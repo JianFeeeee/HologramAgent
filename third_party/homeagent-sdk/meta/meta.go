@@ -59,6 +59,21 @@ var (
 	// SDKName 是 SDK 名称。
 	SDKName = "HomeAgent SDK"
 
+	// SDKModule 是本 SDK 仓当前的 Go module path。
+	//
+	// ★ 2026-10-08 随托管地迁移：`gitcode.com/JianFeeeee/homeagent-sdk`
+	//   → `github.com/JianFeeeee/homeagentsdk`（仓库迁到 GitHub）。
+	//
+	// ❗已有插件的 go.mod 里写的仍是旧路径（本机实测 qq/vanblog/mcquery/
+	//   fileproc/mail-bridge 五个插件工作区全是 gitcode.com/...）。
+	//   因此凡是要「识别 SDK 模块」的判定必须**两种都接受**
+	//   （见 hmapdev 的 sdkModulePath 助手），不能只认新名——
+	//   只认新名会让旧插件被当成「不是 SDK 模块」而静默走错分支。
+	SDKModule = "github.com/JianFeeeee/homeagentsdk"
+
+	// LegacySDKModule 是迁移前的 SDK module path，仍需被识别。
+	LegacySDKModule = "gitcode.com/JianFeeeee/homeagent-sdk"
+
 	// CoreModule 是核心仓的 Go module path，供 hmapdev 生成 go.mod 时使用。
 	//
 	// ★ 2026-10-08 随主仓托管地迁移而更新：仓库在 GitHub
