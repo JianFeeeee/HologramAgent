@@ -14,6 +14,7 @@ import (
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/multimodal"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/pluginmgr"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/remotedevice"
+	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/seemedia"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/seq"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/skillmgr"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/timer"
