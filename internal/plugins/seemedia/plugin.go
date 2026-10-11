@@ -166,9 +166,18 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 
 	if err := s.RegisterTool("hear_audio", sdk.ToolDef{
 		Name: "hear_audio",
-		Description: "【亲自听音频】把一段音频**原样投给你自己**去听，你会直接听到它，" +
-			"而不是读一段转写文字。需要判断语气/音乐/非语音声音时用它。" +
-			"（只想要文字转写、或你本身不支持音频时，用 transcribe_audio 更省。）" +
+		// ★ 不得无条件承诺「你会听到」（2026-10-11 e2e 抓出）。
+		//
+		// 实测：当前部署里**所有** LLM 源都是 audio=false，且
+		// core.input_processing.audio.fallback_provider 为空 ⇒ 内核既不能直视
+		// 也无法回退转写，只会发一条 notice 说「拿不到音频」。此前描述写死
+		// 「你会直接听到它」，与内核随后发的 notice 自相矛盾，模型据此困惑
+		// （实测它转而去数 WAV 字节）。描述必须如实说明可能拿不到。
+		Description: "【亲自听音频】把一段音频**原样投给你自己**去听。若当前模型支持音频" +
+			"（或配了可用的音频回退源），你会在下一步直接听到它。" +
+			"★若当前模型与回退源都不支持音频，内核会明确告诉你拿不到音频（不会假装听到）——" +
+			"那时请改用 transcribe_audio 拿文字转写，或请用户配置音频回退源" +
+			"（core.input_processing.audio.fallback_provider + 该源 audio=true）。" +
 			"来源三选一：path / digest / url。",
 		Parameters:   srcObject(srcParam),
 		ParallelSafe: false,
@@ -239,9 +248,14 @@ func (p *Plugin) handleHearAudio(args map[string]interface{}) (interface{}, erro
 		Type:     "audio_url",
 		AudioURL: &sdk.AudioURL{URL: url},
 	}})
+	// ★ note 同样不得承诺「你会听到」：插件在调用时无法得知当前模型/回退源
+	// 是否支持音频（SDK 未暴露能力查询），支持与否由内核在下一步判定。
+	// 这里只如实说「已投递」，并指明没收到时怎么办。
 	return map[string]interface{}{
 		"status": "ok",
-		"note":   "音频已投给你——请在下一步直接聆听（这不是转写文字）。",
+		"note": "音频已投递——请在下一步确认是否真的收到音频内容。" +
+			"若收到「不支持音频」之类的说明，说明当前模型与回退源都听不了，" +
+			"请改用 transcribe_audio 拿文字转写。",
 	}, nil
 }
 
