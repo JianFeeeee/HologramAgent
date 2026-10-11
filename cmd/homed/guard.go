@@ -82,7 +82,7 @@ func applySystemConfig(cfg *guardConfig) {
 }
 
 func defaultGuardConfig(dataDir string) *guardConfig {
-	return &guardConfig{
+	cfg := &guardConfig{
 		MaxRestarts:       3,
 		HeartbeatTimeout:  "30s",
 		HeartbeatInterval: "5s",
@@ -97,6 +97,45 @@ func defaultGuardConfig(dataDir string) *guardConfig {
 		},
 		LastResortCfg: lastResortConfig{SnapshotBefore: true},
 	}
+	// ★ 必须在这里就把 YAML 字符串解析成 time.Duration（2026-10-11 修）。
+	//
+	// 原先只在 loadGuardConfig 里 parseDur，而 parseDur 是在 yaml.Unmarshal
+	// **之后**执行的。问题出在「解析失败」那条早退路径：
+	//
+	//	if err := yaml.Unmarshal(data, cfg); err != nil {
+	//	    log.Printf(...); return cfg   ← 直接返回，没走下面的 parseDur
+	//	}
+	//
+	// 于是 guard.yaml 一旦写坏（缩进错、半截内容），返回的 cfg 里
+	// heartbeatTimeout/heartbeatInterval/recovery.attemptTimeout 全是 **0**。
+	// 而 loadGuardConfig 开头正是 defaultGuardConfig(dataDir)，
+	// 唯一给这些字段兜底的只有 defaultGuardConfig —— 可它也只给了字符串。
+	//
+	// 后果不是「配置没生效」而是 **agent 装上就崩**：
+	// heartbeatStale(path, 0) 里 `time.Since(mtime) > 0` 恒为真，
+	// 任何心跳都被判陈旧 → guard 每轮都杀 worker → 无限重启。
+	// attemptTimeout=0 则让恢复 probe 立即超时 → L1 梯子必判失败。
+	//
+	// 判据：cmd/homed/guard_config_test.go 的
+	// TestLoadGuardConfigSurvivesCorruptYAML（配置损坏后仍须正值）。
+	parseDur := func(s string, def time.Duration) time.Duration {
+		if s == "" {
+			return def
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil || d <= 0 {
+			return def
+		}
+		return d
+	}
+	cfg.heartbeatTimeout = parseDur(cfg.HeartbeatTimeout, 30*time.Second)
+	cfg.heartbeatInterval = parseDur(cfg.HeartbeatInterval, 5*time.Second)
+	cfg.rebootGrace = parseDur(cfg.RebootGrace, 10*time.Second)
+	cfg.Recovery.attemptTimeout = parseDur(cfg.Recovery.AttemptTimeout, 120*time.Second)
+	if len(cfg.Recovery.Plugins) == 0 {
+		cfg.Recovery.Plugins = []string{"webui", "pluginmgr", "recoverydiag"}
+	}
+	return cfg
 }
 
 func loadGuardConfig(dataDir string) *guardConfig {
@@ -165,11 +204,20 @@ func runGuard(dataDir string) {
 	log.Printf("[guard] starting, data=%s max_restarts=%d hb_timeout=%v last_resort=%s failback_rounds=%d",
 		dataDir, cfg.MaxRestarts, cfg.heartbeatTimeout, cfg.LastResort, cfg.Recovery.MaxAttempts)
 
+	// 探测自身所属的 systemd 单元（L2 自杀防护需要）。
+	// 拿不到就留空 —— 那种情况下跳过自指检测，而不是猜一个单元名。
+	ownUnit := detectOwnSystemdUnit()
+	if ownUnit != "" {
+		log.Printf("[guard] own systemd unit=%s", ownUnit)
+	} else {
+		log.Printf("[guard] own systemd unit unknown (L2 self-restart guard disabled)")
+	}
+
 	// 启动即捕获网络基线（L0：写前留档 + L1 还原依据），并给当前 worker 恢复代理环境
 	captureNetworkBaseline(dataDir)
 
-	failures := 0        // 连续 normal 崩溃次数
-	failbackRound := 0   // 已进行的 failback 轮次
+	failures := 0         // 连续 normal 崩溃次数
+	failbackRound := 0    // 已进行的 failback 轮次
 	failbackDone := false // 本轮 failback 是否已进入
 
 	for {
@@ -198,7 +246,7 @@ func runGuard(dataDir string) {
 		outcome, spawnErr := spawnWorkerOnce(exe, dataDir, boot, hbPath, cfg, sigCh)
 		if spawnErr != nil {
 			log.Printf("[guard] spawn worker: %v, last_resort=%s", spawnErr, cfg.LastResort)
-			doLastResort(cfg)
+			doLastResortGuarded(cfg, ownUnit)
 			failures = 0
 			failbackDone = false
 			failbackRound = 0
@@ -239,7 +287,7 @@ func runGuard(dataDir string) {
 				if cfg.LastResortCfg.SnapshotBefore {
 					rollbackAgentFS(dataDir)
 				}
-				doLastResort(cfg)
+				doLastResortGuarded(cfg, ownUnit)
 				failures = 0
 				failbackDone = false
 				failbackRound = 0
@@ -451,6 +499,120 @@ func doLastResort(cfg *guardConfig) {
 			log.Printf("[guard] restart_app command %s: %v", strings.Join(cfg.RestartCommand, " "), err)
 		}
 	}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  L2 自杀防护（2026-10-11）
+//
+//  # 要防的是什么
+//
+//  doLastResort(restart_app) 会执行 `systemctl restart <unit>`。而启用 guard 的
+//  标准做法正是让 systemd 管理 `homed --role=guard` —— 也就是说 **<unit> 就是
+//  guard 自己所在的单元**。
+//
+//  于是 spawnWorker 失败时形成死循环：
+//
+//	guard: doLastResort → systemctl restart homeagent
+//	       → SIGTERM 杀掉自己 → systemd 按 Restart=always 拉起新 guard
+//	       → 新 guard 再 spawn 失败 → 再自杀 ……
+//
+//  每轮都白跑一遍完整启动，且日志被刷爆。这与 2026-09-05 那次 systemd 审计
+//  记录的事故同类（坏配置导致 836 次重启、79 分钟）。
+//
+//  # 正确解法不是「换个单元名」
+//
+//  换成别的服务（重启 llmsproxy 之类）语义完全不对——L2 的本意是
+//  「重启我自己」。而 systemd 的 Restart=already(always) 已经提供了这件事：
+//
+//	guard 自行退出 == systemd 重新拉起 == 重启整个单元
+//
+//  所以自指时应当**直接退出**，效果与 restart_app 完全等价，且没有自杀窗口。
+//
+//  # 为何还要保留 restart_command
+//
+//  两种部署形态都合法：
+//   - systemd 管 guard（推荐）：自指 → 退出即可
+//   - 别的守护器管 guard（如 supervisor/前台 shell）：此时 guard 不是
+//     systemd 单元的 MainPID，restart_command 可能指向一个**正确**的其它单元，
+//     或者根本不该执行
+//  故不删除，只在「确实是自指」时改走退出路径，并留下明确日志。
+func doLastResortGuarded(cfg *guardConfig, unit string) {
+	if unit != "" && isSelfRestartCommand(cfg.RestartCommand, unit) {
+		log.Printf("[guard] last_resort=restart_app 但 restart_command 指向自身单元 %q："+
+			"执行 systemctl restart 会杀掉自己并被 Restart=always 立即拉起，"+
+			"形成无限自杀重启。改为**直接退出** —— "+
+			"在 Restart=always 下这与 restart_app 等价且无自杀窗口。"+
+			"（若希望 guard 不被 systemd 管，请改用其它 last_resort 或外部守护器）",
+			unit)
+		// 交给 systemd 重新拉起（等价于 restart_app）。
+		// 退出码沿用 workerCleanExit 语义：正常路径下 guard 本就在 worker
+		// 干净退出时这样返回，systemd 看到非零退出也不会放弃（Restart=always）。
+		os.Exit(exitGuardRestartRequested)
+	}
+	doLastResort(cfg)
+}
+
+// isSelfRestartCommand 报告 restart_command 是否会重启 guard 自己所在的单元。
+//
+// 只认 `systemctl … restart <unit>` 与 `systemctl … restart <unit>.service`
+// 两种形态；其它子命令（reload/restart-or-retry 等）不误判。
+//
+// unit 传空字符串时返回 false（检测不出来就别乱杀）。
+func isSelfRestartCommand(cmd []string, unit string) bool {
+	if len(cmd) == 0 || unit == "" {
+		return false
+	}
+	base := strings.TrimSuffix(unit, ".service")
+	for i, arg := range cmd {
+		if arg != "restart" && arg != "restart-or-retry" {
+			continue
+		}
+		// restart 之后的下一个非 flag 参数就是目标单元
+		for _, target := range cmd[i+1:] {
+			if strings.HasPrefix(target, "-") {
+				continue
+			}
+			return strings.TrimSuffix(target, ".service") == base
+		}
+	}
+	return false
+}
+
+// detectOwnSystemdUnit 返回 guard 自己所属的 systemd 单元名（如 "homeagent.service"）。
+//
+// 两个探测途径（都读 Linux 已有设施，不需额外依赖）：
+//  1. /proc/self/cgroup —— cgroup v2 下形如 /system.slice/homeagent.service
+//  2. $INVOCATION_ID —— 反查 /run/systemd/invocation/<id> 的符号链接名
+//
+// 都拿不到时返回空字符串（调用方据此跳过自指检测，不猜）。
+func detectOwnSystemdUnit() string {
+	// 途径 1：cgroup
+	if b, err := os.ReadFile("/proc/self/cgroup"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			// "0::/system.slice/homeagent.service"
+			idx := strings.Index(line, "::")
+			if idx < 0 {
+				continue
+			}
+			path := line[idx+2:]
+			if j := strings.LastIndex(path, "/"); j >= 0 {
+				name := strings.TrimSpace(path[j+1:])
+				if strings.HasSuffix(name, ".service") {
+					return name
+				}
+			}
+		}
+	}
+	// 途径 2：INVOCATION_ID → /run/systemd/invocation/<id>
+	if id := os.Getenv("INVOCATION_ID"); id != "" {
+		if target, err := os.Readlink("/run/systemd/invocation/" + id); err == nil {
+			name := filepath.Base(target)
+			if strings.HasSuffix(name, ".service") {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 var _ = fmt.Sprintf
