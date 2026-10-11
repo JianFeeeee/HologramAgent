@@ -105,12 +105,12 @@ func TestFallbackMIME(t *testing.T) {
 
 func TestClampFrames(t *testing.T) {
 	cases := map[int]int{
-		-5: defaultVideoFrames, // 非正数回默认，而不是 0 帧（0 帧=白调一次）
-		0:  defaultVideoFrames,
-		1:  1,
-		6:  6,
-		10: 10,
-		11: maxVideoFrames, // 超限夹到上限，不放任上游超体积
+		-5:  defaultVideoFrames, // 非正数回默认，而不是 0 帧（0 帧=白调一次）
+		0:   defaultVideoFrames,
+		1:   1,
+		6:   6,
+		10:  10,
+		11:  maxVideoFrames, // 超限夹到上限，不放任上游超体积
 		999: maxVideoFrames,
 	}
 	for in, want := range cases {
