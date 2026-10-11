@@ -169,3 +169,87 @@ func TestSeeToolsAreNotParallelSafe(t *testing.T) {
 			"SetToolBlocks 写的是当前 call 的块，并发会串台")
 	}
 }
+
+// ---- ⑤ 不得承诺「你会听到」 ----
+//
+// 2026-10-11 e2e 抓出：hear_audio 的注册描述写死「你会直接听到它」，而当前
+// 部署里所有 LLM 源都是 audio=false、且音频回退源为空 ⇒ 内核既不能直视也无法
+// 回退，只发一条「拿不到音频」的 notice。模型看到「你会听到」+「拿不到」两句
+// 自相矛盾的话，转而去数 WAV 字节（实测）。
+//
+// 插件在调用时**无法**得知当前模型是否支持音频（SDK 未暴露能力查询），
+// 所以描述必须如实说「可能拿不到」，并把出路（transcribe_audio / 配置回退源）
+// 写清楚。这条判据跨实现有效：谁把承诺改回去，谁就重建了那个自相矛盾。
+func TestHearAudioDoesNotPromiseAudibility(t *testing.T) {
+	src, err := os.ReadFile("plugin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+
+	// 钉住 RegisterTool("hear_audio" 这一段（到该注册调用结束为止）。
+	// ★ 不能用「下一个 RegisterTool」做终点：hear_audio 是**最后一个**注册，
+	//   那样会一直截到文件末尾，把 handler 的 note 也吞进来 —— 于是
+	//   note 里残留的 transcribe_audio 会让本判据误判为「描述合格」。
+	//   （这个 bug 是变异测试抓出来的：改掉描述里的出路却仍 PASS。）
+	i := strings.Index(s, `RegisterTool("hear_audio"`)
+	if i < 0 {
+		t.Fatal("找不到 hear_audio 注册")
+	}
+	seg := s[i:]
+	// 终点：该 RegisterTool 调用对应的 "}, p.handleHearAudio)" 之后。
+	en := strings.Index(seg, "p.handleHearAudio)")
+	if en < 0 {
+		t.Fatal("找不到 hear_audio 注册调用的结尾")
+	}
+	seg = seg[:en]
+	// ★ 剔除注释行：本文件的注释里会**引用旧文案**说明为何不得这么写，
+	// 那不是承诺。判据只应检查真正会送到模型面前的字符串（Description/note）。
+	var code []string
+	for _, line := range strings.Split(seg, "\n") {
+		t2 := strings.TrimSpace(line)
+		if strings.HasPrefix(t2, "//") {
+			continue
+		}
+		code = append(code, line)
+	}
+	seg = strings.Join(code, "\n")
+
+	// ① 不得出现无条件承诺
+	for _, bad := range []string{"你会直接听到它", "你会直接听到"} {
+		if strings.Contains(seg, bad) {
+			t.Errorf("hear_audio 描述不得无条件承诺可听性（当前配置下会与内核 notice 矛盾）: 含 %q", bad)
+		}
+	}
+	// ② 必须说明「拿不到时怎么办」——即指向 transcribe_audio
+	if !strings.Contains(seg, "transcribe_audio") {
+		t.Error("hear_audio 描述必须指明拿不到音频时的出路（transcribe_audio）")
+	}
+	// ③ 必须点明可能不支持（诚实降级），不能只说好话
+	if !strings.Contains(seg, "不支持") {
+		t.Error("hear_audio 描述必须如实说明「当前模型/回退源可能不支持音频」")
+	}
+}
+
+// TestHearAudioNoteIsHonest 钉住 handler 返回的 note 同样不做虚假承诺。
+func TestHearAudioNoteIsHonest(t *testing.T) {
+	src, err := os.ReadFile("plugin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	i := strings.Index(s, "func (p *Plugin) handleHearAudio(")
+	if i < 0 {
+		t.Fatal("找不到 handleHearAudio")
+	}
+	seg := s[i:]
+	if j := strings.Index(seg, "\nfunc "); j > 0 {
+		seg = seg[:j]
+	}
+	if strings.Contains(seg, "请在下一步直接聆听") {
+		t.Error("handleHearAudio 的 note 不得说「直接聆听」——插件无法保证当前模型支持音频")
+	}
+	if !strings.Contains(seg, "transcribe_audio") {
+		t.Error("handleHearAudio 的 note 必须指明听不到时的替代（transcribe_audio）")
+	}
+}
