@@ -203,31 +203,36 @@ eventLoop() → processTextInput()
 要求调用方知道格式，等于让一个拼写错误静默切断引用绑定而全链路无人报错。
 `memory_commit` 同时新增 `sentence_text`：媒体引用挂在句子上，没有句子就无处可挂。
 
-### 媒体记忆（v1.2.0 起：一等记忆块）
+### 媒体记忆（块 union：媒体即块）
 
-媒体不是外挂内容，而是**记忆的一等节点**：`internal/memory/media/` 是内容寻址仓储（CAS），
-图数据库里的 block 节点携带它的 digest 与向量，结构边（如 `sentence --contains--> block`）表达归属。
+媒体不是外挂内容，也不是另建的存储层，而是**块自身的一种取值**。
+`MemoryBlock` 是一个 union：文本块的负载在 `Text`，媒体块的负载在 `Data`（配 MIME/宽高/大小）。
+字节随块同生同灭——同一个 row、同一个块值，没有独立的寻址层。
+
+> ★ 2026-10-11 CAS 淘汰：此前媒体字节存在独立的**内容寻址仓储**（`internal/memory/media/`，
+> 带 `media.db` + `blobs/`、`ref_count` 引用账本、第二套向量与第二套召回 `QueryMediaScored`），
+> 块只留一个 digest 指向它。两套存储必然要打补丁（`crossmodal.go` 曾靠 `heldMediaDigests()`
+> 防召回“无处可归的媒体”），且 digest 与块 ID 双身份让跨层引用容易错位。
+> 该层已整体拆除：媒体跟着块走，块 ID 就是媒体的身份。
 
 | 关注点 | 做法 | 为何 |
 |---|---|---|
-| 寻址 | sha256 digest；元数据在 SQLite，blob 在磁盘（`blobs/<前2位>/<其余>` 两级分桶） | 相同字节只存一份；元数据要可查询，blob 不该进数据库 |
-| 完整性 | 每次 `Get` 重校 digest | 磁盘损坏时静默返回脏数据比报错危险得多 |
-| 写入原子性 | `.tmp` + rename | 半个文件被当成完整内容会永久污染那个 digest |
-| 检索 | 块携带**自己的多模态向量与指纹**，直接参与向量检索 | 不需要描述文本做中介 |
-| 生命周期 | **无独立 GC、无引用计数、无 keep-set**；删除块即删内容 | 媒体是记忆节点，不是需要保活的缓存 |
+| 负载归属 | 字节在 `memory_blocks.data`（BLOB），随块同生共灭 | 一个块要么带文本、要么带字节；不存在块外的字节存储层 |
+| 块身份 | **内容派生** `blk_media_<sha256(trim(mime)+\0+data)[:12]>` | 同内容⇒同 ID⇒`ON CONFLICT` 天然去重（内容寻址当年的好处，现在由块 ID 直接提供） |
+| 检索 | 块携带**自己的多模态向量与指纹**，直接参与 `RecallBlocks` 向量召回 | 纯向量检索，全程不碰负载；负载只在块被选中后按需 `BlockData` 取用 |
+| 取字节 | `BlockData(blockID)` 单块按需加载；插件经 `Memory().MediaBytes(ref)` 按块引用取回 | `blockColumns` 刻意不含 `data`：召回带上负载会让每次全表读入几十 MB |
+| 生命周期 | **无独立 GC、无引用计数、无 keep-set**；删除块即删内容 | 媒体是记忆块，不是需要保活的缓存 |
+| 知识库媒体 | 字节作为条目自带数据落在 entry 目录（与 `content.md`、`.media.json` 并列） | `Remove` 的 `RemoveAll` 天然清掉，不留孤儿 |
 
 **不再有描述式索引**：旧实现在正文里写 `[<mime> <短digest>] <描述>` 标记，并把描述文本当作语义记忆
 （检索靠描述）。该机制已在 v1.2.0 整体拆除：描述是模型生成的二手信息，
 检索“别人转述的图片”不如检索图片自己的向量。现在图片只按自己的统一空间向量被检索，
 正文里不再有 media marker。
 
-**跨空间向量迁移**：媒体行的向量带 `vec_model`（空间指纹）。启动时
-`reembedStaleMedia()` 把 `vec_model` 为空（从未嵌入）或与当前空间不一致（换过模型/维度）的行
-批量重算并**写回库**；模态不在本空间覆盖范围时返回 `ErrModalityUnsupported`，
+**跨空间向量迁移**：块的向量带 `fingerprint`（空间指纹）。启动时
+`reembedStaleMedia()` 把 `vector` 为空/`'null'` 或 fingerprint 与当前空间不一致（换过模型/维度）的块
+批量重算并**写回库**（字节经 `BlockData` 按需取回）；模态不在本空间覆盖范围时返回 `ErrModalityUnsupported`，
 **绝不拿别的模型的向量顶替**。
-
-媒体存储全程可选：`core.memory.media.enabled=false` 或未配置时，整条链路静默退化为纯文本行为，
-不报错不 panic。
 
 ### 其他记忆层
 

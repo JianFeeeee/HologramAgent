@@ -207,19 +207,29 @@ single typo silently breaks reference binding with no error anywhere in the chai
 also gained `sentence_text`: media references hang off a sentence, so with no sentence there is
 nowhere to attach them.
 
-### Media Memory (since v1.2.0: first-class memory blocks)
+### Media Memory (block union: media *is* a block)
 
-Media is not attached content but a **first-class memory node**: `internal/memory/media/` is a
-content-addressed store (CAS), and graph `block` nodes carry its digest plus its own vector, while
-structural edges (e.g. `sentence --contains--> block`) express ownership.
+Media is neither attached content nor a separate storage layer — it is **one of the values a block
+can take**. `MemoryBlock` is a union: a text block carries its payload in `Text`, a media block in
+`Data` (plus MIME/width/height/size). The bytes live and die with the block — same row, same block
+value, with no independent addressing layer.
+
+> ★ 2026-10-11 CAS removal: media bytes used to live in a separate **content-addressed store**
+> (`internal/memory/media/`, with `media.db` + `blobs/`, a `ref_count` ledger, a second vector set
+> and a second retrieval path `QueryMediaScored`), with blocks holding only a digest pointing at it.
+> Two stores inevitably demand patches (`crossmodal.go` needed `heldMediaDigests()` to stop
+> retrieving "media with nowhere to belong"), and the dual digest/block-ID identity made
+> cross-layer references easy to misalign. That layer was removed wholesale: media travels with
+> the block, and the block ID *is* the media's identity.
 
 | Concern | Approach | Why |
 |---|---|---|
-| Addressing | sha256 digest; metadata in SQLite, blobs on disk (`blobs/<first2>/<rest>`, two-level fanout) | Identical bytes stored once; metadata must be queryable, blobs must not live in the database |
-| Integrity | Every `Get` re-verifies the digest | Silently returning corrupt data on disk damage is far worse than an error |
-| Write atomicity | `.tmp` + rename | A half-written file taken as complete content would permanently poison that digest |
-| Retrieval | Blocks carry **their own multimodal vector and fingerprint** and are searched directly | No description text is needed as an intermediary |
-| Lifecycle | **No separate GC, no refcounts, no keep-set**; deleting the block deletes the content | Media is a memory node, not a cache that needs keeping alive |
+| Payload ownership | Bytes in `memory_blocks.data` (BLOB), living and dying with the block | A block carries either text or bytes; there is no byte store outside the block |
+| Block identity | **Content-derived** `blk_media_<sha256(trim(mime)+\0+data)[:12]>` | Same content ⇒ same ID ⇒ `ON CONFLICT` dedupes naturally (the benefit CAS once provided, now supplied directly by the block ID) |
+| Retrieval | Blocks carry **their own multimodal vector and fingerprint**, participating directly in `RecallBlocks` vector search | Pure vector retrieval never touches payloads; a payload is fetched on demand via `BlockData` only after a block is selected |
+| Fetching bytes | `BlockData(blockID)` loads one block on demand; plugins call `Memory().MediaBytes(ref)` with a block reference | `blockColumns` deliberately excludes `data`: including payloads would read tens of MB on every full-table recall |
+| Lifecycle | **No separate GC, no refcounts, no keep-set**; deleting the block deletes the content | Media is a memory block, not a cache that needs keeping alive |
+| Knowledge media | Bytes travel as data carried by the entry, stored in the entry directory (beside `content.md` and `.media.json`) | `Remove`'s `RemoveAll` cleans it up naturally, leaving no orphans |
 
 **Description-based indexing is gone**: the old implementation embedded a
 `[<mime> <short digest>] <description>` marker in the body and treated the description as the
@@ -228,14 +238,11 @@ second-hand model output, and retrieving "someone else's paraphrase of an image"
 than retrieving the image's own vector. Images are now retrieved only by their own vector in the
 unified space, and no media marker is written into the body.
 
-**Cross-space vector migration**: media rows store their vector together with `vec_model` (the space
-fingerprint). At startup `reembedStaleMedia()` recomputes and **writes back** every row whose
-`vec_model` is empty (never embedded) or differs from the current space (model/dimension switched).
-Modalities outside the space return `ErrModalityUnsupported` — the kernel **never substitutes
-another model's vector**.
-
-The media store is **optional throughout**: with `core.memory.media.enabled=false` or no
-configuration, the whole chain silently degrades to plain-text behaviour — no errors, no panics.
+**Cross-space vector migration**: blocks store their vector together with a `fingerprint` (the space
+fingerprint). At startup `reembedStaleMedia()` recomputes and **writes back** every block whose
+`vector` is empty/`'null'` or whose fingerprint differs from the current space (model/dimension
+switched), fetching bytes on demand via `BlockData`. Modalities outside the space return
+`ErrModalityUnsupported` — the kernel **never substitutes another model's vector**.
 
 ### Other Memory Layers
 

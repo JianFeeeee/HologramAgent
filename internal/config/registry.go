@@ -721,7 +721,6 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 	set("core.memory.graph", filepath.Join(dataDir, "memory", "graph.db"))
 	set("core.memory.text", filepath.Join(dataDir, "memory", "text"))
 	set("core.memory.documents", filepath.Join(dataDir, "memory", "documents"))
-	set("core.memory.media.dir", filepath.Join(dataDir, "memory", "media"))
 	// 发行版默认启用本地向量空间。用 chineseclip（text+image、512 维、实测
 	// 稳态约 0.89GB、Apache-2.0）而不是 qwen3vl（视觉塔按需加载，峰值约 9.4GB）：
     // 多数机器装不下后者。
@@ -834,8 +833,8 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string) {
 	reg(ConfigDef{Key: "core.memory.graph", Default: filepath.Join(dataDir, "memory", "graph.db"), Type: "string", DisplayName: "图数据库路径", Description: "长期记忆（图数据库）存储路径", Category: "paths"})
 	reg(ConfigDef{Key: "core.memory.text", Default: filepath.Join(dataDir, "memory", "text"), Type: "string", DisplayName: "文本记忆路径", Description: "短期文本记忆存储目录", Category: "paths"})
 	reg(ConfigDef{Key: "core.memory.documents", Default: filepath.Join(dataDir, "memory", "documents"), Type: "string", DisplayName: "文档记忆路径", Description: "文档记忆存储目录", Category: "paths"})
-	reg(ConfigDef{Key: "core.memory.media.enabled", Default: "true", Type: "bool", DisplayName: "媒体记忆", Description: "把对话里出现的图片/音频变成一等记忆块，内容按 sha256 落盘去重。关闭后媒体仅在当前对话内可见，下一轮起只剩路径或 alt 文本", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.media.dir", Default: filepath.Join(dataDir, "memory", "media"), Type: "string", DisplayName: "媒体存储路径", Description: "媒体内容寻址存储目录（内含 media.db 与 blobs/）", Category: "paths"})
+	// ★ core.memory.media.* 已随 CAS 淘汰删除（2026-10-11）：媒体字节现在是
+	//   块自带负载（MemoryBlock.Data），媒体记忆不再有独立的存储开关/路径。
 	reg(ConfigDef{Key: "core.memory.multimodal_space.provider", Default: "chineseclip", Type: "string", DisplayName: "多模态向量 provider", Description: "从公共 provider 注册表（pkg/embedding）按名字打开的多模态向量空间。内置：chineseclip（默认，text+image，512 维，实测稳态约 0.89GB（加载峰值 1.59GB），Apache-2.0）、qwen3vl（text+image，2048 维，峰值约 9.4GB，视觉塔按需加载；视频已实现但未纳入契约）、http（外部向量 API）。也可是第三方注册的名字。两者均需 onnxruntime 构建标签。留空禁用多模态向量检索，只保留 fastText 文本路径。provider 的模型文件、预处理与运行时全在 provider 内部，核心不做任何模型假设。修改后需重启生效。", Category: "memory"})
 	reg(ConfigDef{Key: "core.memory.multimodal_space.options.model_dir", Default: filepath.Join(dataDir, "models", "chinese-clip-vit-b16-onnx"), Type: "string", DisplayName: "provider 模型目录", Description: "provider 自定义选项（以 options. 开头的键会去掉前缀后原样传给 provider，核心不解释其含义）。对内置 chineseclip：Chinese-CLIP 产物目录（用 scripts/export_chineseclip_onnx.py 生成）。对内置 qwen3vl：Qwen3-VL ONNX 产物目录（用 scripts/export_qwen3vl_embedding_onnx.py 生成）。", Category: "memory"})
 	reg(ConfigDef{Key: "core.memory.multimodal_space.options.endpoint", Default: "", Type: "string", DisplayName: "provider 服务端点", Description: "provider 自定义选项。对内置 http：外部多模态向量服务的端点 URL（POST，接受 modality/side/text/data/mime，返回 embedding）。", Category: "memory"})
