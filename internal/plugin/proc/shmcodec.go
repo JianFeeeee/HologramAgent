@@ -66,6 +66,36 @@ type localCtx struct {
 	ExtraMediaType   interface{}
 	ExtraInputSource interface{}
 	ExtraOutputChan  interface{}
+	// ExtraBag 是 Extra 里具名 4 键之外的全部键（插件自建，如 qq_auth）。
+	// nil 表示无额外键；非 nil 时整体 JSON 进 fExtraBag。
+	ExtraBag map[string]interface{}
+}
+
+// namedExtraKeys 是被提升为具名字段的 4 个 Extra 键。bag 必须排除它们，
+// 否则同一键会被具名字段与 bag 各带一份，回读时语义冲突。
+var namedExtraKeys = map[string]bool{
+	ExtraKeyMediaBlocks:   true,
+	ExtraKeyMediaType:     true,
+	ExtraKeyInputSource:   true,
+	ExtraKeyOutputChannel: true,
+}
+
+// bagFromExtra 把 Extra 里非具名键收集成 bag（无额外键时返回 nil）。
+func bagFromExtra(extra map[string]interface{}) map[string]interface{} {
+	if len(extra) == 0 {
+		return nil
+	}
+	var bag map[string]interface{}
+	for k, v := range extra {
+		if namedExtraKeys[k] {
+			continue
+		}
+		if bag == nil {
+			bag = make(map[string]interface{})
+		}
+		bag[k] = v
+	}
+	return bag
 }
 
 func captureLocal(sc *pubsdk.StageContext) *localCtx {
@@ -91,6 +121,7 @@ func captureLocal(sc *pubsdk.StageContext) *localCtx {
 		l.ExtraMediaType = sc.Extra[ExtraKeyMediaType]
 		l.ExtraInputSource = sc.Extra[ExtraKeyInputSource]
 		l.ExtraOutputChan = sc.Extra[ExtraKeyOutputChannel]
+		l.ExtraBag = bagFromExtra(sc.Extra)
 	}
 	return l
 }
@@ -166,6 +197,9 @@ func (s *Segment) writeLocal(l *localCtx) error {
 		{fExtraMediaType, l.ExtraMediaType},
 		{fExtraInputSource, l.ExtraInputSource},
 		{fExtraOutputChannel, l.ExtraOutputChan},
+		// bag 空时写成未设置（sliceOrNil）；非空时整体 marshal。
+		// 不可序列化的值在这里让 putJSON 显式报错（宁失败不静默丢键）。
+		{fExtraBag, sliceOrNil(len(l.ExtraBag), l.ExtraBag)},
 	}
 	for _, step := range jsonFields {
 		if err := putJSON(step.f, step.v); err != nil {
@@ -263,6 +297,16 @@ func (s *Segment) ReadInto(sc *pubsdk.StageContext) error {
 	}
 
 	extra := map[string]interface{}{}
+	// bag 先打平，具名键随后覆盖 → 具名键永远赢。
+	// 顺序是防御：即便 bag 里混入具名键（写侧 bug/旧数据），
+	// 也不会用 bag 的陈旧值顶掉具名字段的新值。
+	var bag map[string]interface{}
+	if err := getJSON(fExtraBag, &bag); err != nil {
+		return err
+	}
+	for k, v := range bag {
+		extra[k] = v
+	}
 	for _, pair := range []struct {
 		f   stageField
 		key string
@@ -280,6 +324,7 @@ func (s *Segment) ReadInto(sc *pubsdk.StageContext) error {
 			extra[pair.key] = v
 		}
 	}
+
 
 	var respPtr *string
 	if s.getFlag(flagResponseSet) {
@@ -461,6 +506,7 @@ func newSnapshotFromLocal(l *localCtx) *Snapshot {
 	sn.jsons[fExtraMediaType] = marshal(l.ExtraMediaType)
 	sn.jsons[fExtraInputSource] = marshal(l.ExtraInputSource)
 	sn.jsons[fExtraOutputChannel] = marshal(l.ExtraOutputChan)
+	sn.jsons[fExtraBag] = marshal(sliceOrNil(len(l.ExtraBag), l.ExtraBag))
 
 	if l.Response != nil {
 		sn.response = *l.Response
@@ -509,6 +555,8 @@ func (f stageField) String() string {
 		return "extra." + ExtraKeyInputSource
 	case fExtraOutputChannel:
 		return "extra." + ExtraKeyOutputChannel
+	case fExtraBag:
+		return "extra.bag"
 	}
 	return fmt.Sprintf("field(%d)", int(f))
 }

@@ -18,9 +18,13 @@ import (
 )
 
 // 共享段魔数与版本，用于挂载时校验对端布局一致。
+//
+// v2（2026-10-12）：新增 fExtraBag —— Extra 具名 4 键之外的插件自建键
+// （如 qq 的 qq_auth 绑帧身份）跨进程/跨 stage 透传。加字段必升版：
+// AttachSegment 与插件握手对版本失败即拒，旧插件不会静默错读新布局。
 const (
 	shmMagic   uint32 = 0x48415348 // "HASH" — HomeAgent SHared
-	shmVersion uint32 = 1
+	shmVersion uint32 = 2
 )
 
 // 段布局（所有偏移均相对**段起始**，arena 内偏移相对 arenaBase）：
@@ -84,10 +88,22 @@ const (
 	fMemory           // JSON
 	fTokenUsage       // JSON
 	fErrors           // JSON
-	fExtraMediaBlocks // JSON —— Extra 的 4 个键提升为具名字段（§3.3 已核实使用点）
+	fExtraMediaBlocks // JSON —— Extra 的 4 个键提升为具名字段
 	fExtraMediaType
 	fExtraInputSource
 	fExtraOutputChannel
+	// fExtraBag 承载 Extra 里**具名 4 键之外的全部插件自建键**（JSON）。
+	//
+	// 背景（2026-10-12 权限失效修复）：qq 插件靠 ctx.Extra["qq_auth"] 把
+	// 身份绑到推理帧上（中断抢占/并发合并场景下全局身份不可靠，见该插件
+	// README「身份必须绑帧」）。但此前的桥只透传 4 个具名键，插件自建键
+	// 在 stage 之间静默丢失 → before_toolcall 永远回落到可变全局身份 →
+	// 绑帧（以及建立在它之上的权限门）在 proc 插件下整体失效。
+	//
+	// bag 把 Extra 恢复成「任意键跨进程/跨 stage 存活」的原语义。值以 JSON
+	// 往返：插件侧拿到 map[string]interface{}（数字统一 float64），不能
+	// 类型断言回私有 struct —— 插件侧解码约定见 sdk example/qq。
+	fExtraBag
 
 	stageFieldCount
 )
