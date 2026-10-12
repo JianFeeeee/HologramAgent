@@ -834,17 +834,25 @@ func startSupervisorRuntime(sup *supervisor.Daemon, trk *tracker.Tracker, agent 
 func startHeartbeat(dataDir string, ctx context.Context) func() {
 	// 心跳：每 5s 触碰 <data>/heartbeat，guard 据此判定工作进程是否存活/卡死
 	hbPath := filepath.Join(dataDir, "heartbeat")
+	writeHB := func() {
+		if f, err := os.OpenFile(hbPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+			fmt.Fprintf(f, "t=%d\n", time.Now().Unix())
+			f.Close()
+		}
+	}
+	// ★ 首次写入必须**同步**（返回前落盘），不能丢进 goroutine：
+	//
+	// heartbeat 文件在 worker 侧的唯一职责是「让 guard 看到 mtime 变新」。
+	// 停机 >heartbeatTimeout 后重启时，文件 mtime 停在上一代 worker（已过期）；
+	// 若首次写是异步的，它可能与重型初始化（多模态空间/知识库重建，冷启动
+	// 5–8s）竞争调度，迟迟不落盘 —— guard 的 ticker 先到、拿旧 mtime 判 stale。
+	// （2026-10-12 生产部署实测：6 连杀 + failback 降级。）
+	// 同步首写保证：main() 继续往下做任何慢事之前，mtime 已经是新的。
+	writeHB()
 	hbStop := make(chan struct{})
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
-		writeHB := func() {
-			if f, err := os.OpenFile(hbPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-				fmt.Fprintf(f, "t=%d\n", time.Now().Unix())
-				f.Close()
-			}
-		}
-		writeHB()
 		for {
 			select {
 			case <-t.C:

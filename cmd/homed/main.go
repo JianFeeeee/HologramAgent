@@ -53,6 +53,23 @@ func main() {
 		opt.dataDir = resolveDataDir(opt.dataDir)
 	}
 
+	// ---- 心跳：dataDir 一确定就启动（★ 启动竞态的 worker 侧根修）----
+	//
+	// 心跳文件是 guard 判 worker 存活的唯一依据（mtime 新鲜度 + IPC PING）。
+	// 必须在**任何重型初始化之前**首写同步落盘：停机 >heartbeatTimeout 后重启，
+	// 文件 mtime 停在上一代 worker（已过期）；若等所有初始化完才首写（原位置在
+	// main 尾部），guard 的 5s ticker 先到、拿旧 mtime 判 stale → 把还在加载
+	// 多模态空间/知识库的 worker SIGKILL（2026-10-12 生产实测：6 连杀 +
+	// failback 降级，详见 562ba6bd）。
+	//
+	// guard 侧另有启动宽限期兜底（shouldKillStaleHeartbeat），两层独立生效：
+	// worker 侧让 mtime 尽快变新（治本），guard 侧容忍旧 mtime（防御）。
+	//
+	// 用 context.Background()（而非 main 的 ctx）：心跳生命周期 = 进程，
+	// 与 agent 的 ctx 解耦；停止靠本函数返回的 hbStop（waitForShutdown 调它）。
+	stopHeartbeatEarly := startHeartbeat(opt.dataDir, context.Background())
+	defer stopHeartbeatEarly()
+
 	if opt.cliSocket == "" {
 		opt.cliSocket = filepath.Join(opt.dataDir, "cli.sock")
 	}
@@ -186,7 +203,7 @@ func main() {
 	log.Printf("[homed] kernel ready, waiting for plugin IO...")
 
 	// ---- 等待退出信号 ----
-
-	stopHeartbeat := startHeartbeat(opt.dataDir, ctx)
-	waitForShutdown(ctx, opt.dataDir, restartCh, stopHeartbeat, pluginReg, trk, cfgReg, sup)
+	//
+	// 心跳已在 main 早期启动（见文件头部 startHeartbeatEarly），此处不再重复启动。
+	waitForShutdown(ctx, opt.dataDir, restartCh, stopHeartbeatEarly, pluginReg, trk, cfgReg, sup)
 }

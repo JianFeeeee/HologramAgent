@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,5 +168,65 @@ func TestFailbackPluginsAreSubsetOfKnownPlugins(t *testing.T) {
 		if strings.ContainsAny(p, "*?") {
 			t.Errorf("缺省 failback 插件集含通配符 %q —— 受限启动会退化成全加载", p)
 		}
+	}
+}
+
+// TestHeartbeatFirstWriteSynchronous 钉住「心跳首写必须同步落盘」。
+//
+// ★ 场景（2026-10-12 生产部署实测的 worker 侧根因）：停机 >30s 后重启，
+// heartbeat 文件 mtime 停在上一代 worker（已过期）。原实现把首次写放进
+// goroutine —— 它与重型初始化（多模态空间/知识库重建，冷启动 5–8s）竞争
+// 调度，迟迟不落盘；guard 的 5s ticker 先到、拿旧 mtime 判 stale →
+// SIGKILL 加载中的 worker（6 连杀 + failback 降级，guard 侧修复见
+// shouldKillStaleHeartbeat 的宽限期；本判据钉 worker 侧根因）。
+//
+// 不变量：startHeartbeat 返回时，心跳文件 mtime 必已是「现在」——
+// main() 往下做任何慢事之前，guard 看到的一定是新心跳。
+func TestHeartbeatFirstWriteSynchronous(t *testing.T) {
+	dir := t.TempDir()
+	hb := filepath.Join(dir, "heartbeat")
+
+	// 造上一代遗留的过期心跳（复现停机重启场景）
+	if err := os.WriteFile(hb, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(hb, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// 启动心跳；返回即应已落盘首写
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := startHeartbeat(dir, ctx)
+
+	// (a) 返回后立刻检查 mtime：必须是新的（同步首写），不许等到第一个 tick
+	fi, err := os.Stat(hb)
+	if err != nil {
+		t.Fatalf("心跳文件不存在: %v", err)
+	}
+	if age := time.Since(fi.ModTime()); age > 2*time.Second {
+		t.Errorf("startHeartbeat 返回后心跳仍是旧的（age=%v）—— 首写不是同步的，guard 会拿旧 mtime 误杀加载中的 worker", age)
+	}
+
+	// (b) 5s 后应有第二次写（ticker 还在跑）
+	time.Sleep(5500 * time.Millisecond)
+	fi2, err := os.Stat(hb)
+	if err != nil {
+		t.Fatalf("5s 后心跳文件消失: %v", err)
+	}
+	if !fi2.ModTime().After(fi.ModTime()) {
+		t.Error("5s 后心跳未更新 —— ticker 未运行，guard 会在 heartbeatTimeout 后误杀健康 worker")
+	}
+
+	// (c) 停止后不再写
+	stop()
+	m3 := func() time.Time {
+		f, _ := os.Stat(hb)
+		return f.ModTime()
+	}()
+	time.Sleep(5500 * time.Millisecond)
+	if m4, _ := os.Stat(hb); !m4.ModTime().Equal(m3) {
+		t.Error("停止心跳后文件仍被更新 —— hbStop 未生效，泄漏 goroutine")
 	}
 }
