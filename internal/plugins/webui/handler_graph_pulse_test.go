@@ -76,7 +76,8 @@ func graphFixture() map[string]interface{} {
 			{ID: "b_old", Modality: memory.BlockModality("text"), Text: "老块",
 				Vector: []float64{0.1, 0.2, 0.3},
 				CreatedAt: old, UpdatedAt: now.Add(-8 * time.Hour)},
-			{ID: "b_new", Modality: memory.BlockModality("text"), Text: "刚学到的东西",
+			{ID: "b_new", Modality: memory.BlockModality("image"), Text: "刚学到的东西",
+				Data: []byte("png-bytes"), MIME: "image/png",
 				Vector: []float64{0.1, 0.2, 0.3},
 				CreatedAt: now, UpdatedAt: now},
 		},
@@ -102,7 +103,7 @@ func TestHandleMemoryGraph_StripsVector(t *testing.T) {
 		t.Fatalf("response still contains vector field:\n%s", rr.Body.String())
 	}
 	// 其余字段必须还在（不能顺手把整个 memory_blocks 删掉）。
-	for _, want := range []string{`"payload_digest":"d1"`, `"id":"b_new"`, `"nodes"`, `"edges"`} {
+	for _, want := range []string{`"has_data":true`, `"id":"b_new"`, `"nodes"`, `"edges"`} {
 		if !bytes.Contains(rr.Body.Bytes(), []byte(want)) {
 			t.Fatalf("response missing %s:\n%s", want, rr.Body.String())
 		}

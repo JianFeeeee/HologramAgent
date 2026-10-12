@@ -2,6 +2,8 @@ package knowledge
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
@@ -87,7 +89,9 @@ func TestDenseCrossModalRecall(t *testing.T) {
 	s.SetDenseSpace(mm)
 
 	if err := s.AddWithMedia("cat-photo", "猫 图片 说明", []KnowledgeMediaRef{
-		{File: "cat.png", MIME: "image/png", Kind: "image"},
+		// ★ 带 Data：Write 路径会 writeMediaFiles 落盘到条目目录，随后 denseFor
+		//   读回它算图向量。字节 "d-cat" 对应 fakeMM.img 里的 eax 方向。
+		{File: "cat.png", MIME: "image/png", Kind: "image", Data: []byte("d-cat")},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +293,11 @@ func TestAttachMediaRecomputesDense(t *testing.T) {
 	s.SetDenseSpace(mm)
 
 	if err := s.Add("k", "正文"); err != nil {
+		t.Fatal(err)
+	}
+	// AttachMedia 是「挂已在盘上的媒体」：字节必须先落到条目目录，
+	// 否则 denseFor 读不到。"d-x" 对应 fakeMM.img 里的 eax 方向。
+	if err := os.WriteFile(filepath.Join(dir, "k", "x.png"), []byte("d-x"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	before := append([]float64{}, s.items["k"].Dense...)

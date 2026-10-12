@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,32 +11,36 @@ import (
 	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 )
 
-// 媒体记忆接线测试：验证媒体从对话进入 CAS、挂到 L0 事件、
+// 媒体记忆接线测试（块 union 化之后）：验证媒体从对话进入块、挂到 L0 事件、
 // 随归档转到 L2 文档的完整链路。
 //
 // 核心断言不是"函数被调用了"，而是不变量：
-//   1. 媒体存不进去时对话照常（它是记忆增强，不是对话必需品）
-//   2. 引用转移期间内容始终可读（先挂后销，不留归零窗口）
-//   3. mediaStore 为 nil 时全链路静默跳过，行为与本特性上线前一致
+//   1. 媒体进不了块时对话照常（它是记忆增强，不是对话必需品）
+//   2. 块的身份是内容派生：同内容同块，跨层迁移身份不变
+//   3. 图库为 nil 时全链路静默跳过，行为与本特性上线前一致
 
-func newTestAgentWithMedia(t *testing.T) (*Agent, *media.Store) {
+func newTestAgentWithMedia(t *testing.T) *Agent {
 	t.Helper()
 	dir := t.TempDir()
-	ms, err := media.New(filepath.Join(dir, "media"))
+	g, err := memory.NewGraphDB(filepath.Join(dir, "graph.db"))
 	if err != nil {
-		t.Fatalf("media.New: %v", err)
+		t.Fatalf("NewGraphDB: %v", err)
 	}
-	t.Cleanup(func() { ms.Close() })
+	t.Cleanup(func() { g.Close() })
 
 	emb := memory.NewStaticEmbedder()
 	a := &Agent{
-		mediaStore: ms,
-		context:    NewRelevanceContext(filepath.Join(dir, "context.json"), emb),
+		memory:  g,
+		context: NewRelevanceContext(filepath.Join(dir, "context.json"), emb),
 	}
-	return a, ms
+	return a
+}
+
+// dataURLString 造 data URL（media 包退场后由本测试自持，与 parseDataURL 对偶）。
+func dataURLString(mime string, data []byte) string {
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // imageBlockURL 造一个带指定 URL 的图片块。
@@ -49,36 +54,37 @@ func imageBlockURL(dataURL string) agentAPI.ContentBlock {
 }
 
 func TestCaptureBlockMedia_StoresDataURL(t *testing.T) {
-	a, ms := newTestAgentWithMedia(t)
+	a := newTestAgentWithMedia(t)
 
 	raw := []byte{0x89, 'P', 'N', 'G', 1, 2, 3}
 	blocks := []agentAPI.ContentBlock{
 		{Type: "text", Text: "看这张图"},
-		imageBlockURL(media.DataURL("image/png", raw)),
+		imageBlockURL(dataURLString("image/png", raw)),
 	}
 
-	digests := a.captureBlockMedia(blocks, "multimodal_see_picture")
-	if len(digests) != 1 {
-		t.Fatalf("应捕获 1 个媒体，实际 %d", len(digests))
+	got := a.captureBlockMedia(blocks, "multimodal_see_picture")
+	if len(got) != 1 {
+		t.Fatalf("应捕获 1 个媒体块，实际 %d", len(got))
 	}
-
-	got, err := ms.Get(digests[0])
-	if err != nil {
-		t.Fatalf("回读失败: %v", err)
+	b := got[0]
+	// 字节就在块里（union），身份内容派生
+	if string(b.Data) != string(raw) {
+		t.Fatal("块字节与输入不一致")
 	}
-	if string(got) != string(raw) {
-		t.Fatal("内容不一致")
+	if b.ID != memory.MediaBlockID("image/png", raw) {
+		t.Errorf("块 ID 应内容派生: %q", b.ID)
 	}
-	it, _ := ms.Stat(digests[0])
-	if it.MIME != "image/png" || it.Tool != "multimodal_see_picture" || it.Kind != media.KindImage {
-		t.Fatalf("元数据不对: %+v", it)
+	if b.MIME != "image/png" || b.Tool != "multimodal_see_picture" || b.Modality != memory.BlockImage {
+		t.Fatalf("元数据不对: %+v", b)
 	}
+	// capture 之后由 task/processInput 做 stage（见 task.go:397/1102）——
+	// capture 本身只产出块，不暂存。
 }
 
 func TestCaptureBlockMedia_SkipsHTTPURL(t *testing.T) {
-	// http(s) URL 拿不到字节就无法内容寻址；"下载它再存"会把一次对话
+	// http(s) URL 拿不到字节就无法成块；"下载它再存"会把一次对话
 	// 变成一次网络请求（超时、鉴权、SSRF 全来了），不在本层解决。
-	a, _ := newTestAgentWithMedia(t)
+	a := newTestAgentWithMedia(t)
 
 	blocks := []agentAPI.ContentBlock{
 		imageBlockURL("https://example.com/x.png"),
@@ -88,94 +94,93 @@ func TestCaptureBlockMedia_SkipsHTTPURL(t *testing.T) {
 	}
 }
 
-func TestCaptureBlockMedia_NilStoreIsNoop(t *testing.T) {
-	// mediaStore 未启用时全链路静默跳过，不能 panic 也不能报错——
-	// 行为必须与本特性上线前完全一致。
+func TestCaptureBlockMedia_NilMemoryIsNoop(t *testing.T) {
+	// 块 union 化后 captureBlockMedia 不再依赖外部存储（字节就在块里），
+	// 但 stage/drain、bindEventMedia、blockLabel 这些纯内存通路必须照常可用。
 	a := &Agent{}
-	blocks := []agentAPI.ContentBlock{imageBlockURL(media.DataURL("image/png", []byte("x")))}
-	if d := a.captureBlockMedia(blocks, "t"); d != nil {
-		t.Fatalf("nil store 应返回 nil，实际 %v", d)
+	blocks := []agentAPI.ContentBlock{imageBlockURL(dataURLString("image/png", []byte("x")))}
+	got := a.captureBlockMedia(blocks, "t")
+	if len(got) != 1 {
+		t.Fatalf("捕获不依赖图库，应得 1 个块，实际 %v", got)
 	}
-	a.stageMediaDigests("deadbeef")
-	if got := a.drainMediaDigests(); len(got) != 1 {
-		t.Fatal("stage/drain 不依赖 store，应正常工作")
+	a.stageMediaBlocks(got...)
+	if drained := a.drainMediaBlocks(); len(drained) != 1 {
+		t.Fatal("stage/drain 不依赖图库，应正常工作")
 	}
-	// bindEventMedia 对 nil store 也必须安全
+	// bindEventMedia 对空块列表也必须安全
 	evt := &ContextEvent{}
-	a.bindEventMedia(evt, []string{"deadbeef"})
+	a.bindEventMedia(evt, nil)
 	if len(evt.Blocks) != 0 || evt.ID != "" {
-		t.Fatalf("nil store 时不该改动事件: %+v", evt)
+		t.Fatalf("空块列表时不该改动事件: %+v", evt)
 	}
-	if s := mediaLabel(nil); s != "" {
-		t.Fatalf("nil 媒体应产出空标签，得到 %q", s)
+	if s := blockLabel(nil); s != "" {
+		t.Fatalf("nil 块应产出空标签，得到 %q", s)
 	}
 }
 
 func TestCaptureBlockMedia_AudioAndVideo(t *testing.T) {
-	a, ms := newTestAgentWithMedia(t)
+	a := newTestAgentWithMedia(t)
 
 	blocks := []agentAPI.ContentBlock{
-		imageBlockURL(media.DataURL("image/jpeg", []byte("frame"))),
-		{Type: "audio_url", AudioURL: &agentAPI.AudioURL{URL: media.DataURL("audio/wav", []byte("sound"))}},
+		imageBlockURL(dataURLString("image/jpeg", []byte("frame"))),
+		{Type: "audio_url", AudioURL: &agentAPI.AudioURL{URL: dataURLString("audio/wav", []byte("sound"))}},
 	}
-	digests := a.captureBlockMedia(blocks, "multimodal_see_video")
-	if len(digests) != 2 {
-		t.Fatalf("应捕获 2 个，实际 %d", len(digests))
+	got := a.captureBlockMedia(blocks, "multimodal_see_video")
+	if len(got) != 2 {
+		t.Fatalf("应捕获 2 个，实际 %d", len(got))
 	}
-
-	kinds := map[media.Kind]int{}
-	for _, d := range digests {
-		it, err := ms.Stat(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-		kinds[it.Kind]++
+	if got[0].Modality != memory.BlockImage || got[0].MIME != "image/jpeg" {
+		t.Fatalf("图像块元数据不对: %+v", got[0])
 	}
-	if kinds[media.KindImage] != 1 || kinds[media.KindAudio] != 1 {
-		t.Fatalf("大类归属不对: %v", kinds)
+	if got[1].Modality != memory.BlockAudio || got[1].MIME != "audio/wav" {
+		t.Fatalf("音频块元数据不对: %+v", got[1])
 	}
 }
 
-func TestStageDrainMediaDigests(t *testing.T) {
-	a, _ := newTestAgentWithMedia(t)
+func TestStageDrainMediaBlocks(t *testing.T) {
+	a := newTestAgentWithMedia(t)
 
-	a.stageMediaDigests("a", "b")
-	a.stageMediaDigests("c")
-	got := a.drainMediaDigests()
+	b1 := mediaBlock("image/png", []byte("a"))
+	b2 := mediaBlock("image/png", []byte("b"))
+	b3 := mediaBlock("image/png", []byte("c"))
+
+	a.stageMediaBlocks(b1, b2)
+	a.stageMediaBlocks(b3)
+	got := a.drainMediaBlocks()
 	if len(got) != 3 {
 		t.Fatalf("应累积 3 个，实际 %d", len(got))
 	}
 	// drain 后必须清空——否则下一轮对话会把上一轮的媒体又挂一遍
-	if again := a.drainMediaDigests(); again != nil {
+	if again := a.drainMediaBlocks(); again != nil {
 		t.Fatalf("drain 后应为空，实际 %v", again)
 	}
 }
 
 func TestBindEventMedia_CreatesBlocks(t *testing.T) {
-	a, ms := newTestAgentWithMedia(t)
+	a := newTestAgentWithMedia(t)
 
-	d, err := ms.Put([]byte("img"), media.Item{MIME: "image/png"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	b := mediaBlock("image/png", []byte("img"))
 	evt := &ContextEvent{Timestamp: time.Now(), Source: "qq", Input: "看图"}
-	a.bindEventMedia(evt, []string{d})
+	a.bindEventMedia(evt, []memory.MemoryBlock{b})
 
 	if evt.ID == "" {
 		t.Fatal("应懒生成事件 ID")
 	}
-	if len(evt.Blocks) != 1 || evt.Blocks[0].PayloadDigest != d {
+	if len(evt.Blocks) != 1 || evt.Blocks[0].ID != b.ID {
 		t.Fatalf("事件应持有一等记忆块: %+v", evt.Blocks)
 	}
 	if evt.Blocks[0].Modality != memory.BlockImage || evt.Blocks[0].MIME != "image/png" {
 		t.Fatalf("块元数据不对: %+v", evt.Blocks[0])
 	}
+	// 字节随事件里的块一起走（union）
+	if string(evt.Blocks[0].Data) != "img" {
+		t.Fatalf("块字节应随事件: %q", evt.Blocks[0].Data)
+	}
 }
 
 func TestBindEventMedia_LazyIDOnlyWhenNeeded(t *testing.T) {
 	// 绝大多数对话没有媒体，不该为它们都生成 ID 塞进 context.json
-	a, _ := newTestAgentWithMedia(t)
+	a := newTestAgentWithMedia(t)
 	evt := &ContextEvent{Input: "纯文本"}
 	a.bindEventMedia(evt, nil)
 	if evt.ID != "" {
@@ -183,31 +188,27 @@ func TestBindEventMedia_LazyIDOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
-func TestMediaLabel_NoGeneratedDescription(t *testing.T) {
-	// 标签只用来告诉模型「这条记忆带着哪份媒体、可用该 digest 取回字节」。
-	// 它不包含任何生成的描述：描述式索引是把就机制，已彻底废弃。
-	a, ms := newTestAgentWithMedia(t)
+func TestBlockLabel_NoGeneratedDescription(t *testing.T) {
+	// 标签只用来告诉模型「这条记忆带着哪份媒体、可用该块 ID 取回字节」。
+	// 它不包含任何生成的描述：描述式索引是旧机制，已彻底废弃。
+	a := newTestAgentWithMedia(t)
 
-	d, _ := ms.Put([]byte("img"), media.Item{MIME: "image/png"})
-	it, err := ms.Stat(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := mediaLabel(it)
+	b := mediaBlock("image/png", []byte("img"))
+	s := blockLabel(&b)
 	if s == "" {
 		t.Fatal("应产出标签")
 	}
 	if !strings.Contains(s, "image/png") {
 		t.Fatalf("标签应含 MIME 标注: %q", s)
 	}
-	if !strings.Contains(s, shortDigest(d)) {
-		t.Fatalf("标签应含短 digest 供反查: %q", s)
+	if !strings.Contains(s, shortID(b.ID)) {
+		t.Fatalf("标签应含短块 ID 供反查: %q", s)
 	}
 	_ = a
 }
 
-func TestPrune_NilMediaStoreStillArchives(t *testing.T) {
-	// 媒体存储未启用时归档链路必须照常工作
+func TestPrune_NilDocStoreStillArchives(t *testing.T) {
+	// 归档链路不依赖任何外部媒体存储：块随事件走，归档时整体迁移。
 	dir := t.TempDir()
 	emb := memory.NewStaticEmbedder()
 	docStore := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
@@ -224,7 +225,7 @@ func TestPrune_NilMediaStoreStillArchives(t *testing.T) {
 		})
 	}
 	if n := rc.Prune("查询", 5, docStore); n == 0 {
-		t.Fatal("无媒体存储时归档也应正常")
+		t.Fatal("无媒体参与时归档也应正常")
 	}
 }
 
@@ -247,15 +248,11 @@ func TestContextEvent_BlocksFieldRoundTrip(t *testing.T) {
 	}
 
 	// 新写入带记忆块的事件，再读回
-	ms, err := media.New(filepath.Join(dir, "media"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ms.Close()
-	a := &Agent{mediaStore: ms, context: rc}
-	d, _ := ms.Put([]byte("img"), media.Item{MIME: "image/png"})
+	a := newTestAgentWithMedia(t)
+	a.context = rc
+	b := mediaBlock("image/png", []byte("img"))
 	evt := ContextEvent{Timestamp: time.Now(), Source: "qq", Input: "新数据"}
-	a.bindEventMedia(&evt, []string{d})
+	a.bindEventMedia(&evt, []memory.MemoryBlock{b})
 	rc.Append(evt)
 	rc.flush()
 
@@ -274,8 +271,8 @@ func TestContextEvent_BlocksFieldRoundTrip(t *testing.T) {
 
 func TestPruneMigratesBlocksToDocument(t *testing.T) {
 	// 一等记忆块的 L0→L2 迁移：块随事件离开 Context、进入 Document，
-	// 身份（ID/模态/digest/向量）原样保留；同一块不能同时留在两层。
-	// 这条路径不依赖 media_refs/ref_count。
+	// 身份（ID/模态/MIME/向量）原样保留；同一块不能同时留在两层。
+	// 这条路径不依赖任何引用账本。
 	dir := t.TempDir()
 	emb := memory.NewStaticEmbedder()
 	docStore := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
@@ -284,11 +281,9 @@ func TestPruneMigratesBlocksToDocument(t *testing.T) {
 	}
 	rc := NewRelevanceContext(filepath.Join(dir, "context.json"), emb)
 
-	block := memory.MemoryBlock{
-		ID: "blk_migrate_1", Modality: memory.BlockImage,
-		PayloadDigest: "deadbeef", MIME: "image/png", Size: 42,
-		Vector: []float64{0.1, 0.2, 0.3}, Fingerprint: "qwen:test",
-	}
+	block := mediaBlock("image/png", []byte("migrate-me"))
+	block.Vector = []float64{0.1, 0.2, 0.3}
+	block.Fingerprint = "qwen:test"
 	rc.Append(ContextEvent{
 		Timestamp: time.Now().Add(-time.Hour),
 		Source:    "qq", Input: "很久以前的一张图",
@@ -320,8 +315,13 @@ func TestPruneMigratesBlocksToDocument(t *testing.T) {
 		t.Fatalf("文档应有 1 个块，实际 %d", len(found.Blocks))
 	}
 	got := found.Blocks[0]
-	if got.ID != block.ID || got.Modality != block.Modality || got.PayloadDigest != block.PayloadDigest || got.Fingerprint != block.Fingerprint || len(got.Vector) != len(block.Vector) {
+	if got.ID != block.ID || got.Modality != block.Modality || got.MIME != block.MIME ||
+		got.Fingerprint != block.Fingerprint || len(got.Vector) != len(block.Vector) {
 		t.Fatalf("块身份应原样迁移:\n got  %+v\n want %+v", got, block)
+	}
+	// 字节随块迁移（union）
+	if string(got.Data) != string(block.Data) {
+		t.Fatalf("块字节应原样迁移: %q vs %q", got.Data, block.Data)
 	}
 
 	// 同一块不能同时留在 L0。

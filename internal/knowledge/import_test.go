@@ -448,16 +448,16 @@ func TestImportDirMediaSkippedWhenNotRequested(t *testing.T) {
 func TestImportDirMediaFailureDoesNotFailEntry(t *testing.T) {
 	src := mkSrc(t, map[string]string{"note.md": "正文"})
 	s, _ := newImportStore(t)
-	// 造一个指向不存在文件的媒体候选：ImportDir 收集目录时按扩展名识别，
-	// 读不出的文件走 putMediaFile 错误路径，只跳过该媒体。
+	// 造一个读不出的媒体候选：ImportDir 按扩展名识别，读不出的文件
+	// 走 putMediaFile 错误路径，只跳过该媒体。
+	// ★ 用「把 broken.png 做成目录」来造读失败：os.ReadFile 对目录恒报错，
+	//   与权限/身份无关。chmod 0000 对 root 无效（root 绕过 DAC），
+	//   以前那种写法在 root 下跑时 putMediaFile 会成功 → broken.png 变成
+	//   独立媒体条目 → Imported=2，假阳性。
 	bad := filepath.Join(src, "broken.png")
-	if err := os.WriteFile(bad, []byte("x"), 0644); err != nil {
+	if err := os.Mkdir(bad, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(bad, 0000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(bad, 0644) })
 
 	st, err := s.ImportDir(ImportOptions{Dir: src, IncludeMedia: true})
 	if err != nil {

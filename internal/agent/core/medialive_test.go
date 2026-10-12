@@ -1,13 +1,12 @@
 //go:build medialive
 
-// 媒体记忆自动触发链的集成测试。
+// 媒体记忆自动触发链的集成测试（块 union 化之后）。
 //
 // 与其他媒体测试的区别：**不手工调用任何一步**。这里只做两件事——
 // 往 IOManager 注入一个 image 事件，然后等。之后全部由生产代码自己走：
 //
-//	processMediaInput → captureBlockMedia（入 CAS）
+//	processMediaInput → captureBlockMedia（字节直接进块）
 //	  → Prune（L0→L2 块迁移）
-//	  → describePendingMedia（真实视觉模型生成描述）
 //	  → archiveColdDocs → commitTriplesWithMedia → bindSentenceBlocks（L2→L3）
 //	  → 第二轮提问，验证 agent 真能召回
 //
@@ -29,12 +28,12 @@ package core
 import (
 	"bytes"
 	"compress/zlib"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +43,6 @@ import (
 	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/pkg/types"
 )
 
@@ -138,13 +136,12 @@ func livePNG(t *testing.T, w, h int, colors [][3]byte) []byte {
 type liveEnv struct {
 	agent    *Agent
 	io       *agentIO.IOManager
-	mediaSt  *media.Store
 	docStore *document.Store
 	graph    *memory.GraphDB
 	dir      string
 }
 
-// newLiveEnv 构造真 Agent：真 provider、真 CAS、真图库、真文档库。
+// newLiveEnv 构造真 Agent：真 provider、真图库、真文档库。
 //
 // 不注册任何插件：本测试关心记忆链路，插件会引入无关的外部副作用
 // （网络轮询、写文件），而且生产插件目录里的进程不该被测试碰到。
@@ -171,12 +168,6 @@ func newLiveEnv(t *testing.T, c liveCfg) *liveEnv {
 		t.Fatalf("set default provider: %v", err)
 	}
 
-	ms, err := media.New(filepath.Join(dir, "media"))
-	if err != nil {
-		t.Fatalf("media store: %v", err)
-	}
-	t.Cleanup(func() { ms.Close() })
-
 	graph, err := memory.NewGraphDB(filepath.Join(dir, "graph.db"))
 	if err != nil {
 		t.Fatalf("graph: %v", err)
@@ -199,7 +190,6 @@ func newLiveEnv(t *testing.T, c liveCfg) *liveEnv {
 		IO:              io,
 		Memory:          graph,
 		DocStore:        docStore,
-		MediaStore:      ms,
 		StageHost:       NewStageHost(),
 		MaxContextSize:  3, // 故意压低：第二轮就能触发 Prune 归档
 		InputProcessing: types.InputProcessingConfig{},
@@ -216,7 +206,7 @@ func newLiveEnv(t *testing.T, c liveCfg) *liveEnv {
 		}
 	}()
 
-	return &liveEnv{agent: a, io: io, mediaSt: ms, docStore: docStore, graph: graph, dir: dir}
+	return &liveEnv{agent: a, io: io, docStore: docStore, graph: graph, dir: dir}
 }
 
 // TestMediaLive_AutoTriggerChain 全自动触发链：只注入事件，不手工调任何一步。
@@ -229,7 +219,7 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	img := livePNG(t, 96, 96, [][3]byte{{128, 0, 255}, {0, 64, 255}, {255, 0, 0}})
 	t.Logf("测试图片: %d 字节（紫/蓝/红三色带）", len(img))
 
-	// ── 阶段 1：注入 image 事件，验证 CAS 自动落盘 ──
+	// ── 阶段 1：注入 image 事件，验证块自动捕获 ──
 	//
 	// 直接调 handleInput 而不启 eventLoop：eventLoop 是纯转发（select →
 	// handleInput），走同一条代码路径，但同步调用让断言不必猜时序。
@@ -249,33 +239,21 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	a.handleInput(evt)
 	t.Logf("第一轮（含真实 LLM 往返）耗时 %.1fs", time.Since(t0).Seconds())
 
-	// 媒体不再有文字描述：CAS 里只有字节、元数据与向量。
-	// 这里直接按 digest 定位刚落的图（不再有 Pending 队列）。
-	st := env.mediaSt.Stats()
-	if st["count"].(int) != 1 {
-		t.Fatalf("CAS 应自动收到 1 张图，实际 %v 张（captureBlockMedia 未被触发？）", st["count"])
-	}
-	var digest string
+	// 媒体不再有文字描述：字节直接在块的 Data 里，身份内容派生。
+	// 这里直接按块字节定位刚捕获的图（不再有 Pending 队列）。
+	var blockID string
 	var found bool
 	for _, e := range a.context.Recent(0) {
 		for _, b := range e.Blocks {
-			digest, found = b.PayloadDigest, true
+			if bytes.Equal(b.Data, img) {
+				blockID, found = b.ID, true
+			}
 		}
 	}
 	if !found {
-		t.Fatal("无法从上下文块定位刚落盘的图")
+		t.Fatal("无法从上下文块定位刚捕获的图（captureBlockMedia 未被触发？）")
 	}
-	it0, err := env.mediaSt.Stat(digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("✓ 阶段1 CAS 自动落盘: digest=%s size=%d tool=%s",
-		digest[:12], it0.Size, it0.Tool)
-
-	stored, err := env.mediaSt.Get(digest)
-	if err != nil || !bytes.Equal(stored, img) {
-		t.Fatalf("落盘内容与原图不一致 (err=%v)", err)
-	}
+	t.Logf("✓ 阶段1 块自动捕获: id=%s", shortID(blockID))
 
 	// ── 阶段 2：一等记忆块自动挂到 ContextEvent 上 ──
 	//
@@ -285,11 +263,11 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	for _, e := range a.context.Recent(0) {
 		if len(e.Blocks) > 0 {
 			evtID = e.ID
-			if strings.Contains(e.Input, digest[:12]) {
+			if strings.Contains(e.Input, shortID(blockID)) {
 				t.Error("事件 Input 里被写入了媒体标记——描述式索引链应该已经拆除")
 			}
-			if e.Blocks[0].PayloadDigest != digest {
-				t.Fatalf("事件持有的块 digest 不对: %+v", e.Blocks)
+			if !bytes.Equal(e.Blocks[0].Data, img) {
+				t.Fatalf("事件持有的块字节不对: %+v", e.Blocks[0])
 			}
 			break
 		}
@@ -300,14 +278,18 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	t.Logf("✓ 阶段2 块自动绑定: event=%s", evtID)
 
 	// ── 阶段 3：媒体只按自己的向量被索引，不再生成任何描述 ──
-	if it, err := env.mediaSt.Stat(digest); err != nil {
-		t.Fatal(err)
-	} else if len(it.Vec) == 0 {
-		// 未配置多模态空间时就没有向量——这是合法的降级状态，
-		// 但要明确报出来，而不是靠描述文本假装能检索。
-		t.Log("未配置多模态空间：本图无向量，之后只能靠块结构召回 digest")
-	} else {
-		t.Logf("✓ 阶段3 已写入原生向量: dim=%d", len(it.Vec))
+	for _, e := range a.context.Recent(0) {
+		for _, b := range e.Blocks {
+			if b.ID == blockID {
+				if len(b.Vector) == 0 {
+					// 未配置多模态空间时就没有向量——这是合法的降级状态，
+					// 但要明确报出来，而不是靠描述文本假装能检索。
+					t.Log("未配置多模态空间：本图无向量，之后只能靠块结构召回")
+				} else {
+					t.Logf("✓ 阶段3 已写入原生向量: dim=%d", len(b.Vector))
+				}
+			}
+		}
 	}
 
 	// ── 阶段 4：Prune 自动把块从 L0 迁移到 L2 ──
@@ -338,7 +320,7 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	docRefsFound := ""
 	for _, d := range env.docStore.RecentDocs(20) {
 		for _, b := range d.Blocks {
-			if b.PayloadDigest == digest {
+			if b.ID == blockID {
 				docRefsFound = d.ID
 			}
 		}
@@ -349,17 +331,12 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	// 同一块不能同时留在 L0。
 	for _, e := range a.context.Recent(0) {
 		for _, b := range e.Blocks {
-			if b.PayloadDigest == digest {
+			if b.ID == blockID {
 				t.Errorf("块仍留在 L0（evt %s），违反单层不变量", e.ID)
 			}
 		}
 	}
 	t.Logf("✓ 阶段4 块自动迁移: context/%s → document/%s", evtID, docRefsFound)
-
-	// 迁移全程内容必须可读：块虽换了层，字节仍在。
-	if _, err := env.mediaSt.Get(digest); err != nil {
-		t.Fatalf("迁移后内容不可读: %v", err)
-	}
 
 	// ── 阶段 5：archiveColdDocs 自动把块连到 L3 文档节点 ──
 	//
@@ -377,25 +354,23 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	// 块可能以 document --contains--> block（文档归档）或
 	// sentence --contains--> block（对话三元组）两种边存在。
 	sentRefs := 0
-	var boundSentence int64
+	var boundSentence string
 	docBound := 0
-	rows, err := env.graph.Recall(nil, nil, 1, "")
-	if err != nil {
-		t.Fatalf("graph recall: %v", err)
-	}
-	t.Logf("图库实体数 %d", len(rows.Entities))
 	docBlocks, err := env.graph.BlocksForNode("document", docRefsFound)
 	if err != nil {
 		t.Fatal(err)
 	}
 	docBound = len(docBlocks)
-	// 句子 id 是自增整数，扫前若干个足够覆盖本测试写入的量
-	for sid := int64(1); sid <= 40; sid++ {
-		blocks, err := env.graph.BlocksForNode("sentence", strconv.FormatInt(sid, 10))
-		if err == nil && len(blocks) > 0 {
-			sentRefs += len(blocks)
-			if boundSentence == 0 {
-				boundSentence = sid
+	// 原句块 ID 按 SentenceBlockID 现算（sentences 表退场后行号不存在）
+	for _, e := range a.context.Recent(0) {
+		if e.Input != "" {
+			sid := memory.SentenceBlockID(e.Input)
+			blocks, err := env.graph.BlocksForNode("block", sid)
+			if err == nil && len(blocks) > 0 {
+				sentRefs += len(blocks)
+				if boundSentence == "" {
+					boundSentence = sid
+				}
 			}
 		}
 	}
@@ -404,20 +379,20 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	} else if docBound > 0 {
 		t.Logf("✓ 阶段5 L3 自动写入: 文档 %s 持有 %d 个块", docRefsFound, docBound)
 		got := docBlocks
-		if got[0].PayloadDigest != digest {
-			t.Errorf("文档节点持有的块 digest 不对: %+v", got)
-		} else if raw, err := env.mediaSt.Get(got[0].PayloadDigest); err != nil || !bytes.Equal(raw, img) {
+		if got[0].ID != blockID {
+			t.Errorf("文档节点持有的块身份不对: %+v", got)
+		} else if raw, err := env.graph.BlockData(blockID); err != nil || !bytes.Equal(raw, img) {
 			t.Errorf("从文档块取回的字节与原图不一致 (err=%v)", err)
 		} else {
 			t.Logf("✓ 阶段5 反查取回 %d 字节，与原图逐字节一致", len(raw))
 		}
 	} else {
-		t.Logf("✓ 阶段5 L3 自动写入: %d 个句子块，首个 sentences.id=%d", sentRefs, boundSentence)
+		t.Logf("✓ 阶段5 L3 自动写入: %d 个句子块，首个原句块=%s", sentRefs, shortID(boundSentence))
 
 		got, err := env.agent.RecallBlocksForSentence(boundSentence)
-		if err != nil || len(got) == 0 || got[0].PayloadDigest != digest {
+		if err != nil || len(got) == 0 || got[0].ID != blockID {
 			t.Errorf("从句子反查块失败: got=%+v err=%v", got, err)
-		} else if raw, err := env.mediaSt.Get(got[0].PayloadDigest); err != nil || !bytes.Equal(raw, img) {
+		} else if raw, err := env.graph.BlockData(blockID); err != nil || !bytes.Equal(raw, img) {
 			t.Errorf("从句子取回的字节与原图不一致 (err=%v)", err)
 		} else {
 			t.Logf("✓ 阶段5 反查取回 %d 字节，与原图逐字节一致", len(raw))
@@ -425,7 +400,7 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 	}
 
 	// ── 阶段 6：内容随块存在，不被单独清理 ──
-	if _, err := env.mediaSt.Stat(digest); err != nil {
+	if raw, err := env.graph.BlockData(blockID); err != nil || len(raw) == 0 {
 		t.Fatalf("被记忆块持有的内容不存在了: %v", err)
 	}
 	t.Logf("✓ 阶段6 被持有内容仍在")
@@ -477,10 +452,6 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 		t.Skipf("上游 LLM 调用失败，端到端召回无法判定: %s", truncRunes(answer, 160))
 	}
 	t.Logf("✓ 阶段7 E2E 链路贯通（召回能力取决于是否配置多模态向量空间）")
-
-	st = env.mediaSt.Stats()
-	t.Logf("收尾: %v 条 / %v 字节 / 类型 %v",
-		st["count"], st["total_bytes"], st["by_kind"])
 }
 
 // TestMediaLive_NegativeControl 阴性对照：没有媒体记忆时不该"记得"。
@@ -533,7 +504,7 @@ func TestMediaLive_NegativeControl(t *testing.T) {
 
 // mediaB64 返回不带 data URL 前缀的 base64（processMediaInput 自己拼前缀）。
 func mediaB64(b []byte) string {
-	return media.DataURL("image/png", b)[len("data:image/png;base64,"):]
+	return base64.StdEncoding.EncodeToString(b)
 }
 
 func truncRunes(s string, n int) string {

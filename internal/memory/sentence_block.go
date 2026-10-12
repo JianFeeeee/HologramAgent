@@ -262,7 +262,10 @@ func MediaBlockID(mime string, data []byte) string {
 // 前缀匹配到多条时返回 false —— 宁可不解析也不猜一个（猜错=挂错媒体）。
 func (g *GraphDB) BlockByIDPrefix(prefix string) (MemoryBlock, bool, error) {
 	prefix = strings.TrimSpace(prefix)
-	if prefix == "" {
+	// 过短前缀不解析：块 ID 形如 blk_media_<12hex>，
+	// 一个一两字符的前缀会把一大批块都 LIKE 中，猜一个等于挂错媒体。
+	// 至少要求 12 字符（内容派生 hash 的常用短引用长度）。
+	if len(prefix) < 12 {
 		return MemoryBlock{}, false, nil
 	}
 	g.mu.RLock()
@@ -318,6 +321,8 @@ func (g *GraphDB) BlockData(blockID string) ([]byte, error) {
 func (g *GraphDB) StaleBlockVectors(currentFP string) ([]MemoryBlock, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+	// 只取元数据（blockColumns 不含 data）：负载按需由 BlockData 单取。
+	// 迁移路径逐块处理，不需要把全部字节一次性读进内存。
 	rows, err := g.db.Query(`SELECT `+blockColumns+`
 		FROM memory_blocks
 		WHERE modality != ?

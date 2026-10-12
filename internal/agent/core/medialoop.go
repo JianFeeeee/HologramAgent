@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -44,9 +45,10 @@ func (a *Agent) reembedStaleMedia() {
 	}
 	// 只迁图像：多模态空间当前覆盖 text+image，音频/视频不在其内
 	// （不拿别的模态的向量顶替——那是静默错配）。
+	// StaleBlockVectors 只给元数据（lean 列），字节由 reembedOneBlock 按需取。
 	var targets []memory.MemoryBlock
 	for _, b := range stale {
-		if b.Modality == memory.BlockImage && len(b.Data) > 0 {
+		if b.Modality == memory.BlockImage {
 			targets = append(targets, b)
 		}
 	}
@@ -102,7 +104,19 @@ func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
 	if mime == "" {
 		mime = "image/png"
 	}
-	vec, err := a.multimodalSpace.EmbedImageDense(b.Data, mime)
+	// 负载不在 lean 列里：按块 ID 单取字节（块即 union）。
+	data := b.Data
+	if len(data) == 0 {
+		var err error
+		data, err = a.memory.BlockData(b.ID)
+		if err != nil {
+			return err
+		}
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("block %s has no payload", b.ID)
+	}
+	vec, err := a.multimodalSpace.EmbedImageDense(data, mime)
 	if err != nil {
 		return err
 	}

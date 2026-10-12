@@ -400,7 +400,6 @@ func (g *GraphDB) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_scene_refs_scene ON scene_refs(scene_id, kind)`,
 		`CREATE INDEX IF NOT EXISTS idx_scene_refs_ref ON scene_refs(kind, ref_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_blocks_modality ON memory_blocks(modality)`,
-		`CREATE INDEX IF NOT EXISTS idx_memory_blocks_digest ON memory_blocks(payload_digest)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_block_edges_source ON memory_block_edges(source_kind, source_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_block_edges_target ON memory_block_edges(target_kind, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_entity_type ON entities(type)`,

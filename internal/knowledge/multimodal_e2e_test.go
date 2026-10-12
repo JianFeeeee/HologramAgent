@@ -77,9 +77,9 @@ func TestMultimodalEndToEndWithRealProvider(t *testing.T) {
 	s.SetDenseSpace(ds)
 
 	img := mmTinyPNG(t)
-	if err := s.AddWithMedia("photo", "一只猫的照片", []KnowledgeMediaRef{
-		{File: "photo.png", MIME: "image/png", Kind: "image"},
-	}); err != nil {
+	// 先建纯文本条目：字节还没落盘，现在注册媒体引用会让 denseFor
+	// 读不到文件。落盘后再用 AttachMedia 挂上并重算 —— 这样 Media 恰好 1 条。
+	if err := s.Add("photo", "一只猫的照片"); err != nil {
 		t.Fatal(err)
 	}
 	// 字节落进条目目录（CAS 淘汰后：媒体随条目生灭）

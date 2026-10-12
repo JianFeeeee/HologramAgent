@@ -181,8 +181,8 @@ func TestPurgeNoiseKeepsBlockBackedSentences(t *testing.T) {
 		t.Fatalf("原句块未写入: %v", err)
 	}
 	if _, err := g.db.Exec(
-		`INSERT INTO memory_blocks (id, modality, payload_digest, mime)
-		 VALUES ('blk1', 'image', 'digest1', 'image/png')`); err != nil {
+		`INSERT INTO memory_blocks (id, modality, data, mime)
+		 VALUES ('blk1', 'image', X'64696765737431', 'image/png')`); err != nil {
 		t.Fatalf("insert block: %v", err)
 	}
 	if _, err := g.db.Exec(

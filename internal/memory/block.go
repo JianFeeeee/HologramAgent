@@ -139,7 +139,10 @@ func (g *GraphDB) PutMemoryBlocks(blocks []MemoryBlock) error {
 		ON CONFLICT(id) DO UPDATE SET
 			modality = excluded.modality,
 			text_content = excluded.text_content,
-			data = excluded.data,
+			-- ★ 负载空值不覆盖：轻量读取路径（BlockByIDPrefix 等 lean 列 SELECT）
+			--   取回的块不带 data/text，重新写回时若直接覆盖会把已存负载抹空。
+			data = CASE WHEN excluded.data IS NULL OR length(excluded.data) = 0
+				THEN memory_blocks.data ELSE excluded.data END,
 			mime = excluded.mime,
 			size = excluded.size,
 			width = excluded.width,

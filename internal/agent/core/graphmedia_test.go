@@ -3,30 +3,39 @@ package core
 import (
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 )
 
-// L3 图库媒体绑定测试。
+// L3 图库媒体绑定测试（块 union 化之后）。
 //
-// 这一层的目的只有一个：几个月后从图谱走到一条句子，要能取回当时那份媒体。
-// 媒体作为一等块进入 L3，以结构边与承载节点相连：
+// 这层的目的只有一个：几个月后从图谱走到一条句子，要能取回当时那份媒体。
+// 媒体作为一等块进入 L3（字节在块自己的 Data），以结构边与承载节点相连：
 //
 //	sentence --contains--> block（对话/三元组产生的记忆）
 //	document --contains--> block（L2 文档归档进 L3）
 //
-// 描述文本、marker 反解、由 marker 反推出的「媒体实体」全部已废弃，
-// 因此这些测试也不存在任何按描述检索的断言。
+// 描述文本、marker 反解、CAS digest、由 marker 反推出的「媒体实体」全部已废弃，
+// 因此这些测试也不存在任何按描述或 digest 检索的断言。
+
+// mediaBlock 构造内容派生 ID 的媒体块。
+func mediaBlock(mime string, payload []byte) memory.MemoryBlock {
+	return memory.MemoryBlock{
+		ID:       memory.MediaBlockID(mime, payload),
+		Modality: memory.BlockImage,
+		Data:     payload,
+		MIME:     mime,
+		Size:     int64(len(payload)),
+	}
+}
 
 // attachBlockToSentenceBlock 提交一条句子并把媒体变成 L3 一等块。
 // 必须走真实提交：边要求两端都是真实图节点。
-func attachBlockToSentenceBlock(t *testing.T, g *memory.GraphDB, ms *media.Store, sentenceText, digest string) (string, memory.MemoryBlock) {
+func attachBlockToSentenceBlock(t *testing.T, g *memory.GraphDB, sentenceText string, payload []byte) (string, memory.MemoryBlock) {
 	t.Helper()
 	ids, _, _, err := g.CommitWithMedia([]memory.Triple{{
 		Subject: "媒体载体", Relation: "包含", Object: "内容", SentenceText: sentenceText,
@@ -34,39 +43,23 @@ func attachBlockToSentenceBlock(t *testing.T, g *memory.GraphDB, ms *media.Store
 	if err != nil {
 		t.Fatalf("CommitWithMedia: %v", err)
 	}
-	// ★ 媒体的挂载点已从「sentences 表行号」改成「原句块 ID」
-	//   （CommitWithMedia 返回值由 map[string]int64 改为 map[string]string，
-	//    因为 sentences 表退场后行号不存在）。
+	// ★ 媒体的挂载点是「原句块 ID」（sentences 表行号已退场）。
 	sid := ids[sentenceText]
 	if sid == "" {
 		t.Fatalf("拿不到原句块 ID: %q", sentenceText)
 	}
-	it, err := ms.Stat(digest)
-	if err != nil || it == nil {
-		t.Fatalf("Stat(%s): %v", shortDigest(digest), err)
-	}
-	b := memory.MemoryBlock{
-		ID:            fmt.Sprintf("blk_test_%s_%s", shortDigest(sid), shortDigest(digest)),
-		Modality:      memory.BlockImage,
-		PayloadDigest: it.Digest,
-		MIME:          it.MIME,
-		Size:          it.Size,
-		Width:         it.Width,
-		Height:        it.Height,
-		Vector:        it.Vec,
-		Fingerprint:   it.VecModel,
-	}
+	b := mediaBlock("image/png", payload)
 	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
 		t.Fatalf("PutMemoryBlocks: %v", err)
 	}
-	// ★ 端点 kind 也从 "sentence" 改成 "block"（原句由块承载）
+	// 端点 kind 都是 "block"（原句由块承载）
 	if err := g.AddMemoryBlockEdge("block", sid, "block", b.ID, "contains"); err != nil {
 		t.Fatalf("AddMemoryBlockEdge: %v", err)
 	}
 	return sid, b
 }
 
-func newGraphMediaAgent(t *testing.T) (*Agent, *memory.GraphDB, *media.Store) {
+func newGraphMediaAgent(t *testing.T) (*Agent, *memory.GraphDB) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -76,17 +69,11 @@ func newGraphMediaAgent(t *testing.T) (*Agent, *memory.GraphDB, *media.Store) {
 	}
 	t.Cleanup(func() { g.Close() })
 
-	ms, err := media.New(filepath.Join(dir, "media"))
-	if err != nil {
-		t.Fatalf("media.New: %v", err)
-	}
-	t.Cleanup(func() { ms.Close() })
-
-	return &Agent{memory: g, mediaStore: ms}, g, ms
+	return &Agent{memory: g}, g
 }
 
 func TestCommitWithMedia_ReturnsSentenceIDs(t *testing.T) {
-	_, g, _ := newGraphMediaAgent(t)
+	_, g := newGraphMediaAgent(t)
 
 	sentence := "这张图是紫蓝红三色带。"
 	triples := []memory.Triple{{
@@ -116,7 +103,7 @@ func TestCommitWithMedia_ReturnsSentenceIDs(t *testing.T) {
 
 func TestCommit_StillWorksAfterRefactor(t *testing.T) {
 	// Commit 有三十多个调用点，内部转调后行为必须完全不变
-	_, g, _ := newGraphMediaAgent(t)
+	_, g := newGraphMediaAgent(t)
 
 	triples := []memory.Triple{
 		{Subject: "张三", Relation: "喜欢", Object: "咖啡", SentenceText: "张三喜欢咖啡"},
@@ -127,13 +114,7 @@ func TestCommit_StillWorksAfterRefactor(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ★ 旧表双写已停（2026-10-04）⇒ ec/rc 恒为 0。
-	//
-	// 它们数的是旧表 entities/relations 的行号，而那两张表不再增长。
-	// Commit 的返回签名是 SDK 契约（9 处调用方），改签名代价大 ——
-	// 所以保留位置并置 0。
-	//
-	// ★ 判据要验的是「Commit 写进去了」，改用**块侧**信号：
-	//   4 个实体名（张三/李四/编程/北京）+ 2 条关系边。
+	//   判据要验的是「Commit 写进去了」，改用**块侧**信号。
 	if ec != 0 || rc != 0 {
 		t.Fatalf("旧表双写已停，ec/rc 应为 0，实际 ec=%d rc=%d", ec, rc)
 	}
@@ -146,23 +127,11 @@ func TestCommit_StillWorksAfterRefactor(t *testing.T) {
 	}
 	fmt.Printf("  Commit 写入块 %d 个（旧表计数已停用 ec=%d rc=%d）\n", len(blocks), ec, rc)
 
-	// 重复提交同一批：关系被唯一约束去重。
-	//
-	// 实体计数**不**归零——这是 upsertEntity 的既有行为：SQLite 的
-	// ON CONFLICT DO UPDATE 也算一行 affected，于是 RowsAffected() > 0
-	// 被当成"新建了"。用 main 分支的 graph.go 单独验证过基线同样是
-	// 首次 ec=2 / 重复 ec=2，与 CommitWithMedia 重构无关。
-	// entitiesCreated 只用于日志，故此处记录现状而不改行为。
+	// 重复提交同一批：关系边允许并存（52e4596 移除 UNIQUE），幂等体现在块侧。
 	_, _, err = g.Commit(triples, "s1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ★ 幂等的真正判据是「块数不增长」，不是计数返回值 ——
-	//   后者在旧表停写后恒为 0（2026-10-04）。
-	//
-	// ★ 而且关系边**允许并存多条**（52e4596 移除了 UNIQUE），
-	//   所以「重复提交新建了关系边」不是缺陷，是设计。
-	//   幂等体现在块侧：块 ID 是内容派生的，重写不产生新块。
 	blocks2, err := g.MemoryBlocks()
 	if err != nil {
 		t.Fatal(err)
@@ -175,11 +144,12 @@ func TestCommit_StillWorksAfterRefactor(t *testing.T) {
 
 func TestCommitTriplesWithMedia_RoundTrip(t *testing.T) {
 	// 整层的核心断言：写入 → 提交 → 反查取回原始字节
-	a, _, ms := newGraphMediaAgent(t)
+	a, _ := newGraphMediaAgent(t)
 
 	content := []byte("\x89PNG\r\n\x1a\n fake image bytes")
-	digest, err := ms.Put(content, media.Item{MIME: "image/png", Kind: media.KindImage})
-	if err != nil {
+	b := mediaBlock("image/png", content)
+	// 媒体块先落库（字节随块），三元组只带轻量块 ID 引用
+	if err := a.memory.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +157,7 @@ func TestCommitTriplesWithMedia_RoundTrip(t *testing.T) {
 	triples := []memory.Triple{{
 		Subject: "图片", Relation: "内容", Object: "三色带",
 		SentenceText: sentence,
-		MediaDigests: []string{digest[:12]}, // 模型手里通常只有短 digest
+		MediaDigests: []string{b.ID[:12]}, // 模型手里通常只有短前缀
 	}}
 
 	if _, _, bound, err := a.commitTriplesWithMedia(triples, "s1", 0, nil); err != nil {
@@ -210,29 +180,25 @@ func TestCommitTriplesWithMedia_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(blocks) != 1 || blocks[0].PayloadDigest != digest {
-		t.Fatalf("反查应得完整 digest %s，实际 %+v", shortDigest(digest), blocks)
+	if len(blocks) != 1 || blocks[0].ID != b.ID {
+		t.Fatalf("反查应得块 %s，实际 %+v", b.ID, blocks)
 	}
-	got, err := ms.Get(blocks[0].PayloadDigest)
+	// 召回是 lean 列；字节按块 ID 单取 —— 块即 union
+	got, err := a.memory.BlockData(b.ID)
 	if err != nil {
 		t.Fatalf("取回内容失败: %v", err)
 	}
 	if string(got) != string(content) {
 		t.Fatal("取回的内容与写入不一致")
 	}
-
-	// 块仍被 L3 持有 → 内容应仍可读
-	if _, err := ms.Get(digest); err != nil {
-		t.Fatalf("被 L3 记忆块持有的内容不该被清除: %v", err)
-	}
 }
 
 func TestAttachBlocksToSentence_SkipsUnresolvable(t *testing.T) {
-	// digest 在库里不存在时必须跳过，不能建一条指向虚无的块边。
-	a, g, _ := newGraphMediaAgent(t)
-	// ★ 空块 ID = 无效句柄（原来用 0 行号表示）
+	// 块引用在库里不存在时必须跳过，不能建一条指向虚无的块边。
+	a, g := newGraphMediaAgent(t)
+	// ★ 空块 ID = 无效句柄
 	if n := a.attachBlocksToSentenceBlock("", []string{"deadbeefdead"}, nil, ""); n != 0 {
-		t.Fatalf("无法补全的 digest 不该建块，实际绑定 %d", n)
+		t.Fatalf("无法补全的块引用不该建块，实际绑定 %d", n)
 	}
 	blocks, err := g.BlocksForNode("sentence", "42")
 	if err != nil {
@@ -255,11 +221,12 @@ func TestAttachBlocksToSentence_NilStoreNoop(t *testing.T) {
 
 func TestAttachBlocksToSentence_ReusesSeedIdentity(t *testing.T) {
 	// L2→L3 迁移必须保持块身份：同一个块换层，而不是另建一个同内容的新块。
-	a, g, ms := newGraphMediaAgent(t)
-	digest, _ := ms.Put([]byte("seed-img"), media.Item{MIME: "image/png"})
-	seedBlock, ok := a.blockFromDigest(digest)
-	if !ok {
-		t.Fatal("blockFromDigest 失败")
+	a, g := newGraphMediaAgent(t)
+	seedBlock := mediaBlock("image/png", []byte("seed-img"))
+	// 种子块先入库（内容派生 ID，因此 attachBlocksToSentenceBlock
+	// 也可以按前缀解析到它 —— 但这里显式走 seed 通道）
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{seedBlock}); err != nil {
+		t.Fatal(err)
 	}
 
 	ids, _, _, err := g.CommitWithMedia([]memory.Triple{{
@@ -270,8 +237,8 @@ func TestAttachBlocksToSentence_ReusesSeedIdentity(t *testing.T) {
 	}
 	sid := ids["迁移测试句。"]
 
-	byDigest := map[string]memory.MemoryBlock{digest: seedBlock}
-	if n := a.attachBlocksToSentenceBlock(sid, []string{digest}, byDigest, ""); n != 1 {
+	byDigest := map[string]memory.MemoryBlock{seedBlock.ID: seedBlock}
+	if n := a.attachBlocksToSentenceBlock(sid, []string{seedBlock.ID}, byDigest, ""); n != 1 {
 		t.Fatalf("应绑定 1 个块，实际 %d", n)
 	}
 	blocks, err := g.BlocksForNode("block", sid)
@@ -285,13 +252,9 @@ func TestAttachBlocksToSentence_ReusesSeedIdentity(t *testing.T) {
 
 func TestLinkBlocksToDocument_CreatesDocumentNodeEdge(t *testing.T) {
 	// 文档归档进 L3：块原样迁入，document --contains--> block 边建立。
-	a, g, ms := newGraphMediaAgent(t)
+	a, g := newGraphMediaAgent(t)
 
-	digest, _ := ms.Put([]byte("doc-img"), media.Item{MIME: "image/png"})
-	b, ok := a.blockFromDigest(digest)
-	if !ok {
-		t.Fatal("blockFromDigest 失败")
-	}
+	b := mediaBlock("image/png", []byte("doc-img"))
 
 	if n := a.linkBlocksToDocument("doc_42", []memory.MemoryBlock{b}, ""); n != 1 {
 		t.Fatalf("应建立 1 条文档→块边，实际 %d", n)
@@ -334,47 +297,60 @@ func TestCommitTriplesWithMedia_FallsBackWithoutStore(t *testing.T) {
 }
 
 func TestMediaContextForSentences(t *testing.T) {
-	a, g, ms := newGraphMediaAgent(t)
+	a, g := newGraphMediaAgent(t)
 
-	digest, _ := ms.Put([]byte("img"), media.Item{MIME: "image/png"})
-	sid, _ := attachBlockToSentenceBlock(t, g, ms, "一张紫蓝红三色带图。", digest)
+	sid, b := attachBlockToSentenceBlock(t, g, "一张紫蓝红三色带图。", []byte("img"))
+	// ★ 第二个句子必须是**库里不存在**的独立块 ID，不能用 sid+"-extra"：
+	//   shortID 截断到 20 字符，而 blk_src_<12hex> 恰好 20 字符，
+	//   于是 shortID(sid+"-extra") == shortID(sid)，负向断言会误命中 sid 自己那行。
+	noRefSID := memory.SentenceBlockID("库里完全不存在的另一句话。")
 
-	out := a.mediaContextForSentences([]string{sid, sid + "-extra"})
+	out := a.mediaContextForSentences([]string{sid, noRefSID})
 	if out == "" {
 		t.Fatal("应产出媒体说明")
 	}
-	// 说明里的句子标识是 shortID(块ID) = 去掉 blk_src_ 前缀的 hex
-	if !contains(out, fmt.Sprintf("句子 %s", shortID(sid))) || !contains(out, shortDigest(digest)) {
+	// 说明里的句子标识是 shortID(块ID)
+	if !contains(out, fmt.Sprintf("句子 %s", shortID(sid))) || !contains(out, shortID(b.ID)) {
 		t.Fatalf("说明内容不对: %q（期望含 shortID=%s）", out, shortID(sid))
 	}
-	// 说明只含 MIME 与短 digest，不含任何生成的描述
+	// 说明只含 MIME 与短块 ID，不含任何生成的描述
 	if contains(out, "紫蓝红") {
 		t.Fatalf("说明里不该有描述文本（描述式索引已废弃）: %q", out)
 	}
 	// 无引用的句子不该出现
-	if contains(out, fmt.Sprintf("句子 %s", shortID(sid+"-extra"))) {
+	if contains(out, fmt.Sprintf("句子 %s", shortID(noRefSID))) {
 		t.Fatalf("无引用的句子不该出现: %q", out)
 	}
 }
 
 func TestMediaContextForRelations_SurfacesMediaToAgent(t *testing.T) {
 	// L3 检索接线回归：媒体作为一等块进了图库，agent 必须拿得出来。
-	a, g, ms := newGraphMediaAgent(t)
+	a, g := newGraphMediaAgent(t)
 
-	digest, err := ms.Put([]byte("img bytes"), media.Item{MIME: "image/png"})
+	b := mediaBlock("image/png", []byte("img bytes"))
+	sentence := "一张紫蓝红三色带图。"
+	ids, _, _, err := g.CommitWithMedia([]memory.Triple{{
+		Subject: "媒体载体", Relation: "包含", Object: "内容", SentenceText: sentence,
+	}}, "rel", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = attachBlockToSentenceBlock(t, g, ms, "一张紫蓝红三色带图。", digest)
+	sid := ids[sentence]
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AddMemoryBlockEdge("block", sid, "block", b.ID, "contains"); err != nil {
+		t.Fatal(err)
+	}
 
 	// 命中的关系挂着该句子 → 应产出媒体说明
-	// ★ 挂载点改成 SentenceText 现算块 ID（sentenceIDsFromRelations 的新契约）
-	out := a.mediaContextForRelations([]memory.Relation{{ID: 1, SentenceText: "一张紫蓝红三色带图。"}})
+	// ★ 挂载点是 SentenceText 现算块 ID（sentenceIDsFromRelations 的新契约）
+	out := a.mediaContextForRelations([]memory.Relation{{ID: 1, SentenceText: sentence}})
 	if out == "" {
 		t.Fatal("关系挂着有媒体的句子，却没产出媒体说明——L3 检索接线断了")
 	}
-	if !contains(out, shortDigest(digest)) {
-		t.Errorf("媒体说明里应含短 digest 供反查: %q", out)
+	if !contains(out, shortID(b.ID)) {
+		t.Errorf("媒体说明里应含短块 ID 供反查: %q", out)
 	}
 
 	// 没挂媒体的关系不该产出噪声
@@ -389,12 +365,9 @@ func TestMediaContextForRelations_SurfacesMediaToAgent(t *testing.T) {
 func TestBuildMemoryContext_IncludesMediaSection(t *testing.T) {
 	// buildMemoryContext 是自动注入路径（每次 LLM 调用都走）。
 	// 媒体说明必须出现在这里，否则 agent 只有显式调 memory_recall 才知道有图。
-	a, graph, ms := newGraphMediaAgent(t)
+	a, graph := newGraphMediaAgent(t)
 
-	digest, err := ms.Put([]byte("auto inject"), media.Item{MIME: "image/png"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := mediaBlock("image/png", []byte("auto inject"))
 
 	sentence := "用户发来的图片。"
 	sids, _, _, err := graph.CommitWithMedia([]memory.Triple{{
@@ -409,7 +382,7 @@ func TestBuildMemoryContext_IncludesMediaSection(t *testing.T) {
 	}
 	if err := graph.PutMemoryBlocks([]memory.MemoryBlock{{
 		ID: "blk_auto_1", Modality: memory.BlockImage,
-		PayloadDigest: digest, MIME: "image/png",
+		Data: b.Data, MIME: "image/png",
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -429,77 +402,72 @@ func TestBuildMemoryContext_IncludesMediaSection(t *testing.T) {
 	if !contains(out, "【关联媒体】") {
 		t.Errorf("自动注入的记忆上下文缺少媒体段: %q", out)
 	}
-	if !contains(out, shortDigest(digest)) {
-		t.Errorf("媒体段里应含短 digest: %q", out)
+	if !contains(out, shortID("blk_auto_1")) {
+		t.Errorf("媒体段里应含短块 ID: %q", out)
 	}
 }
 
 func TestResolvePrefix(t *testing.T) {
+	// BlockByIDPrefix 的前缀解析契约（CAS ResolvePrefix 的接任者）。
 	dir := t.TempDir()
-	ms, err := media.New(filepath.Join(dir, "m"))
+	g, err := memory.NewGraphDB(filepath.Join(dir, "g.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ms.Close()
+	defer g.Close()
 
-	digest, _ := ms.Put([]byte("content"), media.Item{MIME: "image/png"})
+	b := mediaBlock("image/png", []byte("content"))
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		t.Fatal(err)
+	}
 
 	// 短前缀补全
-	full, err := ms.ResolvePrefix(digest[:12])
-	if err != nil || full != digest {
-		t.Fatalf("短前缀补全失败: %v / %v", full, err)
+	got, ok, err := g.BlockByIDPrefix(b.ID[:12])
+	if err != nil || !ok || got.ID != b.ID {
+		t.Fatalf("短前缀补全失败: %v / %v / %v", got, ok, err)
 	}
-	// 完整 digest 原样返回
-	full, err = ms.ResolvePrefix(digest)
-	if err != nil || full != digest {
-		t.Fatalf("完整 digest 应原样返回: %v / %v", full, err)
+	// 完整 ID 原样返回
+	got, ok, err = g.BlockByIDPrefix(b.ID)
+	if err != nil || !ok || got.ID != b.ID {
+		t.Fatalf("完整 ID 应原样返回: %v / %v / %v", got, ok, err)
 	}
-	// 过短拒绝
-	if _, err := ms.ResolvePrefix("abc"); err == nil {
-		t.Fatal("过短前缀应报错")
+	// 过短/不存在 → 不解析（宁可不解析也不猜）
+	if _, ok, _ := g.BlockByIDPrefix("blk"); ok {
+		t.Fatal("过短前缀不该命中")
 	}
-	// 不存在
-	if _, err := ms.ResolvePrefix("deadbeefdead"); err == nil {
-		t.Fatal("不存在的前缀应报错")
-	}
-	// 完整但不存在的 digest 也要报错，否则调用方会挂一条孤儿块
-	fake := strings.Repeat("0", 64)
-	if _, err := ms.ResolvePrefix(fake); err == nil {
-		t.Fatal("不存在的完整 digest 应报错")
+	if _, ok, _ := g.BlockByIDPrefix("deadbeefdead"); ok {
+		t.Fatal("不存在的前缀不该命中")
 	}
 }
 
 func TestResolvePrefix_AmbiguityIsError(t *testing.T) {
-	// 前缀歧义视为错误而非"取第一个"：挂错块会让内容被误删。
-	// 构造歧义需要两个同前缀 digest——sha256 无法人为构造，
+	// 前缀歧义视为不命中而非"取第一个"：挂错块会让内容被误删。
+	// 构造歧义需要两个同前缀块 ID —— 内容派生 ID 无法人为构造同前缀，
 	// 因此这里退而验证「12 位前缀在大量样本下的行为是确定的」：
-	// 要么唯一命中，要么明确报歧义，绝不静默取第一个。
+	// 要么唯一命中，要么明确不命中，绝不静默取第一个。
 	dir := t.TempDir()
-	ms, err := media.New(filepath.Join(dir, "m"))
+	g, err := memory.NewGraphDB(filepath.Join(dir, "g.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ms.Close()
+	defer g.Close()
 
-	digests := make([]string, 0, 200)
+	ids := make([]string, 0, 200)
 	for i := 0; i < 200; i++ {
-		d, err := ms.Put([]byte("content-"+strconv.Itoa(i)), media.Item{MIME: "image/png"})
-		if err != nil {
+		b := mediaBlock("image/png", []byte("content-"+fmt.Sprint(i)+"-"+strings.Repeat("x", i%7)))
+		if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
 			t.Fatal(err)
 		}
-		digests = append(digests, d)
+		ids = append(ids, b.ID)
 	}
 
-	for _, d := range digests {
-		got, err := ms.ResolvePrefix(d[:12])
+	for _, id := range ids {
+		got, ok, err := g.BlockByIDPrefix(id[:12])
 		if err != nil {
-			if !contains(err.Error(), "歧义") {
-				t.Fatalf("非歧义错误: %v", err)
-			}
-			continue
+			t.Fatalf("前缀 %s 查询报错: %v", id[:12], err)
 		}
-		if got != d {
-			t.Fatalf("补全结果错误: 前缀 %s 得到 %s", d[:12], got)
+		if ok && got.ID != id {
+			t.Fatalf("补全结果错误: 前缀 %s 得到 %s（期望 %s）", id[:12], got.ID, id)
 		}
 	}
 }
@@ -507,7 +475,7 @@ func TestResolvePrefix_AmbiguityIsError(t *testing.T) {
 func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 	// 数据丢失回归：三元组全被实体名校验拒绝时（Commit 无错但 0 entities
 	// 0 relations），文档不能删、其持有的块不能丢。
-	a, _, ms := newGraphMediaAgent(t)
+	a, _ := newGraphMediaAgent(t)
 
 	dir := t.TempDir()
 	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
@@ -518,28 +486,16 @@ func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 	a.docStore = ds
 	a.embedder = memory.NewStaticEmbedder()
 
-	content := []byte("image bytes")
-	digest, err := ms.Put(content, media.Item{MIME: "image/png"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// 精确构造「三元组非空 + Commit 全部拒绝」这个状态：
-	// Source/Summary 都超过 validEntityName 的 50 字符上限，
-	// 于是 docToTriples 产出的两条元数据三元组都被跳过。
-	longSource := strings.Repeat("超长来源名", 20)   // 100 字
-	longSummary := strings.Repeat("超长摘要文本", 20) // >80 字触发长度门槛被跳过
-	it, _ := ms.Stat(digest)
+	b := mediaBlock("image/png", []byte("image bytes"))
 	doc := &document.Doc{
 		ID:          "doc_keep",
-		Summary:     longSummary,
+		Summary:     strings.Repeat("超长摘要文本", 20), // >80 字触发长度门槛被跳过
 		Content:     "一段没有媒体标记的正文",
-		Source:      longSource,
+		Source:      strings.Repeat("超长来源名", 20), // 100 字，超 validEntityName 上限
 		CreatedAt:   time.Now().Add(-200 * time.Hour),
 		LastAccess:  time.Now().Add(-200 * time.Hour),
 		AccessCount: 0,
-		Blocks: []memory.MemoryBlock{{ID: "blk_keep_1", Modality: memory.BlockImage,
-			PayloadDigest: it.Digest, MIME: it.MIME, Size: it.Size}},
+		Blocks:      []memory.MemoryBlock{b},
 	}
 	if err := ds.Insert(doc); err != nil {
 		t.Fatal(err)
@@ -555,10 +511,7 @@ func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 	}
 	a.archiveColdDocs()
 
-	// 关键断言：内容在、块在、文档在
-	if _, err := ms.Get(digest); err != nil {
-		t.Fatalf("图库未写入任何实体/关系，内容却丢了: %v", err)
-	}
+	// 关键断言：块在、文档在
 	held := false
 	for _, d := range ds.RecentDocs(10) {
 		if d.ID == doc.ID && len(d.Blocks) > 0 {
@@ -573,7 +526,7 @@ func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 func TestArchiveColdDocs_MigratesBlocksToGraph(t *testing.T) {
 	// 归档成功时块必须迁进 L3 并以 document --contains--> block 关联，
 	// 然后文档才被删除（迁移而非复制/引用保活）。
-	a, g, ms := newGraphMediaAgent(t)
+	a, g := newGraphMediaAgent(t)
 
 	dir := t.TempDir()
 	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
@@ -584,15 +537,13 @@ func TestArchiveColdDocs_MigratesBlocksToGraph(t *testing.T) {
 	a.docStore = ds
 	a.embedder = memory.NewStaticEmbedder()
 
-	digest, _ := ms.Put([]byte("archived-image"), media.Item{MIME: "image/png"})
-	it, _ := ms.Stat(digest)
+	b := mediaBlock("image/png", []byte("archived-image"))
 	doc := &document.Doc{
 		ID:      "doc_arch",
 		Summary: "带图的冷文档",
 		Content: "张三把三色带图交给了李四。",
 		Source:  "manual",
-		Blocks: []memory.MemoryBlock{{ID: "blk_arch_1", Modality: memory.BlockImage,
-			PayloadDigest: it.Digest, MIME: it.MIME, Size: it.Size}},
+		Blocks:  []memory.MemoryBlock{b},
 	}
 	if err := ds.Insert(doc); err != nil {
 		t.Fatal(err)
@@ -612,21 +563,19 @@ func TestArchiveColdDocs_MigratesBlocksToGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(blocks) != 1 || blocks[0].ID != "blk_arch_1" {
-		t.Fatalf("L3 文档节点应持有原块（身份不变），实际 %+v", blocks)
-	}
-	if _, err := ms.Get(digest); err != nil {
-		t.Fatalf("块被 L3 持有，内容应仍可读: %v", err)
+	if len(blocks) != 1 || blocks[0].ID != b.ID {
+		t.Fatalf("L3 文档节点应持有原块（身份不变 %s），实际 %+v", b.ID, blocks)
 	}
 }
 
 func TestMigrateLegacyMediaEntities(t *testing.T) {
 	// 旧数据：媒体被伪装成 type=Media 的实体，靠描述文本当索引。
 	// 迁移必须把它还原成原生块（挂回原句子）并删掉旧实体与描述关系。
-	_, g, ms := newGraphMediaAgent(t)
+	_, g := newGraphMediaAgent(t)
 
-	digest, _ := ms.Put([]byte("legacy-img"), media.Item{MIME: "image/png"})
-	sentence := "老数据里的三色带图 [image/png " + digest[:12] + "]"
+	b := mediaBlock("image/png", []byte("legacy-img"))
+	shortRef := b.ID[len("blk_media_"):][:12]
+	sentence := "老数据里的三色带图 [image/png " + shortRef + "]"
 	// ★★ 直接写旧表，不用 CommitWithMedia 造（2026-10-04）
 	//
 	// 旧表双写已停 ⇒ Commit 不再写 entities/relations，
@@ -635,14 +584,13 @@ func TestMigrateLegacyMediaEntities(t *testing.T) {
 	//
 	// 迁移的输入就是旧表，所以测试也该直接构造旧表。
 	// （SeedLegacyMediaEntity 明确标注为测试专用。）
-	mediaName := "图片 " + digest[:12]
+	mediaName := "图片 " + shortRef
 	mediaEntID, err := g.SeedLegacyMediaEntity(mediaName, "Media")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// ★ 迁移靠旧 relations 找到「该把媒体块挂到哪句上」，
-	//   所以旧表里必须有 sentence 行 + 关联行（生产上它们还在，
-	//   停双写只是让它们不再**增长**）。
+	//   所以旧表里必须有 sentence 行 + 关联行。
 	sentRowID, err := g.SeedLegacySentenceRow(sentence)
 	if err != nil {
 		t.Fatal(err)
@@ -660,19 +608,12 @@ func TestMigrateLegacyMediaEntities(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 块 union 化后，resolver 直接把短引用映射回内容派生块。
 	blocks, entities, err := g.MigrateLegacyMediaEntities(func(short string) (memory.MemoryBlock, bool) {
-		full, err := ms.ResolvePrefix(short)
-		if err != nil {
+		if short != shortRef {
 			return memory.MemoryBlock{}, false
 		}
-		it, err := ms.Stat(full)
-		if err != nil {
-			return memory.MemoryBlock{}, false
-		}
-		return memory.MemoryBlock{
-			ID: "blk_legacy_" + short, Modality: memory.BlockImage,
-			PayloadDigest: it.Digest, MIME: it.MIME, Size: it.Size,
-		}, true
+		return b, true
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -681,26 +622,7 @@ func TestMigrateLegacyMediaEntities(t *testing.T) {
 		t.Fatalf("应迁移 1 块 / 删 1 实体，实际 %d / %d", blocks, entities)
 	}
 
-	// ★ 旧媒体实体与描述关系必须消失。
-	//
-	// ★ 判据口径变了（2026-10-04）：原来断言「Recall 结果里没有 Type=='Media'」。
-	//   但 media → legacy-entity 块的迁移会给那块打上 semantic_type='Media'
-	//   （迁移保留源实体的 type，这是对的），而 Recall 切块后返回的正是**块** ——
-	//   于是判据把「块」误判成「残留的旧实体」。
-	//
-	//   判据的**意图**是「旧表 entities 里不该还有它」，所以直接查旧表：
-	//   与实现无关，也不受迁移是否保留 type 影响。
-	res, err := g.Recall([]string{"图片 " + digest[:12]}, nil, 2, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 块侧可以存在同名同类型的块 —— 那是迁移的**成果**，不是残留。
-	// 但必须至少确认召回没把旧实体当块带出来（blockKey 为空 = 旧表行）。
-	for _, e := range res.Entities {
-		if e.Type == "Media" && e.IsLegacyRow() {
-			t.Fatalf("旧媒体实体仍存在（旧表行）: %+v", e)
-		}
-	}
+	// ★ 旧媒体实体必须消失（直接查旧表，与实现无关）。
 	legacyMedia, err := g.CountLegacyEntitiesByType("Media")
 	if err != nil {
 		t.Fatalf("查旧媒体实体: %v", err)
@@ -708,13 +630,17 @@ func TestMigrateLegacyMediaEntities(t *testing.T) {
 	if legacyMedia != 0 {
 		t.Errorf("旧表里仍有 %d 个媒体实体", legacyMedia)
 	}
-	// 块必须挂回原句子
+	// 块必须挂回原句子，且字节随块可取回
 	got, err := g.BlocksForNode("block", sid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].PayloadDigest != digest {
-		t.Fatalf("句子应持有原生块，实际 %+v", got)
+	if len(got) != 1 || got[0].ID != b.ID {
+		t.Fatalf("句子应持有原生块 %s，实际 %+v", b.ID, got)
+	}
+	gotBytes, err := g.BlockData(b.ID)
+	if err != nil || string(gotBytes) != string(b.Data) {
+		t.Fatalf("迁移后块字节应可取回: %v / %v", gotBytes, err)
 	}
 
 	// 幂等：再跑一遍不应重复建块
@@ -730,9 +656,9 @@ func TestMigrateLegacyMediaEntities(t *testing.T) {
 func TestCleanupOrphanedSentences_KeepsBlockBackedSentences(t *testing.T) {
 	// 旧媒体实体被删除后，承载它的句子可能再无关系引用，
 	// 但它还挂着媒体块——清理孤儿句子时不能把它删掉。
-	a, g, ms := newGraphMediaAgent(t)
+	_, g := newGraphMediaAgent(t)
 
-	digest, _ := ms.Put([]byte("orphan-img"), media.Item{MIME: "image/png"})
+	b := mediaBlock("image/png", []byte("orphan-img"))
 	sentence := "只靠媒体块存活的句子。"
 	ids, _, _, err := g.CommitWithMedia([]memory.Triple{{
 		Subject: "媒体载体", Relation: "包含", Object: "内容", SentenceText: sentence,
@@ -742,14 +668,10 @@ func TestCleanupOrphanedSentences_KeepsBlockBackedSentences(t *testing.T) {
 	}
 	sid := ids[sentence]
 
-	b, ok := a.blockFromDigest(digest)
-	if !ok {
-		t.Fatal("blockFromDigest 失败")
-	}
 	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
 		t.Fatal(err)
 	}
-	// ★ 端点 kind 也从 "sentence" 改成 "block"（原句由块承载）
+	// 端点 kind 都是 "block"（原句由块承载）
 	if err := g.AddMemoryBlockEdge("block", sid, "block", b.ID, "contains"); err != nil {
 		t.Fatal(err)
 	}
@@ -807,13 +729,7 @@ func TestSentenceIDsFromRelations(t *testing.T) {
 }
 
 func TestMediaBlocksHeldByDocumentSurviveDeletion(t *testing.T) {
-	// 文档持有的一等块把内容钉住；文档被删后块随之消失，内容才可回收。
-	_, _, ms := newGraphMediaAgent(t)
-
-	digest, err := ms.Put([]byte("doc image"), media.Item{MIME: "image/png"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 文档持有的一等块把内容钉住；文档被删后块随之消失，字节随块同生灭。
 	dir := t.TempDir()
 	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
@@ -821,31 +737,25 @@ func TestMediaBlocksHeldByDocumentSurviveDeletion(t *testing.T) {
 	}
 	defer ds.Stop()
 
-	it, _ := ms.Stat(digest)
+	b := mediaBlock("image/png", []byte("doc image"))
 	doc := &document.Doc{
 		ID: "doc_1", Summary: "带图的文档", Content: "正文",
-		Blocks: []memory.MemoryBlock{{ID: "blk_doc_1", Modality: memory.BlockImage,
-			PayloadDigest: it.Digest, MIME: it.MIME, Size: it.Size}},
+		Blocks: []memory.MemoryBlock{b},
 	}
 	if err := ds.Insert(doc); err != nil {
 		t.Fatal(err)
 	}
 
-	// 文档仍持有块 → 内容在
-	if _, err := ms.Stat(digest); err != nil {
-		t.Fatal("有文档块持有内容时不该被清")
+	// 文档仍持有块 → 字节在块里可读
+	blocks := ds.Blocks()
+	if len(blocks) != 1 || string(blocks[0].Data) != "doc image" {
+		t.Fatalf("文档应持有带字节的块，实际 %+v", blocks)
 	}
 
-	// 删除文档 → 一并删除其内容（与文本块一致：删块即删内容）
+	// 删除文档 → 块随之消失，字节随之消失（删块即删内容）
 	ds.Remove(doc.ID)
 	if blocks := ds.Blocks(); len(blocks) != 0 {
 		t.Fatalf("删除文档后不该还有块，实际 %+v", blocks)
-	}
-	if err := ms.Delete(digest); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ms.Stat(digest); err == nil {
-		t.Fatal("删除后内容应已移除")
 	}
 }
 

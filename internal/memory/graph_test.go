@@ -539,13 +539,19 @@ func TestMemoryBlocksAreFirstClassGraphNodes(t *testing.T) {
 	if len(blocks) != 2 {
 		t.Fatalf("memory blocks=%d, want 2", len(blocks))
 	}
+	// ★ 字节负载不在 lean 列里（召回只比向量）：
+	//   断言用 BlockData 按需取回，而不是 MemoryBlocks 返回的结构体。
+	gotData, err := g.BlockData(image.ID)
+	if err != nil || string(gotData) != string(image.Data) {
+		t.Fatalf("image payload not round-tripped: %q / %v", gotData, err)
+	}
 	var gotImage *MemoryBlock
 	for i := range blocks {
 		if blocks[i].ID == image.ID {
 			gotImage = &blocks[i]
 		}
 	}
-	if gotImage == nil || gotImage.Modality != BlockImage || string(gotImage.Data) != string(image.Data) || gotImage.Fingerprint != image.Fingerprint || len(gotImage.Vector) != 3 {
+	if gotImage == nil || gotImage.Modality != BlockImage || gotImage.Fingerprint != image.Fingerprint || len(gotImage.Vector) != 3 {
 		t.Fatalf("image block not round-tripped: %+v", gotImage)
 	}
 

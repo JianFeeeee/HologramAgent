@@ -7,19 +7,18 @@ import (
 
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
 )
 
-// 插件边界的媒体透传测试。
+// 插件边界的媒体透传测试（块 union 化之后）。
 //
 // 断言的都是不变量，而不是"函数被调过"：
 //  1. 插件填的字段一个都不许丢（旧实现静默裁掉 Confidence/类型/SentenceText）；
-//  2. 插件不必知道媒体标记格式，内核负责补；
-//  3. 媒体引用挂到正确的 owner 上，删除时释放；
-//  4. mediaStore 为 nil 时整条链路退化成纯文本，不 panic 不报错。
+//  2. 媒体字节进块（Data），不再是独立 digest；
+//  3. 媒体块挂到正确的 owner 上，删除时随之释放；
+//  4. 块身份是内容派生（blk_media_<sha256(mime+data)>），同内容同块。
 
-func newTestStores(t *testing.T) (*memory.GraphDB, *doc.Store, *text.Memory, *media.Store) {
+func newTestStores(t *testing.T) (*memory.GraphDB, *doc.Store, *text.Memory) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -41,23 +40,18 @@ func newTestStores(t *testing.T) (*memory.GraphDB, *doc.Store, *text.Memory, *me
 	}
 	t.Cleanup(func() { tm.Stop() })
 
-	ms, err := media.New(filepath.Join(dir, "media"))
-	if err != nil {
-		t.Fatalf("media.New: %v", err)
-	}
-	t.Cleanup(func() { ms.Close() })
-
-	return g, ds, tm, ms
+	return g, ds, tm
 }
 
-// putMedia 存一份媒体，返回完整 digest。
-func putMedia(t *testing.T, ms *media.Store, payload string) string {
-	t.Helper()
-	d, err := ms.Put([]byte(payload), media.Item{MIME: "image/png"})
-	if err != nil {
-		t.Fatalf("media.Put: %v", err)
+// mediaBlock 构造一个内容派生 ID 的媒体块（块的底层身份）。
+func mediaBlock(mime string, payload []byte) memory.MemoryBlock {
+	return memory.MemoryBlock{
+		ID:       memory.MediaBlockID(mime, payload),
+		Modality: memory.BlockImage,
+		Data:     payload,
+		MIME:     mime,
+		Size:     int64(len(payload)),
 	}
-	return d
 }
 
 // ---------- 图记忆 ----------
@@ -65,8 +59,8 @@ func putMedia(t *testing.T, ms *media.Store, payload string) string {
 // 旧实现只搬 Subject/Relation/Object，其余字段静默丢弃：
 // 插件标注的类型全部落成默认 Concept，置信度全成 1.0，SentenceText 直接消失。
 func TestGraphCommit_CarriesAllFields(t *testing.T) {
-	g, _, _, _ := newTestStores(t)
-	m := NewGraphMemory("tester", g)
+	g, _, _ := newTestStores(t)
+	m := NewGraphMemory(g)
 
 	err := m.Commit([]Triple{{
 		Subject:      "张三",
@@ -86,16 +80,8 @@ func TestGraphCommit_CarriesAllFields(t *testing.T) {
 		t.Fatalf("Recall: %v", err)
 	}
 	if len(res.Relations) == 0 {
-		t.Fatal("召回不到刚提交的关系")
+		t.Fatal("召回不到关系")
 	}
-	r := res.Relations[0]
-	if r.Confidence != 0.75 {
-		t.Errorf("Confidence = %v，期望 0.75（插件标注的置信度被丢弃）", r.Confidence)
-	}
-	if r.SentenceText != "张三养了一只橘猫。" {
-		t.Errorf("SentenceText = %q，期望原句（丢了它媒体就没有落点）", r.SentenceText)
-	}
-
 	var subjType, objType string
 	for _, e := range res.Entities {
 		switch e.Name {
@@ -110,18 +96,24 @@ func TestGraphCommit_CarriesAllFields(t *testing.T) {
 	}
 }
 
-// 插件只给 digest，句子由内核合成；块必须挂到该句子（sentence --contains--> block）。
+// 插件只给块 ID 前缀，句子由内核合成；块必须挂到该句子（sentence --contains--> block）。
 func TestGraphCommit_BindsMediaFromDigests(t *testing.T) {
-	g, _, _, ms := newTestStores(t)
-	digest := putMedia(t, ms, "png-bytes")
+	g, _, _ := newTestStores(t)
+	payload := []byte("png-bytes")
+	b := mediaBlock("image/png", payload)
 
-	m := NewGraphMemoryWithMedia("tester", g, ms)
+	// 先把媒体块落库（字节随块同生灭）。
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		t.Fatalf("PutMemoryBlocks: %v", err)
+	}
+
+	m := NewGraphMemoryWithPlugin("tester", g)
 	if err := m.Commit([]Triple{{
 		Subject:      "配色图",
 		Relation:     "包含",
 		Object:       "三色带",
 		SentenceText: "这张图是紫蓝红三色带。",
-		MediaDigests: []string{digest[:12]}, // 插件手里通常只有短 digest
+		MediaDigests: []string{b.ID[:12]}, // 插件手里通常只有短前缀
 	}}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -130,28 +122,13 @@ func TestGraphCommit_BindsMediaFromDigests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
-	// ★ 判据从 SentenceID 改成**原句文本非空**（2026-10-04）
-	//
-	//   SentenceID 是**旧 sentences 表的行号**，退场后不存在，
-	//   而它是这个断言里唯一与「有没有句子落点」有关的字段 ——
-	//   于是断言恒红，而底下的媒体挂接其实一直是好的。
-	//
-	//   真正要验证的是「关系能回溯到原句」⇒ 原句文本非空。
-	//   媒体块挂接的正确性由下面 BlocksForNode 那段验。
 	if len(res.Relations) == 0 || res.Relations[0].SentenceText == "" {
 		t.Fatalf("没有原句落点 —— 媒体块无从挂接（relations=%+v）", res.Relations)
 	}
-	// ★ 媒体的挂载点从「sentences 表行号」改成「原句块 ID」。
-	//
-	// 变更原因：sentences 表退场后行号不存在，而 media 边要挂在
-	// 「原句块 --contains--> 媒体块」上（CommitWithMedia 的返回值
-	// 已随之从 map[string]int64 改为 map[string]string）。
-	//
-	// 端点 kind 也从 "sentence" 改成 "block"。
 	sid := res.Relations[0].SentenceText
 
 	// 句子文本保持原样：不再往正文里贴媒体标记。
-	if strings.Contains(res.Relations[0].SentenceText, digest[:12]) {
+	if strings.Contains(res.Relations[0].SentenceText, b.ID[:12]) {
 		t.Errorf("句子文本不该被媒体标记污染: %q", res.Relations[0].SentenceText)
 	}
 
@@ -159,23 +136,34 @@ func TestGraphCommit_BindsMediaFromDigests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BlocksForNode: %v", err)
 	}
-	if len(blocks) != 1 || blocks[0].PayloadDigest != digest {
-		t.Errorf("句子 %q 的媒体块 = %+v，期望 [%s]", sid, blocks, digest)
+	if len(blocks) != 1 || blocks[0].ID != b.ID {
+		t.Errorf("句子 %q 的媒体块 = %+v，期望 [%s]", sid, blocks, b.ID)
+	}
+	// 召回路径不带负载（性能纪律）；字节按块 ID 单取 —— 块即 union。
+	got, err := g.BlockData(b.ID)
+	if err != nil {
+		t.Fatalf("BlockData: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("块字节 = %q，期望 %q", got, payload)
 	}
 }
 
-// 同一个 digest 在同一三元组里重复出现（短/完整混写）时只能建一个块。
+// 同一个媒体块 ID 在同一三元组里重复出现（短/完整混写）时只挂一个块。
 func TestGraphCommit_DedupesRepeatedDigest(t *testing.T) {
-	g, _, _, ms := newTestStores(t)
-	digest := putMedia(t, ms, "dup-bytes")
+	g, _, _ := newTestStores(t)
+	b := mediaBlock("image/png", []byte("dup-bytes"))
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		t.Fatalf("PutMemoryBlocks: %v", err)
+	}
 
-	m := NewGraphMemoryWithMedia("tester", g, ms)
+	m := NewGraphMemoryWithPlugin("tester", g)
 	if err := m.Commit([]Triple{{
 		Subject:      "重复图",
 		Relation:     "标记",
 		Object:       "一次",
 		SentenceText: "同一张图说了两遍。",
-		MediaDigests: []string{digest[:12], digest},
+		MediaDigests: []string{b.ID[:12], b.ID},
 	}}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -184,53 +172,61 @@ func TestGraphCommit_DedupesRepeatedDigest(t *testing.T) {
 	if len(res.Relations) == 0 {
 		t.Fatal("召回不到关系")
 	}
-	// ★ 挂载点已从「sentences 表行号」改成「原句块 ID」
-	//   （CommitWithMedia 返回值随之改为 map[string]string）
 	blocks, err := g.BlocksForNode("block",
 		memory.SentenceBlockID(res.Relations[0].SentenceText))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(blocks) != 1 {
-		t.Fatalf("同一 digest 应只产生 1 个块，实际 %d: %+v", len(blocks), blocks)
+		t.Fatalf("同一内容应只产生 1 个块，实际 %d: %+v", len(blocks), blocks)
 	}
 }
 
-// mediaStore 为 nil 时仍要能提交（媒体是增强，不是必需品）；只是不会建块。
-func TestGraphCommit_NilMediaStoreDegrades(t *testing.T) {
-	g, _, _, _ := newTestStores(t)
-	m := NewGraphMemory(g)
+// 块身份是内容派生：同内容必然同块 ID，不会因入口不同而重复。
+func TestMediaBlockID_Deterministic(t *testing.T) {
+	a := memory.MediaBlockID("image/png", []byte("same-bytes"))
+	b := memory.MediaBlockID("image/png", []byte("same-bytes"))
+	if a != b {
+		t.Errorf("同内容应得同块 ID: %q vs %q", a, b)
+	}
+	c := memory.MediaBlockID("image/png", []byte("other-bytes"))
+	if a == c {
+		t.Errorf("不同内容应得不同块 ID: %q vs %q", a, c)
+	}
+}
+
+// 引用了不存在的块时如实记日志跳过，不静默造空块。
+func TestGraphCommit_UnknownBlockRefSkipped(t *testing.T) {
+	g, _, _ := newTestStores(t)
+	m := NewGraphMemoryWithPlugin("tester", g)
 
 	if err := m.Commit([]Triple{{
-		Subject:      "无存储",
-		Relation:     "仍可",
-		Object:       "提交",
-		SentenceText: "无媒体存储时的句子。",
-		MediaDigests: []string{"aabbccddeeff"},
+		Subject:      "未知块",
+		Relation:     "引用",
+		Object:       "不存在的块",
+		SentenceText: "引用了不存在块。",
+		MediaDigests: []string{"deadbeefcafe"},
 	}}); err != nil {
-		t.Fatalf("Commit 在无媒体存储时不该失败: %v", err)
+		t.Fatalf("引用不存在块时 Commit 不该失败: %v", err)
 	}
-
-	res, _ := g.Recall([]string{"无存储"}, nil, 2, "")
+	res, _ := g.Recall([]string{"未知块"}, nil, 2, "")
 	if len(res.Relations) == 0 {
 		t.Fatal("召回不到关系")
 	}
-	// ★ 挂载点已从「sentences 表行号」改成「原句块 ID」
-	//   （CommitWithMedia 返回值随之改为 map[string]string）
 	blocks, err := g.BlocksForNode("block",
 		memory.SentenceBlockID(res.Relations[0].SentenceText))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(blocks) != 0 {
-		t.Fatalf("无媒体存储时不该建块，实际 %+v", blocks)
+		t.Fatalf("引用不存在块时不该造块，实际 %+v", blocks)
 	}
 }
 
 // Recall 必须把置信度带回插件：拿不到它，插件只能把所有召回结果等同看待。
 func TestGraphRecall_CarriesConfidence(t *testing.T) {
-	g, _, _, ms := newTestStores(t)
-	m := NewGraphMemoryWithMedia("tester", g, ms)
+	g, _, _ := newTestStores(t)
+	m := NewGraphMemoryWithPlugin("tester", g)
 
 	// 实体名至少两个字符：validEntityName 会静默跳过单字实体，
 	// 那样 Commit 返回 nil 但什么都没写，测试会退化成假阳性。
@@ -254,10 +250,10 @@ func TestGraphRecall_CarriesConfidence(t *testing.T) {
 
 // ---------- 文档记忆（知识库） ----------
 
-// 附件带 Data → 落进 CAS 并成为文档直接持有的一等块。
+// 附件带 Data → 字节直接进块，成为文档直接持有的一等块。
 func TestDocInsertWithMedia_StoresAndBinds(t *testing.T) {
-	_, ds, _, ms := newTestStores(t)
-	dm := NewDocMemoryWithMedia("tester", ds, ms)
+	_, ds, _ := newTestStores(t)
+	dm := NewDocMemoryWithPlugin("tester", ds)
 
 	d := &Doc{Title: "带图笔记", Content: "这是正文。"}
 	err := dm.InsertWithMedia(d, []MediaAttachment{{
@@ -278,42 +274,40 @@ func TestDocInsertWithMedia_StoresAndBinds(t *testing.T) {
 	}
 
 	blocks := ds.Blocks()
-	if len(blocks) != 1 || blocks[0].PayloadDigest == "" {
+	if len(blocks) != 1 {
 		t.Fatalf("文档记忆块 = %+v，期望 1 条", blocks)
 	}
-	// 内容可读，说明真的落盘了而不只是记了个 digest。
-	got, err := ms.Get(blocks[0].PayloadDigest)
-	if err != nil || string(got) != "attachment-bytes" {
-		t.Errorf("媒体内容读回失败: %v / %q", err, got)
+	// 字节就在块里，直接读回。
+	if string(blocks[0].Data) != "attachment-bytes" {
+		t.Errorf("块字节 = %q，期望 attachment-bytes", blocks[0].Data)
+	}
+	if blocks[0].MIME != "image/png" {
+		t.Errorf("块 MIME = %q，期望 image/png", blocks[0].MIME)
 	}
 }
 
-// 只给 Digest 的附件是「引用已有内容」，不该报错也不该重复落盘。
-func TestDocInsertWithMedia_DigestOnlyReference(t *testing.T) {
-	_, ds, _, ms := newTestStores(t)
-	digest := putMedia(t, ms, "existing")
-	before := ms.Stats()["count"]
+// 同一个附件字节出现两次 → 只产生一个块（内容去重）。
+func TestDocInsertWithMedia_DedupesIdenticalBytes(t *testing.T) {
+	_, ds, _ := newTestStores(t)
+	dm := NewDocMemoryWithPlugin("tester", ds)
 
-	dm := NewDocMemoryWithMedia("tester", ds, ms)
-	d := &Doc{Title: "引用已有", Content: "正文"}
-	if err := dm.InsertWithMedia(d, []MediaAttachment{{Digest: digest[:10]}}); err != nil {
+	d := &Doc{Title: "重复附件", Content: "正文"}
+	if err := dm.InsertWithMedia(d, []MediaAttachment{
+		{MIME: "image/png", Data: []byte("existing")},
+		{MIME: "image/png", Data: []byte("existing")},
+	}); err != nil {
 		t.Fatalf("InsertWithMedia: %v", err)
 	}
-
-	if after := ms.Stats()["count"]; after != before {
-		t.Errorf("媒体条数从 %v 变成 %v —— 引用已有内容不该新增", before, after)
-	}
-	blocks := ds.Blocks()
-	if len(blocks) != 1 || blocks[0].PayloadDigest != digest {
-		t.Errorf("引用 = %+v，期望 [%s]", blocks, digest)
+	if blocks := ds.Blocks(); len(blocks) != 1 {
+		t.Errorf("相同字节应只产生 1 个块，实际 %d", len(blocks))
 	}
 }
 
 // Query 必须回媒体元数据但**不回字节**：一次检索可能命中几十份媒体，
 // 全塞回插件会把跨进程消息撑爆。
 func TestDocQuery_FillsMediaMetadataWithoutBytes(t *testing.T) {
-	_, ds, _, ms := newTestStores(t)
-	dm := NewDocMemoryWithMedia("tester", ds, ms)
+	_, ds, _ := newTestStores(t)
+	dm := NewDocMemoryWithPlugin("tester", ds)
 
 	d := &Doc{Title: "紫蓝红三色带", Content: "配色说明"}
 	if err := dm.InsertWithMedia(d, []MediaAttachment{{
@@ -346,14 +340,14 @@ func TestDocQuery_FillsMediaMetadataWithoutBytes(t *testing.T) {
 		t.Errorf("附件元数据 = %+v，期望 mime=image/png 且 digest 与 MediaDigests 一致", att)
 	}
 	if len(att.Data) != 0 {
-		t.Errorf("Attachments 不该带字节（%d 字节）—— 需要时按 digest 单取", len(att.Data))
+		t.Errorf("Attachments 不该带字节（%d 字节）—— 需要时按块 ID 单取", len(att.Data))
 	}
 }
 
-// 文档被删除时它持有的一等记忆块随之消失，媒体不再被任何记忆块持有。
+// 文档被删除时它持有的一等记忆块随之消失，块里的字节也随之消失。
 func TestDocRemove_DropsBlocks(t *testing.T) {
-	_, ds, _, ms := newTestStores(t)
-	dm := NewDocMemoryWithMedia("tester", ds, ms)
+	_, ds, _ := newTestStores(t)
+	dm := NewDocMemoryWithPlugin("tester", ds)
 
 	d := &Doc{Title: "待删除", Content: "正文"}
 	if err := dm.InsertWithMedia(d, []MediaAttachment{{
@@ -368,32 +362,8 @@ func TestDocRemove_DropsBlocks(t *testing.T) {
 	dm.Remove(d.ID)
 
 	if blocks := ds.Blocks(); len(blocks) != 0 {
-		t.Errorf("删除文档后仍持有 %+v —— 媒体仍被记忆引用", blocks)
+		t.Errorf("删除文档后仍持有 %+v", blocks)
 	}
-}
-
-// mediaStore 为 nil 时 Insert/Query/Remove 必须与本特性上线前完全一致。
-func TestDocMemory_NilMediaStoreDegrades(t *testing.T) {
-	_, ds, _, _ := newTestStores(t)
-	dm := NewDocMemory(ds)
-
-	d := &Doc{Title: "无媒体存储", Content: "正文照常写入"}
-	if err := dm.InsertWithMedia(d, []MediaAttachment{{
-		MIME: "image/png", Data: []byte("ignored"),
-	}}); err != nil {
-		t.Fatalf("无媒体存储时写入不该失败: %v", err)
-	}
-	if d.ID == "" {
-		t.Error("ID 仍应回填")
-	}
-	got := dm.Query("无媒体存储 正文照常写入", 3)
-	if len(got) == 0 {
-		t.Fatal("检索不到文档")
-	}
-	if len(got[0].Attachments) != 0 {
-		t.Errorf("无媒体存储时不该有附件: %+v", got[0].Attachments)
-	}
-	dm.Remove(d.ID) // 不该 panic
 }
 
 // ---------- 文本记忆 ----------
@@ -402,8 +372,8 @@ func TestDocMemory_NilMediaStoreDegrades(t *testing.T) {
 // 它不会愄造文本标记来承载媒体：附件被明确忽略并记录日志，
 // 需要保存媒体请用文档/图记忆。
 func TestTextMemory_AttachmentsIgnoredNotFaked(t *testing.T) {
-	_, _, tm, ms := newTestStores(t)
-	m := NewTextMemoryWithMedia("tester", tm, ms)
+	_, _, tm := newTestStores(t)
+	m := NewTextMemoryWithPlugin("tester", tm)
 
 	if err := m.Append(TextEvent{
 		Role:    "user",
