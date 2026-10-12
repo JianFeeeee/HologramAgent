@@ -127,20 +127,20 @@ func (h *Handler) handleMemoryTools(w http.ResponseWriter, r *http.Request) {
 // 所以这里显式裁掉 vector，而不是让 GraphData 返回值带个开关：
 // 本接口的语义就是「图谱的可视化数据」，让唯一调用方拿到它要的东西。
 type graphBlockView struct {
-	ID            string    `json:"id"`
-	Modality      string    `json:"modality"`
-	Text          string    `json:"text,omitempty"`
-	PayloadDigest string    `json:"payload_digest"`
-	MIME          string    `json:"mime,omitempty"`
-	Size          int64     `json:"size"`
-	Width         int       `json:"width,omitempty"`
-	Height        int       `json:"height,omitempty"`
-	Fingerprint   string    `json:"fingerprint,omitempty"`
-	Source        string    `json:"source,omitempty"`
-	Tool          string    `json:"tool,omitempty"`
-	Scene         string    `json:"scene,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Modality    string    `json:"modality"`
+	Text        string    `json:"text,omitempty"`
+	HasData     bool      `json:"has_data"`
+	MIME        string    `json:"mime,omitempty"`
+	Size        int64     `json:"size"`
+	Width       int       `json:"width,omitempty"`
+	Height      int       `json:"height,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	Tool        string    `json:"tool,omitempty"`
+	Scene       string    `json:"scene,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // graphDataForVisual 把 GraphData 的原始 map 裁成可视化视图（去掉稠密向量）。
@@ -162,20 +162,20 @@ func graphDataForVisual(data map[string]interface{}) map[string]interface{} {
 	for i := range blocks {
 		b := blocks[i]
 		views = append(views, graphBlockView{
-			ID:            b.ID,
-			Modality:      string(b.Modality),
-			Text:          b.Text,
-			PayloadDigest: b.PayloadDigest,
-			MIME:          b.MIME,
-			Size:          b.Size,
-			Width:         b.Width,
-			Height:        b.Height,
-			Fingerprint:   b.Fingerprint,
-			Source:        b.Source,
-			Tool:          b.Tool,
-			Scene:         b.Scene,
-			CreatedAt:     b.CreatedAt,
-			UpdatedAt:     b.UpdatedAt,
+			ID:          b.ID,
+			Modality:    string(b.Modality),
+			Text:        b.Text,
+			HasData:     len(b.Data) > 0,
+			MIME:        b.MIME,
+			Size:        b.Size,
+			Width:       b.Width,
+			Height:      b.Height,
+			Fingerprint: b.Fingerprint,
+			Source:      b.Source,
+			Tool:        b.Tool,
+			Scene:       b.Scene,
+			CreatedAt:   b.CreatedAt,
+			UpdatedAt:   b.UpdatedAt,
 		})
 	}
 	out["memory_blocks"] = views
@@ -243,16 +243,16 @@ func (h *Handler) handleMemoryGraphPulse(w http.ResponseWriter, r *http.Request)
 	pulse := make([]map[string]interface{}, 0, len(blocks))
 	for _, b := range blocks {
 		pulse = append(pulse, map[string]interface{}{
-			"id":             b.ID,
-			"name":           b.Text,
-			"modality":       string(b.Modality),
-			"payload_digest": b.PayloadDigest,
-			"mime":           b.MIME,
-			"tool":           b.Tool,
-			"scene":          b.Scene,
-			"source":         b.Source,
-			"updated_at":     b.UpdatedAt,
-			"created_at":     b.CreatedAt,
+			"id":         b.ID,
+			"name":       b.Text,
+			"modality":   b.Modality,
+			"has_data":   b.HasData,
+			"mime":       b.MIME,
+			"tool":       b.Tool,
+			"scene":      b.Scene,
+			"source":     b.Source,
+			"updated_at": b.UpdatedAt,
+			"created_at": b.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{

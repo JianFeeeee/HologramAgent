@@ -14,7 +14,6 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/social"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
@@ -80,10 +79,7 @@ type Agent struct {
 	// 文本记忆（原始对话日志）
 	textMem *text.Memory
 
-	// 媒体存储（内容寻址）：对话里出现的图片/音频按 sha256 落盘去重。
-	// 它是记忆块的内容存储，不单独做生命周期管理：块的创建/迁移/删除
-	// 由记忆系统本身决定。为 nil 时全部媒体接线静默跳过。
-	mediaStore *media.Store
+	// 媒体存储句柄已随 CAS 淘汰（块自带负载，见 plan.md）。
 
 	// 人格设定（内容来自启动时载入的人格文件/配置项）
 	personality *agentPkg.Personality
@@ -185,12 +181,12 @@ type Agent struct {
 	// 当前轮次的非文本媒体数据（图片/音频），供 describe_image 等工具访问
 	pendingMedia map[string]interface{}
 
-	// pendingMediaDigests 累积本轮已落进 CAS 的媒体 digest。
+	// pendingMediaBlocks 累积本轮已捕获的媒体块。
 	//
 	// 需要缓存而不是当场挂到事件上：媒体在 process() 执行期间被捕获，
-	// 而承载它的 ContextEvent 要等 process() 返回后才 Append——此刻还没有 owner_id。
+	// 而承载它的 ContextEvent 要等 process() 返回后才 Append——此刻还没有 owner。
 	// 由 schedulerLoop goroutine 独占读写。
-	pendingMediaDigests []string
+	pendingMediaBlocks []memory.MemoryBlock
 
 	// 当前输入是否为工具提醒/中断（以 system 角色注入，避免被当成用户消息）
 	interruptInput bool
@@ -266,7 +262,7 @@ type AgentConfig struct {
 	Knowledge       *knowledge.Store
 	SocialStore     *social.SocialStore
 	TextMemory      *text.Memory
-	MediaStore      *media.Store
+	// 媒体存储句柄已随 CAS 淘汰（块自带负载，见 plan.md）。
 	MultimodalSpace vector.MultimodalEmbedder
 	// EmbeddingProvider / EmbeddingError 是向量空间的配置身份与打开失败原因，
 	// 供 healthcheck_kernel 状态报告区分「未配置 / 打开失败 / 已启用」。
@@ -383,15 +379,12 @@ func New(cfg AgentConfig) *Agent {
 		// 稀疏两路（词向量 + TF-IDF）**保持启用**且仍是主召回路径：多模态
 		// 空间未配置时知识库行为与此前逐字一致（退化为 0.5/0.5 两路融合）。
 		if cfg.Knowledge != nil {
-			// 顺序要紧：先接线（含 MediaStore），再重建。ReindexDense 会
-			// 尝试从 .dense.json 缓存恢复，恢复不了才重算，最后把结果落盘。
-			// 若先重建后接线，首次启动算出的向量会被丢掉而不落盘。
+			// 顺序要紧：先接线再重建。ReindexDense 会尝试从 .dense.json 缓存恢复，
+			// 恢复不了才重算，最后把结果落盘。若先重建后接线，首次启动算出的
+			// 向量会被丢掉而不落盘。
 			cfg.Knowledge.SetDenseSpace(cfg.MultimodalSpace)
-			cfg.Knowledge.SetMediaGetter(cfg.MediaStore)
-			// 媒体**写入**器：ImportDir 复制图片/音视频时用。
-			// 不接的话 include_media=true 会静默失效（媒体全被跳过、
-			// 只在导入结果里留一行"媒体库不可用"），模型无从察觉。
-			cfg.Knowledge.SetMediaPutter(cfg.MediaStore)
+			// 媒体字节随知识条目自带（CAS 淘汰后）：denseFor 直接读条目目录里的
+			// 媒体文件，无需 mediaGet/mediaPut 接线。
 			built, skipped := cfg.Knowledge.ReindexDense()
 			if built > 0 || skipped > 0 {
 				log.Printf("[knowledge] 多模态稠密索引: 新建 %d 跳过 %d（其余命中缓存）", built, skipped)
@@ -421,7 +414,8 @@ func New(cfg AgentConfig) *Agent {
 		knowledge:         cfg.Knowledge,
 		social:            cfg.SocialStore,
 		textMem:           cfg.TextMemory,
-		mediaStore:        cfg.MediaStore,
+		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
+		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
 		personality:       cfg.Personality,
 		personaStore:      cfg.PersonaStore,
 		allowedOutputs:    cfg.AllowedOutputs,

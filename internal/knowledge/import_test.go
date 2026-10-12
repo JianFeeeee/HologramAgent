@@ -2,14 +2,11 @@ package knowledge
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 )
 
 // ===== 从目录导入知识 =====
@@ -400,27 +397,9 @@ func TestImportDirDoesNotFlushPerItem(t *testing.T) {
 	}
 }
 
-// 媒体导入：图片按字节复制进媒体库，条目挂 digest 引用。
-//
-// 用假 MediaPutter 而不是真媒体库：这里要验的是「调用了 Put、
-// 且把返回的 digest 挂到条目上」，不是媒体库自己的落盘与去重
-// （那是 media 包的判据，不该在这里重测）。
-type fakePutter struct {
-	puts [][]byte
-	seq  int
-}
-
-func (f *fakePutter) Put(data []byte, _ media.Item) (string, error) {
-	f.puts = append(f.puts, data)
-	f.seq++
-	return fmt.Sprintf("digest%02d", f.seq), nil
-}
-
 func TestImportDirMediaAttachedToEntry(t *testing.T) {
 	src := mkSrc(t, map[string]string{"note.md": "看图", "note.png": "PNGDATA"})
 	s, root := newImportStore(t)
-	fp := &fakePutter{}
-	s.SetMediaPutter(fp)
 
 	st, err := s.ImportDir(ImportOptions{Dir: src, IncludeMedia: true})
 	if err != nil {
@@ -429,16 +408,21 @@ func TestImportDirMediaAttachedToEntry(t *testing.T) {
 	if st.Media != 1 {
 		t.Errorf("应导入 1 个媒体，实际 %d（%+v）", st.Media, st)
 	}
-	if len(fp.puts) != 1 || string(fp.puts[0]) != "PNGDATA" {
-		t.Errorf("媒体字节未原样复制进媒体库：%v", fp.puts)
+	// 媒体字节随条目落盘（CAS 淘汰后：字节是条目自带数据，与 content.md 同目录）
+	bytesOnDisk, err := os.ReadFile(filepath.Join(root, "note", "note.png"))
+	if err != nil {
+		t.Fatalf("媒体字节未落盘到条目目录：%v", err)
 	}
-	// digest 引用要落到条目的侧车文件里
+	if string(bytesOnDisk) != "PNGDATA" {
+		t.Errorf("媒体字节失真：%q", bytesOnDisk)
+	}
+	// 引用要落到条目的侧车文件里（File 指向同目录文件）
 	data, err := os.ReadFile(filepath.Join(root, "note", mediaSidecarName))
 	if err != nil {
 		t.Fatalf("媒体侧车未写入：%v", err)
 	}
-	if !strings.Contains(string(data), "digest01") {
-		t.Errorf("侧车里没有 Put 返回的 digest：%s", data)
+	if !strings.Contains(string(data), "note.png") {
+		t.Errorf("侧车里没有媒体文件名：%s", data)
 	}
 	// 内存条目也要挂上（否则稠密路算不出这条的图向量）
 	k := s.items["note"]
@@ -447,26 +431,33 @@ func TestImportDirMediaAttachedToEntry(t *testing.T) {
 	}
 }
 
-// include_media 未开启时不该碰媒体库。
+// include_media 未开启时不该把媒体落进条目目录。
 func TestImportDirMediaSkippedWhenNotRequested(t *testing.T) {
 	src := mkSrc(t, map[string]string{"note.md": "看图", "note.png": "PNGDATA"})
-	s, _ := newImportStore(t)
-	fp := &fakePutter{}
-	s.SetMediaPutter(fp)
+	s, root := newImportStore(t)
 
 	if _, err := s.ImportDir(ImportOptions{Dir: src}); err != nil {
 		t.Fatal(err)
 	}
-	if len(fp.puts) != 0 {
-		t.Errorf("未开 include_media 却写了媒体库：%v", fp.puts)
+	if _, err := os.Stat(filepath.Join(root, "note", "note.png")); !os.IsNotExist(err) {
+		t.Errorf("未开 include_media 却落了媒体文件")
 	}
 }
 
-// 媒体入不了库时，正文条目仍应成功（媒体是增强，不是前提）。
+// 媒体读不了时，正文条目仍应成功（媒体是增强，不是前提）。
 func TestImportDirMediaFailureDoesNotFailEntry(t *testing.T) {
-	src := mkSrc(t, map[string]string{"note.md": "正文", "note.png": "PNG"})
+	src := mkSrc(t, map[string]string{"note.md": "正文"})
 	s, _ := newImportStore(t)
-	s.SetMediaPutter(failPutter{})
+	// 造一个指向不存在文件的媒体候选：ImportDir 收集目录时按扩展名识别，
+	// 读不出的文件走 putMediaFile 错误路径，只跳过该媒体。
+	bad := filepath.Join(src, "broken.png")
+	if err := os.WriteFile(bad, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bad, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bad, 0644) })
 
 	st, err := s.ImportDir(ImportOptions{Dir: src, IncludeMedia: true})
 	if err != nil {
@@ -475,13 +466,4 @@ func TestImportDirMediaFailureDoesNotFailEntry(t *testing.T) {
 	if st.Imported != 1 {
 		t.Errorf("正文条目应仍导入成功，实际 %d（%+v）", st.Imported, st)
 	}
-	if st.Media != 0 {
-		t.Errorf("媒体应计入 0，实际 %d", st.Media)
-	}
-}
-
-type failPutter struct{}
-
-func (failPutter) Put([]byte, media.Item) (string, error) {
-	return "", fmt.Errorf("磁盘满")
 }

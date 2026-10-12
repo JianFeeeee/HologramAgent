@@ -22,12 +22,25 @@ const (
 //
 // 它不携带 Layer、Owner 或 RefCount：块当前由哪个层的容器持有，哪个层就是
 // 唯一事实源。Context→Document→Graph 迁移的是这个值本身，不建立平行保活账本。
-// PayloadDigest 仅用于定位内容寻址的原始字节，不表示另一条逻辑记忆。
+//
+// ★★ 负载是 **union**：一个块要么是文本块（负载在 Text），要么是媒体块
+// （负载在 Data，配 MIME/Width/Height）。两者是同一个 MemoryBlock 的两种取值，
+// 不是「块 + 外挂字节层」。
+//
+// 为何不存在独立的字节存储：块已经是内容的载体（文本块自己带正文），媒体块
+// 自当同理。把媒体内容拆到块外、只留一个 digest 指向外部 CAS，会凭空多出
+// 一层需单独维护生命周期的东西（第二套向量、第二套召回路、引用账本、自己的
+// db），并与「块是唯一记忆载体」直接冲突。内容随块同生同灭才是正解。
 type MemoryBlock struct {
-	ID            string        `json:"id"`
-	Modality      BlockModality `json:"modality"`
-	Text          string        `json:"text,omitempty"`
-	PayloadDigest string        `json:"payload_digest,omitempty"`
+	ID       string        `json:"id"`
+	Modality BlockModality `json:"modality"`
+	// Text 是文本块（Modality=text）的负载。
+	Text string `json:"text,omitempty"`
+	// Data 是媒体块（Modality=image/video/audio）的负载：内容的原始字节。
+	//
+	// 落盘形态随所在层而定：L0/L1 的块内联在 JSON 里（Data 序列化为 base64），
+	// L3 的块落 SQLite 的 BLOB 列。无论哪层，字节都不脱离块单独存在。
+	Data []byte `json:"data,omitempty"`
 	MIME          string        `json:"mime,omitempty"`
 	Size          int64         `json:"size,omitempty"`
 	Width         int           `json:"width,omitempty"`
@@ -120,13 +133,13 @@ func (g *GraphDB) PutMemoryBlocks(blocks []MemoryBlock) error {
 			block.CreatedAt = now
 		}
 		_, err = tx.Exec(`INSERT INTO memory_blocks (
-			id, modality, text_content, payload_digest, mime, size, width, height,
+			id, modality, text_content, data, mime, size, width, height,
 			vector, fingerprint, source, tool, scene, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			modality = excluded.modality,
 			text_content = excluded.text_content,
-			payload_digest = excluded.payload_digest,
+			data = excluded.data,
 			mime = excluded.mime,
 			size = excluded.size,
 			width = excluded.width,
@@ -143,7 +156,7 @@ func (g *GraphDB) PutMemoryBlocks(blocks []MemoryBlock) error {
 			--   若让它覆盖已有类型，一次不带标注的写入就会抹掉语义类别。
 			semantic_type = CASE WHEN excluded.semantic_type != '' THEN excluded.semantic_type ELSE memory_blocks.semantic_type END,
 			updated_at = excluded.updated_at`,
-			block.ID, block.Modality, block.Text, block.PayloadDigest, block.MIME,
+			block.ID, block.Modality, block.Text, block.Data, block.MIME,
 			block.Size, block.Width, block.Height, string(vectorJSON), block.Fingerprint,
 			block.Source, block.Tool, block.Scene, block.CreatedAt, now)
 		if err != nil {
@@ -279,14 +292,21 @@ func (g *GraphDB) MemoryBlocks() ([]MemoryBlock, error) {
 //	结果媒体与召回测试大面积变红（列数不匹配 ⇒ 读失败）。
 //
 //	单靠“记得同步”不可靠；提成常量后新增查询直接复用。
-const blockColumns = `id, modality, text_content, payload_digest, mime, size, width, height,
+// blockColumns 是 memory_blocks 的**元数据**列清单，供所有常规读取复用。
+//
+// ★ 为何**不含 data**：媒体负载动辄数 MB（生产实测：图均 495KB、最大 2.7MB），
+// 而 RecallBlocks 要全表扫描有向量的块。若把 data 列进来，每次召回都会把
+// 几十 MB 字节读进内存。块拥有自己的负载（同一行、同一生命周期），
+// 但负载**按需加载**（见 BlockData）——这与被淘汰的 CAS 有本质区别：
+// 那里字节归另一个存储层所有，这里归块自己。
+const blockColumns = `id, modality, text_content, mime, size, width, height,
 			vector, fingerprint, source, tool, scene, semantic_type, created_at, updated_at`
 
 func scanBlockRow(rows *sql.Rows) (MemoryBlock, error) {
 	var b MemoryBlock
 	var vectorJSON string
 	var scene sql.NullString
-	if err := rows.Scan(&b.ID, &b.Modality, &b.Text, &b.PayloadDigest,
+	if err := rows.Scan(&b.ID, &b.Modality, &b.Text,
 		&b.MIME, &b.Size, &b.Width, &b.Height, &vectorJSON,
 		&b.Fingerprint, &b.Source, &b.Tool, &scene, &b.SemanticType,
 		&b.CreatedAt, &b.UpdatedAt); err != nil {
@@ -420,7 +440,7 @@ func (g *GraphDB) MemoryBlockEdges() ([]MemoryBlockEdge, error) {
 func (g *GraphDB) BlocksForNode(nodeKind, nodeID string) ([]MemoryBlock, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	rows, err := g.db.Query(`SELECT b.id, b.modality, b.text_content, b.payload_digest,
+	rows, err := g.db.Query(`SELECT b.id, b.modality, b.text_content,
 		b.mime, b.size, b.width, b.height, b.vector, b.fingerprint, b.source, b.tool,
 		b.created_at, b.updated_at
 		FROM memory_block_edges e
@@ -436,7 +456,7 @@ func (g *GraphDB) BlocksForNode(nodeKind, nodeID string) ([]MemoryBlock, error) 
 	for rows.Next() {
 		var block MemoryBlock
 		var vectorJSON string
-		if err := rows.Scan(&block.ID, &block.Modality, &block.Text, &block.PayloadDigest,
+		if err := rows.Scan(&block.ID, &block.Modality, &block.Text,
 			&block.MIME, &block.Size, &block.Width, &block.Height, &vectorJSON,
 			&block.Fingerprint, &block.Source, &block.Tool, &block.CreatedAt,
 			&block.UpdatedAt); err != nil {

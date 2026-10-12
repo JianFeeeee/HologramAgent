@@ -89,10 +89,8 @@ type Registry struct {
 	memDB    *memory.GraphDB
 	textMem  *text.Memory
 	docStore *doc.Store
-	// mediaStore 让插件写入的记忆也能带媒体。
-	// 为 nil 时（配置关闭或初始化失败）插件侧记忆包装退化为纯文本行为，
-	// 与本特性上线前完全一致。
-	mediaStore *media.Store
+	// mediaStore 已随 CAS 淘汰（块自带负载，见 plan.md）。
+	// 不保留字段：留着会诱导后来者再接线，走回头路。
 	ks         *knowledge.Store
 	mgr        *agentAPI.ProviderManager
 	cfgReg     *internalConfig.ConfigRegistry
@@ -197,7 +195,7 @@ func (r *Registry) SetEventBus(evBus *events.Bus)                           { r.
 func (r *Registry) SetMemory(memDB *memory.GraphDB)                         { r.memDB = memDB }
 func (r *Registry) SetTextMemory(tm *text.Memory)                           { r.textMem = tm }
 func (r *Registry) SetDocStore(ds *doc.Store)                               { r.docStore = ds }
-func (r *Registry) SetMediaStore(ms *media.Store)                           { r.mediaStore = ms }
+func (r *Registry) SetMediaStore(ms *media.Store)                           {}
 func (r *Registry) SetKnowledge(ks *knowledge.Store)                        { r.ks = ks }
 func (r *Registry) SetProviderManager(mgr *agentAPI.ProviderManager)        { r.mgr = mgr }
 func (r *Registry) SetConfigRegistry(cfgReg *internalConfig.ConfigRegistry) { r.cfgReg = cfgReg }
@@ -362,13 +360,12 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 	return sdk.New(name, sdk.SDKConfig{
 		IOManager: r.iom,
 		EventBus:  r.evBus,
-		// 带 media 的包装：插件提交的三元组/文档/文本事件里的媒体会落进 CAS
-		// 并挂上引用。传入插件名仅用于日志溯源（哪个插件写的媒体）。
-		Memory:         sdk.NewGraphMemoryWithMedia(name, r.memDB, r.mediaStore),
-		TextMemory:     sdk.NewTextMemoryWithMedia(name, r.textMem, r.mediaStore),
-		DocMemory:      sdk.NewDocMemoryWithMedia(name, r.docStore, r.mediaStore),
+		// 块自带负载（媒体字节在块的 Data），不再需要独立的媒体存储句柄。
+		// 插件名仅用于日志溯源（哪个插件写的块）。
+		Memory:         sdk.NewGraphMemoryWithPlugin(name, r.memDB),
+		TextMemory:     sdk.NewTextMemoryWithPlugin(name, r.textMem),
+		DocMemory:      sdk.NewDocMemoryWithPlugin(name, r.docStore),
 		Knowledge:      sdk.NewKnowledge(r.ks),
-		Media:          sdk.NewMedia(r.mediaStore),
 		LLM:            sdk.NewLLM(r.mgr, r.cfgReg, r.lua, r.baseKey),
 		Settings:       sett,
 		RegTool:        regTool,

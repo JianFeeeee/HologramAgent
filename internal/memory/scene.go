@@ -471,7 +471,7 @@ func (g *GraphDB) RecallByScene(scenes []string, limit int) (*SceneRecall, error
 		}
 	}
 
-	blockQuery := `SELECT b.id, b.modality, b.text_content, b.payload_digest, b.mime,
+	blockQuery := `SELECT b.id, b.modality, b.text_content, b.mime,
 			b.size, b.width, b.height, b.fingerprint, b.source, b.tool,
 			COALESCE(b.scene, ''), COALESCE(b.semantic_type, ''),
 			b.created_at, b.updated_at, MAX(sr.weight) AS w
@@ -491,7 +491,7 @@ func (g *GraphDB) RecallByScene(scenes []string, limit int) (*SceneRecall, error
 	for brows.Next() {
 		var b MemoryBlock
 		var w float64
-		if err := brows.Scan(&b.ID, &b.Modality, &b.Text, &b.PayloadDigest, &b.MIME,
+		if err := brows.Scan(&b.ID, &b.Modality, &b.Text, &b.MIME,
 			&b.Size, &b.Width, &b.Height, &b.Fingerprint, &b.Source, &b.Tool,
 			&b.Scene, &b.SemanticType, &b.CreatedAt, &b.UpdatedAt, &w); err != nil {
 			return nil, err

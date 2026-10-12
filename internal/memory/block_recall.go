@@ -97,21 +97,12 @@ func (g *GraphDB) RecallBlocks(q BlockRecallQuery) ([]BlockHit, error) {
 	var hits []BlockHit
 	var skippedDim, skippedFP, scanned int
 	for rows.Next() {
-		var b MemoryBlock
-		var vectorJSON string
-		if err := rows.Scan(&b.ID, &b.Modality, &b.Text, &b.PayloadDigest,
-			&b.MIME, &b.Size, &b.Width, &b.Height, &vectorJSON,
-			&b.Fingerprint, &b.Source, &b.Tool, &b.Scene, &b.SemanticType,
-			&b.CreatedAt, &b.UpdatedAt); err != nil {
+		b, err := scanBlockRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		scanned++
-		vec, err := decodeVector(vectorJSON)
-		if err != nil {
-			// 单条坏数据不该让整次召回失败 —— 但要记日志，否则会静默缺失。
-			log.Printf("[graph] recall blocks: skip %s: %v", b.ID, err)
-			continue
-		}
+		vec := b.Vector
 		// 维度不一致：跳过并计数。**不截断、不填充**——那会造出无意义的分数。
 		if len(vec) != dim {
 			skippedDim++

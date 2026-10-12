@@ -344,7 +344,7 @@ func TestSceneBlocks(t *testing.T) {
 	defer g.Close()
 
 	blocks := []MemoryBlock{
-		{ID: "blk_a", Modality: "image", Text: "老大发的排班表截图", PayloadDigest: "aaaa1111bbbb2222", Scene: "chan:qq"},
+		{ID: "blk_a", Modality: "image", Text: "老大发的排班表截图", Data: []byte("png-bytes"), Scene: "chan:qq"},
 		{ID: "blk_b", Modality: "text", Text: "无关场面的转写"},
 	}
 	if err := g.PutMemoryBlocks(blocks); err != nil {
@@ -375,7 +375,7 @@ func TestSceneBlocks(t *testing.T) {
 
 	// 无场景重写不得抹掉已挂的场景（静默降级防护）
 	if err := g.PutMemoryBlocks([]MemoryBlock{
-		{ID: "blk_a", Modality: "image", Text: "重新描述", PayloadDigest: "aaaa1111bbbb2222"},
+		{ID: "blk_a", Modality: "image", Text: "重新描述", Data: []byte("png-bytes")},
 	}); err != nil {
 		t.Fatalf("重写块: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestFormatContextSceneBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := g.PutMemoryBlocks([]MemoryBlock{
-		{ID: "blk_x", Modality: "image", Text: "老大发的排班表截图", PayloadDigest: "cccc3333dddd4444", Scene: "chan:qq"},
+		{ID: "blk_x", Modality: "image", Text: "老大发的排班表截图", Data: []byte("png-bytes"), Scene: "chan:qq"},
 	}); err != nil {
 		t.Fatal(err)
 	}

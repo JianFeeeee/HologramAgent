@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
+	"github.com/JianFeeeee/HomeAgent/internal/memory"
 )
 
 // ===== 从目录导入知识 =====
@@ -370,37 +370,74 @@ func (s *Store) has(name string) bool {
 	return ok
 }
 
-// MediaPutter 是把字节写进媒体库的能力（由 media.Store 实现）。
+// putMediaFile 读一个媒体文件进条目引用（字节随 Data 瞬态携带，
+// 由 Write 落盘到条目目录）。
 //
-// 为何用接口而不是直接依赖 *media.Store：Store 已经有 SetMediaGetter
-// 这类注入点，导入沿用同一形状，测试才能用假实现，不必拉起真媒体库。
-type MediaPutter interface {
-	Put(data []byte, meta media.Item) (string, error)
-}
-
-// putMediaFile 把一个媒体文件复制进媒体库，返回条目用的引用。
-//
-// 媒体库未接入时返回错误而不是静默跳过 —— 但调用方对错误只记警告：
-// 媒体是可选增强，正文不该因为图片入不了库而整个条目失败。
+// ★ 2026-10-11 CAS 淘汰：不再写入全局媒体库 —— 字节是条目自带数据，
+// 与 content.md 同目录同生灭。读取失败返回错误，调用方只记警告跳过该媒体
+// （正文不该因为图片入不了库而整个条目失败）。
 func (s *Store) putMediaFile(path, kind string) (KnowledgeMediaRef, error) {
-	if s.mediaPut == nil {
-		return KnowledgeMediaRef{}, fmt.Errorf("媒体库不可用")
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return KnowledgeMediaRef{}, err
 	}
 	mime := mimeByExt(filepath.Ext(path))
-	digest, err := s.mediaPut.Put(data, media.Item{
-		Kind:       media.Kind(kind),
-		MIME:       mime,
-		Size:       int64(len(data)),
-		OriginPath: path,
-	})
-	if err != nil {
-		return KnowledgeMediaRef{}, err
+	// File 名取源文件名：同目录内天然唯一（同名正文+同名媒体本就是一对）。
+	return KnowledgeMediaRef{
+		Digest: memory.MediaBlockID(mime, data), // 内容身份：与媒体块 ID 同构
+		MIME:   mime,
+		Kind:   kind,
+		File:   filepath.Base(path),
+		Data:   data,
+	}, nil
+}
+
+// writeMediaFiles 把引用携带的瞬态字节落进条目目录。
+//
+// 只写引用里带 Data 的条目（目录导入路径）；字节已在盘上的（如模型引用
+// 已有媒体）直接跳过。File 为空时补足。
+func (s *Store) writeMediaFiles(dir string, refs []KnowledgeMediaRef) error {
+	for i := range refs {
+		r := &refs[i]
+		if len(r.Data) == 0 && r.File != "" {
+			if _, err := os.Stat(filepath.Join(dir, r.File)); err == nil {
+				continue // 字节已在盘上
+			}
+		}
+		if len(r.Data) == 0 {
+			continue // 没字节也没文件：引用悬空，留给 denseFor 静默降级
+		}
+		if r.File == "" {
+			ext := extByMIME(r.MIME)
+			r.File = fmt.Sprintf("media_%d%s", i, ext)
+		}
+		if err := os.WriteFile(filepath.Join(dir, r.File), r.Data, 0644); err != nil {
+			return err
+		}
 	}
-	return KnowledgeMediaRef{Digest: digest, MIME: mime, Kind: kind}, nil
+	return nil
+}
+
+// extByMIME 按常见 MIME 给扩展名（writeMediaFiles 补 File 名用）。
+func extByMIME(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/wav":
+		return ".wav"
+	case "video/mp4":
+		return ".mp4"
+	default:
+		return ".bin"
+	}
 }
 
 // mimeByExt 按扩展名给 MIME。够用即可：媒体库靠 MIME 决定能否解码

@@ -584,7 +584,7 @@ func newMainAgent(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, prov
 		Knowledge:       ks,
 		SocialStore:     socialStore,
 		TextMemory:      textMem,
-		MediaStore:      mediaStore,
+		// MediaStore 已随 CAS 淘汰：块自带负载（见 plan.md）。
 		Personality:     personality,
 		// 人格落库面：首启门禁（任何通道都问一次）与 persona_set 工具用。
 		// 与 WebUI 向导共用 internal/config 的同一份落库逻辑。

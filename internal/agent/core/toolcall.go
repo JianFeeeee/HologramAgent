@@ -339,9 +339,9 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 				}
 				// 模型显式关联的媒体：结构化字段随三元组一起提交，
 				// 由 commitTriplesWithMedia 变成 L3 一等块并与句子建边——
-				// 不再把 marker 写进句子文本。
-				if digests := getStringSlice(m, "media_digests"); len(digests) > 0 {
-					t.MediaDigests = a.resolveMediaDigests(digests)
+				// 不再把 marker 写进句子文本。值是块 ID（或其唯一前缀）。
+				if refs := getStringSlice(m, "media_digests"); len(refs) > 0 {
+					t.MediaDigests = a.resolveMediaRefs(refs)
 					// 块边需要句子作端点。模型没给原句时用三元组本身拼一句
 					// 自然语言——不能造一段 marker 文本，那正是被废弃的东西。
 					if t.SentenceText == "" && len(t.MediaDigests) > 0 {
@@ -697,25 +697,27 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 	}
 }
 
-// knowledgeMediaRefs 把模型给的 digest 列表解析成知识条目的媒体引用。
+// knowledgeMediaRefs 把模型给的块引用（ID 或其唯一前缀）解析成知识条目的媒体引用。
 //
-// 复用 doc_commit 的既有约定：digest 可传前缀（ResolvePrefix），解析不了
-// 的跳过而不是报错——模型偶尔会把 digest 记错，不该让整次写入失败。
-// MIME 从媒体存储回读，嵌入时需要（EmbedImageDense 靠它判定模态）。
-func (a *Agent) knowledgeMediaRefs(digests []string) []knowledge.KnowledgeMediaRef {
-	if a.mediaStore == nil || len(digests) == 0 {
+// 复用 doc_commit 的既有约定：引用可传前缀，解析不了的跳过而不是报错——
+// 模型偶尔会把 ID 记错，不该让整次写入失败。MIME 从块回读，嵌入时需要
+// （EmbedImageDense 靠它判定模态）。字节随条目落盘（writeMediaFiles）。
+func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef {
+	if a.memory == nil || len(refs) == 0 {
 		return nil
 	}
 	var out []knowledge.KnowledgeMediaRef
-	for _, d := range a.resolveMediaDigests(digests) {
-		it, err := a.mediaStore.Stat(d)
-		if err != nil {
+	for _, r := range refs {
+		b, ok, err := a.memory.BlockByIDPrefix(r)
+		if err != nil || !ok {
+			log.Printf("[knowledge] 媒体块引用 %s 无法唯一解析，跳过", r)
 			continue
 		}
 		out = append(out, knowledge.KnowledgeMediaRef{
-			Digest: it.Digest,
-			MIME:   it.MIME,
-			Kind:   string(it.Kind),
+			Digest: b.ID,
+			MIME:   b.MIME,
+			Kind:   string(b.Modality),
+			Data:   b.Data,
 		})
 	}
 	return out
@@ -922,9 +924,9 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 
 		// 模型显式关联的媒体：直接变成文档持有的一等块。
 		// 不再往正文写 marker——文档向量会融合这些块的媒体向量，
-		// 图片按自己的向量被检索。
-		for _, d := range a.resolveMediaDigests(getStringSlice(tc.Arguments, "media_digests")) {
-			if b, ok := a.blockFromDigest(d); ok {
+		// 图片按自己的向量被检索。值是块 ID（或其唯一前缀）。
+		for _, ref := range a.resolveMediaRefs(getStringSlice(tc.Arguments, "media_digests")) {
+			if b, ok, err := a.memory.BlockByIDPrefix(ref); err == nil && ok {
 				doc.Blocks = append(doc.Blocks, b)
 			}
 		}

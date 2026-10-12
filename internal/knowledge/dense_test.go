@@ -85,10 +85,9 @@ func TestDenseCrossModalRecall(t *testing.T) {
 		img: map[string][]float64{"__default": eby, "d-cat": eax},
 	}
 	s.SetDenseSpace(mm)
-	s.SetMediaGetter(fakeMedia{byDigest: map[string][]byte{"d-cat": []byte("d-cat")}})
 
 	if err := s.AddWithMedia("cat-photo", "猫 图片 说明", []KnowledgeMediaRef{
-		{Digest: "d-cat", MIME: "image/png", Kind: "image"},
+		{File: "cat.png", MIME: "image/png", Kind: "image"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,9 +223,8 @@ func TestDenseUnsupportedModalityStillTextEmbedded(t *testing.T) {
 		imgErr: map[string]error{"d-audio": vector.ErrModalityUnsupported},
 	}
 	s.SetDenseSpace(mm)
-	s.SetMediaGetter(fakeMedia{byDigest: map[string][]byte{"d-audio": []byte("d-audio")}})
 
-	if err := s.AddWithMedia("song", "一首歌", []KnowledgeMediaRef{{Digest: "d-audio", MIME: "audio/mpeg"}}); err != nil {
+	if err := s.AddWithMedia("song", "一首歌", []KnowledgeMediaRef{{File: "a.mp3", MIME: "audio/mpeg"}}); err != nil {
 		t.Fatal(err)
 	}
 	k := s.items["song"]
@@ -289,13 +287,12 @@ func TestAttachMediaRecomputesDense(t *testing.T) {
 		img:  map[string][]float64{"__default": {0, 1}, "d-x": eax},
 	}
 	s.SetDenseSpace(mm)
-	s.SetMediaGetter(fakeMedia{byDigest: map[string][]byte{"d-x": []byte("d-x")}})
 
 	if err := s.Add("k", "正文"); err != nil {
 		t.Fatal(err)
 	}
 	before := append([]float64{}, s.items["k"].Dense...)
-	if err := s.AttachMedia("k", KnowledgeMediaRef{Digest: "d-x", MIME: "image/png"}); err != nil {
+	if err := s.AttachMedia("k", KnowledgeMediaRef{File: "x.png", MIME: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
 	after := s.items["k"].Dense

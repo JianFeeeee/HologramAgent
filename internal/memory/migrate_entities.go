@@ -487,7 +487,7 @@ func putBlockTx(tx *sql.Tx, b MemoryBlock) (bool, error) {
 	}
 
 	_, err := tx.Exec(`INSERT INTO memory_blocks
-		(id, modality, text_content, payload_digest, mime, size, width, height,
+		(id, modality, text_content, data, mime, size, width, height,
 		 vector, fingerprint, source, tool, scene, semantic_type, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -499,7 +499,7 @@ func putBlockTx(tx *sql.Tx, b MemoryBlock) (bool, error) {
 			semantic_type = CASE WHEN excluded.semantic_type != ''
 				THEN excluded.semantic_type ELSE memory_blocks.semantic_type END,
 			`+tsUpdate,
-		b.ID, b.Modality, b.Text, b.PayloadDigest, b.MIME, b.Size, b.Width, b.Height,
+		b.ID, b.Modality, b.Text, b.Data, b.MIME, b.Size, b.Width, b.Height,
 		vectorJSON, b.Fingerprint, b.Source, b.Tool, b.Scene, b.SemanticType,
 		created, updated)
 	if err != nil {

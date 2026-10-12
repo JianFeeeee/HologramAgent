@@ -49,6 +49,15 @@ type KnowledgeMediaRef struct {
 	Digest string `json:"digest"`
 	MIME   string `json:"mime"`
 	Kind   string `json:"kind,omitempty"`
+	// File 是媒体字节在**条目目录内**的相对文件名（随条目生灭）。
+	//
+	// ★ 2026-10-11 CAS 淘汰：媒体字节不再寄存于全局内容寻址库，而是作为
+	// 条目自带数据落在 entry 目录里（与 content.md、.media.json 并列）。
+	// Remove 的 os.RemoveAll 天然把它清掉，不留孤儿。
+	File string `json:"file,omitempty"`
+	// Data 是写入期的瞬态字节：putMediaFile → Write 之间搬运，Write 落盘后清空。
+	// json:"-" 保证它不进 .media.json 侧车（侧车只记引用，不记字节）。
+	Data []byte `json:"-"`
 }
 
 // KnowledgeMediaRef 的别名，照顾内部可读性。
@@ -126,8 +135,6 @@ type Store struct {
 	mu    sync.RWMutex
 	items map[string]*Knowledge
 
-	// mediaPut 是媒体写入器（ImportDir 复制媒体时用），见 SetMediaPutter。
-	mediaPut MediaPutter
 
 	indexPath      string
 	denseCachePath string
@@ -157,8 +164,7 @@ type Store struct {
 	// （feature → {docID: weight}），稠密向量会把倒排表退化成全量特征桶，
 	// 同时破坏 TF-IDF 语义（vector.MultimodalEmbedder 的注释已明言）。
 	// 因此稠密路自成一等路，与另两路并列，不混进任何一个 Store。
-	dense    vector.MultimodalEmbedder
-	mediaGet MediaGetter
+	dense vector.MultimodalEmbedder
 }
 
 // mediaSidecarName 是每条知识目录下存放媒体引用的文件名。
@@ -185,12 +191,6 @@ type denseCache struct {
 	Fingerprint string                     `json:"fingerprint"`
 	Dim         int                        `json:"dim"`
 	Entries     map[string]denseCacheEntry `json:"entries"`
-}
-
-// MediaGetter 让知识库能取回媒体字节以计算嵌入，而不依赖具体的媒体存储包。
-// 取不到（或未接线）时，该条目退化为纯文本嵌入——而不是整条不可用。
-type MediaGetter interface {
-	Get(digest string) ([]byte, error)
 }
 
 func NewStore(root string) *Store {
@@ -224,25 +224,6 @@ func (s *Store) SetDenseSpace(ds vector.MultimodalEmbedder) {
 	s.maybeLoadDenseCacheLocked()
 }
 
-// SetMediaGetter 注入媒体取回器（用于为 Media 块算嵌入）。
-// 不注入时多媒体条目仍可入库，只是退化为纯文本嵌入。
-func (s *Store) SetMediaGetter(g MediaGetter) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.mediaGet = g
-}
-
-// SetMediaPutter 注入媒体写入器（ImportDir 把图片/音视频复制进媒体库时用）。
-//
-// 与 SetMediaGetter 分开：一个是取（算嵌入时读回媒体块），一个是存
-// （目录导入时收字节）。合成一个接口会强迫测试同时实现两侧。
-// 不注入时 ImportDir 仍能导入正文，只是媒体被跳过并记原因。
-func (s *Store) SetMediaPutter(p MediaPutter) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.mediaPut = p
-}
-
 // denseEnabled 报告稠密路是否可用（供 Stats/自证与分支判断）。
 // 调用方必须已持锁。
 func (s *Store) denseEnabled() bool {
@@ -265,21 +246,24 @@ func (s *Store) denseFor(k *Knowledge) []float64 {
 	if tv, err := s.dense.VectorizeDense(k.Name + " " + k.Content); err == nil && len(tv) == dim {
 		parts = append(parts, tv)
 	}
+	dir := filepath.Dir(k.Path)
 	for _, m := range k.Media {
-		if v := s.mediaDense(m); v != nil {
+		if v := s.mediaDense(m, dir); v != nil {
 			parts = append(parts, v)
 		}
 	}
 	return vector.FuseVectors(parts...)
 }
 
-// mediaDense 取回媒体字节并嵌入。任何一步拿不到就返回 nil——
+// mediaDense 读条目目录里的媒体字节并嵌入。任何一步拿不到就返回 nil——
 // 媒体缺失不应让整条知识失去文本向量。
-func (s *Store) mediaDense(m KnowledgeMediaRef) []float64 {
-	if !s.denseEnabled() || s.mediaGet == nil || m.Digest == "" {
+//
+// ★ 2026-10-11 CAS 淘汰：字节直接从条目目录的 File 读，不再经 mediaGet。
+func (s *Store) mediaDense(m KnowledgeMediaRef, dir string) []float64 {
+	if !s.denseEnabled() || m.File == "" {
 		return nil
 	}
-	data, err := s.mediaGet.Get(m.Digest)
+	data, err := os.ReadFile(filepath.Join(dir, m.File))
 	if err != nil || len(data) == 0 {
 		return nil
 	}
@@ -365,8 +349,7 @@ func (s *Store) DenseStats() map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := map[string]interface{}{
-		"enabled":      s.denseEnabled(),
-		"media_getter": s.mediaGet != nil,
+		"enabled": s.denseEnabled(),
 	}
 	if s.denseEnabled() {
 		fp := s.dense.Fingerprint()
@@ -744,6 +727,12 @@ func (s *Store) Write(in KnowledgeEntryInput) error {
 	path := filepath.Join(dir, "content.md")
 	if err := os.WriteFile(path, []byte(in.Content), 0644); err != nil {
 		return fmt.Errorf("write knowledge: %w", err)
+	}
+
+	// 媒体字节落进条目目录（CAS 淘汰后，字节是条目自带数据）。
+	// 失败只跳过该媒体并记录——正文已落盘，图片写不进顶多搜不到图。
+	if err := s.writeMediaFiles(dir, in.Media); err != nil {
+		log.Printf("[knowledge] media bytes write error for %s: %v", in.Name, err)
 	}
 
 	now := time.Now()

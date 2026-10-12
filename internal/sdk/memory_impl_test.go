@@ -65,8 +65,8 @@ func putMedia(t *testing.T, ms *media.Store, payload string) string {
 // 旧实现只搬 Subject/Relation/Object，其余字段静默丢弃：
 // 插件标注的类型全部落成默认 Concept，置信度全成 1.0，SentenceText 直接消失。
 func TestGraphCommit_CarriesAllFields(t *testing.T) {
-	g, _, _, ms := newTestStores(t)
-	m := NewGraphMemoryWithMedia("tester", g, ms)
+	g, _, _, _ := newTestStores(t)
+	m := NewGraphMemory("tester", g)
 
 	err := m.Commit([]Triple{{
 		Subject:      "张三",

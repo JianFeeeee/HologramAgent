@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -225,4 +226,127 @@ func putTripleBlocksTx(tx *sql.Tx, t Triple, sessionID string, turnID int) (stri
 	}
 	edgeID, err := res.LastInsertId()
 	return src.ID, dst.ID, edgeID, created, err
+}
+
+// ── 媒体块 ──────────────────────────────────────────────
+
+// MediaBlockID 由**媒体内容字节**派生媒体块的 ID。
+//
+// ★ 为什么媒体块的 ID 也必须内容派生
+// ---------------------------------
+// 块 ID 是本仓的记忆身份，既有约定一律内容派生：
+//   - 原句块 blk_src_<sha256(text)[:12]>
+//   - 实体块 blk_ent_<sha256(name)[:12]>
+//   - 蒸馏块 blk_<sha256(sentence+subject+dim+value)[:12]>
+// 而媒体块此前用时间戳+序号（blk_<unixnano>_<n>），是唯一的例外。
+//
+// 淘汰 CAS 之后，块自己承载内容，于是「同一份内容只应有一个块」这条
+// 不再由外部的内容寻址层保证，而必须由**块 ID 本身**保证：
+// 同内容 ⇒ 同 ID ⇒ PutMemoryBlocks 的 ON CONFLICT 天然去重。
+// 顺带让跨插件边界的引用（只带 ID 前缀）也能唯一定位。
+//
+// ★ 为何把 MIME 也掺进去：同样字节在不同 MIME 下是不同的媒体
+// （同一段字节按 image/png 与 application/octet-stream 解读得到不同结果），
+// 且 MIME 参与向量计算，掺入可避免「先入者定 MIME」的静默错配。
+func MediaBlockID(mime string, data []byte) string {
+	h := sha256.New()
+	h.Write([]byte(strings.TrimSpace(mime)))
+	h.Write([]byte{0})
+	h.Write(data)
+	return "blk_media_" + hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// BlockByIDPrefix 按块 ID 的**前缀**取块（前缀唯一时命中）。
+//
+// 用途：跨进程/跨层的轻量引用（如插件只带块 ID 的前 12 位）。
+// 前缀匹配到多条时返回 false —— 宁可不解析也不猜一个（猜错=挂错媒体）。
+func (g *GraphDB) BlockByIDPrefix(prefix string) (MemoryBlock, bool, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return MemoryBlock{}, false, nil
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	rows, err := g.db.Query(`SELECT `+blockColumns+`
+		FROM memory_blocks WHERE id LIKE ? LIMIT 2`, prefix+"%")
+	if err != nil {
+		return MemoryBlock{}, false, err
+	}
+	defer rows.Close()
+	var got []MemoryBlock
+	for rows.Next() {
+		b, err := scanBlockRow(rows)
+		if err != nil {
+			return MemoryBlock{}, false, err
+		}
+		got = append(got, b)
+	}
+	if err := rows.Err(); err != nil {
+		return MemoryBlock{}, false, err
+	}
+	if len(got) != 1 {
+		return MemoryBlock{}, false, nil // 0 条或歧义（≥2）都不解析
+	}
+	return got[0], true, nil
+}
+
+// BlockData 取单个块的负载字节（按需加载）。
+//
+// ★ 为何单独一个方法：blockColumns 刻意不含 data（召回只比向量，
+// 带上负载会让每次全表召回读入几十 MB）。需要字节的路径显式调本方法。
+func (g *GraphDB) BlockData(blockID string) ([]byte, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	var data []byte
+	err := g.db.QueryRow(`SELECT data FROM memory_blocks WHERE id = ?`, blockID).Scan(&data)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// StaleBlockVectors 返回向量为空、或向量 fingerprint 与当前空间不符的块。
+//
+// 用途：启动时把历史媒体块/文档块的向量重算到当前多模态空间（换模型、
+// 换维度、首次接入嵌入服务、嵌入服务离线后重上线）。
+//
+// 为何需要它：向量是召回的唯一依据，而历史块可能是在另一个空间里算的。
+// fingerprint 不一致的向量不能参与余弦比较（两个坐标系的值比大小无意义），
+// 必须重算而不是留着当"看起来还行"的噪声。
+//
+// 只取非文本块：文本块的向量由文本路径维护，不在多模态空间迁移范围内。
+func (g *GraphDB) StaleBlockVectors(currentFP string) ([]MemoryBlock, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	rows, err := g.db.Query(`SELECT `+blockColumns+`
+		FROM memory_blocks
+		WHERE modality != ?
+		  AND (vector IS NULL OR vector = '' OR vector = 'null' OR fingerprint != ?)
+		ORDER BY created_at`, string(BlockText), currentFP)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemoryBlock
+	for rows.Next() {
+		b, err := scanBlockRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// SetBlockVector 给单个块写入新向量与指纹（迁移用）。只改向量列，不碰负载。
+func (g *GraphDB) SetBlockVector(blockID string, vec []float64, fp string) error {
+	vectorJSON, err := json.Marshal(vec)
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, err = g.db.Exec(`UPDATE memory_blocks SET vector = ?, fingerprint = ?, updated_at = ?
+		WHERE id = ?`, string(vectorJSON), fp, time.Now(), blockID)
+	return err
 }

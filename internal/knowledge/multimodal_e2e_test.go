@@ -8,9 +8,10 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
 )
@@ -67,10 +68,6 @@ func TestMultimodalEndToEndWithRealProvider(t *testing.T) {
 	}
 	t.Logf("真实 provider: dim=%d fp=%s loaded=%v", ds.Dim(), ds.Fingerprint(), ds.Loaded())
 
-	ms, err := media.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	dir := t.TempDir()
 	s := NewStore(dir)
 	if err := s.Start(); err != nil {
@@ -78,16 +75,19 @@ func TestMultimodalEndToEndWithRealProvider(t *testing.T) {
 	}
 	defer s.Stop()
 	s.SetDenseSpace(ds)
-	s.SetMediaGetter(ms)
 
 	img := mmTinyPNG(t)
-	digest, err := ms.Put(img, media.Item{MIME: "image/png", Tool: "test"})
-	if err != nil {
+	if err := s.AddWithMedia("photo", "一只猫的照片", []KnowledgeMediaRef{
+		{File: "photo.png", MIME: "image/png", Kind: "image"},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddWithMedia("photo", "一只猫的照片", []KnowledgeMediaRef{
-		{Digest: digest, MIME: "image/png", Kind: "image"},
-	}); err != nil {
+	// 字节落进条目目录（CAS 淘汰后：媒体随条目生灭）
+	if err := os.WriteFile(filepath.Join(dir, "photo", "photo.png"), img, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// 重算该条稠密向量以纳入图片
+	if err := s.AttachMedia("photo", KnowledgeMediaRef{File: "photo.png", MIME: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Add("plain", "无关的纯文本知识"); err != nil {
@@ -125,7 +125,6 @@ func TestMultimodalEndToEndWithRealProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	s2.SetDenseSpace(ds)
-	s2.SetMediaGetter(ms)
 	built, _ := s2.ReindexDense()
 	t.Logf("重启后 ReindexDense built=%d（0=命中缓存）", built)
 	if built != 0 {

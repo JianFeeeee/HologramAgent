@@ -87,20 +87,21 @@ func (g *GraphDB) MigrateLegacyMediaEntities(resolve LegacyMediaResolver) (block
 	}
 	defer tx.Rollback()
 
-	// 同一份字节可能被多个旧实体引用（重复注入的同一张图），
-	// 迁移后应指向同一个块：块的身份是内容，不是实体行。
-	blockIDForDigest := make(map[string]string)
+	// 同一份内容可能被多个旧实体引用（重复注入的同一张图），迁移后应指向
+	// 同一个块。旧实体名里的**短 digest 就是内容身份**（同内容⇒同短 digest），
+	// 因此以它为去重键——块自带负载后不再有独立的 payload_digest 字段可依赖。
+	blockIDForShort := make(map[string]string)
 
 	for _, e := range legacy {
 		short := LegacyMediaEntityDigest(e.name)
 		if short != "" {
-			if block, ok := resolve(short); ok && block.PayloadDigest != "" {
-				id, seen := blockIDForDigest[block.PayloadDigest]
+			if block, ok := resolve(short); ok {
+				id, seen := blockIDForShort[short]
 				if !seen {
 					if err := insertMigratedBlock(tx, block); err != nil {
 						return 0, 0, fmt.Errorf("migrate legacy media %s: %w", short, err)
 					}
-					blockIDForDigest[block.PayloadDigest] = block.ID
+					blockIDForShort[short] = block.ID
 					id = block.ID
 					blocks++
 				}
@@ -145,11 +146,11 @@ func insertMigratedBlock(tx *sql.Tx, block MemoryBlock) error {
 		created = time.Now()
 	}
 	_, err = tx.Exec(`INSERT INTO memory_blocks (
-		id, modality, text_content, payload_digest, mime, size, width, height,
+		id, modality, text_content, data, mime, size, width, height,
 		vector, fingerprint, source, tool, created_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO NOTHING`,
-		block.ID, block.Modality, block.Text, block.PayloadDigest, block.MIME,
+		block.ID, block.Modality, block.Text, block.Data, block.MIME,
 		block.Size, block.Width, block.Height, string(vectorJSON), block.Fingerprint,
 		block.Source, block.Tool, created, time.Now())
 	return err

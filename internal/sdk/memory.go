@@ -12,16 +12,16 @@ import (
 //   SDK 接口只暴露端点真正要用的字段（原来是先 GraphData 全量再转成
 //   graphBlockView 做同样的事，只是绕了一圈）。
 type MemoryBlockView struct {
-	ID            string    `json:"id"`
-	Modality      string    `json:"modality"`
-	Text          string    `json:"text,omitempty"`
-	PayloadDigest string    `json:"payload_digest,omitempty"`
-	MIME          string    `json:"mime,omitempty"`
-	Source        string    `json:"source,omitempty"`
-	Tool          string    `json:"tool,omitempty"`
-	Scene         string    `json:"scene,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+	Modality  string    `json:"modality"`
+	Text      string    `json:"text,omitempty"`
+	HasData   bool      `json:"has_data"` // 媒体负载在块内（CAS 淘汰后），只报有无不回显内容
+	MIME      string    `json:"mime,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	Tool      string    `json:"tool,omitempty"`
+	Scene     string    `json:"scene,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // MemoryAPI 是内置插件使用的全量图记忆接口。

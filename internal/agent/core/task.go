@@ -391,10 +391,10 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 		a.pendingMedia = evt.Payload
 	}
 
-	// 媒体先落进 CAS。不存的后果是 ContextEvent.Input 只剩一句 alt 文本，
-	// base64 随 message 数组发给模型后就丢了。
+	// 媒体先变成一等块（字节进块的 Data）。不存的后果是 ContextEvent.Input
+	// 只剩一句 alt 文本，base64 随 message 数组发给模型后就丢了。
 	if len(in.blocks) > 0 {
-		a.stageMediaDigests(a.captureBlockMedia(in.blocks, in.captureTool)...)
+		a.stageMediaBlocks(a.captureBlockMedia(in.blocks, in.captureTool)...)
 	}
 
 	noMemory := false
@@ -516,7 +516,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 		ToolsUsed:   f.ToolsUsed,
 		ToolResults: f.ToolResults,
 	}
-	a.bindEventMedia(&turnEvt, a.drainMediaDigests())
+	a.bindEventMedia(&turnEvt, a.drainMediaBlocks())
 	a.context.Append(turnEvt)
 
 	a.emitResponse(evt, f.Response, f.turnUsage)
@@ -1098,8 +1098,8 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 			}
 		}
 		if len(blocks) > 0 {
-			// 先落进 CAS：无论下面走直视还是回退转写，媒体本体都该进记忆。
-			a.stageMediaDigests(a.captureBlockMedia(blocks, tc.Name)...)
+			// 先落成块：无论下面走直视还是回退转写，媒体本体都该进记忆。
+			a.stageMediaBlocks(a.captureBlockMedia(blocks, tc.Name)...)
 
 			if native, fallbackText := a.prepareToolBlocks(blocks); len(native) > 0 {
 				// 能直视：另起一条 user message 承载媒体，并补一句来源说明。

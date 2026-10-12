@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"sync/atomic"
@@ -8,30 +9,21 @@ import (
 
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
 )
 
 // 插件侧记忆接口的实现（SDK 桥接层）。
 //
 // 这一层原先的缺陷是**静默裁字段**：插件把 Triple / Doc 交进来，包装层只挑
-// 自己认识的几个字段转成内部结构，其余丢弃且不报错。两侧都中招：
-//   - 图记忆：丢 Confidence/SubjectType/ObjectType/SentenceText，又走 Commit
-//     而非 CommitWithMedia，于是 sentences 表没有落点，媒体块无从挂接；
-//   - 知识库：Query 只回 ID/Title/Content，Insert 只写这三个，读写两个方向
-//     都把媒体元数据裁掉。
+// 自己认识的几个字段转成内部结构，其余丢弃且不报错。
 //
 // 现在的规则：内部结构有的字段一律透传；媒体一律变成一等记忆块。
-// 媒体存储为 nil 时整条链路静默降级为纯文本行为（媒体是记忆增强，不是必需品）。
-
-const sdkShortDigestLen = 12
-
-func sdkShortDigest(d string) string {
-	if len(d) > sdkShortDigestLen {
-		return d[:sdkShortDigestLen]
-	}
-	return d
-}
+//
+// ★ 2026-10-11：块自带负载（media.Store/CAS 已彻底淘汰）。
+//
+// 一个 MemoryBlock 要么是文本块（负载在 Text），要么是媒体块（负载在 Data）。
+// 不再有块外的字节存储层，因此本层也不再需要 media.Store 句柄 ——
+// 附件字节直接进块的 Data，随块同生同灭。
 
 // sdkBlockSeq 保证块 ID 全局唯一：Graph 的 memory_blocks 以 id 为主键，
 // 不同文档里序号相同的块会在 L2→L3 迁移时相互覆盖。
@@ -41,105 +33,70 @@ func sdkNewBlockID() string {
 	return fmt.Sprintf("blk_%d_%d", time.Now().UnixNano(), atomic.AddInt64(&sdkBlockSeq, 1))
 }
 
-// sdkBlockModality 把 CAS 的媒体大类映射为一等记忆块的模态。
-func sdkBlockModality(k media.Kind) memory.BlockModality {
-	switch k {
-	case media.KindImage:
+// sdkBlockModality 按 MIME 大类推断块的模态。
+func sdkBlockModality(mime string) memory.BlockModality {
+	switch {
+	case bytes.HasPrefix([]byte(mime), []byte("image/")):
 		return memory.BlockImage
-	case media.KindVideo:
+	case bytes.HasPrefix([]byte(mime), []byte("video/")):
 		return memory.BlockVideo
-	case media.KindAudio:
+	case bytes.HasPrefix([]byte(mime), []byte("audio/")):
 		return memory.BlockAudio
 	default:
 		return memory.BlockText
 	}
 }
 
-// sdkBlockForDigest 把一份已入库的媒体变成一个一等记忆块。
-// 块自身携带 digest/向量/ fingerprint；CAS 只提供字节与元数据，不参与生命周期。
-func sdkBlockForDigest(ms *media.Store, digest string) (memory.MemoryBlock, bool) {
-	it, err := ms.Stat(digest)
-	if err != nil || it == nil {
-		return memory.MemoryBlock{}, false
-	}
-	return memory.MemoryBlock{
-		ID:            sdkNewBlockID(),
-		Modality:      sdkBlockModality(it.Kind),
-		PayloadDigest: it.Digest,
-		MIME:          it.MIME,
-		Size:          it.Size,
-		Width:         it.Width,
-		Height:        it.Height,
-		Vector:        it.Vec,
-		Fingerprint:   it.VecModel,
-		Tool:          it.Tool,
-		CreatedAt:     it.FirstSeen,
-	}, true
-}
-
-// sdkBlocksFromDigests 为显式 digest 列表构造一等块（去重）。
-// digest 可以是短前缀，内部会先补全。
-func sdkBlocksFromDigests(ms *media.Store, digests []string) []memory.MemoryBlock {
-	if ms == nil || len(digests) == 0 {
+// sdkBlocksFromAttachments 把附件直接变成一等记忆块（字节进块的 Data）。
+//
+// 去重按内容字节：同一份内容被多次提交时只留一个块（块的身份仍是内容，
+// 只是这个"内容身份"不再需要一层独立的寻址存储来承载）。
+func sdkBlocksFromAttachments(atts []MediaAttachment, tool string) []memory.MemoryBlock {
+	if len(atts) == 0 {
 		return nil
 	}
 	seen := map[string]bool{}
 	var blocks []memory.MemoryBlock
-	for _, d := range digests {
-		if d == "" {
+	for _, a := range atts {
+		if len(a.Data) == 0 {
 			continue
 		}
-		full, err := ms.ResolvePrefix(d)
-		if err != nil || seen[full] {
+		key := string(a.Data)
+		if seen[key] {
 			continue
 		}
-		seen[full] = true
-		if b, ok := sdkBlockForDigest(ms, full); ok {
-			blocks = append(blocks, b)
-		}
-	}
-	return blocks
-}
-
-// sdkPutAttachment 把一份附件解析成完整 digest。
-//
-// 两种入口：带 Data 的是新内容（落进 CAS，相同字节自动去重）；
-// 只给 Digest 的是引用已有内容（补全前缀即可）。两者都不给则无效。
-func sdkPutAttachment(ms *media.Store, a MediaAttachment, tool string) (string, error) {
-	if len(a.Data) > 0 {
+		seen[key] = true
 		mime := a.MIME
 		if mime == "" {
 			mime = "application/octet-stream"
 		}
-		return ms.Put(a.Data, media.Item{
-			MIME:       mime,
-			Tool:       tool,
-			OriginPath: a.Name,
+		blocks = append(blocks, memory.MemoryBlock{
+			ID:        sdkNewBlockID(),
+			Modality:  sdkBlockModality(mime),
+			Data:      a.Data,
+			MIME:      mime,
+			Size:      int64(len(a.Data)),
+			Source:    tool,
+			CreatedAt: time.Now(),
 		})
 	}
-	if a.Digest == "" {
-		return "", fmt.Errorf("附件既无 data 也无 digest")
-	}
-	full, err := ms.ResolvePrefix(a.Digest)
-	if err != nil {
-		return "", fmt.Errorf("digest %s: %w", a.Digest, err)
-	}
-	return full, nil
+	return blocks
 }
 
 // ---------- 图记忆 ----------
 
 type graphMemory struct {
 	db     *memory.GraphDB
-	ms     *media.Store
 	plugin string
 }
 
 func NewGraphMemory(db *memory.GraphDB) MemoryAPI { return &graphMemory{db: db} }
 
-// NewGraphMemoryWithMedia 创建带媒体能力的图记忆包装。plugin 仅用于日志溯源。
-func NewGraphMemoryWithMedia(plugin string, db *memory.GraphDB, ms *media.Store) MemoryAPI {
-	return &graphMemory{db: db, ms: ms, plugin: plugin}
+// NewGraphMemoryWithPlugin 创建带上报名的图记忆包装。
+//
+// 旧签名曾接 media.Store；块自带负载后不再需要它，故改名为 WithPlugin。
+func NewGraphMemoryWithPlugin(plugin string, db *memory.GraphDB) MemoryAPI {
+	return &graphMemory{db: db, plugin: plugin}
 }
 
 func (m *graphMemory) Recall(query []string, depth int) ([]Entity, []Relation, error) {
@@ -154,8 +111,6 @@ func (m *graphMemory) Recall(query []string, depth int) ([]Entity, []Relation, e
 	for i, e := range result.Entities {
 		entities[i] = Entity{Name: e.Name, Type: e.Type, MentionCount: e.MentionCount}
 	}
-	// Confidence 此前被丢弃：插件拿不到置信度就无法判断一条关系可不可信，
-	// 只能把所有召回结果等同对待。
 	relations := make([]Relation, len(result.Relations))
 	for i, r := range result.Relations {
 		relations[i] = Relation{
@@ -168,8 +123,10 @@ func (m *graphMemory) Recall(query []string, depth int) ([]Entity, []Relation, e
 	return entities, relations, nil
 }
 
-// Commit 把插件的三元组写入图库，并把结构化 MediaDigests 变成 L3 一等块。
+// Commit 把插件的三元组写入图库，并把结构化媒体变成 L3 一等块。
+//
 // 媒体通过 sentence --contains--> block 结构边挂接，不读写任何正文 marker。
+// 块自带字节负载，因此需要媒体元数据（Data/MIME）而不仅是一个 digest。
 func (m *graphMemory) Commit(triples []Triple) error {
 	if m.db == nil {
 		return nil
@@ -200,12 +157,11 @@ func (m *graphMemory) Commit(triples []Triple) error {
 // bindSentences 把每个三元组显式携带的媒体变成 L3 一等记忆块，
 // 并以 sentence --contains--> block 结构边关联。
 //
-// 不再往句子文本里写 marker、也不再从文本反解 digest：归属由结构化字段直接给出。
-// ★ sentenceIDs 现在是「原句文本 → 原句**块 ID**」（原为 sentences 表行号）。
-//
-//	sentences 表退场后行号不存在，媒体边改挂到原句块上。
+// ★ sentenceIDs 是「原句文本 → 原句**块 ID**」（原为 sentences 表行号）。
+// ★ 媒体负载：Triple.MediaDigests 只带短前缀（跨进程/跨层的轻量引用），
+// 这里按前缀在**本进程已建的块**里找不到字节时如实记日志，不静默造空块。
 func (m *graphMemory) bindSentences(sentenceIDs map[string]string, triples []memory.Triple) {
-	if m.ms == nil || m.db == nil || len(sentenceIDs) == 0 {
+	if m.db == nil || len(sentenceIDs) == 0 {
 		return
 	}
 	bound := 0
@@ -217,13 +173,22 @@ func (m *graphMemory) bindSentences(sentenceIDs map[string]string, triples []mem
 		if sid == "" {
 			continue
 		}
-		for _, b := range sdkBlocksFromDigests(m.ms, t.MediaDigests) {
+		for _, ref := range t.MediaDigests {
+			// ref 可以是完整块 ID，也可以是前缀（插件跨进程只带短引用）。
+			// 媒体块 ID 是内容派生的 blk_media_<hash>，故前缀足以唯一定位。
+			b, ok, err := m.db.BlockByIDPrefix(ref)
+			if err != nil {
+				log.Printf("[sdk media] 插件 %s 查块 %s 失败: %v", m.plugin, ref, err)
+				continue
+			}
+			if !ok {
+				log.Printf("[sdk media] 插件 %s 的媒体引用 %s 无唯一对应块，跳过", m.plugin, ref)
+				continue
+			}
 			if err := m.db.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
 				log.Printf("[sdk media] 插件 %s 写入 L3 记忆块失败: %v", m.plugin, err)
 				continue
 			}
-			// ★ 起点是**块**（原句块）而非 sentence 表行 ——
-			//   句子的承载者已从 sentences 表迁移到 blk_src_<hash>。
 			if err := m.db.AddMemoryBlockEdge("block", sid, "block", b.ID, "contains"); err != nil {
 				log.Printf("[sdk media] 插件 %s 建立句子→块边失败: %v", m.plugin, err)
 				continue
@@ -265,8 +230,6 @@ func (m *graphMemory) GraphData() (map[string]interface{}, error) {
 }
 
 // BlocksChangedSince 实现 MemoryAPI（星图轻量轮询）。
-//
-// 直接走库侧 SQL 过滤，不取全量快照后再筛——见接口注释里的实测对比。
 func (m *graphMemory) BlocksChangedSince(since time.Time, limit int) ([]MemoryBlockView, error) {
 	if m.db == nil {
 		return nil, nil
@@ -275,20 +238,19 @@ func (m *graphMemory) BlocksChangedSince(since time.Time, limit int) ([]MemoryBl
 	if err != nil {
 		return nil, err
 	}
-	// 映射到边界面视图：只带端点要用的字段，不把内部结构泄出去。
 	out := make([]MemoryBlockView, 0, len(blocks))
 	for _, b := range blocks {
 		out = append(out, MemoryBlockView{
-			ID:            b.ID,
-			Modality:      string(b.Modality),
-			Text:          b.Text,
-			PayloadDigest: b.PayloadDigest,
-			MIME:          b.MIME,
-			Source:        b.Source,
-			Tool:          b.Tool,
-			Scene:         b.Scene,
-			CreatedAt:     b.CreatedAt,
-			UpdatedAt:     b.UpdatedAt,
+			ID:        b.ID,
+			Modality:  string(b.Modality),
+			Text:      b.Text,
+			HasData:   len(b.Data) > 0,
+			MIME:      b.MIME,
+			Source:    b.Source,
+			Tool:      b.Tool,
+			Scene:     b.Scene,
+			CreatedAt: b.CreatedAt,
+			UpdatedAt: b.UpdatedAt,
 		})
 	}
 	return out, nil
@@ -298,15 +260,14 @@ func (m *graphMemory) BlocksChangedSince(since time.Time, limit int) ([]MemoryBl
 
 type textMemoryImpl struct {
 	tm     *text.Memory
-	ms     *media.Store
 	plugin string
 }
 
 func NewTextMemory(tm *text.Memory) TextMemoryAPI { return &textMemoryImpl{tm: tm} }
 
-// NewTextMemoryWithMedia 创建带媒体能力的文本记忆包装。
-func NewTextMemoryWithMedia(plugin string, tm *text.Memory, ms *media.Store) TextMemoryAPI {
-	return &textMemoryImpl{tm: tm, ms: ms, plugin: plugin}
+// NewTextMemoryWithPlugin 创建带上报名的文本记忆包装。
+func NewTextMemoryWithPlugin(plugin string, tm *text.Memory) TextMemoryAPI {
+	return &textMemoryImpl{tm: tm, plugin: plugin}
 }
 
 // Append 追加一条文本事件。
@@ -355,19 +316,20 @@ func (m *textMemoryImpl) Stats() map[string]interface{} {
 
 type docMemoryImpl struct {
 	ds     *doc.Store
-	ms     *media.Store
 	plugin string
 }
 
 func NewDocMemory(ds *doc.Store) DocMemoryAPI { return &docMemoryImpl{ds: ds} }
 
-// NewDocMemoryWithMedia 创建带媒体能力的文档记忆包装。
-func NewDocMemoryWithMedia(plugin string, ds *doc.Store, ms *media.Store) DocMemoryAPI {
-	return &docMemoryImpl{ds: ds, ms: ms, plugin: plugin}
+// NewDocMemoryWithPlugin 创建带上报名的文档记忆包装。
+func NewDocMemoryWithPlugin(plugin string, ds *doc.Store) DocMemoryAPI {
+	return &docMemoryImpl{ds: ds, plugin: plugin}
 }
 
 // Query 检索文档，并从文档持有的一等块补齐媒体元数据。
-// 只返回 digest/MIME，不返回字节或生成式描述；需要字节时按 digest 单取。
+//
+// 只返回块的 MIME/ID，不返回字节：字节留在这条文档的块里，
+// 需要时按块 ID 单取（避免把整批媒体读进内存）。
 func (m *docMemoryImpl) Query(text string, topK int) []*Doc {
 	if m.ds == nil {
 		return nil
@@ -384,37 +346,37 @@ func (m *docMemoryImpl) Query(text string, topK int) []*Doc {
 // fillMedia 填充文档的媒体字段。
 //
 // 唯一的来源是文档直接持有的一等记忆块：媒体不靠正文标记、
-// 也不靠任何生成的描述文本。CAS 只提供 MIME 等元数据。
+// 也不靠任何生成的描述文本。
 func (m *docMemoryImpl) fillMedia(out *Doc, d *doc.Doc) {
-	if m.ms == nil || d == nil {
+	if d == nil {
 		return
 	}
 	for _, b := range d.Blocks {
-		if b.PayloadDigest == "" {
+		if b.Modality == memory.BlockText && len(b.Data) == 0 {
 			continue
 		}
-		out.MediaDigests = append(out.MediaDigests, b.PayloadDigest)
-		att := MediaAttachment{Digest: b.PayloadDigest, MIME: b.MIME}
-		if it, err := m.ms.Stat(b.PayloadDigest); err == nil && it != nil {
-			att.MIME = it.MIME
-		}
-		out.Attachments = append(out.Attachments, att)
+		out.MediaDigests = append(out.MediaDigests, b.ID)
+		out.Attachments = append(out.Attachments, MediaAttachment{
+			Digest: b.ID,
+			MIME:   b.MIME,
+		})
 	}
 }
 
-// appendBlocks 把新的块追加到已有块之后（按 digest 去重）。
+// appendBlocks 把新的块追加到已有块之后（按内容去重）。
 func appendBlocks(existing []memory.MemoryBlock, add []memory.MemoryBlock) []memory.MemoryBlock {
 	seen := make(map[string]bool, len(existing))
 	for _, b := range existing {
-		seen[b.PayloadDigest] = true
+		seen[string(b.Data)] = true
 	}
 	for _, b := range add {
-		if b.PayloadDigest != "" && seen[b.PayloadDigest] {
+		k := string(b.Data)
+		if k != "" && seen[k] {
 			continue
 		}
 		existing = append(existing, b)
-		if b.PayloadDigest != "" {
-			seen[b.PayloadDigest] = true
+		if k != "" {
+			seen[k] = true
 		}
 	}
 	return existing
@@ -425,9 +387,9 @@ func (m *docMemoryImpl) Insert(d *Doc) error { return m.InsertWithMedia(d, nil) 
 
 // InsertWithMedia 写入文档并关联媒体。
 //
-// 媒体直接成为文档持有的一等记忆块：落进 CAS 拿到 digest，
-// 再变成块挂到文档上。不往正文写 marker——文档向量会融合这些块的
-// 媒体向量（同一统一空间），图片按自己的向量被召回。
+// 媒体直接成为文档持有的一等记忆块（字节在块的 Data）。
+// 不往正文写 marker——文档向量会融合这些块的媒体向量（同一统一空间），
+// 图片按自己的向量被召回。
 func (m *docMemoryImpl) InsertWithMedia(d *Doc, attachments []MediaAttachment) error {
 	if m.ds == nil || d == nil {
 		return nil
@@ -437,75 +399,25 @@ func (m *docMemoryImpl) InsertWithMedia(d *Doc, attachments []MediaAttachment) e
 		target.Source = "plugin:" + m.plugin
 	}
 
-	digests := m.storeAttachments(attachments)
-
-	// 一等记忆块：文档直接持有块本身，CAS 只提供字节与向量。
-	target.Blocks = appendBlocks(target.Blocks, sdkBlocksFromDigests(m.ms, digests))
+	target.Blocks = appendBlocks(target.Blocks,
+		sdkBlocksFromAttachments(attachments, "plugin_doc:"+m.plugin))
 
 	if err := m.ds.Insert(target); err != nil {
 		return err
 	}
-	// 回填给调用方：ID 是新建时内核生成的。
 	d.ID = target.ID
 	return nil
 }
 
-// storeAttachments 把附件落库，返回全部完整 digest。
-func (m *docMemoryImpl) storeAttachments(atts []MediaAttachment) []string {
-	if m.ms == nil || len(atts) == 0 {
-		return nil
-	}
-	seen := map[string]bool{}
-	var digests []string
-	for _, a := range atts {
-		full, err := sdkPutAttachment(m.ms, a, "plugin_doc:"+m.plugin)
-		if err != nil {
-			// 媒体存不进去不该让文档写入失败——它是记忆增强，不是文档必需品
-			log.Printf("[sdk media] 插件 %s 文档附件入库失败: %v", m.plugin, err)
-			continue
-		}
-		if seen[full] {
-			continue
-		}
-		seen[full] = true
-		digests = append(digests, full)
-	}
-	return digests
-}
-
-// Remove 删除文档，并删除它持有的一等块所对应的内容（无其他块共享时）。
+// Remove 删除文档。
 //
-// 与文本块一致：删除块即删除内容。媒体字节是块的内容存储，
-// 不单独做引用计数或 GC。
+// 块随文档一起消失，块里的字节也随之消失——无需引用计数或外部 GC：
+// 字节就在块里，块没了字节就没了。
 func (m *docMemoryImpl) Remove(id string) {
 	if m.ds == nil {
 		return
 	}
-	var digests []string
-	if d := m.ds.Get(id); d != nil {
-		for _, b := range d.Blocks {
-			if b.PayloadDigest != "" {
-				digests = append(digests, b.PayloadDigest)
-			}
-		}
-	}
 	m.ds.Remove(id)
-	if m.ms == nil {
-		return
-	}
-	// 仍被其它文档持有的 digest 不能删（同一份字节可能被多个块共享）。
-	stillHeld := map[string]bool{}
-	for _, b := range m.ds.Blocks() {
-		stillHeld[b.PayloadDigest] = true
-	}
-	for _, d := range digests {
-		if stillHeld[d] {
-			continue
-		}
-		if err := m.ms.Delete(d); err != nil {
-			log.Printf("[sdk media] 删除文档 %s 的内容失败 %s: %v", id, sdkShortDigest(d), err)
-		}
-	}
 }
 
 func (m *docMemoryImpl) Stats() map[string]interface{} {

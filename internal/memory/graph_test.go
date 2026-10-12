@@ -520,7 +520,7 @@ func TestMemoryBlocksAreFirstClassGraphNodes(t *testing.T) {
 
 	image := MemoryBlock{
 		ID: "block_image_1", Modality: BlockImage,
-		PayloadDigest: "0123456789abcdef", MIME: "image/png", Size: 1234,
+		Data: []byte("fake-png"), MIME: "image/png", Size: 1234,
 		Width: 768, Height: 512, Vector: []float64{0.1, 0.2, 0.3},
 		Fingerprint: "qwen:test", Source: "qq", Tool: "upload",
 	}
@@ -545,7 +545,7 @@ func TestMemoryBlocksAreFirstClassGraphNodes(t *testing.T) {
 			gotImage = &blocks[i]
 		}
 	}
-	if gotImage == nil || gotImage.Modality != BlockImage || gotImage.PayloadDigest != image.PayloadDigest || gotImage.Fingerprint != image.Fingerprint || len(gotImage.Vector) != 3 {
+	if gotImage == nil || gotImage.Modality != BlockImage || string(gotImage.Data) != string(image.Data) || gotImage.Fingerprint != image.Fingerprint || len(gotImage.Vector) != 3 {
 		t.Fatalf("image block not round-tripped: %+v", gotImage)
 	}
 

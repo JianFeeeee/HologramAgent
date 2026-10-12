@@ -368,7 +368,7 @@ func (idx *Indexer) FormatContext(ctx *InjectedContext) string {
 				if blk.Text != "" {
 					b.WriteString(truncateRunes(blk.Text, sceneSentenceMaxRunes))
 				} else {
-					b.WriteString(shortBlockDigest(blk.PayloadDigest))
+					b.WriteString(shortBlockDigest(blk.ID))
 				}
 			}
 			b.WriteString("\n")
@@ -419,6 +419,10 @@ const sceneSentenceMaxRunes = 60
 const maxSceneRecallBlocks = 3
 
 // shortBlockDigest 取 digest 前 12 位做展示（与 L3 里引用媒体的写法一致）。
+// shortBlockDigest 把块 ID 截短，供提示词里指认媒体块。
+//
+// 参数曾是内容 digest；块自带负载后，指认单位改成**块 ID**（模型按块 ID
+// 取回该块的负载，不再经内容寻址层中转）。
 func shortBlockDigest(d string) string {
 	if len(d) <= 12 {
 		return d

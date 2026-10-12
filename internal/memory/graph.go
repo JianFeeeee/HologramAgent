@@ -309,7 +309,9 @@ func (g *GraphDB) initSchema() error {
 			id TEXT PRIMARY KEY,
 			modality TEXT NOT NULL,
 			text_content TEXT DEFAULT '',
-			payload_digest TEXT DEFAULT '',
+			-- data 是媒体块的负载（union 的另一半）：文本块用 text_content，
+			-- 媒体块用 data。字节随块同生同灭，块外不存在独立的字节存储层。
+			data BLOB,
 			mime TEXT DEFAULT '',
 			size INTEGER DEFAULT 0,
 			width INTEGER DEFAULT 0,
@@ -436,6 +438,12 @@ func (g *GraphDB) initSchema() error {
 	//   `type` 在 SQLite 里合法但与很多工具的保留字冲突
 	//   （且 memory_blocks 已有 modality 列表达「模态」，语义类型是另一回事）。
 	tx.Exec(`ALTER TABLE memory_blocks ADD COLUMN semantic_type TEXT DEFAULT ''`)
+	// ★★★ 迁移9：媒体负载内联进块（2026-10-11）
+	//
+	// 淘汰独立的字节层（media.Store/CAS）：媒体内容成为块自己的负载，
+	// 与文本块的 text_content 对称——一个块要么带文本、要么带媒体字节。
+	// 旧库的 payload_digest 列保留（迁移脚本据此回填 data），但不参与新写入。
+	tx.Exec(`ALTER TABLE memory_blocks ADD COLUMN data BLOB`)
 
 	// ★★★ 迁移8：memory_block_edges 升格为「边是独立单位」
 	//
@@ -1100,7 +1108,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 			var rank int
 			// rank 是第 1 列，先扫掉，剩下 15 列正好对上 scanBlockRow。
 			if err := rows.Scan(&rank, &bScratch.ID, &bScratch.Modality,
-				&bScratch.Text, &bScratch.PayloadDigest, &bScratch.MIME,
+				&bScratch.Text, &bScratch.MIME,
 				&bScratch.Size, &bScratch.Width, &bScratch.Height, &vecJSON,
 				&bScratch.Fingerprint, &bScratch.Source, &bScratch.Tool,
 				&sceneNull, &bScratch.SemanticType,
@@ -1642,7 +1650,7 @@ func (g *GraphDB) GraphData() (map[string]interface{}, error) {
 		// ★ 这条 Scan 历史上就少扫了 scene（SELECT 用 blockConstants 改了，
 		//   Scan 却没跟上）—— 与 semantic_type 是同一类错，
 		//   报错形如「expected 16 destination arguments in Scan, not 14」。
-		if err := brows.Scan(&block.ID, &block.Modality, &block.Text, &block.PayloadDigest,
+		if err := brows.Scan(&block.ID, &block.Modality, &block.Text,
 			&block.MIME, &block.Size, &block.Width, &block.Height, &vectorJSON,
 			&block.Fingerprint, &block.Source, &block.Tool, &block.Scene,
 			&block.SemanticType, &block.CreatedAt,

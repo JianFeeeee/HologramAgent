@@ -34,7 +34,6 @@ func TestDenseCacheAvoidsRecompute(t *testing.T) {
 	s2 := NewStore(dir)
 	_ = s2.Start()
 	s2.SetDenseSpace(mm)
-	s2.SetMediaGetter(fakeMedia{})
 	for _, id := range s2.List() {
 		if len(s2.items[id].Dense) == 0 {
 			t.Fatalf("重启后 %s 未从缓存恢复稠密向量", id)
