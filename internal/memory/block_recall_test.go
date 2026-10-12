@@ -167,6 +167,64 @@ func TestRecallBlocks_MinScore过滤(t *testing.T) {
 	}
 }
 
+// 模态过滤：ExcludeText / Modality 必须在**截断之前**生效。
+//
+// 这是块 union 化引入的真实回归的判据（2026-10-12）：
+// 视觉路从 CAS 时代的 `FROM media`（只含媒体）改成全局 RecallBlocks，
+// 而实测同一 chineseclip 空间里图像块绝对 cosine（0.36~0.41）天然低于
+// 文本块（0.65~1.00）——「取全局 top-K 再过滤掉文本块」会让名额先被文本
+// 块占满，视觉路必空（实测 per=200 返回 1000 条里图像块 0 条）。
+//
+// 所以判据不能只查“结果里没有文本块”（那是过滤后的必然），
+// 而是：**文本块数量远超名额时，媒体块仍能占满名额**。
+func TestRecallBlocks_模态过滤在截断前生效(t *testing.T) {
+	g := newBlockTestGraph(t)
+	var blocks []MemoryBlock
+	// 500 个文本块，相似度全都**高于**媒体块
+	for i := 0; i < 500; i++ {
+		blocks = append(blocks, MemoryBlock{
+			ID:       "txt" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
+			Modality: BlockText, Text: "文本",
+			Vector: vec(1, 0), Fingerprint: "fp", // 与查询完全一致：1.0
+		})
+	}
+	// 2 个媒体块，相似度明显低
+	blocks = append(blocks,
+		MemoryBlock{ID: "img1", Modality: BlockImage, MIME: "image/png", Data: []byte("a"),
+			Vector: vec(0.5, 0.5), Fingerprint: "fp"},
+		MemoryBlock{ID: "img2", Modality: BlockAudio, MIME: "audio/wav", Data: []byte("b"),
+			Vector: vec(0.4, 0.6), Fingerprint: "fp"},
+	)
+	mustPut(t, g, blocks)
+
+	// ① ExcludeText：TopK=2 —— 若过滤在截断后，会被 500 个满分文本块占满 → 0 条
+	hits, err := g.RecallBlocks(BlockRecallQuery{
+		Vector: vec(1, 0), TopK: 2, ExcludeText: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("ExcludeText 应取到 2 个媒体块，实际 %d 条: %v", len(hits), hitIDs(hits))
+	}
+	for _, h := range hits {
+		if h.Block.Modality == BlockText {
+			t.Errorf("ExcludeText 仍返回文本块: %s", h.Block.ID)
+		}
+	}
+
+	// ② Modality=image：只要图像，不要音频
+	hits, err = g.RecallBlocks(BlockRecallQuery{
+		Vector: vec(1, 0), TopK: 5, Modality: BlockImage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Block.ID != "img1" {
+		t.Fatalf("Modality=image 应只返回 img1，实际 %v", hitIDs(hits))
+	}
+}
+
 // 库里没有任何块时返回空切片而非错误（"还没回填"是正常状态）。
 func TestRecallBlocks_空库不报错(t *testing.T) {
 	g := newBlockTestGraph(t)

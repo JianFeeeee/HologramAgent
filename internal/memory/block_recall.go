@@ -44,6 +44,21 @@ type BlockRecallQuery struct {
 	TopK        int
 	// MinScore 低于此分数的候选被丢弃（0 表示不设下限）。
 	MinScore float64
+	// Modality 非空时只召回该模态的块（空 = 不限）。
+	//
+	// ★ 为何需要它（实测回归）：CAS 时代视觉路查 `FROM media`（只含媒体），
+	//   结构上不可能被文本块挤掉。块 union 化后视觉路改用本接口（全局
+	//   top-K，含数千文本块），而实测同一个 chineseclip 空间里：
+	//       查询「图片」→ 图像块 max cosine 0.377，文本块 max 1.000
+	//       查询「照片」→ 图像块 max 0.385，文本块 max 0.935
+	//   图片的绝对相似度天然低于字面相同的文本，per=200 时视觉路返回
+	//   1000 条里**图像块 0 条** —— 视觉路被彻底饿死。
+	//   所以“取全局 top-K 再过滤掉文本块”是错的取法：过滤发生在截断之后。
+	//   必须在 SQL 层就限定模态，让 top-K 在目标模态内部竞争。
+	Modality BlockModality
+	// ExcludeText 为 true 时排除文本块（等价 Modality 取非文本全集，
+	// 用于“媒体块”语义；模态可能有 image/video/audio 多种）。
+	ExcludeText bool
 	// SkipCentroid 关闭中心化校正，直接用原始向量算余弦。
 	//
 	// 默认是要校正的：实测 chineseclip 的块向量均值范数 0.9374，
@@ -85,14 +100,25 @@ func (g *GraphDB) RecallBlocks(q BlockRecallQuery) ([]BlockHit, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	rows, err := g.db.Query(`SELECT ` + blockColumns + `
+	// 模态过滤下沉到 SQL：文本块动辄数千，把它们读进来再丢弃是白花
+	// 向量反序列化与余弦计算的钱（实测 3639 文本块 vs 112 图像块）。
+	query := `SELECT ` + blockColumns + `
 		FROM memory_blocks
-		WHERE vector IS NOT NULL AND vector != '' AND vector != 'null'`)
+		WHERE vector IS NOT NULL AND vector != '' AND vector != 'null'`
+	var args []interface{}
+	if q.Modality != "" {
+		query += ` AND modality = ?`
+		args = append(args, string(q.Modality))
+	}
+	if q.ExcludeText {
+		query += ` AND modality != ?`
+		args = append(args, string(BlockText))
+	}
+	rows, err := g.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	dim := len(q.Vector)
 	var hits []BlockHit
 	var skippedDim, skippedFP, scanned int
@@ -113,7 +139,15 @@ func (g *GraphDB) RecallBlocks(q BlockRecallQuery) ([]BlockHit, error) {
 			skippedFP++
 			continue
 		}
-		// ★ 中心化：查询向量与块向量**都要**中心化后再算余弦。
+		// 模态过滤已在 SQL 层完成（见上）。这里保留一段防御式判断：
+		// 调用方若直接拼 SQL 绕过（未来新路径），语义不变。
+		if q.Modality != "" && b.Modality != q.Modality {
+			continue
+		}
+		if q.ExcludeText && b.Modality == BlockText {
+			continue
+		}
+		// 中心化：查询向量与块向量**都要**中心化后再算余弦。
 		// 只处理一边的话等于在混两种量纲（一半带公共分量、一半不带），
 		// 算出的余弦没有意义。
 		score := centerBoth(centroid, vec, q.Vector)

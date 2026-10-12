@@ -111,6 +111,16 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 			Vector:      qv,
 			Fingerprint: a.multimodalSpace.Fingerprint(),
 			TopK:        per,
+			// ★ ExcludeText 必须传：视觉路要的是**媒体块**。
+			//
+			// 不传的后果（实测回归，块 union 化引入）：CAS 时代这里查的是
+			// `FROM media`（只含媒体），结构上不可能被文本块挤掉。
+			// 换成全局 RecallBlocks 后，同一个 chineseclip 空间里图像块的
+			// 绝对 cosine（0.36~0.41）天然低于文本块（0.65~1.00），
+			// per=200 时返回 1000 条里图像块 **0 条** —— 视觉路被饿死。
+			// 下面的 `continue` 是防御，不是过滤手段：筛选必须发生在
+			// 截断**之前**，否则名额已被文本块占满。
+			ExcludeText: true,
 		}); err != nil {
 			log.Printf("[crossmodal] 媒体块检索失败: %v", err)
 		} else {
