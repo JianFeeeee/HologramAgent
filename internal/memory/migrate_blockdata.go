@@ -52,7 +52,8 @@ func (g *GraphDB) CountBlockDataBackfillCandidates() (int, error) {
 
 // BackfillBlockData 把块负载从旧 CAS 回填到 data 列。
 //
-// resolve 按 payload_digest 取字节（通常包一层 media.Store.Get）。
+// resolve 按 payload_digest 取字节（由调用方提供，如迁移命令直接读旧 CAS 的
+// 冻结布局 blobs/<d[:2]>/<d[2:]>）。
 // 单事务、全成功或全回滚。幂等：只处理 data 为空且 payload_digest 非空的块，
 // 重复运行不会覆盖已回填的字节。
 //
@@ -60,9 +61,9 @@ func (g *GraphDB) CountBlockDataBackfillCandidates() (int, error) {
 // 这是无法补救的既有数据损失（CAS 曾被清理过），不是迁移故障，不该阻断
 // 其余块的回填。
 //
-// ★ 不校验「回填字节的 sha256 == payload_digest」：那是 CAS 的内部不变量，
-// 已由 media.Store.Get 在读出时校验（见其 digest mismatch 检查）。这里
-// 再算一次 sha256 对上万张图是纯浪费。
+// ★ 不校验「回填字节的 sha256 == payload_digest」：那是旧 CAS 的不变量，
+// 应由提供 resolve 的一方在读出时校验（homed-media-backfill 的 blobReader
+// 就是这么做的）。这里再算一次 sha256 对上万张图是纯浪费。
 func (g *GraphDB) BackfillBlockData(resolve BlockPayloadResolver) (BlockDataBackfillStats, error) {
 	var st BlockDataBackfillStats
 	if resolve == nil {

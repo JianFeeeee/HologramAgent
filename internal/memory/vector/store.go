@@ -22,7 +22,7 @@ type Vectorizer interface {
 // MultimodalEmbedder 是稠密多模态编码器的接口。
 //
 // 与 Vectorizer（稀疏词向量，供 TF-IDF/倒排检索）刻意区分：多模态模型产出的
-// 是共享稠密空间，直接用于 media.Store 的稠密余弦检索，
+// 是共享稠密空间，直接用于媒体块的稠密余弦召回（块自带向量），
 // **不得**塞进文档/知识层的稀疏 vector.Store（会破坏倒排剪枝与 TF-IDF 语义）。
 //
 // 实现不限：可以是内嵌 ONNX，也可以是外部 HTTP 向量服务——

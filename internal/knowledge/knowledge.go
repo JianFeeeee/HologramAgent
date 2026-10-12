@@ -36,13 +36,10 @@ type Knowledge struct {
 	Media []MediaRef `json:"-"`
 }
 
-// MediaRef 是媒体在知识条目里的一等引用。Digest 是内容 sha256（媒体存储的
-// 主键），向量不在这里——它存在 media.Store 里（同一份媒体可能被多条知识
-// 引用，向量只算一次、只存一份）。
-//
-// 与 memory/media 的 Item 刻意不共用：那边是媒体存储的内务结构（含
-// OriginPath/FirstSeen 等溯源字段），这里是知识条目对外暴露的引用。
-// 知识库只依赖 digest + MIME 就能完成嵌入与检索。
+// MediaRef 是媒体在知识条目里的一等引用。Digest 是内容派生的媒体身份
+// （与记忆块的 `MediaBlockID` 同构：同内容⇒同 Digest），但**字节不在别处**：
+// 字节作为条目自带数据落在条目目录的 `File` 上（与 content.md 并列，随条目生灭）。
+// 向量不入侧车——它随条目在内存/稠密缓存里按需算。
 //
 // 命名为 KnowledgeMediaRef 而非 MediaRef，是为了不与别的包的类型撞名。
 type KnowledgeMediaRef struct {
