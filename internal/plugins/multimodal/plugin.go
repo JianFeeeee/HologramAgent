@@ -26,8 +26,8 @@
 //
 //	① **path**：设备/工具回传的媒体已被 remotedevice 落盘（如 screensee 的
 //	   file 字段），插件直接读文件。
-//	② **digest**：用户直接上传的媒体，内核在 `processInput` 里已经落进 CAS
-//	   （`stageMediaDigests`）。插件用 `sdk.Media().Get(digest)` 取回字节 ——
+//	② **块引用**：用户直接上传的媒体，内核在 `processInput` 里已落成记忆块
+//	   （内容派生 ID）。插件用 `sdk.Memory().MediaBytes(ref)` 取回字节 ——
 //	   比在内核与插件之间传 base64 干净得多（内核那份 pendingMedia 可以退场）。
 package multimodal
 
@@ -152,7 +152,7 @@ func (p *Plugin) commonParams() map[string]interface{} {
 			},
 			"digest": map[string]interface{}{
 				"type":        "string",
-				"description": "可选：媒体在内容寻址库（CAS）里的 digest。与 path 二选一。",
+				"description": "可选：媒体在记忆里的**块引用**（块 ID 或其唯一前缀）。与 path 二选一。",
 			},
 			"provider": map[string]interface{}{
 				"type":        "string",
@@ -330,10 +330,10 @@ func (p *Plugin) describe(args map[string]interface{}, prompt, prefix string,
 	}, nil
 }
 
-// resolveMedia 按 path → digest 的顺序解析出 data URL。
+// resolveMedia 按 path → 块引用 的顺序解析出 data URL。
 func (p *Plugin) resolveMedia(args map[string]interface{}, kind string) (string, error) {
 	path, _ := args["path"].(string)
-	digest, _ := args["digest"].(string)
+	ref, _ := args["digest"].(string)
 
 	switch {
 	case strings.TrimSpace(path) != "":
@@ -353,25 +353,29 @@ func (p *Plugin) resolveMedia(args map[string]interface{}, kind string) (string,
 		}
 		return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b), nil
 
-	case strings.TrimSpace(digest) != "":
-		if p.sdk.Media() == nil {
-			return "", fmt.Errorf("内容寻址库不可用，无法按 digest 取媒体")
+	case strings.TrimSpace(ref) != "":
+		// ★ CAS 淘汰：digest 参数现收**媒体块引用**，由记忆层按块取字节。
+		if p.sdk.Memory() == nil {
+			return "", fmt.Errorf("记忆系统不可用，无法按块引用取媒体")
 		}
-		b, err := p.sdk.Media().Get(strings.TrimSpace(digest))
+		b, mime, ok, err := p.sdk.Memory().MediaBytes(strings.TrimSpace(ref))
 		if err != nil {
-			return "", fmt.Errorf("按 digest 取媒体失败 %s: %w", digest, err)
+			return "", fmt.Errorf("按块引用取媒体失败 %s: %w", ref, err)
 		}
-		mime := "image/png"
-		if info, serr := p.sdk.Media().Stat(strings.TrimSpace(digest)); serr == nil && info.MIME != "" {
-			mime = info.MIME
-		} else if kind == "audio_url" {
-			mime = "audio/wav"
+		if !ok {
+			return "", fmt.Errorf("媒体块引用 %s 无对应块或无负载", ref)
+		}
+		if mime == "" {
+			mime = "image/png"
+			if kind == "audio_url" {
+				mime = "audio/wav"
+			}
 		}
 		return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b), nil
 	}
 	// ★ 两条都没有 ⇒ 明确报错，并说清怎么办。
 	return "", fmt.Errorf("没有可处理的媒体。请传 path（设备/工具回传的媒体，" +
-		"如 screensee 返回的 file 路径）或 digest；" +
+		"如 screensee 返回的 file 路径）或 digest（记忆里的媒体块引用）；" +
 		"本轮用户直接上传的图片/音频请直接用它们，无需本工具")
 }
 

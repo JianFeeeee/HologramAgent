@@ -22,7 +22,6 @@ import (
 	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
 	"github.com/JianFeeeee/HomeAgent/internal/plugin/proc"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
@@ -89,8 +88,8 @@ type Registry struct {
 	memDB    *memory.GraphDB
 	textMem  *text.Memory
 	docStore *doc.Store
-	// mediaStore 已随 CAS 淘汰（块自带负载，见 plan.md）。
-	// 不保留字段：留着会诱导后来者再接线，走回头路。
+	// CAS 已淘汰（块自带负载，见 plan.md）。本注册表不保留媒体存储字段：
+	// 留着会诱导后来者再接线，走回头路。媒体字节走 sdk.Memory().MediaBytes。
 	ks         *knowledge.Store
 	mgr        *agentAPI.ProviderManager
 	cfgReg     *internalConfig.ConfigRegistry
@@ -195,7 +194,6 @@ func (r *Registry) SetEventBus(evBus *events.Bus)                           { r.
 func (r *Registry) SetMemory(memDB *memory.GraphDB)                         { r.memDB = memDB }
 func (r *Registry) SetTextMemory(tm *text.Memory)                           { r.textMem = tm }
 func (r *Registry) SetDocStore(ds *doc.Store)                               { r.docStore = ds }
-func (r *Registry) SetMediaStore(ms *media.Store)                           {}
 func (r *Registry) SetKnowledge(ks *knowledge.Store)                        { r.ks = ks }
 func (r *Registry) SetProviderManager(mgr *agentAPI.ProviderManager)        { r.mgr = mgr }
 func (r *Registry) SetConfigRegistry(cfgReg *internalConfig.ConfigRegistry) { r.cfgReg = cfgReg }

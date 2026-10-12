@@ -26,7 +26,6 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/distill"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/pipeline"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/social"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
@@ -299,34 +298,6 @@ func initDocStore(cfg *types.Config) (*document.Store, func()) {
 	return docStore, func() { docStore.Stop() }
 }
 
-// initMediaStore 按开关启动内容寻址的媒体存储；开不起来只告警（媒体记忆非对话必需品）。
-//
-// 本函数体是 main() 里对应启动阶段的整块平移：语句、日志文本、错误语义不变，
-// 只把「*dataDir」变成参数、把 defer 变成由调用点注册的 cleanup。
-func initMediaStore(cfgReg *internalConfig.ConfigRegistry, cfg *types.Config) (*media.Store, func()) {
-	var mediaStore *media.Store
-	if cfgReg.GetBool("core.memory.media.enabled", true) {
-		mediaDir := cfgReg.GetString("core.memory.media.dir",
-			filepath.Join(cfg.Daemon.DataDir, "memory", "media"))
-		ms, err := media.New(mediaDir)
-		if err != nil {
-			// 媒体存储开不起来不该阻止启动——它是记忆增强，不是对话必需品
-			log.Printf("[homed] warning: media store: %v（媒体记忆已禁用）", err)
-		} else {
-			mediaStore = ms
-			st := mediaStore.Stats()
-			log.Printf("[homed] media store active: %v 条 / %v 字节",
-				st["count"], st["total_bytes"])
-		}
-	}
-
-	return mediaStore, func() {
-		if mediaStore != nil {
-			mediaStore.Close()
-		}
-	}
-}
-
 // initDistillSplitter 按配置打开蒸馏用的生成侧 provider 并组装拆分器。
 //
 // 返回 nil 表示不启用（未配置 provider、或打开失败）—— 此时蒸馏回退既有的
@@ -517,7 +488,7 @@ func loadPersonality(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry) *
 // 只把「*dataDir」变成参数、把 defer 变成由调用点注册的 cleanup。
 func newStageAndRegistry(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, iom *agentIO.IOManager,
 	evBus *events.Bus, memDB *memory.GraphDB, textMem *text.Memory, docStore *document.Store,
-	mediaStore *media.Store, ks *knowledge.Store, providerMgr *agentAPI.ProviderManager,
+	ks *knowledge.Store, providerMgr *agentAPI.ProviderManager,
 	dataDir string) (*agentCore.StageHost, *plugin.Registry) {
 	stageHost := agentCore.NewStageHost()
 
@@ -527,7 +498,6 @@ func newStageAndRegistry(cfg *types.Config, cfgReg *internalConfig.ConfigRegistr
 	pluginReg.SetMemory(memDB)
 	pluginReg.SetTextMemory(textMem)
 	pluginReg.SetDocStore(docStore)
-	pluginReg.SetMediaStore(mediaStore) // 插件写入的记忆也走媒体链路；nil 时静默降级
 	pluginReg.SetKnowledge(ks)
 	pluginReg.SetProviderManager(providerMgr)
 	pluginReg.SetConfigRegistry(cfgReg)
@@ -557,7 +527,7 @@ func newStageAndRegistry(cfg *types.Config, cfgReg *internalConfig.ConfigRegistr
 func newMainAgent(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, provider agentAPI.Provider,
 	providerMgr *agentAPI.ProviderManager, iom *agentIO.IOManager, memDB *memory.GraphDB,
 	memIdx *memory.Indexer, trk *tracker.Tracker, docStore *document.Store, ks *knowledge.Store,
-	socialStore *social.SocialStore, textMem *text.Memory, mediaStore *media.Store,
+	socialStore *social.SocialStore, textMem *text.Memory,
 	personality *agentPkg.Personality, pluginReg *plugin.Registry, embedder *memory.StaticEmbedder,
 	multimodalSpace vector.MultimodalEmbedder, mmProviderName, mmErr string,
 	stageHost *agentCore.StageHost, evBus *events.Bus) *agentCore.Agent {

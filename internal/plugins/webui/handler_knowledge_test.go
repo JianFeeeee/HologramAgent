@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,16 +17,19 @@ import (
 	"path/filepath"
 
 	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
 	"github.com/JianFeeeee/HomeAgent/internal/sdk"
 	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
 	"github.com/JianFeeeee/HomeAgent/pkg/types"
 )
 
-// newKnowledgeHandler 构造一个带知识库（可选媒体存储）的 Handler。
-func newKnowledgeHandler(t *testing.T, withMedia bool) (*Handler, *knowledge.Store, func()) {
+// newKnowledgeHandler 构造一个带知识库的 Handler。
+//
+// ★ 不再有“媒体存储”参数：CAS 淘汰后媒体字节随引用自带（KnowledgeMediaRef.Data），
+//   写知识不需要任何外部存储 —— 因此也不存在“存储未初始化”的失败态。
+func newKnowledgeHandler(t *testing.T) (*Handler, *knowledge.Store, string, func()) {
 	t.Helper()
-	ks := knowledge.NewStore(t.TempDir())
+	dir := t.TempDir()
+	ks := knowledge.NewStore(dir)
 	if err := ks.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -41,15 +45,8 @@ func newKnowledgeHandler(t *testing.T, withMedia bool) (*Handler, *knowledge.Sto
 		Knowledge:  sdk.NewKnowledge(ks),
 		Config:     sdk.NewConfig(cfg),
 	}
-	if withMedia {
-		ms, err := media.New(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		sdkCfg.Media = sdk.NewMedia(ms)
-	}
 	h := NewHandler(testSDK(sdkCfg))
-	return h, ks, func() { sup.Shutdown() }
+	return h, ks, dir, func() { sup.Shutdown() }
 }
 
 // 上传 PNG 绝不能被当文本存成乱码正文。
@@ -57,7 +54,7 @@ func newKnowledgeHandler(t *testing.T, withMedia bool) (*Handler, *knowledge.Sto
 // 修复前的行为：任何文件都是 file.Read 后 string(buf[:n]) 直接当 Markdown
 // 存进 content.md —— 传张图得到一份乱码文本知识，且无任何迹象。
 func TestKnowledgeUploadPNGIsNotStoredAsText(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	raw := makePNG(t)
@@ -111,7 +108,7 @@ func TestKnowledgeUploadPNGIsNotStoredAsText(t *testing.T) {
 
 // 声明 text/plain 但实际是 PNG（Content-Type 不可信）也必须入 CAS。
 func TestKnowledgeUploadDetectsRealTypeOverClaimedHeader(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	raw := makePNG(t)
@@ -138,7 +135,7 @@ func TestKnowledgeUploadDetectsRealTypeOverClaimedHeader(t *testing.T) {
 
 // 纯文本上传仍走原路径存正文。
 func TestKnowledgeUploadTextStaysAsContent(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	var buf bytes.Buffer
@@ -169,7 +166,7 @@ func TestKnowledgeUploadTextStaysAsContent(t *testing.T) {
 
 // 非文本也非媒体的垃圾字节应被明确拒绝，而不是当文本存。
 func TestKnowledgeUploadRejectsBinaryGarbage(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	// 非法 UTF-8 且探测不出媒体
@@ -194,9 +191,10 @@ func TestKnowledgeUploadRejectsBinaryGarbage(t *testing.T) {
 	}
 }
 
-// 媒体存储未初始化时上传图片必须 503，不能静默把二进制当文本存。
-func TestKnowledgeUploadMediaWithoutStoreIsUnavailable(t *testing.T) {
-	h, _, done := newKnowledgeHandler(t, false)
+// 媒体上传不再依赖外部存储：CAS 淘汰后字节随引用自带，
+// 因此“没配媒体存储”不再是失败态 —— 上传图片必须成功。
+func TestKnowledgeUploadMediaNeedsNoStore(t *testing.T) {
+	h, _, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	raw := makePNG(t)
@@ -211,14 +209,14 @@ func TestKnowledgeUploadMediaWithoutStoreIsUnavailable(t *testing.T) {
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	w := httptest.NewRecorder()
 	h.handleKnowledge(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("无媒体存储应 503，实为 %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Errorf("上传图片应成功（无外部存储依赖），实为 %d: %s", w.Code, w.Body.String())
 	}
 }
 
 // 状态码语义：名称非法是 400，不存在是 404，缺名是 400。
 func TestKnowledgeStatusCodes(t *testing.T) {
-	h, _, done := newKnowledgeHandler(t, true)
+	h, _, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	// 非法名称（..）
@@ -251,7 +249,7 @@ func TestKnowledgeStatusCodes(t *testing.T) {
 
 // 搜索结果应带分类/预览等前端需要的字段，而不是裸 JSON。
 func TestKnowledgeSearchReturnsViews(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 	if err := ks.Add("tech/go/并发", "goroutine 调度 GMP 抢占"); err != nil {
 		t.Fatal(err)
@@ -287,7 +285,7 @@ func TestKnowledgeSearchReturnsViews(t *testing.T) {
 
 // 分类过滤参数应真正生效。
 func TestKnowledgeSearchCategoryFilter(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 	for _, e := range []struct{ n, c string }{
 		{"tech/go/a", "并发 调度"},
@@ -316,7 +314,7 @@ func TestKnowledgeSearchCategoryFilter(t *testing.T) {
 
 // 列表端点应返回 names + stats（供前端刷新计数），并附稠密路状态。
 func TestKnowledgeListReturnsStats(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 	_ = ks.Add("a", "A")
 	_ = ks.Add("b", "B")
@@ -393,7 +391,7 @@ func isPrintableOrSpace(s string) bool {
 // 前端在 dashboard.js 的 createKnowledgeChat 里用 FormData 组装，
 // 逐个 append("file", files[i]) —— 这里逐字复刻，确认服务端吃得下。
 func TestKnowledgeUploadMultipleFilesFromFrontend(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	var buf bytes.Buffer
@@ -438,7 +436,7 @@ func TestKnowledgeUploadMultipleFilesFromFrontend(t *testing.T) {
 
 // 文本文件不带 content 字段时，文本内容应被采纳为正文。
 func TestKnowledgeUploadTextFileBecomesContent(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, _, done := newKnowledgeHandler(t)
 	defer done()
 
 	var buf bytes.Buffer
@@ -461,9 +459,13 @@ func TestKnowledgeUploadTextFileBecomesContent(t *testing.T) {
 	}
 }
 
-// 上传的媒体必须能在媒体库里取回字节（digest 有效），否则引用是死的。
+// 上传的媒体必须真能取回字节，否则引用是死的。
+//
+// ★ CAS 淘汰后字节的归属变了：不再是全局内容寻址库，而是**条目目录自带的文件**
+//   （与 content.md 同生共灭）。所以判据也从“按 digest 向存储读回”改为
+//   “按条目记录的 File 从条目目录读回，且与上传字节逐字节一致”。
 func TestKnowledgeUploadedMediaRetrievable(t *testing.T) {
-	h, ks, done := newKnowledgeHandler(t, true)
+	h, ks, dir, done := newKnowledgeHandler(t)
 	defer done()
 
 	raw := makePNG(t)
@@ -488,21 +490,32 @@ func TestKnowledgeUploadedMediaRetrievable(t *testing.T) {
 	if len(resp.Media) != 1 {
 		t.Fatalf("应 1 个媒体，实为 %d", len(resp.Media))
 	}
-	// Handler 持有的媒体存储应能按 digest 取回原始字节
-	got, err := h.mediaStore.Get(resp.Media[0].Digest)
+	ref := resp.Media[0]
+	if ref.Digest == "" {
+		t.Error("媒体引用应带内容派生 Digest（身份）")
+	}
+	if ref.Kind != "image" {
+		t.Errorf("kind 应为 image，实为 %q", ref.Kind)
+	}
+	// 字节落在条目目录内的 File 上，读回应与上传逐字节一致。
+	if ref.File == "" {
+		t.Fatal("媒体引用应带条目目录内的 File 名")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "m", ref.File))
 	if err != nil {
-		t.Fatalf("媒体不可取回: %v", err)
+		t.Fatalf("条目目录内取不到媒体字节: %v", err)
 	}
 	if !bytes.Equal(got, raw) {
 		t.Error("取回的字节与上传的不一致")
 	}
-	info, err := h.mediaStore.Stat(resp.Media[0].Digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Kind != "image" {
-		t.Errorf("kind 应为 image，实为 %q", info.Kind)
-	}
-	// 条目上也应持久化了引用（重启不丢）
+	// 条目上也应持久化了引用（重启不丢）：侧车文件里必须记下该引用，
+	// 且 Data 不落侧车（字节只存文件，侧车只记引用，不重复存一份）。
 	_ = ks.Flush()
+	sidecar, err := os.ReadFile(filepath.Join(dir, "m", ".media.json"))
+	if err != nil {
+		t.Fatalf("媒体侧车应落盘: %v", err)
+	}
+	if !bytes.Contains(sidecar, []byte(ref.File)) {
+		t.Errorf("侧车应记录媒体 File=%q，实为 %s", ref.File, sidecar)
+	}
 }

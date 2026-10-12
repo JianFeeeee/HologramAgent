@@ -24,7 +24,7 @@
 // # 媒体来源（用户决策 path + digest + url 三者都支持）
 //
 //	path   —— 设备/工具回传的落盘文件（local_screensee、browser_screenshot、mc 截图…）
-//	digest —— 用户上传已入 CAS 的媒体，用 sdk.Media().Get 取回，不在内核与插件间传 base64
+//	digest —— 用户上传已入库的媒体，用 sdk.Memory().MediaBytes 按块取回，不在内核与插件间传 base64
 //	url    —— http(s) 直链；图/音频原样透传给模型（不下载，不入 CAS，交给上游拉取），
 //	          视频则交给 ffmpeg 直接读取（ffmpeg 原生支持 http 输入）
 //
@@ -129,7 +129,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		},
 		"digest": map[string]interface{}{
 			"type":        "string",
-			"description": "媒体在内容寻址库（CAS）里的 digest（用户上传已入库的媒体）。",
+			"description": "媒体在记忆里的**块引用**（块 ID 或其唯一前缀；用户上传已入库的媒体）。",
 		},
 		"url": map[string]interface{}{
 			"type":        "string",
@@ -303,16 +303,27 @@ func (p *Plugin) handleSeeVideo(args map[string]interface{}) (interface{}, error
 
 // ── 来源解析 ───────────────────────────────────────────────
 
-// resolveMediaURL 把 path/digest/url 解析成可直接放进 image_url/audio_url 的字符串。
+// mediaBytes 按媒体块引用取回字节与 MIME。
 //
-//	url    → 原样返回（http 直链，交给上游拉取；不下载、不入 CAS）
-//	path   → 读本地文件，转 data URL
-//	digest → 从 CAS 取回字节，转 data URL
+// ★ CAS 淘汰后插件取媒体的唯一路径：块 ID（内容派生）就是媒体身份。
+//   取不到时返回 ok=false（“这个引用没媒体”是常态，不是错误）。
+func (p *Plugin) mediaBytes(ref string) (data []byte, mime string, ok bool, err error) {
+	if p.sdk == nil || p.sdk.Memory() == nil {
+		return nil, "", false, fmt.Errorf("记忆系统不可用")
+	}
+	return p.sdk.Memory().MediaBytes(ref)
+}
+
+// resolveMediaURL 把 path/ref/url 解析成可直接放进 image_url/audio_url 的字符串。
+//
+//	url → 原样返回（http 直链，交给上游拉取；不下载）
+//	path → 读本地文件，转 data URL
+//	ref  → 按**媒体块引用**取回字节，转 data URL
 //
 // kind 仅用于在扩展名/元信息都缺失时猜一个兜底 MIME（image 或 audio）。
 func (p *Plugin) resolveMediaURL(args map[string]interface{}, kind string) (string, error) {
 	path := strings.TrimSpace(argStr(args, "path"))
-	digest := strings.TrimSpace(argStr(args, "digest"))
+	ref := strings.TrimSpace(argStr(args, "digest"))
 	rawURL := strings.TrimSpace(argStr(args, "url"))
 
 	switch {
@@ -332,22 +343,24 @@ func (p *Plugin) resolveMediaURL(args map[string]interface{}, kind string) (stri
 		}
 		return dataURL(mimeByExtOr(path, kind), b), nil
 
-	case digest != "":
-		if p.sdk.Media() == nil {
-			return "", fmt.Errorf("内容寻址库不可用，无法按 digest 取媒体")
-		}
-		b, err := p.sdk.Media().Get(digest)
+	case ref != "":
+		// ★ CAS 淘汰：digest 参数现收**媒体块引用**（块 ID 或其唯一前缀），
+		//   由记忆层按块取字节 —— 不再有独立的 digest 寻址层。
+		b, mime, ok, err := p.mediaBytes(ref)
 		if err != nil {
-			return "", fmt.Errorf("按 digest 取媒体失败 %s: %w", digest, err)
+			return "", fmt.Errorf("按块引用取媒体失败 %s: %w", ref, err)
 		}
-		mime := fallbackMIME(kind)
-		if info, serr := p.sdk.Media().Stat(digest); serr == nil && info.MIME != "" {
-			mime = info.MIME
+		if !ok {
+			return "", fmt.Errorf("媒体块引用 %s 无对应块或无负载；"+
+				"请传 path（设备/工具回传的文件）或 url（http(s) 直链）", ref)
+		}
+		if mime == "" {
+			mime = fallbackMIME(kind)
 		}
 		return dataURL(mime, b), nil
 	}
 	return "", fmt.Errorf("没有可处理的媒体。请传 path（设备/工具回传的文件，如 screensee 的截图）、" +
-		"digest（CAS 里的媒体），或 url（http(s) 直链）三者之一")
+		"digest（记忆里的媒体块引用），或 url（http(s) 直链）三者之一")
 }
 
 // resolveVideoInput 为 see_video 解析出一个 ffmpeg 能读的输入。
@@ -360,7 +373,7 @@ func (p *Plugin) resolveMediaURL(args map[string]interface{}, kind string) (stri
 func (p *Plugin) resolveVideoInput(args map[string]interface{}) (input string, cleanup func(), err error) {
 	noop := func() {}
 	path := strings.TrimSpace(argStr(args, "path"))
-	digest := strings.TrimSpace(argStr(args, "digest"))
+	ref := strings.TrimSpace(argStr(args, "digest"))
 	rawURL := strings.TrimSpace(argStr(args, "url"))
 
 	switch {
@@ -378,13 +391,14 @@ func (p *Plugin) resolveVideoInput(args map[string]interface{}) (input string, c
 		}
 		return path, noop, nil
 
-	case digest != "":
-		if p.sdk.Media() == nil {
-			return "", noop, fmt.Errorf("内容寻址库不可用，无法按 digest 取视频")
-		}
-		b, e := p.sdk.Media().Get(digest)
+	case ref != "":
+		// ★ CAS 淘汰：digest 参数现收**媒体块引用**，由记忆层取字节。
+		b, _, ok, e := p.mediaBytes(ref)
 		if e != nil {
-			return "", noop, fmt.Errorf("按 digest 取视频失败 %s: %w", digest, e)
+			return "", noop, fmt.Errorf("按块引用取视频失败 %s: %w", ref, e)
+		}
+		if !ok {
+			return "", noop, fmt.Errorf("媒体块引用 %s 无对应块或无负载；请传 path 或 url", ref)
 		}
 		f, e := os.CreateTemp("", "seemedia-*.video")
 		if e != nil {

@@ -38,6 +38,15 @@ type MemoryAPI interface {
 	//
 	// 属内置接口（非 pubsdk），与 GraphData 同理，不影响外部插件。
 	BlocksChangedSince(since time.Time, limit int) ([]MemoryBlockView, error)
+	// MediaBytes 按**块引用**取回媒体块的字节与 MIME。
+	//
+	// ★ 这是 CAS 淘汰后插件取媒体的唯一入口：块 ID 就是媒体的身份
+	//   （内容派生 blk_media_<hash>），不再有独立的 digest 寻址层。
+	//   ref 可以是完整块 ID，也可以是唯一前缀（模型/跨进程只带短引用）。
+	//
+	// 取不到（无唯一对应块、或块无负载）时返回 (nil, "", false, nil) ——
+	// 「这个引用没有媒体」是调用方能自己处理的常态，不是错误。
+	MediaBytes(ref string) (data []byte, mime string, ok bool, err error)
 }
 
 type Entity = pubsdk.Entity

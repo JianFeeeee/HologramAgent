@@ -31,6 +31,12 @@ func (f *fakeGraphMemory) Purge(map[string]string, string) (int, error) {
 }
 func (f *fakeGraphMemory) GraphData() (map[string]interface{}, error) { return f.data, nil }
 
+// MediaBytes 是 CAS 淘汰后插件取媒体的入口。本桩只服务星图端点，
+// 不做媒体断言，返回“无此块”即可（与真实实现在无引用时的行为一致）。
+func (f *fakeGraphMemory) MediaBytes(string) ([]byte, string, bool, error) {
+	return nil, "", false, nil
+}
+
 // BlocksChangedSince 是 pulse 端点现在的数据源（不再走 GraphData 全量 + 过滤）。
 //
 // 桩要**忠实反映过滤语义**：只回窗口内的块。若这里偷懒返回全部，

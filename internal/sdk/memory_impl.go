@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -254,6 +255,32 @@ func (m *graphMemory) BlocksChangedSince(since time.Time, limit int) ([]MemoryBl
 		})
 	}
 	return out, nil
+}
+
+// MediaBytes 实现 MemoryAPI：按块引用取回媒体字节与 MIME。
+//
+// ★ CAS 淘汰后插件取媒体的唯一入口。块 ID 就是媒体身份
+// （内容派生 blk_media_<hash>）；ref 可为完整 ID 或唯一前缀。
+// 负载不在 blockColumns 里（召回只比向量），所以先解析引用再单取 data。
+func (m *graphMemory) MediaBytes(ref string) ([]byte, string, bool, error) {
+	if m.db == nil || strings.TrimSpace(ref) == "" {
+		return nil, "", false, nil
+	}
+	b, ok, err := m.db.BlockByIDPrefix(ref)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if !ok {
+		return nil, "", false, nil
+	}
+	data, err := m.db.BlockData(b.ID)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if len(data) == 0 {
+		return nil, "", false, nil
+	}
+	return data, b.MIME, true, nil
 }
 
 // ---------- 文本记忆 ----------

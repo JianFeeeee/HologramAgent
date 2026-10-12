@@ -304,8 +304,6 @@ func knowledgeStatusFor(err error) (int, string) {
 		return http.StatusBadRequest, err.Error()
 	case errors.Is(err, knowledge.ErrNotFound):
 		return http.StatusNotFound, err.Error()
-	case errors.Is(err, sdk.ErrMediaUnavailable):
-		return http.StatusServiceUnavailable, err.Error()
 	default:
 		return http.StatusInternalServerError, err.Error()
 	}
@@ -507,17 +505,17 @@ func (h *Handler) handleKnowledgeUpload(w http.ResponseWriter, r *http.Request) 
 			if detected == "application/octet-stream" {
 				useMIME = mime
 			}
-			if h.mediaStore == nil {
-				writeJSON(w, http.StatusServiceUnavailable,
-					map[string]string{"error": "媒体存储未初始化，无法保存图片/音视频"})
-				return
-			}
-			digest, err := h.mediaStore.Put(data, useMIME, "webui_knowledge")
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store media: " + err.Error()})
-				return
-			}
-			media = append(media, sdk.KnowledgeMediaRef{Digest: digest, MIME: useMIME, Kind: mediaKindOf(useMIME)})
+			// ★ CAS 淘汰（2026-10-11）：字节不再寄存在全局内容寻址库，
+			//   而是作为**条目自带数据**随引用携带，由 knowledge.Write 落进
+			//   条目目录（与 content.md 同生共灭）。Digest 仍按内容派生
+			//   （MediaBlockID 同构），但不再需要先 Put 进独立存储。
+			media = append(media, sdk.KnowledgeMediaRef{
+				Digest: memory.MediaBlockID(useMIME, data),
+				MIME:   useMIME,
+				Kind:   mediaKindOf(useMIME),
+				File:   filepath.Base(fh.Filename),
+				Data:   data,
+			})
 			continue
 		}
 		// 文本类：确认是合法 UTF-8 才当正文，否则拒绝并说明原因

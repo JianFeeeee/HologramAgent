@@ -133,9 +133,6 @@ func main() {
 	docStore, closeDocStore := initDocStore(cfg)
 	defer closeDocStore()
 
-	mediaStore, closeMediaStore := initMediaStore(cfgReg, cfg)
-	defer closeMediaStore()
-
 	multimodalSpace, mmProviderName, mmErr, closeMultimodal := initMultimodalSpace(cfgReg)
 	defer closeMultimodal()
 
@@ -151,12 +148,12 @@ func main() {
 	// ---- 阶段管道（StageHost）+ 插件系统（Registry） ----
 
 	stageHost, pluginReg := newStageAndRegistry(cfg, cfgReg, iom, evBus, mem.db, textMem,
-		docStore, mediaStore, ks, providerMgr, opt.dataDir)
+		docStore, ks, providerMgr, opt.dataDir)
 
 	// ---- Agent Core (需在插件加载前创建，因为插件 Configure 需要 StatusProvider) ----
 
 	agent := newMainAgent(cfg, cfgReg, provider, providerMgr, iom, mem.db, mem.indexer, trk,
-		docStore, ks, mem.social, textMem, mediaStore, personality, pluginReg, embedder,
+		docStore, ks, mem.social, textMem, personality, pluginReg, embedder,
 		multimodalSpace, mmProviderName, mmErr, stageHost, evBus)
 
 	wirePluginSDK(pluginReg, luaVM, baseAPIKey, sup, trk, cfg, stageHost, mem.indexer, agent)

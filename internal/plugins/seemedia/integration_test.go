@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/media"
+	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -23,26 +23,36 @@ import (
 //   - 损坏输入如实报错、不 panic
 //   - 已取消的 ctx 必须让 ffmpeg 立刻失败（取消传播真生效）
 //   - 并发 16 路抽帧不串台、不泄漏临时目录
-//   - digest 视频走真 CAS → 临时文件 → cleanup 删文件
+//   - 块引用视频走真记忆库 → 临时文件 → cleanup 删文件
 
-// sdkWithVideo 用真 CAS（临时目录）把一段视频字节 Put 进去，返回带媒体面的
-// PluginSDK 与**真实 digest**（真实 CAS 的 key 是内容哈希，直接用它取回）。
+// sdkWithVideo 把一段视频字节写成**真记忆块**（内容派生 ID），返回带记忆面的
+// PluginSDK 与真实块引用（块 ID 或其唯一前缀，与生产同一取字节路径）。
+//
+// ★ CAS 淘汰后不再有媒体存储可 Put：字节进块（MemoryBlock.Data），
+//   插件用 sdk.Memory().MediaBytes(ref) 取回 —— 这正是测试要钉的路径。
 func sdkWithVideo(t *testing.T, raw []byte) (*sdk.PluginSDK, string) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "seemedia-cas-")
+	dir := t.TempDir()
+	db, err := memory.NewGraphDB(filepath.Join(dir, "graph.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	store, err := media.New(dir)
-	if err != nil {
+	t.Cleanup(func() { db.Close() })
+
+	block := memory.MemoryBlock{
+		ID:       memory.MediaBlockID("video/mp4", raw),
+		Modality: memory.BlockVideo,
+		Data:     raw,
+		MIME:     "video/mp4",
+		Size:     int64(len(raw)),
+		Tool:     "test",
+	}
+	if err := db.PutMemoryBlocks([]memory.MemoryBlock{block}); err != nil {
 		t.Fatal(err)
 	}
-	digest, err := store.Put(raw, media.Item{MIME: "video/mp4", Tool: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sdk.New("seemedia", sdk.SDKConfig{Media: sdk.NewMedia(store)}), digest
+	return sdk.New("seemedia", sdk.SDKConfig{
+		Memory: sdk.NewGraphMemoryWithPlugin("seemedia", db),
+	}), block.ID
 }
 
 func mkTestVideo(t *testing.T, dur int) string {
@@ -195,7 +205,7 @@ func TestExtractFrames_ConcurrentNoLeak(t *testing.T) {
 	}
 }
 
-// ⑥ digest 视频来源：真 CAS 取字节 → 临时文件 → 抽帧 → cleanup 删文件。
+// ⑥ 块引用视频来源：真记忆块取字节 → 临时文件 → 抽帧 → cleanup 删文件。
 func TestResolveVideoInput_DigestCleanup(t *testing.T) {
 	p := newProbedPlugin(t)
 	video := mkTestVideo(t, 4)
@@ -203,12 +213,12 @@ func TestResolveVideoInput_DigestCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, digest := sdkWithVideo(t, raw)
+	s, ref := sdkWithVideo(t, raw)
 	p.sdk = s
 
-	input, cleanup, err := p.resolveVideoInput(map[string]interface{}{"digest": digest})
+	input, cleanup, err := p.resolveVideoInput(map[string]interface{}{"digest": ref})
 	if err != nil {
-		t.Fatalf("digest 解析失败: %v", err)
+		t.Fatalf("块引用解析失败: %v", err)
 	}
 	if _, serr := os.Stat(input); serr != nil {
 		t.Fatalf("临时视频文件应存在: %v", serr)

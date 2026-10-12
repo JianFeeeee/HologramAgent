@@ -400,3 +400,70 @@ func TestTextMemory_AttachmentsIgnoredNotFaked(t *testing.T) {
 		t.Errorf("文本层不该凭空造出附件（没有块存储可挂）: %+v", last.Attachments)
 	}
 }
+
+// ---------- MediaBytes：CAS 淘汰后插件取媒体的唯一路径 ----------
+
+// 判据（不变量，不是"函数被调过"）：
+//  1. 按完整块 ID 取回字节与 MIME，逐字节一致
+//  2. 按唯一前缀也能取回（跨进程/跨层只带短引用是常态）
+//  3. 引用不存在 → ok=false 而非 error（"没这个媒体"是调用方能处理的常态）
+//  4. 过短前缀（歧义风险）→ ok=false；宁可不解析也不挂错媒体
+//  5. 文本块（无负载）→ ok=false，不返回空切片冒充"有字节"
+func TestMemoryBytes_ByBlockRef(t *testing.T) {
+	g, _, _ := newTestStores(t)
+	payload := []byte("PNGDATA-0123456789")
+	b := mediaBlock("image/png", payload)
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		t.Fatalf("PutMemoryBlocks: %v", err)
+	}
+	m := NewGraphMemoryWithPlugin("test", g)
+
+	// 1. 完整块 ID
+	data, mime, ok, err := m.MediaBytes(b.ID)
+	if err != nil {
+		t.Fatalf("MediaBytes(全 ID): %v", err)
+	}
+	if !ok {
+		t.Fatal("完整块 ID 应能取回字节")
+	}
+	if string(data) != string(payload) {
+		t.Errorf("字节 = %q，期望 %q", data, payload)
+	}
+	if mime != "image/png" {
+		t.Errorf("MIME = %q，期望 image/png", mime)
+	}
+
+	// 2. 唯一前缀（blk_media_ + 前 4 位 hex 已 ≥12 字符）
+	prefix := b.ID[:len("blk_media_")+4]
+	data2, _, ok2, err := m.MediaBytes(prefix)
+	if err != nil || !ok2 {
+		t.Fatalf("唯一前缀应能取回字节: ok=%v err=%v", ok2, err)
+	}
+	if string(data2) != string(payload) {
+		t.Errorf("前缀取回字节不一致: %q", data2)
+	}
+
+	// 3. 不存在的引用 → ok=false, err=nil
+	if _, _, ok3, err := m.MediaBytes("blk_media_deadbeef0000"); err != nil || ok3 {
+		t.Errorf("不存在的引用应 ok=false err=nil，实为 ok=%v err=%v", ok3, err)
+	}
+
+	// 4. 过短前缀 → ok=false
+	if _, _, ok4, err := m.MediaBytes("blk_"); err != nil || ok4 {
+		t.Errorf("过短前缀应不解析，实为 ok=%v err=%v", ok4, err)
+	}
+
+	// 5. 文本块（无负载）→ ok=false
+	textBlock := memory.MemoryBlock{ID: "blk_src_abc123def456", Modality: memory.BlockText, Text: "纯文本"}
+	if err := g.PutMemoryBlocks([]memory.MemoryBlock{textBlock}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok5, err := m.MediaBytes(textBlock.ID); err != nil || ok5 {
+		t.Errorf("无负载的块应 ok=false，实为 ok=%v err=%v", ok5, err)
+	}
+
+	// 6. 空引用 → ok=false，不 panic
+	if _, _, ok6, _ := m.MediaBytes("  "); ok6 {
+		t.Error("空引用应 ok=false")
+	}
+}
