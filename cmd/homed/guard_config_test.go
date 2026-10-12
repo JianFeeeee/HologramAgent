@@ -241,3 +241,55 @@ func TestSnapshotBeforeDefaultsTrue(t *testing.T) {
 		t.Error("failback 缺省应启用")
 	}
 }
+
+// TestStartupGraceAllowsInit 钉住「启动宽限期」这一部署关键行为。
+//
+// ★ 场景（2026-10-12 生产部署实测触发的故障）：
+//   停机 34s 后重启，heartbeat 文件 mtime 停在上一代 worker（已过期），
+//   新 worker 要先做完全部重型初始化（chineseclip + 静态词向量 + 知识重建，
+//   冷启动 5–8s）才开始写心跳。guard 的 5s ticker 先到、拿旧 mtime 判 stale
+//   → 把还在加载的 worker SIGKILL → 连续 6 次重启、guard 进入 failback
+//   Safe-Mode（服务降级）。
+//
+// 不变量：
+//  (a) 宽限期内，即使心跳文件 mtime 极旧，也**不许**判杀
+//  (b) 宽限期满后，陈旧心跳**必须**判杀（卡死的 worker 不能靠宽限躲过去）
+//  (c) 宽限期满后，新鲜心跳不许判杀（误杀健康 worker 同样是事故）
+func TestStartupGraceAllowsInit(t *testing.T) {
+	dir := t.TempDir()
+	hb := filepath.Join(dir, "heartbeat")
+	if err := os.WriteFile(hb, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// 上一代 worker 的旧 mtime（停机 34s → 远超 30s 阈值）
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(hb, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	spawn := time.Now()
+	deadline := spawn.Add(30 * time.Second)
+
+	// (a) 宽限期内（刚 spawn 1s）：旧 mtime 也不许杀
+	if shouldKillStaleHeartbeat(spawn.Add(1*time.Second), deadline, hb, 30*time.Second) {
+		t.Error("宽限期内判杀 —— 会把还在加载多模态空间/知识库的 worker SIGKILL（生产已实测触发 6 连杀）")
+	}
+	// 宽限最后一刻同样不许杀（ticker 恰在 deadline 前触发是常态）
+	if shouldKillStaleHeartbeat(deadline.Add(-50*time.Millisecond), deadline, hb, 30*time.Second) {
+		t.Error("宽限期末沿判杀 —— worker 还没来得及写第一次心跳")
+	}
+
+	// (b) 宽限期满 + 心跳仍旧（真的卡死）：必须杀
+	if !shouldKillStaleHeartbeat(deadline.Add(1*time.Second), deadline, hb, 30*time.Second) {
+		t.Error("宽限期满后陈旧心跳未判杀 —— 卡死的 worker 靠宽限躲过去，agent 实际不可用")
+	}
+
+	// (c) 宽限期满 + 心跳新鲜（健康 worker）：不许杀
+	fresh := time.Now()
+	if err := os.Chtimes(hb, fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if shouldKillStaleHeartbeat(deadline.Add(2*time.Second), deadline, hb, 30*time.Second) {
+		t.Error("宽限期满后新鲜心跳被判杀 —— 误杀健康 worker")
+	}
+}

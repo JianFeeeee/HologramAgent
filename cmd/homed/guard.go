@@ -335,6 +335,16 @@ func spawnWorkerOnce(exe, dataDir, boot, hbPath string, cfg *guardConfig, sigCh 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
+	// ★ 启动宽限期：新 worker 要先做完全部重型初始化（graph/文本/向量/
+	// 多模态空间/知识库，实测冷启动约 5–8s）才开始写心跳（main.go:190）。
+	// 而 heartbeat 文件保存的是**上一代 worker** 的 mtime——停机 >heartbeatTimeout
+	// 后，新 worker 还没启动、文件就已"过期"。若无宽限，guard 的 heartbeatInterval
+	// ticker 先到、拿旧 mtime 判 stale → 把还在正常加载的 worker SIGKILL，
+	// 循环重启抖动（2026-10-12 部署实测触发：连续 6 次 failback Safe-Mode）。
+	// 宽限 = 给 worker 完整的启动时长再开始心跳判定。
+	startupGrace := cfg.heartbeatTimeout
+	startupDeadline := time.Now().Add(startupGrace)
+
 	hbTicker := time.NewTicker(cfg.heartbeatInterval)
 	defer hbTicker.Stop()
 
@@ -374,9 +384,15 @@ func spawnWorkerOnce(exe, dataDir, boot, hbPath string, cfg *guardConfig, sigCh 
 			log.Printf("[guard] worker pid=%d crashed: %v", pid, err)
 			return workerCrash, nil
 		case <-hbTicker.C:
-			// IPC PING/ACK 存活判定（带自诊断上报），失败回退文件心跳 mtime
+			// IPC PING/ACK 存活判定（带自诊断上报），失败回退文件心跳 mtime。
 			if st, perr := ipcClient.Ping(cfg.heartbeatTimeout); perr != nil {
-				if heartbeatStale(hbPath, cfg.heartbeatTimeout) {
+				// ★ 启动宽限：新 worker 先做完全部重型初始化（graph/文本/向量/
+				// 多模态空间/知识库，实测冷启动约 5–8s）才写心跳（main.go:190）。
+				// 而 heartbeat 文件 mtime 是**上一代 worker** 的——停机 >heartbeatTimeout
+				// 后，新 worker 还没启动、文件就已"过期"。无宽限时 guard 的 ticker
+				// 先到、拿旧 mtime 判 stale → 把还在加载的 worker SIGKILL，循环抖动
+				// （2026-10-12 部署实测触发：6 次 failback Safe-Mode）。
+				if shouldKillStaleHeartbeat(time.Now(), startupDeadline, hbPath, cfg.heartbeatTimeout) {
 					log.Printf("[guard] heartbeat stale for pid=%d (ipc: %v), treating as hang, SIGKILL", pid, perr)
 					cmd.Process.Kill()
 					<-done
@@ -389,6 +405,7 @@ func spawnWorkerOnce(exe, dataDir, boot, hbPath string, cfg *guardConfig, sigCh 
 	}
 }
 
+// heartbeatStale 判心跳文件是否过期（纯函数，见 TestHeartbeatStale）。
 func heartbeatStale(path string, timeout time.Duration) bool {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -396,6 +413,19 @@ func heartbeatStale(path string, timeout time.Duration) bool {
 		return false
 	}
 	return time.Since(fi.ModTime()) > timeout
+}
+
+// shouldKillStaleHeartbeat 在启动宽限期满后，才对陈旧心跳做杀进程判定。
+//
+// 纯函数，把 spawnWorkerOnce 里的决策抽出来便于判据覆盖。
+// 之所以不能只测 heartbeatStale：真正的回归是「拿上一代 worker 的
+// 旧 mtime，在新 worker 还在加载时就判 stale」——只有与启动宽限
+// 结合才暴露（见 TestStartupGraceAllowsInit）。
+func shouldKillStaleHeartbeat(now, startupDeadline time.Time, hbPath string, timeout time.Duration) bool {
+	if now.Before(startupDeadline) {
+		return false // 启动宽限期：不判
+	}
+	return heartbeatStale(hbPath, timeout)
 }
 
 // restoreLLMBaseline 从文件基线恢复 core.llm.* 配置（存在才恢复）。
