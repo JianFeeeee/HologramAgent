@@ -81,6 +81,17 @@ func TestStarmapNoPerFrameFullScan(t *testing.T) {
 			"固定 50 轮在大图上绝大多数轮次是在重复收敛后的状态")
 	}
 
+	// ★★ 布局代码必须**与 GUI 同源**（2026-10-13）。
+	//
+	// 为何单独钉这一条：这份布局曾在 dashboard.js 与 cmd/gui/renderer/app.js
+	// 各存一份手抄。两次真实事故都出自这个分叉：
+	//   ① WebUI 换上网格法后 GUI 那份没跟着改（换客户端卡顿原样存在）
+	//   ② 反向抄时抄了 WebUI 独有的 starmapMorphSet，GUI 用 state.starmapGrown
+	//      ⇒ 渲染循环每帧 ReferenceError、星图 0 帧
+	// 现在唯一事实源在 shared/starmap/layout.js，由 tools/starmap-sync.mjs
+	// 写进两处标记块。这里校验「本文件里的块 == 共享源」，手改会被立刻拦下。
+	checkStarmapSharedBlock(t, src)
+
 	// Worker 脚本必须存在且用同一套网格算法
 	wb, err := os.ReadFile(filepath.Join("static", "starmap-layout-worker.js"))
 	if err != nil {
@@ -126,4 +137,39 @@ func readDashboardJS(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// checkStarmapSharedBlock 校验本文件里的共享块与 shared/starmap/layout.js 逐字节一致。
+//
+// 判据读宿主文件 + 共享源 + 生成器三者约定：标记块内容 = 生成器产出的那一整段。
+// 用一个薄封装调生成器（--check）比在 Go 里重算拼接规则更可靠 ——
+// 拼接规则只有一处（tools/starmap-sync.mjs），重复实现它正是「两份副本」的老毛病。
+func checkStarmapSharedBlock(t *testing.T, src string) {
+	t.Helper()
+	const begin = "// ===== BEGIN shared:starmap/layout ====="
+	const end = "// ===== END shared:starmap/layout ====="
+	b := strings.Index(src, begin)
+	e := strings.Index(src, end)
+	if b < 0 || e < 0 || e < b {
+		t.Fatalf("找不到共享块标记（%s / %s）—— 星图布局必须由 shared/starmap/layout.js 生成",
+			begin, end)
+	}
+	block := src[b : e+len(end)]
+	// 共享源必须被完整包进块里（抽首尾两段特征串判，避免把整份源码抄进断言）。
+	shared, err := os.ReadFile(filepath.Join("..", "..", "..", "shared", "starmap", "layout.js"))
+	if err != nil {
+		t.Fatalf("读共享源失败: %v", err)
+	}
+	sh := strings.TrimRight(strings.ReplaceAll(string(shared), "\r\n", "\n"), "\n")
+	// 共享源的正文（去掉首尾空行）必须逐字出现在块内。
+	body := strings.TrimSpace(sh)
+	if !strings.Contains(block, body) {
+		t.Error("本文件的星图布局块与 shared/starmap/layout.js 不一致（漂移）。\n" +
+			"     修法：node tools/starmap-sync.mjs\n" +
+			"     若是改算法，请只改 shared/starmap/layout.js，再跑同步 ——\n" +
+			"     直接改这个副本会让 WebUI 与 GUI 再次分叉（已因此出过两次事故）。")
+	}
+	if !strings.Contains(block, "generated") && !strings.Contains(block, "生成") {
+		t.Error("共享块内应带「本块由生成器产出」的提示，避免后人当普通代码手改")
+	}
 }

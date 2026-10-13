@@ -1,4 +1,4 @@
-.PHONY: test-gui all build build-plain build-cli build-gui clean install test run build-static build-linux-arm64 lint fmt sync-client-versions check-client-versions csrc csrc-test csrc-lint csrc-abi csrc-headers csrc-sanitize csrc-cross csrc-fuzz check-csrc check-csrc-full
+.PHONY: test-gui all build build-plain build-cli build-gui clean install test run build-static build-linux-arm64 lint fmt sync-client-versions check-client-versions check-starmap-shared check-client-protocol csrc csrc-test csrc-lint csrc-abi csrc-headers csrc-sanitize csrc-cross csrc-fuzz check-csrc check-csrc-full
 # HOMED_TAGS 默认带 onnxruntime：发行版**默认启用**本地向量空间（与
 # deploy/packaging/build.sh 保持一致）。
 #
@@ -368,6 +368,8 @@ test:
 	 $(MAKE) csrc-test || rc=$$?; \
 	 $(MAKE) check-csrc || rc=$$?; \
 	 $(MAKE) check-codec-cgo-only || rc=$$?; \
+	 $(MAKE) check-starmap-shared || rc=$$?; \
+	 $(MAKE) check-client-protocol || rc=$$?; \
 	 exit $$rc
 
 # check-codec-cgo-only：钉死「编解码层完全 C 化」这一决定。
@@ -414,6 +416,29 @@ sync-client-versions:
 
 check-client-versions:
 	@bash deploy/scripts/sync-client-versions.sh --check
+
+# check-starmap-shared：钉住 WebUI 与 GUI 的星图布局**同源**。
+#
+# 为何需要：两份客户端内联脚本里的布局代码曾是手抄副本，已经因此出过两次事故：
+#   ① WebUI 修好 O(n²)→网格法，GUI 那份没跟着改（换客户端卡顿原样存在）
+#   ② 抄空闲帧跳过时抄了 WebUI 独有的 starmapMorphSet，GUI 实际用
+#      state.starmapGrown ⇒ 渲染循环每帧 ReferenceError、星图 0 帧
+# 现在唯一事实源在 shared/starmap/，由 tools/starmap-sync.mjs 写进两处标记块。
+# 本目标校验「两处标记块 == 共享源」；手改任一副本会立刻红。
+sync-starmap:
+	@node tools/starmap-sync.mjs
+
+check-starmap-shared:
+	@node tools/starmap-sync.mjs --check
+
+# check-client-protocol：客户端↔核心的协议一致性门禁。
+#
+# 为何单列一个显式目标（虽然这些用例在 go test ./... 里也会跑）：
+# 它们是**跨客户端契约**判据，改协议时最该被单独、反复地跑。2026-10-13 的
+# 协议审计查出四处静默不一致（幽灵类型 agent_error、system 发了没人收、
+# CLI 缺 stage、设备桥静默丢弃 push），全部靠这类判据才能防复发。
+check-client-protocol:
+	@$(GO) test -count=1 -run 'TestSSESubTypesAreRealEventTypes|TestEveryPublishedEventHasAnOutwardPath|TestClientsRecognizeServerEventTypes|TestNoPhantomFrameTypes|TestStageFrameFieldsMatchServer|TestDeviceBridgeOpCoverage|TestSseWhitelistParsesToExpectedSet' ./internal/plugins/webui/
 
 # lint-full：在 vet 之外跑 golangci-lint（阈值见 .golangci.yml，起步 warn-only）。
 # 未安装时给出可执行的安装提示与跳过原因，而不是静默成功。

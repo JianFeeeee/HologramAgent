@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron . --no-sandbox",
     "dev": "electron . --no-sandbox --dev",
-    "test": "node sse-backoff.test.mjs && node sse-backoff-behavior.test.mjs && node retry-guard.test.mjs && node endpoint-align.test.mjs && node connections-io.test.mjs && node silent-start.test.mjs && node package-config.test.mjs && node loading-notify.test.mjs && node computeruse.test.mjs",
+    "test": "node sse-backoff.test.mjs && node sse-backoff-behavior.test.mjs && node retry-guard.test.mjs && node endpoint-align.test.mjs && node connections-io.test.mjs && node silent-start.test.mjs && node package-config.test.mjs && node loading-notify.test.mjs && node computeruse.test.mjs && node starmap-perf.test.mjs",
     "test-live": "node chat-perf.test.mjs && node protocol-align.test.mjs",
     "test-package": "../../scripts/gui-package-smoke.sh"
   },

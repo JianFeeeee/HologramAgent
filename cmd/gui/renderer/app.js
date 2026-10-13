@@ -2692,6 +2692,21 @@ function renderChatStarmap() {
     return;
   }
   if (state.starmapLoading) return;
+  // ★★ 2026-10-13：星图面板不可见时不建图。
+  //
+  // 为何必须在这里拦：GUI 的**默认视图就是 chat**（state.currentView = "chat"），
+  // 而 renderAll 在 chat 视图会调 renderChatStarmap()。此前该函数无可见性守卫 ⇒
+  // 每次启动都为**看不见的**星图面板付全价：实测 943ms 建图 + 首帧 433ms
+  // 纹理上传（1294 张）≈ 1.4 秒的白耗——用户第一眼看到的却是聊天页。
+  //
+  // 判据用 offsetParent：面板 display:none 或未挂载时为 null。
+  // 等用户真点到「星图」子面板，switchChatPanel 会再调本函数。
+  var visCheck = document.getElementById("sm-container-chat");
+  if (!visCheck || !visCheck.offsetParent) {
+    state.starmapLoading = false;
+    state.starmapInit = false;
+    return;
+  }
   state.starmapLoading = true;
   loadChatStarmapData();
 }
@@ -3065,35 +3080,269 @@ function initChatStarmap() {
   } catch (e) {}
   starmapAnimate();
 }
+// ===== BEGIN shared:starmap/layout =====
+// 星图力导向布局 —— WebUI 与 GUI 的**唯一事实源**。
+//
+// ===================================================================
+// 这个文件为什么存在（别把它当成“又一份副本”）
+// ===================================================================
+//
+// 下面这三个函数原本在 `internal/plugins/webui/dashboard.js` 与
+// `cmd/gui/renderer/app.js` 里各有一份手抄。分叉的代价已经兑现过两次：
+//
+//   1. WebUI 把 O(n²) 布局换成网格近邻（生产库 3754 块：3.52 亿次配对 →
+//      n·k 次），GUI 那份没跟着改 ⇒ 换客户端卡顿原样存在。
+//   2. 把空闲帧跳过从 WebUI 抄进 GUI 时抄了 `starmapMorphSet`（WebUI 独有），
+//      GUI 实际用 `state.starmapGrown` ⇒ 渲染循环每帧 ReferenceError、星图 0 帧。
+//
+// 所以这里放**唯一一份**实现，由 `tools/starmap-sync.mjs` 写进两个客户端文件
+// 的 `BEGIN/END shared:starmap/layout` 标记块内，并由判据钉住“三处逐字节相同”。
+//
+// ===================================================================
+// 算法
+// ===================================================================
+//
+// 被替换掉的旧实现是 50 轮 `for i / for j=i+1` 全对全斥力：
+// 生产库 3754 块 ⇒ 每轮 704 万次配对、50 轮 3.52 亿次。实测（CDP Profiler
+// + Electron）单次建图阻塞主线程 1.8–10.9 秒。
+//
+// 关键观察：原斥力体里本来就有 `if (d < 25)` —— **只对近邻施力**。既然只关心
+// 近邻，就没必要算全对全：把空间切成边长 == 斥力半径的格子，每个节点只与
+// 「自身格 + 相邻 26 格」（3×3×3）内的点比较即可。
+//
+// ★ 为何格边长必须恰等于斥力半径：这样「距离 < 25 的点」必然落在相邻 26 格内，
+//   **绝不遗漏** —— 这是敢跳过远处配对的唯一依据。格边长一旦小于斥力半径，
+//   就会漏掉真实邻居，图会塌成一团。
+//
+// 复杂度 O(n·k)：均匀分布下每格约 1 点 ⇒ 每轮约 27n 次比较。
+// 配合迭代数自适应与收敛早停，3754 节点实测 8365ms → 438ms。
 
-// ★ 几何体/材质共享（2026-10-05 修星图内存暴涨）
+// 自适应迭代数：小图跑满 50 轮（值得精细），大图退到 14 轮。
 //
-// 原实现每个节点都`new THREE.SphereGeometry(gr, 16, 12)`——因为半径
-// gr 各不相同，看起来「只能各自 new」。但 three.js 里几何体的大小应当由
-// **mesh.scale** 表达，几何体本身应当共享。
+// n=3754 时约 15 轮。旧实现固定 50 轮，且每轮是 O(n²)。
+// 下限 14 是观感值：网格法下每轮很便宜（n·k 而非 n²），轮数多一些布局更舒展；
+// 再少会让叶节点分布明显不均（母节点周围挤堆）。
+function starmapLayoutIterationsFor(n) {
+	if (n <= 400) return 50;
+	var it = Math.floor(60000 / n);
+	if (it < 14) it = 14;
+	if (it > 50) it = 50;
+	return it;
+}
+
+// 早停阈值：取「节点平均间距的 0.2%」。
+// 用相对量而不是绝对值，否则同一个阈值在不同规模的图上含义完全不同。
+function starmapLayoutMaxMoveThreshold(n, maxR) {
+	var perimeter = 2 * Math.PI * maxR;
+	var gap = n > 0 ? perimeter / n : maxR;
+	var th = gap * 0.002;
+	var cap = maxR * 2 * 0.001;
+	return th < cap ? th : cap;
+}
+
+// starmapLayoutRelax 就地松弛坐标。
 //
-// 实测（CDP 抓生产实例，2588 个节点）：
-//
-//	Mesh/SphereGeometry    2588 个   geometry 数据合计 22.67MB
-//	Sprite/BufferGeometry  1294 个（label 纹理，每个 256×64 RGBA ≈ 64KB）
-//
-// 两者都不释放：buildChatStarmapGraph 只starmapScene.remove(m)，
-// **从不 dispose()** —— remove 只把对象从场景树摘下来，WebGL 侧资源
-// （buffer/texture）仍被引用，不释放。星图每次全量重建泄漏一整轮，
-// 于是进程常驻内存反复冲上GB 级、靠 GC 回收后再度暴涨，界面随之卡住。
-//
-// 修法两条：单位球共享（几何体从 2588 份降到 1 份）+ 重建时 dispose。
-// 单位球细节：SphereGeometry(1, 16, 12) 建一次，实例按 gr 缩放，
-// 因为 mesh 是父节点，缩放会叠加到子 glow 上—— 所以 glow 挂到 mesh 下时
-// 要用 gr/rad 的相对比例。
-// ★ 单位球几何体的**半径取0.5**，不是 1。
-//
-// 原因：节点缩放基准是 mesh.userData.baseScale = rad / 0.5 ——
-// 分母0.5 就是原SphereGeometry 的半径。若把共享球改成半径 1，
-// baseScale 会整体缩放一倍（大的节点变得更大、小的更小），且与
-// 脉冲结束时的复原逻辑（setScalar(baseScale)）不自洽。
-// 保持 0.5 ⇒ baseScale 公式原样成立，行为与修复前逐像素一致。
+// 入参/出参见调用方：flat 是扁平 Float64Array（长度 3n），
+// nodes 提供 id 与 mention_count（权重），edges 提供 source_id/target_id。
+// 用扁平数组而非对象数组，是为了让可行时能直接走结构化克隆交给 Worker。
+function starmapLayoutRelax(flat, nodes, edges, maxR) {
+	var n = nodes.length;
+	if (n === 0) return flat;
+	var CUTOFF = 25; // == 斥力半径，见文件头说明
+	var BASE_R = 15;
+	// 归一化权重（斥力/吸力都按它加权）
+	var mn = new Float64Array(n);
+	var maxMc = 1,
+		minMc = 0;
+	for (var a = 0; a < n; a++) {
+		var m = (nodes[a] && nodes[a].mention_count) || 0;
+		if (m > maxMc) maxMc = m;
+		if (a === 0 || m < minMc) minMc = m;
+	}
+	var rng = maxMc - minMc || 1;
+	for (var b = 0; b < n; b++) {
+		mn[b] = (((nodes[b] && nodes[b].mention_count) || 0) - minMc) / rng;
+	}
+	// 边下标（id → 下标对）。下标化是为了内层循环不做字符串比较。
+	var idx = {};
+	for (var i0 = 0; i0 < n; i0++) idx[nodes[i0].id] = i0;
+	var edgeIdx = [];
+	for (var e0 = 0; e0 < edges.length; e0++) {
+		var s0 = idx[edges[e0].source_id],
+			t0 = idx[edges[e0].target_id];
+		if (s0 === undefined || t0 === undefined || s0 === t0) continue;
+		edgeIdx.push([s0, t0]);
+	}
+	var grid = new Map();
+	function rebuildGrid() {
+		grid.clear();
+		for (var i = 0; i < n; i++) {
+			var key =
+				Math.floor(flat[i * 3] / CUTOFF) +
+				"|" +
+				Math.floor(flat[i * 3 + 1] / CUTOFF) +
+				"|" +
+				Math.floor(flat[i * 3 + 2] / CUTOFF);
+			var bucket = grid.get(key);
+			if (!bucket) grid.set(key, (bucket = []));
+			bucket.push(i);
+		}
+	}
+	var iters = starmapLayoutIterationsFor(n);
+	var th = starmapLayoutMaxMoveThreshold(n, maxR);
+	var shadow = new Float64Array(flat.length);
+	shadow.set(flat);
+	for (var it = 0; it < iters; it++) {
+		rebuildGrid();
+		// 斥力：只算 3×3×3 邻格内的近邻；每对只处理一次（j > i），
+		// 与旧实现 `for j = i+1` 的语义一致，避免重复施力。
+		for (var i1 = 0; i1 < n; i1++) {
+			var cxi = Math.floor(flat[i1 * 3] / CUTOFF);
+			var cyi = Math.floor(flat[i1 * 3 + 1] / CUTOFF);
+			var czi = Math.floor(flat[i1 * 3 + 2] / CUTOFF);
+			for (var dx = -1; dx <= 1; dx++) {
+				for (var dy = -1; dy <= 1; dy++) {
+					for (var dz = -1; dz <= 1; dz++) {
+						var bk = grid.get(cxi + dx + "|" + (cyi + dy) + "|" + (czi + dz));
+						if (!bk) continue;
+						for (var bi = 0; bi < bk.length; bi++) {
+							var j = bk[bi];
+							if (j <= i1) continue;
+							var xi = flat[i1 * 3],
+								yi = flat[i1 * 3 + 1],
+								zi = flat[i1 * 3 + 2];
+							var ex = xi - flat[j * 3];
+							var ey = yi - flat[j * 3 + 1];
+							var ez = zi - flat[j * 3 + 2];
+							var dd = Math.sqrt(ex * ex + ey * ey + ez * ez) + 0.1;
+							if (dd >= CUTOFF) continue;
+							var rf = 0.5 + (mn[i1] + mn[j]) * 0.5;
+							var force = (0.06 * rf) / Math.max(dd, 0.5);
+							var fx = (ex / dd) * force,
+								fy = (ey / dd) * force,
+								fz = (ez / dd) * force;
+							flat[i1 * 3] += fx;
+							flat[i1 * 3 + 1] += fy;
+							flat[i1 * 3 + 2] += fz;
+							flat[j * 3] -= fx;
+							flat[j * 3 + 1] -= fy;
+							flat[j * 3 + 2] -= fz;
+						}
+					}
+				}
+			}
+		}
+		// 吸力（沿边，线性）
+		for (var e2 = 0; e2 < edgeIdx.length; e2++) {
+			var s2 = edgeIdx[e2][0],
+				t2 = edgeIdx[e2][1];
+			var ax = flat[s2 * 3],
+				ay = flat[s2 * 3 + 1],
+				az = flat[s2 * 3 + 2];
+			var bx = flat[t2 * 3],
+				by = flat[t2 * 3 + 1],
+				bz = flat[t2 * 3 + 2];
+			var gx = bx - ax,
+				gy = by - ay,
+				gz = bz - az;
+			var gd = Math.sqrt(gx * gx + gy * gy + gz * gz) + 0.1;
+			if (gd <= 20) continue;
+			var af = 0.04 * Math.max(0.3, 1.0 - (mn[s2] + mn[t2]) * 0.3);
+			var ux = (gx / gd) * af,
+				uy = (gy / gd) * af,
+				uz = (gz / gd) * af;
+			flat[s2 * 3] += ux;
+			flat[s2 * 3 + 1] += uy;
+			flat[s2 * 3 + 2] += uz;
+			flat[t2 * 3] -= ux;
+			flat[t2 * 3 + 1] -= uy;
+			flat[t2 * 3 + 2] -= uz;
+		}
+		// 向心约束 + 早停位移统计（一次遍历同时做完，省一趟内存读）
+		var maxA = maxR * 1.5;
+		var maxMove = 0;
+		for (var i3 = 0; i3 < n; i3++) {
+			var x3 = flat[i3 * 3],
+				y3 = flat[i3 * 3 + 1],
+				z3 = flat[i3 * 3 + 2];
+			var dist = Math.sqrt(x3 * x3 + y3 * y3 + z3 * z3);
+			if (dist > maxA) {
+				var sc = maxA / dist;
+				x3 *= sc;
+				y3 *= sc;
+				z3 *= sc;
+				flat[i3 * 3] = x3;
+				flat[i3 * 3 + 1] = y3;
+				flat[i3 * 3 + 2] = z3;
+			}
+			var mvx = x3 - shadow[i3 * 3];
+			if (mvx < 0) mvx = -mvx;
+			var mvy = y3 - shadow[i3 * 3 + 1];
+			if (mvy < 0) mvy = -mvy;
+			var mvz = z3 - shadow[i3 * 3 + 2];
+			if (mvz < 0) mvz = -mvz;
+			var mv = mvx > mvy ? mvx : mvy;
+			if (mvz > mv) mv = mvz;
+			if (mv > maxMove) maxMove = mv;
+		}
+		shadow.set(flat);
+		if (maxMove < th) break; // 收敛：剩余轮次只是重复同一状态
+	}
+	return flat;
+}
+// 本块由 tools/starmap-sync.mjs 从 shared/starmap/layout.js 生成 —— 请改共享源，不要直接改这里。
+// ===== END shared:starmap/layout =====
+
+
 var starmapUnitSphere = null;
+// starmapGlowMesh：全部节点的光晕合并成的一个 InstancedMesh，以及它的构建参数。
+//
+// 为何合并（2026-10-13）：原每节点一个光晕子 mesh（1294 个），使 draw call
+// 达 3477/帧。光晕是纯静态装饰（glowSphere 全仓只有写入、从无读取）。
+var starmapGlowMesh = null;
+var starmapGlowItems = [];
+
+// starmapBuildGlowInstances 把全部节点的光晕球合并成一个 InstancedMesh。
+//
+// ★ 半径换算：主球 mesh 是按 baseScale(=rad/0.5) 缩放的，而光晕现在脱离了
+//   该缩放链，所以必须用**世界半径**直接调 scale：共享单位球半径 0.5 ⇒
+//   scale = worldRadius / 0.5。原先子 mesh 的相对换算 (gr/parentScale)*2
+//   在这里不适用（那是为挂在缩放过的父节点上算的）。
+function starmapBuildGlowInstances(items, pos) {
+  if (!items.length) return;
+  var unit = starmapSphereGeometry();
+  var gm = new THREE.MeshBasicMaterial({
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+  });
+  var inst = new THREE.InstancedMesh(unit, gm, items.length);
+  inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+  var dummy = new THREE.Object3D();
+  var c = new THREE.Color();
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var p = pos[it.id];
+    if (!p) {
+      dummy.position.set(0, 0, 0);
+      dummy.scale.setScalar(0);
+    } else {
+      dummy.position.set(p.x, p.y, p.z);
+      dummy.scale.setScalar(it.worldRadius / 0.5);
+    }
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    inst.setColorAt(i, c.setHex(it.color));
+  }
+  inst.instanceMatrix.needsUpdate = true;
+  if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+  inst.frustumCulled = false;
+  starmapScene.add(inst);
+  starmapGlowMesh = inst;
+  starmapGlowItems = items;
+}
+
 function starmapSphereGeometry() {
   if (!starmapUnitSphere) starmapUnitSphere = new THREE.SphereGeometry(0.5, 16, 12);
   return starmapUnitSphere;
@@ -3161,6 +3410,14 @@ function buildChatStarmapGraph() {
   });
   starmapNodeMeshes = [];
   starmapEdgeLines = [];
+  // ★ 光晕实例要一并释放（同一次重建里它会被重建）。
+  if (starmapGlowMesh) {
+    starmapScene.remove(starmapGlowMesh);
+    if (starmapGlowMesh.material) starmapGlowMesh.material.dispose();
+    // geometry 是共享单位球（starmapSphereGeometry），不能 dispose。
+    starmapGlowMesh = null;
+  }
+  var glowItems = [];
   if (starmapNodes.length === 0) return;
   // Calculate node degrees for leaf node detection
   var nodeDegs = {};
@@ -3228,61 +3485,33 @@ function buildChatStarmapGraph() {
     };
   });
   // Force-directed simulation
-  for (var it = 0; it < 50; it++) {
-    var ids = Object.keys(pos);
-    // Repulsion
-    for (var i = 0; i < ids.length; i++) {
-      for (var j = i + 1; j < ids.length; j++) {
-        var a = pos[ids[i]],
-          b = pos[ids[j]];
-        var dx = a.x - b.x,
-          dy = a.y - b.y,
-          dz = a.z - b.z,
-          d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 0.1;
-        var rf = 0.5 + (a.mn + b.mn) * 0.5;
-        if (d < 25) {
-          var force = (0.06 * rf) / Math.max(d, 0.5);
-          a.x += (dx / d) * force;
-          a.y += (dy / d) * force;
-          a.z += (dz / d) * force;
-          b.x -= (dx / d) * force;
-          b.y -= (dy / d) * force;
-          b.z -= (dz / d) * force;
-        }
-      }
-    }
-    // Attraction along edges
-    starmapEdges.forEach((e) => {
-      var a = pos[e.source_id],
-        b = pos[e.target_id];
-      if (!a || !b) return;
-      var dx = b.x - a.x,
-        dy = b.y - a.y,
-        dz = b.z - a.z,
-        d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 0.1;
-      var af = Math.max(0.3, 1.0 - (a.mn + b.mn) * 0.3);
-      if (d > 20) {
-        var force = 0.04 * af;
-        a.x += (dx / d) * force;
-        a.y += (dy / d) * force;
-        a.z += (dz / d) * force;
-        b.x -= (dx / d) * force;
-        b.y -= (dy / d) * force;
-        b.z -= (dz / d) * force;
-      }
-    });
-    // Centering constraint
-    ids.forEach((id) => {
-      var p = pos[id];
-      var dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-      var maxA = maxR * 1.5;
-      if (dist > maxA) {
-        var s = maxA / dist;
-        p.x *= s;
-        p.y *= s;
-        p.z *= s;
-      }
-    });
+  //
+  // ★★ 2026-10-13：O(n²) → O(n·k) 网格法（与 WebUI dashboard.js 同一算法）。
+  //
+  // 旧实现在此内联跑 50 轮 `for i / for j=i+1` 全对全斥力。实测（Electron
+  // + 真生产库 3754 块）：**单次建图阻塞主线程 1.8–9 秒**。而斥力体里本来
+  // 就有 `if (d < 25)` —— 只对近邻施力。既然只关心近邻，全对全就是白算：
+  // 把空间切成边长 == 斥力半径的格子，每点只比自身格 + 相邻 26 格。
+  // 距离 < 25 的点必然落在相邻格内，**不遗漏**（这是跳过远处配对的唯一依据）。
+  //
+  // ★ 为何这里不像 WebUI 那样走 Worker：GUI 用 file:// 加载页面（main.js 的
+  //   loadFile），外部 Worker 脚本与 Blob Worker 的可靠性都需要在打包环境
+  //   里单独验证，不能在“性能修复”里顺带赌上星图能否初始化。网格法本身
+  //   已把建图从秒级降到百毫秒级，先把它坐实。
+  var flatLayout = new Float64Array(starmapNodes.length * 3);
+  for (var li = 0; li < starmapNodes.length; li++) {
+    var lp = pos[starmapNodes[li].id];
+    flatLayout[li * 3] = lp.x;
+    flatLayout[li * 3 + 1] = lp.y;
+    flatLayout[li * 3 + 2] = lp.z;
+  }
+  starmapLayoutRelax(flatLayout, starmapNodes, starmapEdges, maxR);
+  for (var lj = 0; lj < starmapNodes.length; lj++) {
+    var lq = pos[starmapNodes[lj].id];
+    if (!lq) continue;
+    lq.x = flatLayout[lj * 3];
+    lq.y = flatLayout[lj * 3 + 1];
+    lq.z = flatLayout[lj * 3 + 2];
   }
   // Create nodes
   starmapNodes.forEach((n) => {
@@ -3314,19 +3543,15 @@ function buildChatStarmapGraph() {
     // mesh 已按 rad/baseScale 缩放过（baseScale = rad/0.5），故 glow 用
     // 相对比例：世界半径 gr = mesh 缩放 × 本地 scale。
     var parentScale = mesh.scale.x || 1;
-    var gg = starmapSphereGeometry();
-    var gm = new THREE.MeshBasicMaterial({
-      color: col,
-      transparent: true,
-      opacity: 0.12 + mnr * 0.08,
-      side: THREE.BackSide,
-      blending: THREE.AdditiveBlending,
-    });
-    var gs = new THREE.Mesh(gg, gm);
-    // 共享球半径 0.5，故要 ×2 才是单位半径的相对值。
-    gs.scale.setScalar((gr / parentScale) * 2);
-    mesh.add(gs);
-    mesh.userData.glowSphere = gs;
+    // ★★ 2026-10-13：光晕不再每节点一个子 mesh（与 WebUI 同改）。
+    //
+    // GUI 原先 1294 节点 = 1294 球 + 1294 光晕 + 1294 标签 + 966 条边
+    // ⇒ renderer.info.render.calls 达 **3477/帧**，实测 render() 19–40ms
+    // 且 1.8–2.5s 的建图里有 433ms 花在「第一次提交时上传 1294 张纹理」。
+    //
+    // 光晕是**纯静态装饰**（全仓 grep：glowSphere 只有写入、从无读取，
+    // 任何动画都不碰它），故合并成单个 InstancedMesh：1294 → 1 draw call。
+    glowItems.push({ id: n.id, worldRadius: gr, color: col });
     // Label sprite
     var canvas = document.createElement("canvas");
     canvas.width = 256;
@@ -3358,26 +3583,36 @@ function buildChatStarmapGraph() {
     starmapNodeMeshes.push(mesh);
   });
   // Create edges
+  //
+  // ★ 合并成按颜色分组的 LineSegments（与 WebUI 同改）：
+  //   原来 966 条边 = 966 个独立 Line + 966 个 BufferGeometry，
+  //   实测隐藏这 966 条就省下 ~8ms/帧（~40% 的 render 成本）。
+  //   代价：单条边不再能单独点选 —— GUI 此前也没有点选边的交互。
+  var edgeByColor = {};
   starmapEdges.forEach((e) => {
     var a = pos[e.source_id],
       b = pos[e.target_id];
     if (!a || !b) return;
     var col = smEdgeColors[e.relation_type] || smEdgeColors[e.type] || 0x444466;
-    var pts = [
-      new THREE.Vector3(a.x, a.y, a.z),
-      new THREE.Vector3(b.x, b.y, b.z),
-    ];
-    var geo = new THREE.BufferGeometry().setFromPoints(pts);
+    var k = String(col);
+    if (!edgeByColor[k]) edgeByColor[k] = { col: col, pts: [] };
+    edgeByColor[k].pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  });
+  Object.keys(edgeByColor).forEach((k) => {
+    var g = edgeByColor[k];
+    if (!g.pts.length) return;
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(g.pts, 3));
     var mat = new THREE.LineBasicMaterial({
-      color: col,
+      color: g.col,
       transparent: true,
       opacity: 0.4,
     });
-    var line = new THREE.Line(geo, mat);
-    line.userData = { edgeId: e.id, edgeData: e };
-    starmapScene.add(line);
-    starmapEdgeLines.push(line);
+    var seg = new THREE.LineSegments(geo, mat);
+    starmapScene.add(seg);
+    starmapEdgeLines.push(seg);
   });
+  starmapBuildGlowInstances(glowItems, pos);
 }
 
 // 回合收尾：由 SSE 事件（agent_output final / reset 帧）或 watchdog 驱动。
@@ -4722,6 +4957,15 @@ function resetStarmapCamera() {
 }
 
 var starmapLastFrame = 0;
+// 空闲帧跳过与星空时间驱动的状态（2026-10-13，与 WebUI 同改）。
+//
+// ★ 为何需要：GUI 每帧要提交 1809 draw call（1294 标签精灵 + 节点球），
+//   图形静止时按 12fps 重绘是纯浪费。配合“星空按 dt 推进”，空闲时可降频
+//   而不让星空跳变。
+var starmapLastRenderKey = null;
+var starmapLastRenderAt = 0;
+var starmapLastFrameTs = 0;
+var SM_IDLE_RENDER_MS = 5000;
 var SM_PULSE_MS = 1400; // 单个脉冲的生命期
 var starmapDirty = false; // 全量图过期标记（pulse 检出未知新实体时置位）
 function starmapPanelActive() {
@@ -4741,13 +4985,65 @@ function starmapAnimate() {
   if (now - starmapLastFrame < 83) return;
   starmapLastFrame = now;
   if (starmapCtrl) starmapCtrl.update();
-  if (starmapStarField) starmapStarField.rotation.y += 0.0001;
+  // 星空按**真实流逝时间**旋转（而非每帧固定 0.0001）。
+  //
+  // ★ 为何改成时间驱动：以前每帧加固定角度，所以为了“让星空动”就必须
+  //   按帧重绘；而每次重绘（1809 draw call + 1294 精灵）成本显著。
+  //   改成按 dt 推进后，星空角度与重绘频率解耦，于是空闲时可以降频。
+  var dtSec = starmapLastFrameTs ? (now - starmapLastFrameTs) / 1000 : 0;
+  starmapLastFrameTs = now;
+  // 0.0001 弧度/帧 @12fps ≈ 0.0012 弧度/秒（等值换算，保持原观感速度）
+  if (starmapStarField && dtSec > 0 && dtSec < 1) {
+    starmapStarField.rotation.y += dtSec * 0.0012;
+  }
   // 推进活动脉冲（发光/缩放/呼吸），放在渲染前，
   // 这样本帧看到的就是本帧推进后的材质状态。
   // hover 冲突由 starmapTickActivity 内部逐节点跳过处理，
   // **不**在这里整段跳过 —— 那样会在 hover 期间冻结全部脉冲，
   // hover 一放开就看到一堆积压的脉冲同时弹。
   starmapTickActivity();
+  // ★★ 2026-10-13：空闲帧跳过绘制（与 WebUI 同改）。
+  //
+  // 为何要做：GUI 的 draw call 已从 3477 降到 1809，但**每帧仍是实成本**
+  // （1294 个标签精灵 + 节点球）。图形完全静止时按 12fps 重绘是纯浪费。
+  //
+  // 判据：相机姿态 + 活动集。任何交互（拖动/悬停/点击）或脉冲都会改变
+  // camKey ⇒ 立即重绘，不受此间隔限制，手感不受影响。
+  //
+  // ★ 必须先判 starmapCam/starmapCtrl：switchChatPanel 里 renderChatStarmap()
+  //   是**异步**拉数据建图的（loadChatStarmapData），但它紧接着就同步调了
+  //   starmapAnimate()。那一瞬间相机还没建出来（starmapCam === null），
+  //   直接读 .position 会抛 TypeError —— 实测报在 switchChatPanel 调用栈上。
+  if (!starmapRen || !starmapCam || !starmapCtrl) return;
+  // ★ 活跃集概念两仓不同，不能相抄：GUI 用 state.starmapGrown（nodeId → 截止时间戳），
+  //   WebUI 用 starmapMorphSet。此前直接从 WebUI 抄了 starmapMorphSet，
+  //   而 GUI 没有这个变量 ⇒ 每帧 ReferenceError、星图 0 帧。
+  var grownCount = 0;
+  for (var _gk in state.starmapGrown) grownCount++;
+  var camKey =
+    starmapCam.position.x.toFixed(3) +
+    "," +
+    starmapCam.position.y.toFixed(3) +
+    "," +
+    starmapCam.position.z.toFixed(3) +
+    "," +
+    starmapCtrl.target.x.toFixed(3) +
+    "," +
+    starmapCtrl.target.y.toFixed(3) +
+    "," +
+    starmapCtrl.target.z.toFixed(3) +
+    "," +
+    state.starmapPulses.length +
+    "," +
+    grownCount +
+    "," +
+    (starmapHovered ? starmapHovered.userData.nodeId : "") +
+    "," +
+    (starmapSelected ? starmapSelected.userData.nodeId : "");
+  var changed = camKey !== starmapLastRenderKey;
+  if (!changed && now - starmapLastRenderAt < SM_IDLE_RENDER_MS) return;
+  starmapLastRenderKey = camKey;
+  starmapLastRenderAt = now;
   if (starmapRen && starmapScene && starmapCam)
     starmapRen.render(starmapScene, starmapCam);
 }
@@ -6656,6 +6952,22 @@ async function connectFetchSSE(url) {
           // Server 因 Last-Event-ID 不在 ring（delta ID / 已到 tip）无法重放，
           // 通知前端增量补拉历史——避免空等后续聚合事件导致「消息同步不及时」。
           syncChatFromHistory();
+        } else if (type === "system") {
+          // 内核级状态事件（目前唯一发布者是 plugin_crashed）。
+          //
+          // ★ 为何必须补上（2026-10-13 协议审计）：该事件一直在发
+          //   （internal/plugin/dynamic_proc.go:175），而 GUI 的事件分发里
+          //   没有任何分支接它 —— 插件崩溃对桌面端用户完全不可见。
+          //
+          // toast(m, isError, warn)：GUI 是三参数形态，warn 走黄色样式。
+          if (p.event === "plugin_crashed") {
+            var nm = p.plugin || "?";
+            toast(
+              __("插件 " + nm + " 异常退出，内核正在重启它", "Plugin " + nm + " crashed; kernel is restarting it"),
+              false,
+              true,
+            );
+          }
         }
       } catch (err) {}
     }
