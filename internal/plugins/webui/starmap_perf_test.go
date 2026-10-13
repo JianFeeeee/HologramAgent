@@ -2,6 +2,7 @@ package webui
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -54,6 +55,51 @@ func TestStarmapNoPerFrameFullScan(t *testing.T) {
 	labels := extractFunc(t, src, "starmapDrawLabels")
 	if !strings.Contains(labels, "SM_LABEL_MIN_INTERVAL") {
 		t.Error("starmapDrawLabels 缺少节流：OrbitControls 有阻尼，拖动时每帧重建 3190 项 plan")
+	}
+
+	// ⑤ ★★ 2026-10-13：力导向布局必须是网格近邻（O(n·k)），不得再出现
+	//    全对全（O(n²)）的双层循环。
+	//
+	//    为何单独钉这一条：生产库 3754 块时全对全 50 轮 = 3.52 亿次配对，
+	//    CDP Profiler 实测单次阻塞主线程 10.9 秒。而斥力体里本来就有
+	//    `if (d < 25)` —— 只对近邻施力，没必要全对全。
+	//
+	//    ★ 判据必须同时覆盖**两处**实现（串行回退 + Worker 脚本）：
+	//    只盯着 dashboard.js 的话，把回退改回全对全就没人拦 ——
+	//    而那正是“有 Worker 与没 Worker 看到的图不一样”的成因。
+	relax := extractFunc(t, src, "starmapLayoutRelax")
+	if !strings.Contains(relax, "grid") || !strings.Contains(relax, "CUTOFF") {
+		t.Error("starmapLayoutRelax 必须走网格近邻（grid + CUTOFF）：" +
+			"全对全斥力在生产库（3754 块）实测阻塞主线程 10.9 秒")
+	}
+	// 全对全的特征：内层循环遍历外层指针的副本（Object.keys(pos) / ids.length）
+	if strings.Contains(relax, "Object.keys") {
+		t.Error("starmapLayoutRelax 又回到 Object.keys 全量遍历：那是 O(n²) 的写法")
+	}
+	if !strings.Contains(src, "starmapLayoutIterationsFor") {
+		t.Error("缺少迭代数自适应（starmapLayoutIterationsFor）：" +
+			"固定 50 轮在大图上绝大多数轮次是在重复收敛后的状态")
+	}
+
+	// Worker 脚本必须存在且用同一套网格算法
+	wb, err := os.ReadFile(filepath.Join("static", "starmap-layout-worker.js"))
+	if err != nil {
+		t.Fatalf("缺少 static/starmap-layout-worker.js: %v", err)
+	}
+	wsrc := string(wb)
+	if !strings.Contains(wsrc, "CUTOFF") || !strings.Contains(wsrc, "iterationsFor") {
+		t.Error("starmap-layout-worker.js 必须用同一套网格法（CUTOFF）与自适应迭代数，" +
+			"否则 Worker 与串行回退会给出不同布局")
+	}
+	if regexp.MustCompile(`for \(var j = i \+ 1; j < ids\.length`).MatchString(wsrc) {
+		t.Error("starmap-layout-worker.js 里仍有全对全双层循环（O(n²)）")
+	}
+
+	// ⑥ 建图必须在容器可见时才做（否则聊天页签也被拖死）。
+	render := extractFunc(t, src, "renderChatStarmap")
+	if !strings.Contains(render, "offsetParent") {
+		t.Error("renderChatStarmap 必须在容器不可见时提前返回（offsetParent 判据）：" +
+			"starmapActiveContainer 会 fallback 到聊天面板，使未打开星图也被迫建图")
 	}
 }
 

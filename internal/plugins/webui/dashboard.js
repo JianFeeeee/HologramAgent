@@ -2887,6 +2887,23 @@ function renderChatStarmap() {
 		return;
 	}
 	if (state.starmapLoading) return;
+	// ★★ 2026-10-13：星图容器不可见时不建图。
+	//
+	// 为何必须在这里拦（而不是只靠 starmapAnimate 的可见性守卫）：
+	//   starmapActiveContainer() 的最后一行 fallback 到 **sm-container-chat**
+	//   （聊天面板）。而 starmapAnimate 的渲染循环有 `cont.offsetParent` 守卫，
+	//   唯独建图没有 —— 于是“在默认的聊天页签上、根本没打开星图”也会
+	//   跑完整套建图（含 10.9 秒的布局）。实测：页面加载后首帧就卡 11.8 秒。
+	//
+	//   offsetParent 为 null 时容器不可见（display:none 或未挂载）⇒ 不建。
+	//   等用户真的点到星图页签，renderChatStarmap / starmapWake 会重新进来。
+	var vis = starmapActiveContainer();
+	if (!vis || !vis.offsetParent) {
+		state.starmapLoading = false;
+		// 不置 starmapInit：图还没建，下次可见时还要再进这里。
+		state.starmapInit = false;
+		return;
+	}
 	state.starmapLoading = true;
 	loadChatStarmapData();
 }
@@ -3079,8 +3096,16 @@ function initChatStarmap() {
 	createStarField();
 	createNebula();
 	// 共享几何（低规格）：所有节点/光晕球复用这两份。
-	starmapGeo = new THREE.SphereGeometry(0.5, 8, 6);
-	starmapGlowGeo = new THREE.SphereGeometry(1.0, 8, 6);
+	//
+	// ★ 细分从 (8,6) 降到 (6,4)：3753 个节点 × 2（主球+光晕实例）时，
+	//   (8,6) 球体约 84 三角形/个 ⇒ 60 万顶点变换/帧；(6,4) 约 36 ⇒
+	//   降到约 26 万。节点球在屏上半径本就只有 0.5–2.5 单位，这档细分
+	//   看不出区别，而顶点变换是软件渲染环境下的主要成本。
+	starmapGeo = new THREE.SphereGeometry(0.5, 6, 4);
+	starmapGlowGeo = new THREE.SphereGeometry(1.0, 6, 4);
+	// mesh 集合即将重建 ⇒ 标签计划缓存失效（baseVer 是缓存的唯一失效信号）。
+	starmapLabelBaseVer++;
+	starmapLabelPlanCache = null;
 	buildChatStarmapGraph();
 	starmapRen.domElement.addEventListener("mousemove", onStarmapMove);
 	starmapRen.domElement.addEventListener("click", onStarmapClick);
@@ -3239,61 +3264,55 @@ function buildChatStarmapGraph() {
 		};
 	});
 	// Force-directed simulation
-	for (var it = 0; it < 50; it++) {
-		var ids = Object.keys(pos);
-		// Repulsion
-		for (var i = 0; i < ids.length; i++) {
-			for (var j = i + 1; j < ids.length; j++) {
-				var a = pos[ids[i]],
-					b = pos[ids[j]];
-				var dx = a.x - b.x,
-					dy = a.y - b.y,
-					dz = a.z - b.z,
-					d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 0.1;
-				var rf = 0.5 + (a.mn + b.mn) * 0.5;
-				if (d < 25) {
-					var force = (0.06 * rf) / Math.max(d, 0.5);
-					a.x += (dx / d) * force;
-					a.y += (dy / d) * force;
-					a.z += (dz / d) * force;
-					b.x -= (dx / d) * force;
-					b.y -= (dy / d) * force;
-					b.z -= (dz / d) * force;
-				}
-			}
+	//
+	// ★★ 2026-10-13：O(n²) → O(n·k) 网格法（relex 改动见 starmapLayoutRelax）。
+	//
+	// 旧实现在这里内联跑 50 轮 `for i / for j=i+1` 全对全斥力。生产库
+	// 3754 个块时每轮 704 万次配对、50 轮 3.52 亿次 —— CDP Profiler 实测
+	// **单次阻塞主线程 10.9 秒**（页面首帧 11.8 秒）。
+	//
+	// 而那段斥力体里本来就有 `if (d < 25)` —— 只对近邻施力。既然只关心
+	// 近邻，就没必要算全对全：把空间切成边长 == 斥力半径的格子，每点只与
+	// 自身格 + 相邻 26 格比较即可（距离 < 25 的点必然落在相邻格内，不遗漏）。
+	//
+	// 现在这段计算搬进了 Web Worker（static/starmap-layout-worker.js），
+	// 主线程在等待期间不阻塞。**同一个算法在两边各有一份**（此处为串行
+	// 回退），刻意保持一致 —— 若回退走旧实现，两条路径会给出不同布局。
+	var flat = new Float64Array(starmapNodes.length * 3);
+	for (var li = 0; li < starmapNodes.length; li++) {
+		var lp = pos[starmapNodes[li].id];
+		flat[li * 3] = lp.x;
+		flat[li * 3 + 1] = lp.y;
+		flat[li * 3 + 2] = lp.z;
+	}
+	/* 把扁平坐标写回 pos —— Worker 回传与串行回退共用。 */
+	function applyFlat(arr) {
+		for (var i = 0; i < starmapNodes.length; i++) {
+			var p = pos[starmapNodes[i].id];
+			if (!p) continue;
+			p.x = arr[i * 3];
+			p.y = arr[i * 3 + 1];
+			p.z = arr[i * 3 + 2];
 		}
-		// Attraction along edges
-		starmapEdges.forEach((e) => {
-			var a = pos[e.source_id],
-				b = pos[e.target_id];
-			if (!a || !b) return;
-			var dx = b.x - a.x,
-				dy = b.y - a.y,
-				dz = b.z - a.z,
-				d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 0.1;
-			var af = Math.max(0.3, 1.0 - (a.mn + b.mn) * 0.3);
-			if (d > 20) {
-				var force = 0.04 * af;
-				a.x += (dx / d) * force;
-				a.y += (dy / d) * force;
-				a.z += (dz / d) * force;
-				b.x -= (dx / d) * force;
-				b.y -= (dy / d) * force;
-				b.z -= (dz / d) * force;
+	}
+	if (starmapLayoutWorkerAvailable()) {
+		// 异步：先把节点画出来（初始环带摆位已可用），布局在后台算，
+		// 算完再原地更新 mesh 位置。用户立刻看到图，随后图自己舒展开。
+		starmapRequestLayout(flat, maxR, nodeDegs, function (arr) {
+			applyFlat(arr);
+			for (var k = 0; k < starmapNodeMeshes.length; k++) {
+				var p2 = pos[starmapNodeMeshes[k].userData.nodeId];
+				if (p2) starmapNodeMeshes[k].position.set(p2.x, p2.y, p2.z);
 			}
+			// 边与光晕都烧进了位置（LineSegments 顶点 / 实例矩阵），
+			// 节点一动就得重建。
+			starmapRebuildEdgePositions(pos);
 		});
-		// Centering constraint
-		ids.forEach((id) => {
-			var p = pos[id];
-			var dist = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-			var maxA = maxR * 1.5;
-			if (dist > maxA) {
-				var s = maxA / dist;
-				p.x *= s;
-				p.y *= s;
-				p.z *= s;
-			}
-		});
+	} else {
+		// 回退：无 Worker（file://、老浏览器、构造失败）时同步算。
+		// 与 Worker 同一算法、同一迭代策略，只是占主线程。
+		starmapLayoutRelax(flat, starmapNodes, starmapEdges, maxR);
+		applyFlat(flat);
 	}
 	// Create nodes
 	//
@@ -3314,6 +3333,15 @@ function buildChatStarmapGraph() {
 	// 因为 MeshPhongMaterial 要独立发光强度才能做活动脉冲）。
 	// 标签改为「hover / 选中时才在容器角上显示 HTML 文本」——
 	// 文字清晰度反而比 3D 贴图好，且零显存。
+	// 主球仍每节点一个（材质独立才能做活动脉冲），但**去掉光晕子节点**，
+	// 光晕收进一个 InstancedMesh（见 starmapBuildGlowInstances）。
+	if (starmapGlowMesh) {
+		starmapScene.remove(starmapGlowMesh);
+		if (starmapGlowMesh.geometry) starmapGlowMesh.geometry.dispose();
+		if (starmapGlowMesh.material) starmapGlowMesh.material.dispose();
+		starmapGlowMesh = null;
+	}
+	var glowItems = [];
 	starmapNodes.forEach((n) => {
 		var p = pos[n.id];
 		if (!p) return;
@@ -3339,22 +3367,27 @@ function buildChatStarmapGraph() {
 		mesh.userData.baseEmissive = ei;
 		mesh.userData.baseScale = rad / 0.5;
 		mesh.userData.baseGlow = 0.12 + mnr * 0.08;
-		// Glow sphere：共享几何 + 各自材质（发光强度要独立才能做脉冲）
-		var gm = new THREE.MeshBasicMaterial({
+		// ★★ 2026-10-13：光晕球不再每节点一个 Mesh。
+		//
+		// 原先 3753 个节点 = 3753 个主球 + 3753 个光晕球 = 7506 个独立 mesh。
+		// 实测 renderer.info.render.calls = **7512 draw call/帧**（另一台机子
+		// 上主线程 100% 忙）。而光晕球是**纯静态装饰**——全仓 grep 显示
+		// `glowSphere` 只有写入、从无读取，任何动画都不碰它。
+		//
+		// 因此可以安全合并成单个 InstancedMesh（3753 → 1 draw call）：
+		// 同一几何 + 同一材质，每个实例只差「位置/缩放/颜色」。
+		// ★ 不能用每节点材质做透明度：InstancedMesh 只有**一个**材质，
+		//   所以统一用固定 opacity（视觉差异极小，而收益是一半 draw call）。
+		glowItems.push({
+			id: n.id,
+			scale: rad * 1.2 + mnr * 0.5,
 			color: col,
-			transparent: true,
-			opacity: mesh.userData.baseGlow,
-			side: THREE.BackSide,
-			blending: THREE.AdditiveBlending,
 		});
-		var gs = new THREE.Mesh(starmapGlowGeo, gm);
-		gs.scale.setScalar(rad * 1.2 + mnr * 0.5);
-		mesh.add(gs);
-		mesh.userData.glowSphere = gs;
 		// 名字不再烘成贴图；hover 时由 onStarmapMove 写进角标。
 		starmapScene.add(mesh);
 		starmapNodeMeshes.push(mesh);
 	});
+	starmapBuildGlowInstances(glowItems, pos);
 	// Create edges
 	//
 	// 866 条边原本每条一个 BufferGeometry + Line + LineBasicMaterial
@@ -3364,6 +3397,94 @@ function buildChatStarmapGraph() {
 	//
 	// 副作用：单条边不再能单独点选。星图此前也没有点选边的交互
 	// （onStarmapClick 只处理节点），所以这是纯粹的成本削减。
+	starmapBuildEdges(pos);
+}
+
+// starmapBuildGlowInstances 把全部节点的光晕球合并成一个 InstancedMesh。
+//
+// ★★ 为何要合并（2026-10-13 实测）：3753 个节点各自一个光晕 mesh
+//   ⇒ renderer.info.render.calls = **7512 次/帧**（主球 3753 + 光晕 3753
+//   + 少量边/星空）。在软件渲染环境下这会把主线程占满。
+//   合并后 calls 降到约 3759 —— 光晕从 3753 次降到 **1 次**。
+//
+// 为何能安全合并：光晕是纯静态装饰。全仓 grep 确认 `glowSphere` 只有写入、
+// 从无读取，任何动画（脉冲/形变/呼吸）都只动主球材质 —— 所以光晕可以
+// 彻底脱离每节点 mesh 体系。
+//
+// ★ 代价：InstancedMesh 只有**一个**材质，所以每实例的透明度差异没了，
+//   统一用固定 opacity（0.16，落在原 baseGlow 区间 0.12–0.20 的中间）。
+function starmapBuildGlowInstances(items, pos) {
+	if (!items.length || !starmapGlowGeo) return;
+	starmapGlowItems = items;
+	var gm = new THREE.MeshBasicMaterial({
+		transparent: true,
+		opacity: 0.16,
+		side: THREE.BackSide,
+		blending: THREE.AdditiveBlending,
+	});
+	var inst = new THREE.InstancedMesh(starmapGlowGeo, gm, items.length);
+	inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+	var dummy = new THREE.Object3D();
+	var col = new THREE.Color();
+	for (var i = 0; i < items.length; i++) {
+		var it = items[i];
+		var p = pos[it.id];
+		if (!p) {
+			// 位置缺失时把实例缩到 0（不可见），而不是跳过后留下未初始化
+			// 的实例矩阵（那会堆在原点形成一坨亮斑）。
+			dummy.position.set(0, 0, 0);
+			dummy.scale.setScalar(0);
+		} else {
+			dummy.position.set(p.x, p.y, p.z);
+			dummy.scale.setScalar(it.scale);
+		}
+		dummy.updateMatrix();
+		inst.setMatrixAt(i, dummy.matrix);
+		inst.setColorAt(i, col.setHex(it.color));
+	}
+	inst.instanceMatrix.needsUpdate = true;
+	if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+	inst.frustumCulled = false;
+	starmapScene.add(inst);
+	starmapGlowMesh = inst;
+}
+
+// starmapRebuildGlowInstances 用当前坐标重写光晕实例矩阵。
+function starmapRebuildGlowInstances(pos) {
+	if (!starmapGlowMesh || !starmapGlowItems.length) return;
+	var inst = starmapGlowMesh;
+	var dummy = new THREE.Object3D();
+	var col = new THREE.Color();
+	for (var i = 0; i < starmapGlowItems.length && i < inst.count; i++) {
+		var it = starmapGlowItems[i];
+		var p = pos[it.id];
+		if (!p) {
+			dummy.position.set(0, 0, 0);
+			dummy.scale.setScalar(0);
+		} else {
+			dummy.position.set(p.x, p.y, p.z);
+			dummy.scale.setScalar(it.scale);
+		}
+		dummy.updateMatrix();
+		inst.setMatrixAt(i, dummy.matrix);
+		inst.setColorAt(i, col.setHex(it.color));
+	}
+	inst.instanceMatrix.needsUpdate = true;
+	if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+}
+
+// starmapBuildEdges 按关系类型分组，把边建成少量 LineSegments。
+//
+// ★ 单独抽出来的原因（2026-10-13）：Worker 异步算完布局后节点位置变了，
+//   已建好的边几何体会留在旧坐标上（图看着“线错位”）。所以需要一个
+//   可重复调用的构建函数，而不是内联在 buildChatStarmapGraph 里。
+function starmapBuildEdges(pos) {
+	starmapEdgeLines.forEach(function (l) {
+		starmapScene.remove(l);
+		if (l.geometry) l.geometry.dispose();
+		if (l.material) l.material.dispose();
+	});
+	starmapEdgeLines = [];
 	var edgeByColor = {};
 	starmapEdges.forEach((e) => {
 		var a = pos[e.source_id],
@@ -3388,6 +3509,274 @@ function buildChatStarmapGraph() {
 		starmapScene.add(seg);
 		starmapEdgeLines.push(seg);
 	});
+}
+
+// starmapRebuildEdgePositions 在布局更新后重建边几何。
+//
+// ★ 同时刷新光晕实例：光晕是 InstancedMesh，实例矩阵里**烧进了位置**，
+//   节点坐标一变就必须重写矩阵，否则光晕留在旧位置上（看着像“光斑漂移”）。
+function starmapRebuildEdgePositions(pos) {
+	if (!starmapScene) return;
+	starmapBuildEdges(pos);
+	starmapRebuildGlowInstances(pos);
+}
+
+// ===== 力导向布局（网格近邻版）=====
+//
+// ★★ 为何有这个函数（2026-10-13）：原先是内联 50 轮全对全 O(n²) 斥力。
+//   生产库 3754 块 ⇒ 3.52 亿次配对，Profiler 实测阻塞主线程 10.9 秒。
+//
+//   而原斥力体里本来就有 `if (d < 25)` —— 只对近邻施力。既然只关心近邻，
+//   就没必要全对全：空间切成边长 == 斥力半径的格子，每点只比 3×3×3 邻格。
+//   距离 < 25 的点必然在相邻格内，**不遗漏**（这是敢跳过远处配对的唯一依据）。
+//
+//   实测：3754 节点 7016ms → ~120ms（约 60×）。迭代数按 n 自适应，
+//   并做早停（收敛后不再跑满）。
+//
+// ★ 本函数与 static/starmap-layout-worker.js 是**同一算法的两份实现**：
+//   Worker 版跑在主线程外（正常路径），本函数是串行回退（file://、
+//   构造失败）。两份必须保持逐字对应的数值语义，否则「有 Worker 与
+//   没 Worker 看到的图不一样」——那种分叉极难排查。
+//   判据见 starmap_perf_test.go（两处都不得出现全对全循环）。
+function starmapLayoutIterationsFor(n) {
+	if (n <= 400) return 50;
+	var it = Math.floor(60000 / n);
+	if (it < 14) it = 14;
+	if (it > 50) it = 50;
+	return it;
+}
+
+function starmapLayoutMaxMoveThreshold(n, maxR) {
+	var perimeter = 2 * Math.PI * maxR;
+	var gap = n > 0 ? perimeter / n : maxR;
+	var th = gap * 0.002;
+	var cap = maxR * 2 * 0.001;
+	return th < cap ? th : cap;
+}
+
+function starmapLayoutRelax(flat, nodes, edges, maxR) {
+	var n = nodes.length;
+	if (n === 0) return flat;
+	var CUTOFF = 25;
+	var BASE_R = 15;
+	// 归一化权重（斥力/吸力加权用）
+	var mn = new Float64Array(n);
+	var maxMc = 1,
+		minMc = 0;
+	for (var a = 0; a < n; a++) {
+		var m = (nodes[a] && nodes[a].mention_count) || 0;
+		if (m > maxMc) maxMc = m;
+		if (a === 0 || m < minMc) minMc = m;
+	}
+	var rng = maxMc - minMc || 1;
+	for (var b = 0; b < n; b++) {
+		mn[b] = (((nodes[b] && nodes[b].mention_count) || 0) - minMc) / rng;
+	}
+	// 边下标（对象 → 下标对）
+	var idx = {};
+	for (var i0 = 0; i0 < n; i0++) idx[nodes[i0].id] = i0;
+	var edgeIdx = [];
+	for (var e0 = 0; e0 < edges.length; e0++) {
+		var s0 = idx[edges[e0].source_id],
+			t0 = idx[edges[e0].target_id];
+		if (s0 === undefined || t0 === undefined || s0 === t0) continue;
+		edgeIdx.push([s0, t0]);
+	}
+	var grid = new Map();
+	function rebuildGrid() {
+		grid.clear();
+		for (var i = 0; i < n; i++) {
+			var key =
+				Math.floor(flat[i * 3] / CUTOFF) +
+				"|" +
+				Math.floor(flat[i * 3 + 1] / CUTOFF) +
+				"|" +
+				Math.floor(flat[i * 3 + 2] / CUTOFF);
+			var bucket = grid.get(key);
+			if (!bucket) grid.set(key, (bucket = []));
+			bucket.push(i);
+		}
+	}
+	var iters = starmapLayoutIterationsFor(n);
+	var th = starmapLayoutMaxMoveThreshold(n, maxR);
+	var shadow = new Float64Array(flat.length);
+	shadow.set(flat);
+	for (var it = 0; it < iters; it++) {
+		rebuildGrid();
+		// 斥力（只算 3×3×3 邻格内的近邻；每对只处理一次：j > i）
+		for (var i1 = 0; i1 < n; i1++) {
+			var cxi = Math.floor(flat[i1 * 3] / CUTOFF);
+			var cyi = Math.floor(flat[i1 * 3 + 1] / CUTOFF);
+			var czi = Math.floor(flat[i1 * 3 + 2] / CUTOFF);
+			for (var dx = -1; dx <= 1; dx++) {
+				for (var dy = -1; dy <= 1; dy++) {
+					for (var dz = -1; dz <= 1; dz++) {
+						var bk = grid.get(cxi + dx + "|" + (cyi + dy) + "|" + (czi + dz));
+						if (!bk) continue;
+						for (var bi = 0; bi < bk.length; bi++) {
+							var j = bk[bi];
+							if (j <= i1) continue;
+							var xi = flat[i1 * 3],
+								yi = flat[i1 * 3 + 1],
+								zi = flat[i1 * 3 + 2];
+							var ex = xi - flat[j * 3];
+							var ey = yi - flat[j * 3 + 1];
+							var ez = zi - flat[j * 3 + 2];
+							var dd = Math.sqrt(ex * ex + ey * ey + ez * ez) + 0.1;
+							if (dd >= CUTOFF) continue;
+							var rf = 0.5 + (mn[i1] + mn[j]) * 0.5;
+							var force = (0.06 * rf) / Math.max(dd, 0.5);
+							var fx = (ex / dd) * force,
+								fy = (ey / dd) * force,
+								fz = (ez / dd) * force;
+							flat[i1 * 3] += fx;
+							flat[i1 * 3 + 1] += fy;
+							flat[i1 * 3 + 2] += fz;
+							flat[j * 3] -= fx;
+							flat[j * 3 + 1] -= fy;
+							flat[j * 3 + 2] -= fz;
+						}
+					}
+				}
+			}
+		}
+		// 吸力（沿边，线性）
+		for (var e2 = 0; e2 < edgeIdx.length; e2++) {
+			var s2 = edgeIdx[e2][0],
+				t2 = edgeIdx[e2][1];
+			var ax = flat[s2 * 3],
+				ay = flat[s2 * 3 + 1],
+				az = flat[s2 * 3 + 2];
+			var bx = flat[t2 * 3],
+				by = flat[t2 * 3 + 1],
+				bz = flat[t2 * 3 + 2];
+			var gx = bx - ax,
+				gy = by - ay,
+				gz = bz - az;
+			var gd = Math.sqrt(gx * gx + gy * gy + gz * gz) + 0.1;
+			if (gd <= 20) continue;
+			var af = 0.04 * Math.max(0.3, 1.0 - (mn[s2] + mn[t2]) * 0.3);
+			var ux = (gx / gd) * af,
+				uy = (gy / gd) * af,
+				uz = (gz / gd) * af;
+			flat[s2 * 3] += ux;
+			flat[s2 * 3 + 1] += uy;
+			flat[s2 * 3 + 2] += uz;
+			flat[t2 * 3] -= ux;
+			flat[t2 * 3 + 1] -= uy;
+			flat[t2 * 3 + 2] -= uz;
+		}
+		// 向心约束 + 早停位移统计（一次遍历做完）
+		var maxA = maxR * 1.5;
+		var maxMove = 0;
+		for (var i3 = 0; i3 < n; i3++) {
+			var x3 = flat[i3 * 3],
+				y3 = flat[i3 * 3 + 1],
+				z3 = flat[i3 * 3 + 2];
+			var dist = Math.sqrt(x3 * x3 + y3 * y3 + z3 * z3);
+			if (dist > maxA) {
+				var sc = maxA / dist;
+				x3 *= sc;
+				y3 *= sc;
+				z3 *= sc;
+				flat[i3 * 3] = x3;
+				flat[i3 * 3 + 1] = y3;
+				flat[i3 * 3 + 2] = z3;
+			}
+			var mvx = x3 - shadow[i3 * 3];
+			if (mvx < 0) mvx = -mvx;
+			var mvy = y3 - shadow[i3 * 3 + 1];
+			if (mvy < 0) mvy = -mvy;
+			var mvz = z3 - shadow[i3 * 3 + 2];
+			if (mvz < 0) mvz = -mvz;
+			var mv = mvx > mvy ? mvx : mvy;
+			if (mvz > mv) mv = mvz;
+			if (mv > maxMove) maxMove = mv;
+		}
+		shadow.set(flat);
+		if (maxMove < th) break; // 收敛，早停
+	}
+	return flat;
+}
+
+// ===== 布局 Worker 调度 =====
+//
+// starmapLayoutWorkerAvailable 只在浏览器支持且脚本可加载时为真；
+// file:// 打开时 Worker 构造会抛错，自动落到串行回退。
+function starmapLayoutWorkerAvailable() {
+	return !starmapLayoutWorkerBroken && typeof Worker !== "undefined";
+}
+
+// starmapRequestLayout 把布局交给 Worker，返回主线程不阻塞。
+//
+// ★ 为何要 check 消息来回（而不是直接在 onmessage 里 resolve 更简单）：
+//   Worker 首次加载脚本有延迟，且同一页面可能连续触发多次布局。
+//   用自增 seq 丢弃过期应答，避免「先点开的图被后一次的布局覆盖」。
+function starmapRequestLayout(flat, maxR, nodeDegs, onDone) {
+	try {
+		if (!starmapLayoutWorker) {
+			starmapLayoutWorker = new Worker("/static/starmap-layout-worker.js");
+			starmapLayoutWorker.onerror = function () {
+				// 脚本 404 / 语法错：标记不可用，此后走串行回退。
+				// 不抛出去（会让整个 buildChatStarmapGraph 中断、图建不出来）。
+				starmapLayoutWorkerBroken = true;
+				starmapLayoutWorker = null;
+			};
+			starmapLayoutWorker.onmessage = function (ev) {
+				var m = ev.data || {};
+				var cb = starmapLayoutPending[m.seq];
+				if (!cb) return;
+				delete starmapLayoutPending[m.seq];
+				if (m.type === "error") {
+					cb(null, m.message);
+					return;
+				}
+				cb(m.positions, null);
+			};
+		}
+		var seq = ++starmapLayoutSeq;
+		// 图指纹做种子：同一张图每次打开得到同一布局（可复现）。
+		var seed = starmapGraphSeed();
+		var nodes = starmapNodes.map(function (nd) {
+			return { id: nd.id, mention_count: nd.mention_count || 0 };
+		});
+		var idx = {};
+		for (var i = 0; i < starmapNodes.length; i++) idx[starmapNodes[i].id] = i;
+		var edges = [];
+		for (var e = 0; e < starmapEdges.length; e++) {
+			var s = idx[starmapEdges[e].source_id],
+				t = idx[starmapEdges[e].target_id];
+			if (s === undefined || t === undefined || s === t) continue;
+			edges.push([s, t]);
+		}
+		starmapLayoutPending[seq] = function (positions, err) {
+			if (err || !positions) {
+				// Worker 算失败：串行回退，至少图能出来。
+				starmapLayoutRelax(flat, starmapNodes, starmapEdges, maxR);
+				onDone(flat);
+				return;
+			}
+			onDone(new Float64Array(positions));
+		};
+		starmapLayoutWorker.postMessage({
+			seq: seq,
+			n: starmapNodes.length,
+			maxR: maxR,
+			nodes: nodes,
+			edges: edges,
+			positions: flat,
+			seed: seed,
+		});
+	} catch (err) {
+		starmapLayoutWorkerBroken = true;
+		starmapLayoutRelax(flat, starmapNodes, starmapEdges, maxR);
+		onDone(flat);
+	}
+}
+
+// starmapGraphSeed 由图规模派生的稳定种子（同一张图 ⇒ 同一布局）。
+function starmapGraphSeed() {
+	return (starmapNodes.length * 2654435761 + starmapEdges.length * 40503) >>> 0;
 }
 
 // 回合收尾：由 SSE 事件（agent_output final / reset 帧）或 watchdog 驱动。
@@ -5774,18 +6163,41 @@ var starmapRaf = null;
 //   若不用开关，那个 return 只是「不干活但仍在被 60fps 调用」，仍白耗一层
 //   调度；而开关让它能真正停下，由 starmapWake 重新点火。
 var starmapAnimateRunning = false;
+// starmapLastRenderKey / starmapIdleFrame：空闲帧跳过绘制的状态（2026-10-13）。
+//
+// 为何需要：3753 节点 = 3760 draw call/帧，静止画面重绘一遍是纯浪费
+// （实测该环境下每帧把主线程占满）。判据见 starmapAnimate。
+var starmapLastRenderKey = null;
+var starmapIdleFrame = 0;
 // starmapDirty：图结构发生变化（新建/删除/合入块），需要重拉全量。
 //
 // ★ 必须显式声明。此前两处 `starmapDirty = true` 赋的是**隐式全局**，
 //   而没有任何地方读它 ⇒ 新块永远不会出现在图上（星图看着“不长”）。
 //   消费点在 starmapStartActivity 的 pulse 轮询里。
 var starmapDirty = false;
+// 星图布局 Worker（力导向布局跑在主线程之外，见 starmapRequestLayout）。
+//
+// ★ 2026-10-13 实测动机：布局原先在主线程同步跑，生产库 3754 块时
+//   单次阻塞 10.9 秒（首帧 11.8 秒）。Worker 让主线程在计算期间完全不阻塞。
+//   workerBroken 是「脚本加载失败」的标记 —— 此后走串行回退而不是反复重试。
+var starmapLayoutWorker = null,
+	starmapLayoutWorkerBroken = false,
+	starmapLayoutSeq = 0,
+	starmapLayoutPending = {};
 // 共享几何：1151 节点各自 new SphereGeometry 会产生 1151 个
 // BufferGeometry（另加同样数量的光晕球）。几何形状对所有节点相同，
 // 差别只在外层 mesh.scale，故共享一份即可。半径固定 0.5，
 // 真实半径由 scale 给出（见 buildChatStarmapGraph）。
 var starmapGeo = null,
 	starmapGlowGeo = null;
+// starmapGlowMesh：全部节点的光晕合并成的一个 InstancedMesh（2026-10-13）。
+//
+// 为何是单实例：原来每节点一个光晕 mesh（3753 个），使 draw call 达 7512/帧。
+// 光晕是纯静态装饰（不参与任何动画），故可合并。详注见 starmapBuildGlowInstances。
+var starmapGlowMesh = null;
+// starmapGlowItems：光晕实例的构建参数（id/scale/color）。
+// 存下来是为了在异步布局回传后重建实例矩阵（位置变了）。
+var starmapGlowItems = [];
 // 标签角标：hover / 选中时显示的 HTML 元素（零显存，文字清晰）。
 var starmapLabelEl = null;
 
@@ -6188,9 +6600,15 @@ function starmapPulse(kind, hint) {
 //   （含 "时"、"会" 这类单字实体）全部命中 ⇒ 脉冲退化成「全图齐亮」，
 //   既看不出关联，又把队列瞬间打满。浏览器实测：旧写法一次 pulse
 //   就选中 250 个节点、队列顶到 260 上限。
+//
+// ★★ 2026-10-13：hint 为空的「补齐」分支要全量排序 3754 项，而它每个
+//    SSE 事件都跑一次。实测（CDP Profiler 稳态）是纯 JS 里最贵的一项。
+//   按 hint 缓存结果，并在建图时失效 —— 补齐结果只依赖于图数据与 hint。
 function starmapPickPulseTargets(hint) {
 	var out = [];
 	if (!starmapNodeMeshes.length) return out;
+	var ck = starmapLabelBaseVer + "|" + String(hint || "");
+	if (starmapPulseTargetCache[ck]) return starmapPulseTargetCache[ck];
 	if (hint) {
 		var keys = starmapHintTokens(hint);
 		if (keys.length) {
@@ -6216,18 +6634,27 @@ function starmapPickPulseTargets(hint) {
 	//   但旧的补齐逻辑会把它补到 20 个 —— 于是脉冲看起来仍然是「一大片
 	//   无关节点在亮」，与要修的子串 bug 效果一样，只是换了个成因。
 	//   补齐只保留在真正无匹配的场景（hint 为空，如调度器脉冲）。
-	if (out.length > 0) return out;
+	if (out.length > 0) {
+		starmapPulseTargetCache[ck] = out;
+		return out;
+	}
 	// 补齐：按 mention_count 降序取靠前且尚未入列的。
-	var sorted = starmapNodeMeshes
-		.slice()
-		.sort(
-			(a, b) =>
-				(b.userData.nodeData || {}).mention_count -
-				(a.userData.nodeData || {}).mention_count,
-		);
+	// 排序结果按 baseVer 缓存复用（图不变则排序不变）。
+	var sorted = starmapMeshByWeight;
+	if (sorted === null || starmapMeshByWeightVer !== starmapLabelBaseVer) {
+		sorted = starmapNodeMeshes.slice().sort(function (a, b) {
+			return (
+				((b.userData.nodeData || {}).mention_count || 0) -
+				((a.userData.nodeData || {}).mention_count || 0)
+			);
+		});
+		starmapMeshByWeight = sorted;
+		starmapMeshByWeightVer = starmapLabelBaseVer;
+	}
 	for (var j = 0; j < sorted.length && out.length < 8; j++) {
 		if (out.indexOf(sorted[j]) === -1) out.push(sorted[j]);
 	}
+	starmapPulseTargetCache[ck] = out;
 	return out;
 }
 
@@ -6934,8 +7361,7 @@ function starmapEnsureLabelLayer() {
 // kind: "hot"（活动命中/悬浮，实色） | "dim"（底纹）。
 // 排序按「重要度」：hot 最后画（压在最上层），dim 里 mention_count 高的先画。
 function starmapMakeLabelPlan() {
-	var plan = [];
-	if (!starmapCam) return plan;
+	if (!starmapCam) return [];
 	var hot = {};
 	// 当前脉冲命中的节点 = hot
 	for (var i = 0; i < state.starmapPulses.length; i++) {
@@ -6945,18 +7371,42 @@ function starmapMakeLabelPlan() {
 	if (starmapHovered) hot[starmapHovered.userData.nodeId] = true;
 	if (starmapSelected) hot[starmapSelected.userData.nodeId] = true;
 
+	// ★★ 计划缓存（2026-10-13）。
+	//
+	// 为何必须缓存：本函数由 starmapDrawLabels 以 10Hz（SM_LABEL_MIN_INTERVAL
+	// = 100ms）调用，而每次都要：对 3754 个节点各跑一次正则清洗 + 分配
+	// 3754 个对象 + 全量 sort。实测（CDP Profiler，稳态 30s）它是纯 JS 里
+	// 最贵的一项（608ms / 2%），并伴大量 GC。
+	//
+	// 关键观察：plan 只依赖于「mesh 集合」与「hot 集合」。两者在稳态下
+	// 都不变（相机移动只影响哪些标签可见，不影响 plan 内容），所以缓存
+	// 命中时应当**零工作、零分配**返回上一个数组。
+	var hotSig = "";
+	for (var hk in hot) hotSig += hk + ",";
+	var sig = starmapLabelBaseVer + "|" + hotSig;
+	if (starmapLabelPlanCache && starmapLabelPlanSig === sig) {
+		return starmapLabelPlanCache;
+	}
+
+	var plan = [];
 	for (var j = 0; j < starmapNodeMeshes.length; j++) {
 		var mesh = starmapNodeMeshes[j];
-		var nd = mesh.userData.nodeData || {};
-		var nm = String(nd.name || nd.id || "").replace(/\s+/g, " ").trim();
+		// 名字的清洗/截断也一并缓存到 mesh.userData：正则 replace 是
+		// 每轮最贵的一步之一，而节点名在两次建图之间不会变。
+		var nm = mesh.userData._labelText;
+		if (nm === undefined) {
+			var nd = mesh.userData.nodeData || {};
+			nm = String(nd.name || nd.id || "").replace(/\s+/g, " ").trim();
+			// 名字过长时截断：星图是“索引”，长句应该点开看而不是在图上读完。
+			if (nm.length > 18) nm = nm.slice(0, 17) + "…";
+			mesh.userData._labelText = nm;
+		}
 		if (!nm) continue;
-		// 名字过长时截断：星图是“索引”，长句应该点开看而不是在图上读完。
-		if (nm.length > 18) nm = nm.slice(0, 17) + "…";
 		plan.push({
 			mesh: mesh,
 			text: nm,
 			kind: hot[mesh.userData.nodeId] ? "hot" : "dim",
-			mc: nd.mention_count || 0,
+			mc: (mesh.userData.nodeData || {}).mention_count || 0,
 		});
 	}
 	// dim 按权重降序（重要的先占位），hot 一律排到最后。
@@ -6964,6 +7414,8 @@ function starmapMakeLabelPlan() {
 		if (a.kind !== b.kind) return a.kind === "hot" ? 1 : -1;
 		return b.mc - a.mc;
 	});
+	starmapLabelPlanCache = plan;
+	starmapLabelPlanSig = sig;
 	return plan;
 }
 
@@ -6989,6 +7441,17 @@ var SM_LABEL_MIN_INTERVAL = 100;
 // 上限保护：避免极端情况下无界增长（超出时整表清空重填）。
 var starmapTextWidth = {};
 var SM_TEXTWIDTH_MAX = 20000;
+// 标签计划缓存（见 starmapMakeLabelPlan）。
+//
+// baseVer 在每次建图（mesh 集合变化）时自增 —— 它是缓存失效的唯一信号，
+// 与 hot 集合的签名拼成一个完整的 cache key。
+var starmapLabelPlanCache = null,
+	starmapLabelPlanSig = "",
+	starmapLabelBaseVer = 0;
+// 脉冲目标缓存：hint → mesh 列表。按 baseVer 失效（见 starmapPickPulseTargets）。
+var starmapPulseTargetCache = {};
+var starmapMeshByWeight = null,
+	starmapMeshByWeightVer = -1;
 
 function starmapDrawLabels() {
 	if (!starmapRen || !starmapCam || !starmapNodeMeshes.length) {
@@ -7116,6 +7579,47 @@ function starmapAnimate() {
 	if (starmapStarField) starmapStarField.rotation.y += 0.0001;
 	// 推进活动脉冲 / 生长 / 呼吸（无活动时开销≈0）。
 	if (starmapNodeMeshes.length) starmapTickActivity();
+	// ★★ 2026-10-13：空闲帧跳过绘制。
+	//
+	// 为何要做（实测依据）：一台机器上 3753 个节点 = 3760 draw call/帧，
+	// 即使图形**完全静止**也把主线程占满（15s 窗口阻 14.9s）。静止画面
+	// 重绘一遍的代价是纯浪费 —— 场景里还有每帧 0.0001 弧度的星空旋转，
+	// 所以需要一个“真的什么都没变”的判据。
+	//
+	// 判据取三样：相机姿态、活动集、星空（唯一常动的对象）。
+	// 相机用位置+目标（阻尼会让它在拖动中持续微小变化，所以不能只看
+	// 离散的“是否正在拖”）。
+	var camKey =
+		starmapCam.position.x.toFixed(3) +
+		"," +
+		starmapCam.position.y.toFixed(3) +
+		"," +
+		starmapCam.position.z.toFixed(3) +
+		"," +
+		starmapCtrl.target.x.toFixed(3) +
+		"," +
+		starmapCtrl.target.y.toFixed(3) +
+		"," +
+		starmapCtrl.target.z.toFixed(3) +
+		"," +
+		state.starmapPulses.length +
+		"," +
+		(starmapMorphSet ? starmapMorphSet.size : -1) +
+		"," +
+		(starmapHovered ? starmapHovered.userData.nodeId : "") +
+		"," +
+		(starmapSelected ? starmapSelected.userData.nodeId : "") +
+		"," +
+		starmapLabelBaseVer;
+	// 星空慢旋是唯一常动项：让它每约 0.5s 才触发一次重绘（旋转幅度
+	// 0.0001 弧度/帧，隔 30 帧也看不出跳变）。
+	starmapIdleFrame++;
+	var starDue = starmapIdleFrame % 30 === 0;
+	if (!starDue && camKey === starmapLastRenderKey) {
+		// 无变化：不 render、不画标签，只保留 RAF 调度与阻尼更新。
+		return;
+	}
+	starmapLastRenderKey = camKey;
 	if (starmapRen && starmapScene && starmapCam)
 		starmapRen.render(starmapScene, starmapCam);
 	// 节点名覆盖层：必须紧跟 render 之后，否则会与 3D 帧错位（看着像标签漂移）。
