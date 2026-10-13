@@ -734,7 +734,19 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	// executeNewTask/resumeTask），而 `scheduler` 曾既不在本列表里、也没有任何
 	// 订阅方—— 事件发出来就掉地上。后果是「我的任务被谁打断了」对内对外都
 	// 不可见，排查时只能按时序猜。这里补上对外那一半。
-	subTypes := []string{"agent_output", "reasoning", "agent_error", "tool_call", "stage", "agent_llm_chain", "terminal_output", "scheduler",
+	//
+	// ★★ 2026-10-13 协议审计：这份字面量清单必须与 internal/events 的事件常量对齐。
+	//    审计发现两处不一致，均已在此修正：
+	//      ① "agent_error" 是**幽灵类型** —— 全仓无任何发布者（events 包无此常量、
+	//         SDK 无此常量、生产日志 0 次），而鸿蒙客户端为它写了处理分支
+	//         （ChatSse.ets:116 显示「本轮处理失败」）⇒ 那是一段不可达代码。
+	//         真正的失败走 `error` 帧（HTTP 层）与 `system` 事件。已删除该字面量。
+	//      ② "system"（插件崩溃通知）被 dynamic_proc.go 发布，注释写明
+	//         「webui/诊断插件可订阅」，却不在本清单里 ⇒ 事件发出来就掉地上、
+	//         客户端永远看不到插件崩溃。已补上。
+	//
+	//    判据见 handler_sse_protocol_test.go（两份清单必须互为子集）。
+	subTypes := []string{"agent_output", "reasoning", "tool_call", "stage", "agent_llm_chain", "terminal_output", "scheduler", "system",
 		// memory_access：图记忆的真实读写（哪个块被读了/写了/删了/合了）。
 		//
 		// ★ 为何新增而不是用现有的 tool_call：tool_call 只带**工具名**

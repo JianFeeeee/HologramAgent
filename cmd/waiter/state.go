@@ -126,7 +126,19 @@ type respLine struct {
 	Tool    string `json:"tool"`
 	Status  string `json:"status"`
 	Result  string `json:"result"`
-	Reset   bool   `json:"reset,omitempty"` // delta 帧：服务端轮次作废，清空累积
+	// Phase 是 stage 帧的阶段名（on_input / pre_action / post_action /
+	// toolcall / before_output / after_output …）。
+	//
+	// 为何要加（2026-10-13 协议审计）：CLI 此前是唯一看不到阶段进展的客户端，
+	// 服务端补发 stage 帧后，客户端必须有字段承载它。
+	Phase string `json:"phase,omitempty"`
+	// Event / Plugin 是 system 帧的字段（目前只有 plugin_crashed）。
+	//
+	// 为何要加（2026-10-13 协议审计）：system 是内核级状态事件，
+	// 而 CLI 此前既不订阅它、也没有字段承载 —— 插件崩溃对终端用户不可见。
+	Event  string `json:"event,omitempty"`
+	Plugin string `json:"plugin,omitempty"`
+	Reset  bool   `json:"reset,omitempty"` // delta 帧：服务端轮次作废，清空累积
 }
 
 // parseRespLineStruct 解析一行 JSON 响应帧，解析失败时将原文放入 Content。

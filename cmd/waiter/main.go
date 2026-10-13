@@ -486,6 +486,22 @@ func renderPlain(rl respLine, raw string) string {
 		return rl.Content
 	case "error":
 		return "[错误] " + rl.Error
+	case "stage":
+		// 过程信息：让无头调用方（脚本、基准 runner）也能看到进展，
+		// 而不是只能等最终 response 帧。
+		if rl.Tool != "" {
+			return "[阶段] " + rl.Phase + " (" + rl.Tool + ")"
+		}
+		return "[阶段] " + rl.Phase
+	case "system":
+		// 内核级状态（目前只有 plugin_crashed）。
+		//
+		// 为何要接（2026-10-13 协议审计）：该事件一直在发，而 CLI 是唯一
+		// 完全接不到的客户端 —— 插件炸了终端里毫无提示，只能去翻 journal。
+		if rl.Event == "plugin_crashed" {
+			return "[系统] 插件 " + rl.Plugin + " 异常退出，内核正在重启它"
+		}
+		return "[系统] " + rl.Event
 	default:
 		if raw != "" {
 			return raw
@@ -516,6 +532,13 @@ func printServerEventColored(rl respLine, raw string) {
 		fmt.Printf("%s%s%s%s\n", clearLine, colorGreen, rl.Content, colorReset)
 	case "error":
 		fmt.Printf("%s%s%s%s\n", clearLine, colorRed, rl.Error, colorReset)
+	case "stage":
+		// 阶段进展：用暗色（与“思考”同级）——它是过程信息，不应比最终回复更显眼。
+		if rl.Tool != "" {
+			fmt.Printf("%s%s▸ %s (%s)%s\n", clearLine, colorDim, rl.Phase, rl.Tool, colorReset)
+		} else {
+			fmt.Printf("%s%s▸ %s%s\n", clearLine, colorDim, rl.Phase, colorReset)
+		}
 	default:
 		text := raw
 		if text == "" {

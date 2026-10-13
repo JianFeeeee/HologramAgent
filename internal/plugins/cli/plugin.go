@@ -244,10 +244,59 @@ func (p *Plugin) handleChat(w *connWriter, line string, s *sdk.PluginSDK) {
 		}
 		w.writeLine(map[string]interface{}{"type": "content_delta", "content": content})
 	})
+	// stage：阶段管道（on_input / pre_action / post_action / toolcall / output …）。
+	//
+	// ★ 为何要补（2026-10-13 协议审计）：CLI 是**唯一**看不到阶段进展的客户端
+	//   —— WebUI / GUI / 鸿蒙 都消费了 stage。后果具象：agent 跑长任务时
+	//   终端长时间静默，用户分不清“在干活”还是“卡住了”。
+	//
+	// 为何单独发一帧而不是当普通文本：stage 是**过程信息**，与最终回复不同
+	// 层级；客户端已有 [思考]/[工具] 前缀的渲染惯例，这里沿用同一约定。
+	//
+	// 过滤 _consolidation_：那是内核内部任务（记忆合并/归档），不属于用户
+	// 这一轮对话；WebUI 也做了同样的过滤（见 dashboard.js 的 stage 处理）。
+	unsubStage := s.Subscribe(sdk.EventStage, func(evt *sdk.Event) {
+		ch, _ := evt.Payload["channel"].(string)
+		if ch != cliChannel || ch == "_consolidation_" {
+			return
+		}
+		phase, _ := evt.Payload["phase"].(string)
+		if phase == "" {
+			return
+		}
+		tool, _ := evt.Payload["tool"].(string)
+		w.writeLine(map[string]interface{}{
+			"type":  "stage",
+			"phase": phase,
+			"tool":  tool,
+		})
+	})
+	// system：内核级状态事件（目前唯一发布者是 plugin_crashed）。
+	//
+	// ★ 为何要补（2026-10-13 协议审计）：该事件一直在发（dynamic_proc.go:175），
+	//   注释还写着「webui/诊断插件可订阅」，但 CLI 完全接不到 —— 插件崩溃
+	//   对终端用户不可见，只能去翻 journal。
+	//
+	// ★ 不过滤 channel：system 是**内核级**事件，不由某条输入通道产生，
+	//   所以没有 channel 字段可比（这是它与其他事件的区别）。
+	unsubSystem := s.Subscribe(sdk.EventSystem, func(evt *sdk.Event) {
+		evtName, _ := evt.Payload["event"].(string)
+		if evtName == "" {
+			return
+		}
+		plugin, _ := evt.Payload["plugin"].(string)
+		w.writeLine(map[string]interface{}{
+			"type":   "system",
+			"event":  evtName,
+			"plugin": plugin,
+		})
+	})
 	defer unsubReasoning()
 	defer unsubToolCall()
 	defer unsubReasoningDelta()
 	defer unsubContentDelta()
+	defer unsubStage()
+	defer unsubSystem()
 
 	resp := s.InjectTextSync(cliSource, cliChannel, line)
 	if resp != nil {

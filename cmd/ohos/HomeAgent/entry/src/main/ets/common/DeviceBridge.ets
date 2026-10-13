@@ -1,4 +1,5 @@
 import { webSocket } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CapResult } from './BridgeCaps';
 import { BridgeCmdHandler, bridgeHelloFrame, bridgeBindFrame, bridgeResultFrame,
   bridgeDataStartFrame, bridgeDataEndFrame, bridgeEventFrame, bridgeStatusFrame,
@@ -225,7 +226,22 @@ export class DeviceBridgeClient {
       }
       return;
     }
-    if (op !== 'cmd' || !this.bound) {
+    if (op !== 'cmd') {
+      // ★★ 2026-10-13 协议审计：这里原本是静默 return，而服务端**会**发
+      //   op=push / cmd_speech_start / cmd_speech_end / hello_ack。
+      //   本机（鸿蒙端）只做「被控设备」，不做输出通道，所以收到这些 op
+      //   属预期——但**静默丢弃**会让「服务端以为发出去了、本端却毫无痕迹」，
+      //   排查时只能对时序猜。至少留一行日志，让“收到了但不支持”与
+      //   “根本没收到”可区分。
+      //
+      //   为何不报错回去：这些 op 不要求回执（服务端 pushToDevice 不等
+      //   device→server 的应答），回一个错误帧反而会被当成未知帧处理。
+      if (op.length > 0) {
+        hilog.debug(0x0000, 'HomeAgent', 'device bridge: 忽略不支持的 op %{public}s', op);
+      }
+      return;
+    }
+    if (!this.bound) {
       return;
     }
     const reqId: string = obj['req_id'] as string ?? '';

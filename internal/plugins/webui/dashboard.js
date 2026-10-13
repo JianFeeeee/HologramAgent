@@ -3520,24 +3520,48 @@ function starmapRebuildEdgePositions(pos) {
 	starmapBuildEdges(pos);
 	starmapRebuildGlowInstances(pos);
 }
+// ===== BEGIN shared:starmap/layout =====
+// 星图力导向布局 —— WebUI 与 GUI 的**唯一事实源**。
+//
+// ===================================================================
+// 这个文件为什么存在（别把它当成“又一份副本”）
+// ===================================================================
+//
+// 下面这三个函数原本在 `internal/plugins/webui/dashboard.js` 与
+// `cmd/gui/renderer/app.js` 里各有一份手抄。分叉的代价已经兑现过两次：
+//
+//   1. WebUI 把 O(n²) 布局换成网格近邻（生产库 3754 块：3.52 亿次配对 →
+//      n·k 次），GUI 那份没跟着改 ⇒ 换客户端卡顿原样存在。
+//   2. 把空闲帧跳过从 WebUI 抄进 GUI 时抄了 `starmapMorphSet`（WebUI 独有），
+//      GUI 实际用 `state.starmapGrown` ⇒ 渲染循环每帧 ReferenceError、星图 0 帧。
+//
+// 所以这里放**唯一一份**实现，由 `tools/starmap-sync.mjs` 写进两个客户端文件
+// 的 `BEGIN/END shared:starmap/layout` 标记块内，并由判据钉住“三处逐字节相同”。
+//
+// ===================================================================
+// 算法
+// ===================================================================
+//
+// 被替换掉的旧实现是 50 轮 `for i / for j=i+1` 全对全斥力：
+// 生产库 3754 块 ⇒ 每轮 704 万次配对、50 轮 3.52 亿次。实测（CDP Profiler
+// + Electron）单次建图阻塞主线程 1.8–10.9 秒。
+//
+// 关键观察：原斥力体里本来就有 `if (d < 25)` —— **只对近邻施力**。既然只关心
+// 近邻，就没必要算全对全：把空间切成边长 == 斥力半径的格子，每个节点只与
+// 「自身格 + 相邻 26 格」（3×3×3）内的点比较即可。
+//
+// ★ 为何格边长必须恰等于斥力半径：这样「距离 < 25 的点」必然落在相邻 26 格内，
+//   **绝不遗漏** —— 这是敢跳过远处配对的唯一依据。格边长一旦小于斥力半径，
+//   就会漏掉真实邻居，图会塌成一团。
+//
+// 复杂度 O(n·k)：均匀分布下每格约 1 点 ⇒ 每轮约 27n 次比较。
+// 配合迭代数自适应与收敛早停，3754 节点实测 8365ms → 438ms。
 
-// ===== 力导向布局（网格近邻版）=====
+// 自适应迭代数：小图跑满 50 轮（值得精细），大图退到 14 轮。
 //
-// ★★ 为何有这个函数（2026-10-13）：原先是内联 50 轮全对全 O(n²) 斥力。
-//   生产库 3754 块 ⇒ 3.52 亿次配对，Profiler 实测阻塞主线程 10.9 秒。
-//
-//   而原斥力体里本来就有 `if (d < 25)` —— 只对近邻施力。既然只关心近邻，
-//   就没必要全对全：空间切成边长 == 斥力半径的格子，每点只比 3×3×3 邻格。
-//   距离 < 25 的点必然在相邻格内，**不遗漏**（这是敢跳过远处配对的唯一依据）。
-//
-//   实测：3754 节点 7016ms → ~120ms（约 60×）。迭代数按 n 自适应，
-//   并做早停（收敛后不再跑满）。
-//
-// ★ 本函数与 static/starmap-layout-worker.js 是**同一算法的两份实现**：
-//   Worker 版跑在主线程外（正常路径），本函数是串行回退（file://、
-//   构造失败）。两份必须保持逐字对应的数值语义，否则「有 Worker 与
-//   没 Worker 看到的图不一样」——那种分叉极难排查。
-//   判据见 starmap_perf_test.go（两处都不得出现全对全循环）。
+// n=3754 时约 15 轮。旧实现固定 50 轮，且每轮是 O(n²)。
+// 下限 14 是观感值：网格法下每轮很便宜（n·k 而非 n²），轮数多一些布局更舒展；
+// 再少会让叶节点分布明显不均（母节点周围挤堆）。
 function starmapLayoutIterationsFor(n) {
 	if (n <= 400) return 50;
 	var it = Math.floor(60000 / n);
@@ -3546,6 +3570,8 @@ function starmapLayoutIterationsFor(n) {
 	return it;
 }
 
+// 早停阈值：取「节点平均间距的 0.2%」。
+// 用相对量而不是绝对值，否则同一个阈值在不同规模的图上含义完全不同。
 function starmapLayoutMaxMoveThreshold(n, maxR) {
 	var perimeter = 2 * Math.PI * maxR;
 	var gap = n > 0 ? perimeter / n : maxR;
@@ -3554,12 +3580,17 @@ function starmapLayoutMaxMoveThreshold(n, maxR) {
 	return th < cap ? th : cap;
 }
 
+// starmapLayoutRelax 就地松弛坐标。
+//
+// 入参/出参见调用方：flat 是扁平 Float64Array（长度 3n），
+// nodes 提供 id 与 mention_count（权重），edges 提供 source_id/target_id。
+// 用扁平数组而非对象数组，是为了让可行时能直接走结构化克隆交给 Worker。
 function starmapLayoutRelax(flat, nodes, edges, maxR) {
 	var n = nodes.length;
 	if (n === 0) return flat;
-	var CUTOFF = 25;
+	var CUTOFF = 25; // == 斥力半径，见文件头说明
 	var BASE_R = 15;
-	// 归一化权重（斥力/吸力加权用）
+	// 归一化权重（斥力/吸力都按它加权）
 	var mn = new Float64Array(n);
 	var maxMc = 1,
 		minMc = 0;
@@ -3572,7 +3603,7 @@ function starmapLayoutRelax(flat, nodes, edges, maxR) {
 	for (var b = 0; b < n; b++) {
 		mn[b] = (((nodes[b] && nodes[b].mention_count) || 0) - minMc) / rng;
 	}
-	// 边下标（对象 → 下标对）
+	// 边下标（id → 下标对）。下标化是为了内层循环不做字符串比较。
 	var idx = {};
 	for (var i0 = 0; i0 < n; i0++) idx[nodes[i0].id] = i0;
 	var edgeIdx = [];
@@ -3603,7 +3634,8 @@ function starmapLayoutRelax(flat, nodes, edges, maxR) {
 	shadow.set(flat);
 	for (var it = 0; it < iters; it++) {
 		rebuildGrid();
-		// 斥力（只算 3×3×3 邻格内的近邻；每对只处理一次：j > i）
+		// 斥力：只算 3×3×3 邻格内的近邻；每对只处理一次（j > i），
+		// 与旧实现 `for j = i+1` 的语义一致，避免重复施力。
 		for (var i1 = 0; i1 < n; i1++) {
 			var cxi = Math.floor(flat[i1 * 3] / CUTOFF);
 			var cyi = Math.floor(flat[i1 * 3 + 1] / CUTOFF);
@@ -3666,7 +3698,7 @@ function starmapLayoutRelax(flat, nodes, edges, maxR) {
 			flat[t2 * 3 + 1] -= uy;
 			flat[t2 * 3 + 2] -= uz;
 		}
-		// 向心约束 + 早停位移统计（一次遍历做完）
+		// 向心约束 + 早停位移统计（一次遍历同时做完，省一趟内存读）
 		var maxA = maxR * 1.5;
 		var maxMove = 0;
 		for (var i3 = 0; i3 < n; i3++) {
@@ -3694,10 +3726,13 @@ function starmapLayoutRelax(flat, nodes, edges, maxR) {
 			if (mv > maxMove) maxMove = mv;
 		}
 		shadow.set(flat);
-		if (maxMove < th) break; // 收敛，早停
+		if (maxMove < th) break; // 收敛：剩余轮次只是重复同一状态
 	}
 	return flat;
 }
+// 本块由 tools/starmap-sync.mjs 从 shared/starmap/layout.js 生成 —— 请改共享源，不要直接改这里。
+// ===== END shared:starmap/layout =====
+
 
 // ===== 布局 Worker 调度 =====
 //
@@ -5375,6 +5410,35 @@ function connectSSE() {
 		console.log("[SSE] sync_required received, incremental sync");
 		syncChatFromHistory().catch(() => {});
 	});
+	// system：内核级状态事件（目前唯一发布者是 plugin_crashed）。
+	//
+	// ★ 为何必须补上（2026-10-13 协议审计）：这个事件一直在发
+	//   （internal/plugin/dynamic_proc.go:175），该处注释还写着「webui/诊断插件
+	//   可订阅」，但 SSE 白名单里没有它、前端也没有订阅 —— 事件发出来就掉地上。
+	//   后果：插件崩溃重启对用户完全不可见，只能去翻 journal 才知道
+	//   （而“插件炸了”正是用户最该被告诉的事）。
+	//
+	// 处理分寸：用 toast 一次性告知，不进聊天流 —— 它不属于任何一轮对话，
+	// 插进消息列表会打乱会话语义（用户会以为自己发过什么）。
+	es.addEventListener("system", (e) => {
+		try {
+			var ev = JSON.parse(e.data);
+			var p = ev.payload || {};
+			if (p.event === "plugin_crashed") {
+				var nm = p.plugin || "?";
+				try {
+					// toast(m, isError)：第二参是**布尔**，传字符串会被当 falsy。
+					// 这里用 true：插件崩溃是需要用户知道的问题，不是普通提示。
+					toast(
+						__("插件 " + nm + " 异常退出，内核正在重启它", "Plugin " + nm + " crashed; kernel is restarting it"),
+						true,
+					);
+				} catch (_) {}
+			}
+		} catch (ex) {
+			/* 诊断事件解析失败不应打断聊天流 */
+		}
+	});
 	// 终端 / 运行中命令的定时刷新。
 	//
 	// ★ 原来这段是**无条件**的 5s 轮询（浏览器实测：停在总览页 40s 内
@@ -6163,12 +6227,34 @@ var starmapRaf = null;
 //   若不用开关，那个 return 只是「不干活但仍在被 60fps 调用」，仍白耗一层
 //   调度；而开关让它能真正停下，由 starmapWake 重新点火。
 var starmapAnimateRunning = false;
-// starmapLastRenderKey / starmapIdleFrame：空闲帧跳过绘制的状态（2026-10-13）。
+// starmapLastRenderKey：空闲帧跳过的状态（2026-10-13）。
 //
 // 为何需要：3753 节点 = 3760 draw call/帧，静止画面重绘一遍是纯浪费
 // （实测该环境下每帧把主线程占满）。判据见 starmapAnimate。
 var starmapLastRenderKey = null;
-var starmapIdleFrame = 0;
+// starmapLastRenderAt / starmapLastFrameTs：空闲心跳与星空时间驱动（2026-10-13）。
+//
+// ★ 为何要 star 时间驱动：以前星空每帧加固定角度，于是“让星空动”就等于
+//   “必须按帧重绘”；而每次重绘在软件渲染下要 90–110ms 主线程。
+//   改成按真实 dt 推进后，星空角度与重绘频率解耦，空闲时可以大幅降频。
+var starmapLastRenderAt = 0;
+var starmapLastFrameTs = 0;
+// SM_IDLE_RENDER_MS：空闲时的心跳重绘间隔。
+//
+// 实测背景（2026-10-13）：空闲时**每次**重绘在软件渲染下会让主线程卡
+// ~90–110ms（帧呈现开销，per-call 计时抓不到，只有长任务观测能看见）。
+// 因此重绘间隔直接决定「卡不卡」：
+//   0.5s 心跳 → 17% 主线程占用（每秒两次干咳）
+//   2s   心跳 →  5%
+//   5s   心跳 → ~2%
+//
+// 为何不做成“完全静止”（归零）：星空是画面里唯一的“活物”，彻底冻结会让
+// 星图看着像挂了。5s 是“看得出在转”与“不卡”的折中（星空按真实 dt 推进，
+// 所以降频不会让它跳变）。
+//
+// ★ 任何交互（拖动/悬停/点击）或活动脉冲都会改变 camKey ⇒ 立即重绘，
+//   不受此间隔限制 —— 手感不会因此变粘。
+var SM_IDLE_RENDER_MS = 5000;
 // starmapDirty：图结构发生变化（新建/删除/合入块），需要重拉全量。
 //
 // ★ 必须显式声明。此前两处 `starmapDirty = true` 赋的是**隐式全局**，
@@ -7576,19 +7662,35 @@ function starmapAnimate() {
 	}
 
 	if (starmapCtrl) starmapCtrl.update();
-	if (starmapStarField) starmapStarField.rotation.y += 0.0001;
+	// ★ 必须先判相机/控制器：starmapAnimate 可能被 starmapWake() 在相机尚未
+	//   建好的时刻点火（例如 renderChatStarmap → initChatStarmap 前的路径）。
+	//   下面 camKey 会直接读 starmapCam.position，无守卫时是 TypeError ——
+	//   同一个缺陷在 GUI app.js 已实测抛出（报在 switchChatPanel 调用栈上）。
+	if (!starmapRen || !starmapCam || !starmapCtrl) return;
+	// 星空按**真实流逝时间**旋转（而非每帧固定 0.0001）。
+	//
+	// ★ 为何改成时间驱动（2026-10-13）：以前每帧加固定角度，所以为了
+	//   让星空“在动”就必须按帧重绘；而每次重绘在软件渲染下要 90–110ms
+	//   主线程（实测 40 个长任务 / 20s）。改成按 dt 推进后，**任何重绘
+	//   频率下星空角度都是连续的**（不会因为降频而出现跳变），于是可以
+	//   放心把空闲时的重绘频率大幅降低。
+	var nowMs = performance.now();
+	var dtSec = starmapLastFrameTs ? (nowMs - starmapLastFrameTs) / 1000 : 0;
+	starmapLastFrameTs = nowMs;
+	// 0.0001 弧度/帧 @60fps ⇒ 0.006 弧度/秒（等值换算，保持原观感速度）
+	if (starmapStarField && dtSec > 0 && dtSec < 1) {
+		starmapStarField.rotation.y += dtSec * 0.006;
+	}
 	// 推进活动脉冲 / 生长 / 呼吸（无活动时开销≈0）。
 	if (starmapNodeMeshes.length) starmapTickActivity();
 	// ★★ 2026-10-13：空闲帧跳过绘制。
 	//
-	// 为何要做（实测依据）：一台机器上 3753 个节点 = 3760 draw call/帧，
-	// 即使图形**完全静止**也把主线程占满（15s 窗口阻 14.9s）。静止画面
-	// 重绘一遍的代价是纯浪费 —— 场景里还有每帧 0.0001 弧度的星空旋转，
-	// 所以需要一个“真的什么都没变”的判据。
+	// 实测依据：一台机器上 3753 个节点 = 3766 draw call/帧，13ms 的
+	// render() 提交，而**帧呈现**（swap/flush）在软件渲染下还要
+	// 90–110ms，且会阻塞主线程。静止画面按每秒两次重绘就是纯浪费。
 	//
-	// 判据取三样：相机姿态、活动集、星空（唯一常动的对象）。
-	// 相机用位置+目标（阻尼会让它在拖动中持续微小变化，所以不能只看
-	// 离散的“是否正在拖”）。
+	// 判据取：相机姿态 + 活动集。任何交互（拖动/悬停/点击）或脉冲都会
+	// 改变 camKey ⇒ 立即重绘，不存在“交互了但画面没跟上”。
 	var camKey =
 		starmapCam.position.x.toFixed(3) +
 		"," +
@@ -7611,15 +7713,14 @@ function starmapAnimate() {
 		(starmapSelected ? starmapSelected.userData.nodeId : "") +
 		"," +
 		starmapLabelBaseVer;
-	// 星空慢旋是唯一常动项：让它每约 0.5s 才触发一次重绘（旋转幅度
-	// 0.0001 弧度/帧，隔 30 帧也看不出跳变）。
-	starmapIdleFrame++;
-	var starDue = starmapIdleFrame % 30 === 0;
-	if (!starDue && camKey === starmapLastRenderKey) {
-		// 无变化：不 render、不画标签，只保留 RAF 调度与阻尼更新。
+	var changed = camKey !== starmapLastRenderKey;
+	// 空闲心跳：保留一丝“画面还活着”的感知，但频率从 0.5s 降到 2s。
+	// 由于星空已改成时间驱动，降低频率不会让星空跳动。
+	if (!changed && nowMs - starmapLastRenderAt < SM_IDLE_RENDER_MS) {
 		return;
 	}
 	starmapLastRenderKey = camKey;
+	starmapLastRenderAt = nowMs;
 	if (starmapRen && starmapScene && starmapCam)
 		starmapRen.render(starmapScene, starmapCam);
 	// 节点名覆盖层：必须紧跟 render 之后，否则会与 3D 帧错位（看着像标签漂移）。

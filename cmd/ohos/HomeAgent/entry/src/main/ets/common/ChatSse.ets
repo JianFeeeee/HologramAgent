@@ -113,8 +113,25 @@ export function applyChatSse(ev: SseEvent, sink: ChatStreamSink): void {
     } else if (type === 'sync_required') {
       // 断线重连时服务端要求补拉历史（ring 里没有可重放的聚合事件）
       sink.reloadHistory();
-    } else if (type === 'agent_error') {
-      // 后端错误一律转人话，技术细节不上 UI
+    } else if (type === 'system') {
+      // 内核级状态事件（目前唯一发布者是 plugin_crashed）。
+      //
+      // ★ 为何必须补上（2026-10-13 协议审计）：该事件一直在发
+      //   （internal/plugin/dynamic_proc.go:175，注释还写着「webui/诊断插件
+      //   可订阅」），但鸿蒙端从未处理 —— 插件崩溃对手机用户不可见。
+      if (payload['event'] === 'plugin_crashed') {
+        const nm: string = payload['plugin'] as string ?? '?';
+        // 用 stage 条告知（鸿蒙端 sink 没有 toast 能力；stage 是已有的轻量提示位）。
+        // 不用 setLoading(false)：崩溃不影响本轮对话本身。
+        sink.setStage('插件 ' + nm + ' 异常退出，内核正在重启它');
+        sink.refresh();
+      }
+    } else if (type === 'error') {
+      // ★ 这里原本是 'agent_error' —— 那是一个**不存在的类型**（2026-10-13 审计）。
+      //   events 包与 SDK 都没有这个常量，全仓无任何发布者，生产日志 0 次。
+      //   而真正的失败帧叫 'error'（见 webui/handler_chat.go 与 cli/plugin.go
+      //   都发 {type:"error", ...}），于是「本轮处理失败」提示根本没机会显示。
+      //   改用真实类型名。
       sink.setLoading(false);
       sink.setStage('本轮处理失败，请重试');
       sink.refresh();
