@@ -146,6 +146,23 @@ type TaskFrame struct {
 	// tool_calls，工具结果各自作为 tool 消息追加在它之后。
 	assistantMsgIdx int
 
+	// batchAttachments / batchRecall 是本批**积压的附加消息**，
+	// 只在整批 tool 消息全部落完之后才由 flushBatchAttachments 追加。
+	//
+	// ★ 为何必须积压而不是当场追加（2026-10-13 生产 400 事故）：
+	//   OpenAI 协议要求 assistant(tool_calls=[c1..cn]) 之后**紧接** n 条
+	//   role=tool，中间不得插入任何其他角色。而 stepToolAfter 在批内循环里
+	//   对**每个工具各调一次** —— 若它当场就把 mediaMsg（user）/召回（system）
+	//   追加进去，第一条 tool 之后就被塞进一条其他角色的消息，于是第二条
+	//   tool 不再与 assistant 相邻。上游实测报：
+	//     api error 400: An assistant message with 'tool_calls' must be followed
+	//     by tool messages responding to each 'tool_call_id'.
+	//     (insufficient tool messages following tool_calls message)
+	//
+	//   用户明确的设计约束：「多模态注入点应该在当前轮工具调用后」。
+	batchAttachments []agentAPI.Message
+	batchRecall      string
+
 	// CurRaw 是本次执行的**未降级**返回值（interface{}）。
 	// 存在理由：CurResult 是 string，结构化信息在此被抹平，导致 Success
 	// 无法诚实化、after_toolcall 的改写静默失效。
@@ -868,6 +885,9 @@ func (a *Agent) stepToolBatch(f *TaskFrame) stepOutcome {
 			return out
 		}
 	}
+	// ★ 整批 tool 消息已全部落完，此刻才能追加多模态/召回附加消息
+	//（否则会切断 assistant(tool_calls) 与其结果的相邻性，见 batchAttachments）。
+	f.flushBatchAttachments()
 	f.ToolIdx = n
 	f.Step = StepTurnEnd
 	return outcomeContinue
@@ -930,6 +950,9 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 // stepToolBegin 取本批下一个工具；批已耗尽或发生中断则进入收尾。
 func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	if f.ToolIdx >= len(f.PendingTools) {
+		// ★ 批已耗尽（本批全部走串行路径）：同样只能在**这里**追加附加消息，
+		// 理由与并行路径一致（见 batchAttachments）。
+		f.flushBatchAttachments()
 		f.Step = StepTurnEnd
 		return outcomeContinue
 	}
@@ -1129,12 +1152,15 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 		f.noteOversizeTool(tc.Name)
 	}
 	if mediaMsg != nil {
-		// 必须紧跟在 toolMsg 之后：中间插入其他消息会让 tool_call_id 配对断开。
-		f.Msgs = append(f.Msgs, *mediaMsg)
+		// 延迟到批末（见 batchAttachments 的注释）：当场追加会把后续 tool 消息
+		// 与 assistant 挤开，上游判 insufficient tool messages。
+		f.batchAttachments = append(f.batchAttachments, *mediaMsg)
 	}
-	// 召回作为 system 消息挂在末尾（tool/assistant 配对已完成，插入此处不断链）。
+	// 召回同样延迟到批末：它是 system 消息，同样会断开 tool 配对。
+	// （语义与原先一致：同一批内多条召回仍是最后一条生效，因为
+	//  appendOrReplaceRecall 本就是替换而非累加。）
 	if recallText != "" {
-		f.Msgs = appendOrReplaceRecall(f.Msgs, recallText)
+		f.batchRecall = recallText
 	}
 
 	a.publishEvent(events.EventToolCall, map[string]interface{}{
@@ -1149,6 +1175,26 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	f.ToolIdx++
 	f.Step = StepToolBegin
 	return outcomeContinue
+}
+
+// flushBatchAttachments 把本批积压的附加消息一次性追加到 Msgs 末尾。
+//
+// 必须在**整批 tool 消息全部落完之后**调用，否则会切断
+// assistant(tool_calls) 与 tool 结果消息的相邻性（见 batchAttachments 注释）。
+// 两个调用点：并行路径 stepToolBatch 的收尾循环之后；串行路径 stepToolBegin
+// 发现批已耗尽时。
+func (f *TaskFrame) flushBatchAttachments() {
+	if len(f.batchAttachments) == 0 && f.batchRecall == "" {
+		return
+	}
+	for _, m := range f.batchAttachments {
+		f.Msgs = append(f.Msgs, m)
+	}
+	f.batchAttachments = nil
+	if f.batchRecall != "" {
+		f.Msgs = appendOrReplaceRecall(f.Msgs, f.batchRecall)
+		f.batchRecall = ""
+	}
 }
 
 // ensureBatchAssistant 保证本批有且只有**一条**带 tool_calls 的 assistant 消息。
