@@ -1,7 +1,7 @@
 // Package proc 实现外部插件的子进程加载通道（plugin.bin）。
 //
 // 数据面设计：定长头 + arena，变长数据用相对基址的 {off,len} 描述符
-//（相对偏移是关键：各进程 mmap 到不同虚拟地址也能正确解引用）。
+// （相对偏移是关键：各进程 mmap 到不同虚拟地址也能正确解引用）。
 //
 //	homed ──spawn──> plugin（纯 Go 二进制，无 cgo）
 //	  ├── stdio JSON-RPC   控制面：51 个 method id 平移为 method 名（§3.2）
@@ -17,19 +17,22 @@ import (
 	"sync/atomic"
 )
 
-// 共享段魔数与版本，用于挂载时校验对端布局一致。
+// shmMagic 标识 HomeAgent 的 StageContext 共享段。
 //
-// v2（2026-10-12）：新增 fExtraBag —— Extra 具名 4 键之外的插件自建键
-// （如 qq 的 qq_auth 绑帧身份）跨进程/跨 stage 透传。加字段必升版：
-// AttachSegment 与插件握手对版本失败即拒，旧插件不会静默错读新布局。
+// **不设版本号**：段布局自描述 —— 内核把描述符个数写进 header
+// （offFieldCount），插件据此定位标志位，不再用自己编译期的常量推算。
+// 这样「加字段」不再需要一个人工维护、必然腐烂的版本号来兜底：
+// 布局不一致由描述符个数这种**派生事实**自动检出（见 AttachSegment）。
+//
+// 协议兼容性由双方版本号的**主版本**在握手上校验（见 protocol.go 的
+// MajorVersion）。
 const (
-	shmMagic   uint32 = 0x48415348 // "HASH" — HomeAgent SHared
-	shmVersion uint32 = 2
+	shmMagic uint32 = 0x48415348 // "HASH" — HomeAgent SHared
 )
 
 // 段布局（所有偏移均相对**段起始**，arena 内偏移相对 arenaBase）：
 //
-//	[0, headerSize)                 Header：魔数/版本/arena 游标
+//	[0, headerSize)                 Header：魔数/描述符个数/arena 游标
 //	[headerSize, ctxEnd)            ShmStageCtx：每字段一个 Slice{off,len} 描述符
 //	[arenaBase, arenaBase+arenaCap) arena：append-only 变长数据区
 //
@@ -38,13 +41,13 @@ const (
 	headerSize = 64
 
 	// Header 内字段偏移
-	offMagic     = 0  // uint32
-	offVersion   = 4  // uint32
-	offArenaBase = 8  // uint32
-	offArenaCap  = 12 // uint32
-	offArenaUsed = 16 // uint32（原子 bump 游标）
-	offCtxBase   = 20 // uint32
-	offSeq       = 24 // uint64：每次成功写回自增，供乐观读校验
+	offMagic      = 0  // uint32
+	offFieldCount = 4  // uint32：StageContext 描述符个数（插件据此定位标志位）
+	offArenaBase  = 8  // uint32
+	offArenaCap   = 12 // uint32
+	offArenaUsed  = 16 // uint32（原子 bump 游标）
+	offCtxBase    = 20 // uint32
+	offSeq        = 24 // uint64：每次成功写回自增，供乐观读校验
 )
 
 // Slice 是 arena 内变长数据的描述符，off 相对 arenaBase。
@@ -136,7 +139,7 @@ func NewSegment(data []byte) (*Segment, error) {
 	arenaCap := uint32(len(data)) - arenaBase
 
 	binary.LittleEndian.PutUint32(data[offMagic:], shmMagic)
-	binary.LittleEndian.PutUint32(data[offVersion:], shmVersion)
+	binary.LittleEndian.PutUint32(data[offFieldCount:], uint32(stageFieldCount))
 	binary.LittleEndian.PutUint32(data[offArenaBase:], arenaBase)
 	binary.LittleEndian.PutUint32(data[offArenaCap:], arenaCap)
 	binary.LittleEndian.PutUint32(data[offArenaUsed:], 0)
@@ -151,7 +154,10 @@ func NewSegment(data []byte) (*Segment, error) {
 }
 
 // AttachSegment 挂载一块已由 NewSegment 初始化的区域（插件进程侧调用）。
-// 校验魔数与版本，避免版本不一致时静默错读。
+//
+// 校验魔数与**描述符个数**（而非人工版本号）：个数是段布局的派生事实，
+// 加字段时自动变化，因此不需要谁记得去升一个号。插件若按旧字段数推算
+// 标志位基址会静默错位，这里显式拒绝。
 func AttachSegment(data []byte) (*Segment, error) {
 	if len(data) < headerSize+ctxSize {
 		return nil, fmt.Errorf("proc: 共享段过小（%d 字节）", len(data))
@@ -159,9 +165,9 @@ func AttachSegment(data []byte) (*Segment, error) {
 	if got := binary.LittleEndian.Uint32(data[offMagic:]); got != shmMagic {
 		return nil, fmt.Errorf("proc: 共享段魔数不匹配（0x%x，期望 0x%x）", got, shmMagic)
 	}
-	if got := binary.LittleEndian.Uint32(data[offVersion:]); got != shmVersion {
-		return nil, fmt.Errorf("proc: 共享段版本不匹配（%d，本内核 %d）——插件需用配套 hmapdev 重编",
-			got, shmVersion)
+	if got := binary.LittleEndian.Uint32(data[offFieldCount:]); got != uint32(stageFieldCount) {
+		return nil, fmt.Errorf("proc: 共享段描述符个数不匹配（%d，本内核 %d）——插件需用配套 hmapdev 重编",
+			got, stageFieldCount)
 	}
 	return &Segment{data: data}, nil
 }

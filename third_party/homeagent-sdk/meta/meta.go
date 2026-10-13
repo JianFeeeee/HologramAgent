@@ -103,15 +103,15 @@ func FullVersion() string {
 	return SDKName + " v" + Version + " (" + Commit + ")"
 }
 
-// ---- 协议版本 ----
+// ---- 协议兼容性 ----
 //
-// 子进程 RPC 的协议版本是一个独立的小整数，与 SDK/内核语义版本解耦：
-// 语义版本变动频繁（修 bug、加字段），而 wire 协议只在**帧格式或握手语义**
-// 变化时才升。当前值见核心仓 internal/plugin/proc/protocol.go 的 ProtocolVersion。
+// **不自定协议号**：兼容性只认双方版本号的**主版本段**。
+// 主版本相同即兼容（1.x 内全是纯追加）；跨主版本则是破坏性变更
+// （如 1.0.0 从 C ABI 改子进程），握手时显式拒绝并提示重编。
 //
 // C ABI 时代的 ABIVersion / CABINum / 51 个 Core<Method> 整数 ID 已随
 // Part 6.2 删除 internal/plugin/cabi/ 一并退场：
 //   - 整数 method id 平移为 method 名字符串（proc/protocol.go 的 Method* 常量）
-//   - 版本协商改为握手帧里的 protocol 字段
+//   - 版本协商改为握手帧里的 core_version / sdk_version 主版本比对
 //
 // 保留那些常量只会让人以为它们还在生效。

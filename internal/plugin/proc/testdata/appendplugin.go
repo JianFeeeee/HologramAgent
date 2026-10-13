@@ -187,7 +187,7 @@ func main() {
 				shm = m[ctxOff : ctxOff+ctxSize]
 			}
 			send(response{ID: req.ID, Result: map[string]interface{}{
-				"protocol": 2, "sdk_version": "test",
+				"sdk_version": "1.0.0",
 				"plugin_name": "append-" + tag, "pid": os.Getpid(),
 			}})
 

@@ -315,25 +315,38 @@ func TestProcess_ConcurrentCallsRouteCorrectly(t *testing.T) {
 	}
 }
 
-// 协议版本不匹配必须显式拒绝，不能半兼容运行。
+// 主版本不匹配必须显式拒绝，不能半兼容运行。
 //
-// v2 引入的必要性就靠这条：v1 插件（只读内联 args）遇上 v2 内核，跟 v2 插件
-// 发 blocks_ref 给 v1 内核，都会静默失效、不报任何错。只有在这里显式拦下，
-// 那双错配才会变成一条带修复指令的启动失败。
-func TestProcess_ProtocolMismatchRejected(t *testing.T) {
+// 为什么需要显式拦下：主版本两端（如 C ABI 时代与子进程时代）的帧格式与
+// 共享段布局都不同，错配不会报错、只会静默失效（空参数、字段被忽略）。
+// 判据是双方版本号的**主版本段**，不是任何自定协议号。
+func TestProcess_MajorVersionMismatchRejected(t *testing.T) {
 	bin := buildTestPlugin(t, "badprotoplugin.go")
 	_, err := Spawn("badproto", bin, Options{Handler: noopHandler})
 	if err == nil {
-		t.Fatal("协议版本不匹配应拒绝建链")
+		t.Fatal("主版本不匹配应拒绝建链")
 	}
-	if !strings.Contains(err.Error(), "协议版本不匹配") {
-		t.Errorf("错误应说明版本不匹配，实际: %v", err)
+	if !strings.Contains(err.Error(), "主版本不匹配") {
+		t.Errorf("错误应说明主版本不匹配，实际: %v", err)
 	}
 	// 运维可读性：光报“不匹配”不能定位到行动。生产上碰到它的现场是
 	// “只更新了内核没重编插件”，所以错误里必须带出这条修复指令。
 	if !strings.Contains(err.Error(), "hmapdev") || !strings.Contains(err.Error(), "重编") {
 		t.Errorf("错误应给出重编插件的修复指令，实际: %v", err)
 	}
+}
+
+// 同主版本内的中版本差异（内核 1.4.0 vs 插件 SDK 1.1.0）必须**允许**建链。
+//
+// 这是 §七「1.x 内纯追加、不调新面就不用重编」规约的落地：若不校验主版本
+// 而是全等比较，未重编的存量插件会被无谓地全部拒绝。
+func TestProcess_SameMajorDifferentMinorAccepted(t *testing.T) {
+	bin := buildTestPlugin(t, "oldminorplugin.go")
+	p, err := Spawn("oldminor", bin, Options{Handler: noopHandler})
+	if err != nil {
+		t.Fatalf("同主版本（1.x）应允许建链: %v", err)
+	}
+	defer func() { _ = p.Stop() }()
 }
 
 func TestProcess_SpawnRequiresHandler(t *testing.T) {

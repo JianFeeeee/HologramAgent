@@ -1,6 +1,9 @@
 //go:build ignore
 
-// badprotoplugin 上报错误的协议版本，验证内核显式拒绝而非半兼容运行。
+// badprotoplugin 上报不同主版本的 SDK，验证内核显式拒绝而非半兼容运行。
+//
+// 主版本跃迁是破坏性变更的定义（如 1.0.0 从 C ABI 改子进程），
+// 所以它是兼容性的正确分界——不需要另一个自定的协议号来复述。
 package main
 
 import (
@@ -38,8 +41,7 @@ func main() {
 		}
 		if req.Method == "handshake" {
 			send(response{ID: req.ID, Result: map[string]interface{}{
-				"protocol":    999, // 故意不匹配
-				"sdk_version": "ancient",
+				"sdk_version": "99.0.0", // 主版本不同，故意不匹配
 				"plugin_name": "badproto",
 				"pid":         os.Getpid(),
 			}})

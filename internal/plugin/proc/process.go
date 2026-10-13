@@ -255,10 +255,9 @@ func (p *Process) handshake(timeout time.Duration) error {
 	defer cancel()
 
 	raw, err := p.CallContext(ctx, MethodHandshake, HandshakeParams{
-		Protocol:    ProtocolVersion,
 		CoreVersion: meta.Version,
 		PluginName:  p.name,
-		ShmVersion:  shmVersion,
+		FieldCount:  uint32(stageFieldCount),
 		ShmSize:     p.shmSize,
 		EvtRingSize: p.evtRingSize,
 	})
@@ -269,12 +268,13 @@ func (p *Process) handshake(timeout time.Duration) error {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("proc: %s 握手应答解析失败: %w", p.name, err)
 	}
-	if res.Protocol != ProtocolVersion {
-		return fmt.Errorf("proc: %s 协议版本不匹配（插件 %d，内核 %d）——请用配套 hmapdev 重编",
-			p.name, res.Protocol, ProtocolVersion)
+	// 主版本号是唯一兼容判据：跨主版本必是被破坏性变更分开的两端。
+	if want, got := MajorVersion(meta.Version), MajorVersion(res.SDKVersion); want != got {
+		return fmt.Errorf("proc: %s 主版本不匹配（插件 SDK %s，内核 %s）——请用配套 hmapdev 重编",
+			p.name, res.SDKVersion, meta.Version)
 	}
-	log.Printf("[proc] %s 已建链（pid=%d protocol=%d sdk=%s）",
-		p.name, p.PID(), res.Protocol, res.SDKVersion)
+	log.Printf("[proc] %s 已建链（pid=%d sdk=%s core=%s）",
+		p.name, p.PID(), res.SDKVersion, meta.Version)
 	return nil
 }
 

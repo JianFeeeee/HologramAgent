@@ -57,7 +57,7 @@ func main() {
 		switch req.Method {
 		case "handshake":
 			send(response{ID: req.ID, Result: map[string]interface{}{
-				"protocol": 2, "sdk_version": "test", "plugin_name": "fork", "pid": os.Getpid(),
+				"sdk_version": "1.0.0", "plugin_name": "fork", "pid": os.Getpid(),
 			}})
 		case "tool.invoke":
 			// 不回应答，直接退出：模拟插件突然死亡（崩溃/被 kill）。

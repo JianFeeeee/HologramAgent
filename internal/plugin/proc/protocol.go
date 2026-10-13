@@ -1,6 +1,9 @@
 package proc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // RPC 协议定义：控制面（§3.2 method id 平移为 method 名）。
 //
@@ -12,17 +15,29 @@ import "encoding/json"
 // JSON 序列化 3-8 µs 对比 LLM 单轮 2-8 秒占 0.0001%，可读性与可调试性更值。
 // 大 payload（多媒体二进制）走共享内存 arena，不进 RPC 帧（§3.3 实验 10：18-22x）。
 
-// 协议版本：与共享段版本独立演进。
-// 插件握手时上报，内核校验——不匹配显式拒绝，避免半兼容导致的诡异行为。
+// 协议兼容性判据：**大版本号唯一**。
 //
-// v2（§13.6 / §13.13）：内核→插件的 payload 改为调用帧承载。
-// v1 插件只读内联 args，遇上 v2 内核会拿到空参数；v2 插件发 blocks_ref，
-// v1 内核反序列化时静默忽略（旧内核 io.setToolBlocks 还是桩）。两种错配
-// 都不会报错，只会静默失效——所以必须 bump 版本，让它在握手上就**显式**失败。
+// 不自定协议号。插件的兼容性由双方各自的版本号表态：内核侧 meta.Version、
+// 插件侧 sdk_version（SDK 版本跟随内核中版本，patch 恒为 .0）。
+// 版本号唯一事实源就是这两个 meta.Version（见 docs/zh/ci-cd-runbook.md）。
 //
-// 部署纪律：内核与全部插件必须同批重建、同批安装；改协议就要改这个常量，
-// 不得依赖“两边大致兼容”。
-const ProtocolVersion = 2
+// 判据是**主版本相同**：
+//   - 1.x ↔ 1.y：兼容。1.0.0 之后全是纯追加，不调新面就不受影响。
+//   - 跨主版本（如 1.x → 2.x）：拒绝建链，提示用配套 hmapdev 重编。
+//     主版本跃迁正是**破坏性变更**的定义（1.0.0 从 C ABI 改子进程即属此列），
+//     所以它天然是正确的分界，不需要另一个号来复述这件事。
+//
+// 布局一致性另由 stageFieldCount（描述符个数）把关：它是结构的派生事实，
+// 也不是版本号。两者错配都在握手上显式失败，不半兼容运行。
+
+// MajorVersion 取版本号的主版本段（"1.4.0" → "1"，"" → ""）。
+func MajorVersion(v string) string {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexByte(v, '.'); i >= 0 {
+		return v[:i]
+	}
+	return v
+}
 
 // Direction 无需显式字段：靠 Method 是否为空区分请求与响应
 // （与 clawhubadapter/sidecar 的成熟做法一致）。
@@ -184,19 +199,20 @@ const (
 
 // HandshakeParams 是内核 → 插件的建链首帧：告知内核侧规格。
 type HandshakeParams struct {
-	Protocol    int    `json:"protocol"`     // 内核支持的协议版本
-	CoreVersion string `json:"core_version"` // 内核版本（诊断用）
+	CoreVersion string `json:"core_version"` // 内核版本（插件据此判主版本兼容）
 	PluginName  string `json:"plugin_name"`  // 内核分配的插件名
-	ShmVersion  uint32 `json:"shm_version"`
-	ShmSize     int    `json:"shm_size"`
+	// FieldCount 是 StageContext 描述符个数。插件据此与自己的编译期
+	// 字段数比对：不匹配意味着标志位基址会错位，必须重编（而非静默错读）。
+	FieldCount uint32 `json:"field_count"`
+	ShmSize    int    `json:"shm_size"`
 	// EvtRingSize 是事件环段大小（0 表示不支持事件环）。插件据此 mmap fd 4。
 	EvtRingSize int `json:"evt_ring_size,omitempty"`
 }
 
 // HandshakeResult 是插件 → 内核的建链应答：上报自身信息。
 type HandshakeResult struct {
-	Protocol   int    `json:"protocol"`    // 必须等于 ProtocolVersion
-	SDKVersion string `json:"sdk_version"` // 插件编译时链接的公开 SDK 版本
+	// SDKVersion 是插件编译时链接的公开 SDK 版本。内核据此判主版本兼容。
+	SDKVersion string `json:"sdk_version"`
 	PluginName string `json:"plugin_name"`
 	PID        int    `json:"pid"`
 }

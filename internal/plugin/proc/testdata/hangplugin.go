@@ -42,7 +42,7 @@ func main() {
 		switch req.Method {
 		case "handshake":
 			send(response{ID: req.ID, Result: map[string]interface{}{
-				"protocol": 2, "sdk_version": "test", "plugin_name": "hang", "pid": os.Getpid(),
+				"sdk_version": "1.0.0", "plugin_name": "hang", "pid": os.Getpid(),
 			}})
 		case "tool.invoke":
 			// 永久卡住，永不回应答

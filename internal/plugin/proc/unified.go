@@ -34,8 +34,7 @@ import (
 
 const (
 	// unifiedMagic 标识统一共享内存区域。
-	unifiedMagic   uint32 = 0x554D5352 // "UMSR" — Unified Memory Shared Region
-	unifiedVersion uint32 = 1
+	unifiedMagic uint32 = 0x554D5352 // "UMSR" — Unified Memory Shared Region
 
 	superBlockSize = 64 // SuperBlock 占前 64 字节
 )
@@ -43,7 +42,7 @@ const (
 // SuperBlock 布局：64 字节，所有偏移相对区域起始。
 //
 // [0,4)   magic
-// [4,8)   version
+// [4,8)   reserved（原 version，已废：SuperBlock 靠 magic + capacity 自描述）
 // [8,16)  generation（atomic uint64，resize 时 bump）
 // [16,20) capacity（区域总字节数）
 // [20,24) ctxOff（StageContext segment 偏移）
@@ -55,7 +54,7 @@ const (
 // [44,64) reserved
 const (
 	sbOffMagic      = 0
-	sbOffVersion    = 4
+	sbOffReserved0  = 4 // 保留（原 version 槽位，布局不变以免动其余偏移）
 	sbOffGeneration = 8
 	sbOffCapacity   = 16
 	sbOffCtxOff     = 20
@@ -133,7 +132,6 @@ func initUnifiedRegion(data []byte, ctxTotal, evtTotal int) (*unifiedRegion, err
 	arenaCap := cap - arenaOff
 
 	putU32(data[sbOffMagic:], unifiedMagic)
-	putU32(data[sbOffVersion:], unifiedVersion)
 	putU64(data[sbOffGeneration:], 0)
 	putU32(data[sbOffCapacity:], cap)
 	putU32(data[sbOffCtxOff:], ctxOff)
@@ -163,10 +161,8 @@ func attachUnifiedRegion(data []byte) (*unifiedRegion, error) {
 	if magic != unifiedMagic {
 		return nil, fmt.Errorf("unified: 魔数不匹配（0x%x，期望 0x%x）", magic, unifiedMagic)
 	}
-	ver := getU32(data[sbOffVersion:])
-	if ver != unifiedVersion {
-		return nil, fmt.Errorf("unified: 版本不匹配（%d，期望 %d）", ver, unifiedVersion)
-	}
+	// 不自描述校验版本号：SuperBlock 靠 magic + capacity + 各段越界检查把关
+	//（这些是结构的派生事实，不存在“忘同步一个人工号”的失效模式）。
 	ctxOff := getU32(data[sbOffCtxOff:])
 	ctxSize := getU32(data[sbOffCtxSize:])
 	evtOff := getU32(data[sbOffEvtOff:])
