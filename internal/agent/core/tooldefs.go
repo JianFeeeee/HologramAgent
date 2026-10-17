@@ -306,9 +306,39 @@ func (a *Agent) buildToolCatalog() string {
 //     工具改名不会跟着变；
 //  2. 往 required 变参里塞字符串 "toolParallel" —— 拼错就静默失效，
 //     编译器不报错，而"少一个工具能并发"正是最难察觉的那类问题。
+//
+// builtinToolTimeouts 是内置工具声明的执行超时（name → 如 "3m"）。
+//
+// 只在 init 阶段（buildToolDefs 首次调用）写入，之后只读 ⇒ 无需加锁的
+// 前提是"写发生在任何并发读之前"。为稳妥起见用 RWMutex：buildToolDefs
+// 可能被多次调用（每轮重建工具表），而 resolveToolTimeout 在工具执行时读。
+var (
+	builtinToolTimeoutMu sync.RWMutex
+	builtinToolTimeouts  = map[string]string{}
+)
+
+func registerBuiltinToolTimeout(name, d string) {
+	builtinToolTimeoutMu.Lock()
+	builtinToolTimeouts[name] = d
+	builtinToolTimeoutMu.Unlock()
+}
+
+// builtinToolTimeout 查内置工具声明的超时（"" = 未声明）。
+func builtinToolTimeout(name string) string {
+	builtinToolTimeoutMu.RLock()
+	defer builtinToolTimeoutMu.RUnlock()
+	return builtinToolTimeouts[name]
+}
+
 type toolDefOptions struct {
 	// parallel 声明该工具可被并发执行（已核实只读、无共享写）。
 	parallel bool
+	// timeout 声明该工具单次执行的最长时间（如 "3m"）。
+	//
+	// ★ 为什么需要（2026-10-17 生产实测）：内核原本把所有工具一刀切 60s，
+	// 而 output_send__* 是**投递到子 pipeline** 的长任务，天然可能超过 60s
+	// （实测两次 60s 超时）。留空 = 用内核默认 60s，行为不变。
+	timeout string
 }
 
 // parallelOpts 是"可并发"的声明项。
@@ -332,6 +362,17 @@ func toolDefWith(name, description string, properties map[string]interface{}, re
 		Description:  description,
 		Parameters:   params,
 		ParallelSafe: opts.parallel,
+		Timeout:      opts.timeout,
+	}
+	// ★ 内置工具不走 StageHost.RegisterTool（它们由 executeToolCallInner
+	// 的 switch 分派），所以 Timeout 声明若只留在结构体上就没人读得到。
+	// 这里顺手登记进包级表，供 resolveToolTimeout 查询。
+	//
+	// 为什么不在 ToSchema 里带上 timeout：那份 map 是**发给模型的**
+	// function schema。把内核的执行参数混进去，模型会以为需要自己传
+	// timeout 参数，反而制造新的误解。
+	if opts.timeout != "" {
+		registerBuiltinToolTimeout(name, opts.timeout)
 	}
 	return def.ToSchema()
 }

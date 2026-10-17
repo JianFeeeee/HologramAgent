@@ -174,6 +174,10 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		},
 		// 共享 p.mu 写锁，且 healthcheck_report 会 append p.reports
 		Serial: true,
+		// ★ 声明显式超时：LLM 驱动检查默认就要 120s（见 llm_timeout 配置），
+		// 而内核原先把所有工具一刀切 60s ⇒ 这个工具**天生**跑不完，
+		// 每次都报「执行超时（60秒）」。这里给到配置上限之上。
+		Timeout: "5m",
 	}, func(args map[string]interface{}) (interface{}, error) {
 		plugin, _ := args["plugin"].(string)
 		return p.runFullCheck(s, plugin)

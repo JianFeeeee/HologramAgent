@@ -311,6 +311,25 @@ type ToolDef struct {
 	// 判据优先级：**Serial 胜出**。显式声明"必须串行"不允许被
 	// ParallelSafe 或任何默认值覆盖。
 	Serial bool `json:"serial,omitempty"`
+	// Timeout 声明本工具单次执行允许的最长时间（如 "2m"、"90s"）。
+	//
+	// ★ 为什么需要它（2026-10-17 生产实测）：
+	//   内核在 agent/core/toolcall.go 里有一个**写死的 60s** 外层上限。
+	//   它与工具自己的超时配置**互相矛盾**且内层形同虚设：
+	//     · cmd_run 有 timeout 参数（默认 30s，可传 "2m"），agent 真的传了
+	//       130s 级的值，但外层 60s 先到 ⇒ 工具自己的设置完全不生效
+	//     · healthcheck 声明默认 120s ⇒ 被砍掉一半
+	//     · 向开发线投递用的 output_send__* 天然是长任务（子 pipeline 执行）
+	//   实测后果：工具被内核掐断，模型看到「执行超时（60秒）」，
+	//   只能换更小的任务重试 —— 而真正的问题是内核没给它足够时间。
+	//
+	// 为零值时的行为：留空 = 用内核默认（60s）。存量插件不改一行，
+	// 行为与改动前逐字一致。声明它是**责任**：写长了要确保工具真能收敛，
+	// 否则会把"卡死"拖得更久。
+	//
+	// 内核会取 min(声明值, 内核硬上限 10m)：防止插件声明成 0（无限）
+	// 或荒唐的大值把队列堵死。
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // IOInjector provides methods for injecting input and interrupts into the agent pipeline.

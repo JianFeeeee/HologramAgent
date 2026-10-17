@@ -13,7 +13,112 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
+	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
+
+// 工具执行超时的默认值与硬上限。
+const (
+	// defaultToolTimeout 是**未声明** Timeout 的工具沿用的值。
+	// 与改动前逐字一致（60s）：存量插件不改一行，行为不变。
+	defaultToolTimeout = 60 * time.Second
+	// maxToolTimeout 是硬上限，防止插件声明成 0（无限）或荒唐的大值
+	// 把任务队列堵死。10 分钟足够覆盖已知的长任务：
+	//   cmd_run 长命令 / healthcheck（120s）/ output_send 到子 pipeline。
+	maxToolTimeout = 10 * time.Minute
+)
+
+// resolveToolTimeout 取某个工具应使用的超时。
+//
+// 顺序：ToolDef.Timeout（插件声明）→ defaultToolTimeout。
+// 声明值非法（解析失败 / ≤0 / 超上限）时**回退默认并记日志**，
+// 不静默接受：写错单位（如 "130" 少了 s）是最容易犯的错，
+// 让它默默变成 60s 会让人以为"声明没生效"却查不出原因。
+func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{}) time.Duration {
+	if a.stageHost == nil {
+		return defaultToolTimeout
+	}
+	def := a.stageHost.ToolDef(toolName)
+	if def == nil {
+		// 内置工具（output_send__* 等）不在 StageHost 里 —— 走内置表。
+		def = &sdk.ToolDef{}
+	}
+	// ★ 第二条通道：调用参数里的 timeout。
+	//
+	// 有些工具的时长**不是固定的**，而是由本次调用参数决定 —— 典型是
+	// cmd_run（模型自己传 timeout）。只做静态声明修不好它：
+	//   声明 130s：模型传 timeout=10s 时白等（浪费配额）
+	//   声明 30s ：模型传 timeout=2m  时仍被砍（就是原 bug）
+	// 所以这里把参数值也算进来，取**较大者**。
+	//
+	// 为什么取较大而不是直接用参数值：参数是模型给的，可能写成
+	// "1" 这种缺单位的（生产日志实测过）或是恶意的超大值。
+	// 用 max(声明值, 参数值) 并夹到硬上限，两边都兜住。
+	base := defaultToolTimeout
+	// 声明来源有两处：StageHost（插件工具 + 经 RegisterTool 注册的）
+	// 与内置工具表（output_send__* 等由 switch 分派的）。
+	// def.Timeout 为空时再查内置表。
+	declared := strings.TrimSpace(def.Timeout)
+	if declared == "" {
+		declared = builtinToolTimeout(toolName)
+	}
+	if declared != "" {
+		if d, err := time.ParseDuration(declared); err == nil && d > 0 {
+			base = d
+		} else if err != nil {
+			log.Printf("[agent] tool %s 声明的 Timeout=%q 解析失败（%v），用默认 %v",
+				toolName, declared, err, defaultToolTimeout)
+		}
+	}
+	if v, ok := args["timeout"].(string); ok && strings.TrimSpace(v) != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil && d > base {
+			base = d
+		}
+	}
+	if base > maxToolTimeout {
+		log.Printf("[agent] tool %s 超时 %v 超过硬上限，夹到 %v", toolName, base, maxToolTimeout)
+		return maxToolTimeout
+	}
+	return base
+}
+
+// resolveToolTimeoutDeclared 只取静态声明（保留给需要区分来源的调用方）。
+func (a *Agent) resolveToolTimeoutDeclared(toolName string) time.Duration {
+	if a.stageHost == nil {
+		return defaultToolTimeout
+	}
+	def := a.stageHost.ToolDef(toolName)
+	if def == nil || strings.TrimSpace(def.Timeout) == "" {
+		return defaultToolTimeout
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(def.Timeout))
+	if err != nil {
+		log.Printf("[agent] tool %s 声明的 Timeout=%q 解析失败（%v），回退默认 %v",
+			toolName, def.Timeout, err, defaultToolTimeout)
+		return defaultToolTimeout
+	}
+	if d <= 0 {
+		log.Printf("[agent] tool %s 声明的 Timeout=%q 非正数，回退默认 %v",
+			toolName, def.Timeout, defaultToolTimeout)
+		return defaultToolTimeout
+	}
+	if d > maxToolTimeout {
+		log.Printf("[agent] tool %s 声明的 Timeout=%v 超过硬上限，夹到 %v",
+			toolName, d, maxToolTimeout)
+		return maxToolTimeout
+	}
+	return d
+}
+
+// fmtDuration 把时长写成给模型看的中文形式（秒/分钟）。
+//
+// 不用 time.Duration.String()：它给出 "1m0s"、"1h30m0s" 这类紧凑写法，
+// 模型读得懂，但用户看错误提示时"1m0s"不如"1 分钟"直观。
+func fmtDuration(d time.Duration) string {
+	if d%time.Minute == 0 && d >= time.Minute {
+		return fmt.Sprintf("%d 分钟", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%d 秒", int(d/time.Second))
+}
 
 // toolOutcome 是一次工具执行的完整结果：**文本**（给模型）与
 // **原值**（给契约判断）分开携带。
@@ -56,12 +161,27 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		done <- a.executeToolCallInner(tc, channel, turnScenes)
 	}()
 
+	// ★ 超时：优先用工具**自己声明**的时长，而不是一刀切 60s。
+	//
+	// 2026-10-17 生产实测的缺陷：这里原本写死 60s，与工具自己的超时配置
+	// **互相矛盾**且让内层形同虚设：
+	//
+	//	23:13:38  执行 cmd_run（agent 传了 130s 级 timeout 参数）
+	//	23:14:38  ★ 内核 60s 硬超时掐断 → 「执行超时（60秒）」
+	//
+	// 而 cmd_run 内部明明有自己的 ctx（按 timeout 参数）；healthcheck
+	// 更是声明默认 120s —— 直接砍掉一半。output_send__*（向开发线投递，
+	// 子 pipeline 执行）天然就是长任务，也一起被误杀。
+	//
+	// 现在：ToolDef.Timeout 声明多久就给多久，但仍有**硬上限**
+	// （maxToolTimeout = 10m）兜住"插件声明成 0/无限"这种把队列堵死的写法。
+	toolTimeout := a.resolveToolTimeout(tc.Name, tc.Arguments)
 	select {
 	case result := <-done:
 		return result
-	case <-time.After(60 * time.Second):
-		log.Printf("[agent] tool %s timed out after 60s", tc.Name)
-		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("工具 %s 执行超时（60秒）", tc.Name),
+	case <-time.After(toolTimeout):
+		log.Printf("[agent] tool %s timed out after %v", tc.Name, toolTimeout)
+		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("工具 %s 执行超时（%s）", tc.Name, fmtDuration(toolTimeout)),
 			"该工具本次未在时限内返回。可改用更小的任务，或换用其他工具。")
 		return toolOutcome{Text: te.Error(), Raw: te}
 	}

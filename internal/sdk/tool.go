@@ -72,6 +72,11 @@ type BuiltinToolDef struct {
 	ParallelSafe bool
 	// Serial 声明此工具必须串行，优先于 ParallelSafe。
 	Serial bool
+	// Timeout 声明本工具单次执行允许的最长时间（如 "3m"）。
+	//
+	// 与 ToolDef.Timeout 同义（对外插件 / 内置插件两条路都要能声明）。
+	// 留空 = 内核默认 60s。
+	Timeout string
 }
 
 // ToSchema 转成下发给模型的 function schema。
