@@ -385,8 +385,35 @@ type PluginMgrAPI interface {
 	ReloadOne(name string) error
 	// ListLoadedPlugins 列出已加载插件。
 	ListLoadedPlugins() []string
-	// IsPluginDisabled 查询插件是否被禁用。
+	// IsPluginDisabled 查询插件是否被**持久**禁用。
 	IsPluginDisabled(name string) bool
+
+	// ---- 运行态启停（设计 docs/zh/kernel-modularization-design.md §2.6.7）----
+	//
+	// ★ 与 DisablePlugin/EnablePlugin 的区别（这是这两个方法存在的全部理由）：
+	//
+	//	DisablePlugin/EnablePlugin ⇒ 改**持久**状态（disabled_plugins 配置）
+	//	StopPlugin/StartPlugin     ⇒ 只改**运行**状态，不写任何配置
+	//
+	// 心智模型：插件是 agent 的应用程序。
+	//   · disabled_plugins = 系统里"禁止运行这个程序"（持久决定）
+	//   · runtimeStopped   = 用户"现在关掉这个窗口"（运行决定，重启复位）
+	//
+	// 混用二者的后果（实测缺陷）：想临时关一下却顺带关掉了开机自启
+	// ⇒ 用户下次开机会发现"怎么不启动了"。
+
+	// StopPlugin 运行态关闭：现在停掉，**不改持久状态**。重启后按
+	// auto_start + disabled_plugins 正常决定。
+	//
+	// 拒绝作用于 pluginmgr 自身与 webui（自锁/失联，内核层面拦死）。
+	StopPlugin(name string) error
+	// StartPlugin 运行态启动：现在拉起，**不解除持久禁用**。
+	//
+	// 被持久禁用的插件会被拒绝（提示先用 EnablePlugin）——
+	// 持久禁用是用户的明确决定，运行态操作不该绕过它。
+	StartPlugin(name string) error
+	// IsPluginRuntimeStopped 查询插件是否处于运行态关闭。
+	IsPluginRuntimeStopped(name string) bool
 }
 
 // StageScope controls which events a stage handler receives.
@@ -449,6 +476,8 @@ type PluginSDK struct {
 	llm            LLMAPI
 	sett           SettingsAPI
 	social         SocialAPI
+	secrets        SecretsAPI
+	rawFiles       RawFilesAPI
 	events         EventSubscriber
 	plgMgr         PluginMgrAPI
 
@@ -540,6 +569,16 @@ func (s *PluginSDK) LLM() LLMAPI {
 }
 
 // Social returns the social graph API (may be nil if not available).
+// Secrets returns the kernel secret vault API.
+//
+// ★ 内核未启用安全模块时它**不是 nil**，而是 Available() 返回 false 的
+// 实现 —— 这样插件可以统一地"先问 Available 再决定"，不必到处判空。
+func (s *PluginSDK) Secrets() SecretsAPI {
+	s.apiMu.RLock()
+	defer s.apiMu.RUnlock()
+	return s.secrets
+}
+
 func (s *PluginSDK) Social() SocialAPI {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()
@@ -703,6 +742,30 @@ func (s *PluginSDK) SetIOInjector(io IOInjector) {
 }
 
 // SetMemoryAPI sets the memory API (called by the core at startup).
+// RawFiles 返回随包分发资源的读取接口（内核装配时注入）。
+//
+// 未注入时返回 nil —— 那是旧内核或测试环境。插件应判空后**响亮失败**，
+// 而不是拿一个空实现继续（会表现为"资源读出来是空的"，与"资源不存在"难区分）。
+func (s *PluginSDK) RawFiles() RawFilesAPI {
+	s.apiMu.RLock()
+	defer s.apiMu.RUnlock()
+	return s.rawFiles
+}
+
+// SetRawFilesAPI 由内核装配时注入（插件不调用它）。
+func (s *PluginSDK) SetRawFilesAPI(v RawFilesAPI) {
+	s.apiMu.Lock()
+	s.rawFiles = v
+	s.apiMu.Unlock()
+}
+
+// SetSecretsAPI 由内核装配时注入（插件不调用它）。
+func (s *PluginSDK) SetSecretsAPI(v SecretsAPI) {
+	s.apiMu.Lock()
+	s.secrets = v
+	s.apiMu.Unlock()
+}
+
 func (s *PluginSDK) SetMemoryAPI(mem MemoryAPI) {
 	s.apiMu.Lock()
 	s.mem = mem

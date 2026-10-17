@@ -22,7 +22,9 @@ import (
 )
 
 // runFailbackRecovery 在 failback worker 内执行 L1 恢复梯子：
-//   probe(rescue 源) → 还原 DNS/proxy → probe → 还原 LLM 配置快照+ReloadFromConfig → probe
+//
+//	probe(rescue 源) → 还原 DNS/proxy → probe → 还原 LLM 配置快照+ReloadFromConfig → probe
+//
 // 成功后写 recovery_result.json 并以 exitRecovered 退出；失败以 exitRecoveryFailed 退出。
 // 全程确定性、无 token 消耗（除 rescue 源 QuickChat 复检外）。
 func runFailbackRecovery(dataDir string, cfgReg *internalConfig.ConfigRegistry, lua *luaVM.VM, providerMgr *agentAPI.ProviderManager, baseAPIKey string) {

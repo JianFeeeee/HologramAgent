@@ -25,6 +25,11 @@ GO=go
 GOCACHE=/tmp/gocache
 export GOPATH=/tmp/gopath
 BUILD_DIR=build
+# GRAPH_FILE 是启动依赖图的制品名（必须与 kernelboot.GraphFileName 一致）。
+#
+# ★ 图的来源是**各模块自己的 Requires()/Provides()**（不再有手工 JSON 清单）：
+# 生成器 import internal/kernelmod/all（各模块 init 自注册）⇒ 算分层 ⇒ 落图。
+GRAPH_FILE=depgraph.bin
 PROJECT_ROOT := $(CURDIR)
 # 版本号来源（见 docs/git-branching.md §2.1）：
 #
@@ -281,7 +286,36 @@ check-csrc-full: check-csrc csrc-fuzz
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=1 $(GO) build $(TAG_ARGS) -trimpath -installsuffix dynlink -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY) ./cmd/homed/
+	@# ★ 编译期定序：先由生成器（import 模块登记表）算出启动顺序图，
+	@#   取 digest，再构建 homed 并把 digest 注入二进制。
+	@#
+	@# 为何必须"先出图后构建"（设计 §2.5.2）：启动时 homed 比对
+	@# 「磁盘图的 digest」与「内嵌 digest」，不一致 ⇒ **拒绝启动**。
+	@# 两边必须来自**同一次构建**。
+	@#
+	@# 为何要这个保护：它能拦住最危险的一类故障 —— 图文件自身完好
+	@# （自校验通过），但描述的是**旧代码**（改了 Requires 没重出图）
+	@# ⇒ 按旧图调度 ⇒ 顺序错（正是要消灭的"静默顺序错"）。
+	@#
+	@# ⚠ 本段必须写成**一条 shell 命令**（\ 续行）：
+	@#   Make 的每行 recipe 是独立 shell，普通变量跨行不保留。
+	@#
+	@# ★★ ldflags 的引号必须让 $${GRAPH_HASH} **能展开**（2026-10-17 实测缺陷）：
+	@#   原写法把整串包在**单引号**里 ⇒ shell 里单引号不做变量展开
+	@#   ⇒ 注入进二进制的是**字面量** `$$GRAPH_HASH` ⇒ 内核启动时比对
+	@#   「磁盘图 digest」vs「内嵌的 $$GRAPH_HASH」必然不等 ⇒ **拒绝启动**。
+	@#   而 `make build` 日志全绿（图生成了、hash 也"注入"了），
+	@#   只有真跑内核才暴露。修法：用**双引号**包 ldflags。
+	@#
+	@# ⚠ 上面这条注释**不能挪到 recipe 中间**：注释行会打断 \ 续行链，
+	@#   使后半段成为**独立的 shell**（变量丢失 ⇒ hash 为空）。
+	@GRAPH_HASH=""; \
+	CGO_ENABLED=1 $(GO) build $(TAG_ARGS) -o $(BUILD_DIR)/homed-depgraph ./cmd/homed-depgraph/ && \
+	GRAPH_HASH=$$($(BUILD_DIR)/homed-depgraph -digest) && \
+	$(BUILD_DIR)/homed-depgraph -print && \
+	$(BUILD_DIR)/homed-depgraph -out $(BUILD_DIR)/$(GRAPH_FILE) && \
+	echo "已注入启动依赖图 hash: $$GRAPH_HASH" ; \
+	CGO_ENABLED=1 $(GO) build $(TAG_ARGS) -trimpath -installsuffix dynlink -ldflags "$(LDFLAGS) -X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=$$GRAPH_HASH" -o $(BUILD_DIR)/$(BINARY) ./cmd/homed/
 	@echo "Built: $(BUILD_DIR)/$(BINARY) ($(VERSION), tags='$(HOMED_TAGS)')"
 	@go version -m $(BUILD_DIR)/$(BINARY) | grep -q 'onnxruntime' \
 		|| echo "WARN: 本次构建不含 onnxruntime，本地向量空间不可用（HOMED_TAGS= 显式关掉时才符合预期）"

@@ -7,6 +7,21 @@ type SettingsAPI interface {
 	// Set writes a config value to the plugin's own config table.
 	Set(key string, value interface{}) error
 
+	// SetSecret writes a value that is ALWAYS encrypted at rest, regardless of
+	// the key name. Use it when the key name is neutral (e.g. "blob", "conn")
+	// and so cannot be detected as sensitive automatically.
+	//
+	// Returns an error (not a silent plaintext write) when no master key is
+	// installed — a plugin that believes it stored a secret must not end up
+	// with plaintext on disk.
+	//
+	// The companion read is GetSecret. ConfigDef.Secret/Type=="password" and
+	// sensitive key names are encrypted automatically and do NOT need this.
+	SetSecret(key string, value interface{}) error
+
+	// GetSecret reads a value written by SetSecret (transparently decrypted).
+	GetSecret(key string) (string, error)
+
 	// List returns all keys matching the given prefix.
 	List(prefix string) ([]string, error)
 

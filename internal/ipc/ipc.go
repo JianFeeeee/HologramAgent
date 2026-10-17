@@ -7,9 +7,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -20,12 +22,12 @@ func sinkPath(dataDir string) string {
 
 // Status worker 上报给 guard 的自诊断快照。
 type Status struct {
-	PID       int     `json:"pid"`
-	Boot      string  `json:"boot"`               // normal | failback
-	UptimeSec int64   `json:"uptime_sec"`         // 进程存活秒数
-	LLMOK     *bool   `json:"llm_ok,omitempty"`   // rescue 源可达性（nil=未探）
-	Tools     int     `json:"tools"`              // 已注册工具数
-	LastDiag  string  `json:"last_diag,omitempty"` // 最近一次自诊断结论（如 diag_loc.cause）
+	PID       int    `json:"pid"`
+	Boot      string `json:"boot"`                // normal | failback
+	UptimeSec int64  `json:"uptime_sec"`          // 进程存活秒数
+	LLMOK     *bool  `json:"llm_ok,omitempty"`    // rescue 源可达性（nil=未探）
+	Tools     int    `json:"tools"`               // 已注册工具数
+	LastDiag  string `json:"last_diag,omitempty"` // 最近一次自诊断结论（如 diag_loc.cause）
 }
 
 // StatusFunc 组装 worker 当前状态。
@@ -33,11 +35,12 @@ type StatusFunc func() *Status
 
 // Server worker 侧：监听 unix socket，处理 PING→ACK。
 type Server struct {
-	path   string
-	ln     net.Listener
-	status StatusFunc
-	stop   chan struct{}
-	done   chan struct{}
+	doneOnce sync.Once
+	path     string
+	ln       net.Listener
+	status   StatusFunc
+	stop     chan struct{}
+	done     chan struct{}
 }
 
 // NewServer 创建心跳服务端（尚未 Listen，见 Start）。
@@ -63,7 +66,7 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) acceptLoop() {
-	defer close(s.done)
+	defer safeclose.Safe(&s.doneOnce, s.done)
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
@@ -127,7 +130,7 @@ func (c *Client) Ping(timeout time.Duration) (*Status, error) {
 		return nil, fmt.Errorf("ipc: empty ACK")
 	}
 	var resp struct {
-		Type   string `json:"type"`
+		Type   string  `json:"type"`
 		Status *Status `json:"status"`
 	}
 	if err := json.Unmarshal(sc.Bytes(), &resp); err != nil {
