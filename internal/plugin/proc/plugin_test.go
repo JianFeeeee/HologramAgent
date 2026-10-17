@@ -39,6 +39,12 @@ type fakeCoreSDK struct {
 	// 用接口而非具体类型：需要能塞入"只实现公开 KnowledgeAPI、
 	// 不具备内核多模态扩展"的替身，以验证能力缺失时的报错路径。
 	knowledge knowledgeAPITest
+
+	// settingsAPI 是可注入的真实配置后端（端到端加密判据用）。
+	// 为 nil 时 Settings() 返回 nil（旧行为不变）。
+	settingsAPI pubsdk.SettingsAPI
+	// secretsAPI 同理：变量库后端（端到端判据用）。
+	secretsAPI pubsdk.SecretsAPI
 }
 
 // knowledgeAPITest 是公开 SDK 的知识库契约（不含内核扩展方法）。
@@ -61,7 +67,8 @@ func newFakeCore() *fakeCoreSDK {
 }
 
 func (f *fakeCoreSDK) PluginName() string                  { return "fake" }
-func (f *fakeCoreSDK) Settings() pubsdk.SettingsAPI        { return nil }
+func (f *fakeCoreSDK) Settings() pubsdk.SettingsAPI        { return f.settingsAPI }
+func (f *fakeCoreSDK) Secrets() pubsdk.SecretsAPI          { return f.secretsAPI }
 func (f *fakeCoreSDK) Memory() pubsdk.MemoryAPI            { return nil }
 func (f *fakeCoreSDK) TextMemory() pubsdk.TextMemoryAPI    { return nil }
 func (f *fakeCoreSDK) DocMemory() pubsdk.DocMemoryAPI      { return f.docMem }

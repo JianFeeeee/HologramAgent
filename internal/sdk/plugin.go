@@ -128,6 +128,11 @@ type PluginManager interface {
 	IsBuiltinPlugin(name string) bool
 	DisablePlugin(name, by string) error
 	EnablePlugin(name string) error
+	// StopPlugin/StartPlugin 是**运行态**启停（设计 §2.6.7.3/2.6.7.4）：
+	// 只改运行状态，不写 disabled_plugins。与 Disable/Enable（持久态）分开。
+	StopPlugin(name string) error
+	StartPlugin(name string) error
+	IsPluginRuntimeStopped(name string) bool
 	// RemovePlugin 卸载插件：先停止（stop handlers + Stop），再执行插件注册的
 	// onRemove 回调（RegisterOnRemoveHandler），最后从注册表移除并清理配置表。
 	// 目录删除由调用方负责。
@@ -303,6 +308,8 @@ type SDKConfig struct {
 	Knowledge      KnowledgeAPI
 	LLM            LLMAPI
 	Settings       SettingsAPI
+	Secrets        pubsdk.SecretsAPI
+	RawFiles       pubsdk.RawFilesAPI
 	RegTool        ToolRegistrar
 	RegStage       StageRegistrar
 	RegAPI         APIRegistrar
@@ -323,6 +330,12 @@ type SDKConfig struct {
 
 func New(name string, cfg SDKConfig) *PluginSDK {
 	base := pubsdk.New(name, cfg.Settings, cfg.RegTool, cfg.RegStage, cfg.RegAPI, cfg.RegOutput)
+	if cfg.Secrets != nil {
+		base.SetSecretsAPI(cfg.Secrets)
+	}
+	if cfg.RawFiles != nil {
+		base.SetRawFilesAPI(cfg.RawFiles)
+	}
 	// 反代声明收集：内置插件（无 plugin.json）在 Start 里用 RegisterProxy
 	// 声明自己的服务，落到本包的登记表；外部插件走 plugin.json 自动发现。
 	base.SetProxyRegistrar(func(svc string, d pubsdk.ProxyDef) { RegisterBuiltinProxy(name, svc, d) })

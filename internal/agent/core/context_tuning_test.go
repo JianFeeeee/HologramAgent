@@ -6,6 +6,7 @@ import (
 	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 )
+
 // 这组判据把「上下文管理的阈值」从硬编码变成可配置，并守住两条纪律：
 //
 //  1. **零值等价**：ContextTuning 零值必须与硬编码时代**逐值相同**。

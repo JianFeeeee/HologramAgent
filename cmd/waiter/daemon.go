@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/devicebridge/client"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ type msgEntry struct {
 }
 
 type daemonHandler struct {
+	stopOnce sync.Once
 	// homed 连接
 	homeMu   sync.Mutex
 	homeConn net.Conn
@@ -255,7 +257,7 @@ func runDaemon(cfg *Config) {
 	go func() {
 		<-sigCh
 		log.Printf("[daemon] shutting down")
-		close(dh.stopCh)
+		safeclose.Safe(&dh.stopOnce, dh.stopCh)
 		dh.closeHome()
 		ln.Close()
 	}()

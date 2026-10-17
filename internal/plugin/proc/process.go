@@ -10,12 +10,14 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 )
 
 // Process 管理一个外部插件子进程：spawn / 双向 JSON-RPC / 优雅停止 / 崩溃检测。
@@ -55,18 +57,20 @@ type Process struct {
 	handler RequestHandler
 
 	// exited 在进程被收割后关闭，用于唤醒所有等待者。
-	exited    chan struct{}
-	exitOnce  sync.Once
-	exitErr   atomic.Pointer[error]
-	readerWG  sync.WaitGroup
-	waiterWG  sync.WaitGroup
-	readyOnce sync.Once
-	ready     chan struct{}
+	exited     chan struct{}
+	exitedOnce sync.Once
+	exitOnce   sync.Once
+	exitErr    atomic.Pointer[error]
+	readerWG   sync.WaitGroup
+	waiterWG   sync.WaitGroup
+	readyOnce  sync.Once
+	ready      chan struct{}
 
 	// waitErr 由**唯一的** waitLoop 写入：cmd.Wait() 的返回值。
 	// waitDone 关闭后 waitErr 才可读。
-	waitErr  error
-	waitDone chan struct{}
+	waitErr      error
+	waitDone     chan struct{}
+	waitDoneOnce sync.Once
 
 	// onExit 在进程退出时回调（内核用它喂 plugin_health.recordCrash，
 	// 以及 ForceRelease 释放该插件持有的 stage 锁）。
@@ -110,7 +114,12 @@ type Options struct {
 
 // 默认超时。
 const (
-	defaultHandshakeTimeout = 10 * time.Second
+	// DefaultHandshakeTimeout 是内核与插件**建链（握手）**的默认超时。
+	//
+	// 导出它是因为它是**唯一真相源**：插件的 manifest 换算
+	// （PluginManifest.HandshakeTimeout）必须引用这个常量，
+	// 否则两处会各自漂移（"以为改了一处其实另一处没改"）。
+	DefaultHandshakeTimeout = 10 * time.Second
 	// stopGracePeriod 是发出 plugin.stop 后等待进程自行退出的时间。
 	// 超时则 Kill——**这是"真正的取消"**，对比 cgo 路径超时后线程永久泄漏。
 	stopGracePeriod = 5 * time.Second
@@ -118,6 +127,9 @@ const (
 	// 正常情况 wait4 微秒级返回；超过说明卡在不可中断的内核态。
 	killReapTimeout = 2 * time.Second
 )
+
+// defaultHandshakeTimeout 是包内旧名（保持既有调用点不改）。
+const defaultHandshakeTimeout = DefaultHandshakeTimeout
 
 // ErrProcessExited 表示子进程已退出，调用无法完成。
 var ErrProcessExited = errors.New("proc: 插件进程已退出")
@@ -282,6 +294,33 @@ func (p *Process) handshake(timeout time.Duration) error {
 //
 // 参考 clawhubadapter/sidecarProcess 的成熟做法：大 buffer 防长行截断、
 // pending 表定位应答、退出时唤醒全部等待者。
+// summarizeFrame 把一段非 JSON 文本压成单行摘要（诊断用）。
+//
+// 用途：让"插件往 stdout 打印了什么"一眼可见 —— 否则只看到
+// 「invalid character 'x'」而不知道是哪句话（实测排查代价见 readLoop 里那段注释）。
+//
+// 处理：
+//   - 控制字符（\r\n\t 等）替换成空格，避免多行打散日志
+//   - 超长截断并标注原始字节数
+func summarizeFrame(b []byte, max int) string {
+	var sb strings.Builder
+	for _, c := range b {
+		if c < 0x20 || c == 0x7f {
+			sb.WriteByte(' ')
+			continue
+		}
+		sb.WriteByte(c)
+		if sb.Len() >= max {
+			break
+		}
+	}
+	out := strings.TrimSpace(sb.String())
+	if len(b) > max {
+		return out + fmt.Sprintf(" …（共 %d 字节，已截断）", len(b))
+	}
+	return out
+}
+
 func (p *Process) readLoop() {
 	defer p.readerWG.Done()
 
@@ -290,7 +329,7 @@ func (p *Process) readLoop() {
 	// 超大 payload 应走共享内存 arena 而非 RPC 帧。
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	p.readyOnce.Do(func() { close(p.ready) })
+	safeclose.Safe(&p.readyOnce, p.ready)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -303,7 +342,32 @@ func (p *Process) readLoop() {
 			Method string `json:"method"`
 		}
 		if err := json.Unmarshal(line, &probe); err != nil {
-			log.Printf("[proc] %s 收到非法 JSON 帧（%d 字节）: %v", p.name, len(line), err)
+			// ★★★ 这条日志必须**可定位**（2026-10-16 实测修正）。
+			//
+			// ## 原问题的形态
+			//
+			// 子进程插件的 **stdout 是 JSON-RPC 协议通道**，stderr 才是日志通道
+			// （SDK 侧 log.SetOutput(os.Stderr)）。插件若用 `fmt.Printf` 写日志，
+			// 那句话会以**裸文本**进入协议流 ⇒ 就是这里。
+			//
+			// 原日志只报「收到非法 JSON 帧（N 字节）: invalid character 'x'」：
+			//   · **不显示内容** ⇒ 看不到是"哪句话"混进来了；
+			//   · **不提原因** ⇒ 看起来像协议/内核故障，不像"插件自己 printf"。
+			//
+			// 实测代价：生产环境累计 **1038 条**这种报错（weather 113 / rss 103 /
+			// calendar 102 / 第三方 huawei_smarthome 720），而真因只是那 4 个插件
+			// 用了 fmt.Printf。定位它花了一整轮排查。
+			//
+			// ⇒ 现在把**内容摘要**与**可能原因 + 修法**一起打出来。
+			// 限长是因为坏帧可能很大（插件打了长文本/二进制），
+			// 截断到 160 字节足以认出"这是哪句日志"。
+			log.Printf("[proc] %s 收到非法 JSON 帧（%d 字节）: %v\n"+
+				"        ↑ 内容摘要: %s\n"+
+				"        可能原因：插件往 **stdout** 打印了日志，而 stdout 是"+
+				"JSON-RPC **协议通道**（stderr 才是日志通道）。\n"+
+				"        修法：把插件里的 fmt.Printf/fmt.Println 改成 log.Printf"+
+				"（脚手架模板 1.4.0 起已修正）。",
+				p.name, len(line), err, summarizeFrame(line, 160))
 			continue
 		}
 
@@ -357,7 +421,7 @@ func (p *Process) readLoop() {
 func (p *Process) waitLoop() {
 	defer p.waiterWG.Done()
 	p.waitErr = p.cmd.Wait()
-	close(p.waitDone)
+	safeclose.Safe(&p.waitDoneOnce, p.waitDone)
 
 	// 主动拆管道：若孙子进程仍持有 stdout 写端，readLoop 不会自己退，
 	// 关掉读端逼它从 Scan 里出来（报 file already closed，已预期）。
@@ -401,7 +465,7 @@ func (p *Process) markExited() {
 			ch <- &Response{Error: ErrProcessExited.Error()}
 		}
 
-		// ★ 顺序至关重要：onExit 必须在 close(p.exited) **之前**完成。
+		// ★ 顺序至关重要：onExit 必须在 safeclose.Safe(&p.exitedOnce, p.exited) **之前**完成。
 		//
 		// onExit（内核侧即 Plugin.handleExit）会调 Host.ReclaimOwner 回收该插件
 		// 残留的共享槽——**那是要读共享内存区域的**。而 exited 一关闭，
@@ -424,7 +488,7 @@ func (p *Process) markExited() {
 			p.onExit(p.name, p.ExitError())
 		}
 
-		close(p.exited)
+		safeclose.Safe(&p.exitedOnce, p.exited)
 	})
 }
 
@@ -639,9 +703,10 @@ func (p *Process) Kill() error {
 	// 超时后主动关掉读端，强制 readLoop 从 Scan 里出来（file already closed，
 	// 已在 waitLoop 里被列为预期错误）。
 	readerDone := make(chan struct{})
+	var readerDoneOnce sync.Once
 	go func() {
 		p.readerWG.Wait()
-		close(readerDone)
+		safeclose.Safe(&readerDoneOnce, readerDone)
 	}()
 	select {
 	case <-readerDone:

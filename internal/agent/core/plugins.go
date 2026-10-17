@@ -80,6 +80,8 @@ var builtinToolOwner = map[string]string{
 	"llm_list_sources": "core", "llm_set_source": "core", "llm_current_source": "core",
 	"plgreload": "core", "get_plugin_tools": "core", "list_devices": "core",
 	"devicedetect": "core", "device_ctl_status": "core", "device_ctl_cmdrun": "core",
+	// 安全模块的变量库（内核能力，不是插件）
+	"secret_submit": "core", "secret_list": "core", "secret_forget": "core",
 	"device_ctl_cmdresult": "core", "screensee": "core",
 }
 

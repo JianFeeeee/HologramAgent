@@ -114,6 +114,8 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// ★ E-3：列表永远默认屏蔽敏感值。明文揭示必须走单键 reveal 接口。
+		h.maskSecretValues(values, false)
 
 		plugins := []string{"core"}
 		for _, p := range h.settings.Plugins() {
@@ -150,6 +152,25 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 		// 避免被 fmt.Sprint 以科学计数法存库导致后续读取/解析失败。
 		if f, ok := body.Value.(float64); ok && f == math.Trunc(f) && math.Abs(f) < 1e15 {
 			body.Value = int64(f)
+		}
+		// ★ 掩码占位符**不是值**，绝不能存回内核。
+		//
+		// 真实故障（2026-10-16）：设置页里点一次「保存」，前端会把同一组字段
+		// （含刚被掩码的 api_key）一并回传 ⇒ `••••••••` 被当真实值存进
+		// `core.llm.sources.<n>.api_key` ⇒ 下游（commondev 的 pi 源导入器）
+		// 把掩码写进 pi 的 auth.json ⇒ 模型调用 401。
+		//
+		// 这里拒绝并**明确告诉调用方怎么做**：它没说"保存失败"就完了，
+		// 否则用户不知道该如何保存其他字段。
+		if IsSecretPlaceholder(body.Value) {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "该值是**掩码占位符**（列表接口为防泄漏而显示的“已设置”标记），" +
+					"不是真实内容；存回它会用标记覆盖真值。" +
+					"若未修改此字段请**不要保存它**（只保存你改动的键）；" +
+					"若确实要改，请填入新的真值（或先调 reveal 接口取回当前值后再改）。",
+				"key": body.Key,
+			})
+			return
 		}
 		deleting := body.Value == nil
 		if strings.HasPrefix(body.Key, "plugin.") {

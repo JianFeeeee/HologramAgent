@@ -21,24 +21,29 @@ type nilSettings struct{}
 
 func (m *nilSettings) DataDir() string { return "/tmp/mock_data" }
 
-func (m *nilSettings) Get(string) (interface{}, error)                    { return nil, nil }
-func (m *nilSettings) Set(string, interface{}) error                      { return nil }
-func (m *nilSettings) List(string) ([]string, error)                      { return nil, nil }
-func (m *nilSettings) GetCore(string) (interface{}, error)                { return nil, nil }
-func (m *nilSettings) SetCore(string, interface{}) error                  { return nil }
-func (m *nilSettings) ListCore(string) ([]string, error)                  { return nil, nil }
-func (m *nilSettings) GetPlugin(string, string) (interface{}, error)      { return nil, nil }
-func (m *nilSettings) SetPlugin(string, string, interface{}) error        { return nil }
-func (m *nilSettings) ListPlugin(string, string) ([]string, error)        { return nil, nil }
-func (m *nilSettings) RegisterDef(pubsdk.ConfigDef)                          {}
-func (m *nilSettings) Defs(string) []*pubsdk.ConfigDef                       { return nil }
-func (m *nilSettings) Dump() map[string]interface{}                          { return nil }
-func (m *nilSettings) Plugins() []string                                     { return nil }
-func (m *nilSettings) DefsCore(string) []*sdk.ConfigDef                      { return nil }
-func (m *nilSettings) DefsPlugin(string, string) []*sdk.ConfigDef            { return nil }
-func (m *nilSettings) Remove(string) error                                   { return nil }
-func (m *nilSettings) RemoveCore(string) error                               { return nil }
-func (m *nilSettings) RemovePlugin(string, string) error                     { return nil }
+func (m *nilSettings) Get(string) (interface{}, error)     { return nil, nil }
+func (m *nilSettings) Set(string, interface{}) error       { return nil }
+func (m *nilSettings) SetSecret(string, interface{}) error { return nil }
+func (m *nilSettings) GetSecret(string) (string, error)    { return "", nil }
+
+// IsSecret：E-3 起 SettingsAPI 要求实现（判断某键是否按密文存储）。
+func (m *nilSettings) IsSecret(string) bool                          { return false }
+func (m *nilSettings) List(string) ([]string, error)                 { return nil, nil }
+func (m *nilSettings) GetCore(string) (interface{}, error)           { return nil, nil }
+func (m *nilSettings) SetCore(string, interface{}) error             { return nil }
+func (m *nilSettings) ListCore(string) ([]string, error)             { return nil, nil }
+func (m *nilSettings) GetPlugin(string, string) (interface{}, error) { return nil, nil }
+func (m *nilSettings) SetPlugin(string, string, interface{}) error   { return nil }
+func (m *nilSettings) ListPlugin(string, string) ([]string, error)   { return nil, nil }
+func (m *nilSettings) RegisterDef(pubsdk.ConfigDef)                  {}
+func (m *nilSettings) Defs(string) []*pubsdk.ConfigDef               { return nil }
+func (m *nilSettings) Dump() map[string]interface{}                  { return nil }
+func (m *nilSettings) Plugins() []string                             { return nil }
+func (m *nilSettings) DefsCore(string) []*sdk.ConfigDef              { return nil }
+func (m *nilSettings) DefsPlugin(string, string) []*sdk.ConfigDef    { return nil }
+func (m *nilSettings) Remove(string) error                           { return nil }
+func (m *nilSettings) RemoveCore(string) error                       { return nil }
+func (m *nilSettings) RemovePlugin(string, string) error             { return nil }
 
 // toolSpy 记录注册的工具，并可按名调用 handler。
 type toolSpy struct {
@@ -46,7 +51,9 @@ type toolSpy struct {
 	handlers map[string]func(args map[string]interface{}) (interface{}, error)
 }
 
-func newToolSpy() *toolSpy { return &toolSpy{handlers: map[string]func(map[string]interface{}) (interface{}, error){}} }
+func newToolSpy() *toolSpy {
+	return &toolSpy{handlers: map[string]func(map[string]interface{}) (interface{}, error){}}
+}
 
 func (s *toolSpy) Register(name string, def interface{}, h func(args map[string]interface{}) (interface{}, error)) error {
 	s.mu.Lock()
@@ -83,13 +90,13 @@ func newTestPlugin(t *testing.T) (*Plugin, *toolSpy, *events.Bus) {
 
 	spy := newToolSpy()
 	cfgSDK := sdk.New("skillmgr", sdk.SDKConfig{
-		RegTool:   func(name string, def sdk.ToolDef, h sdk.ToolHandler) error {
+		RegTool: func(name string, def sdk.ToolDef, h sdk.ToolHandler) error {
 			return spy.Register(name, def, func(args map[string]interface{}) (interface{}, error) {
 				return h(args)
 			})
 		},
-		Settings:  &nilSettings{},
-		EventBus:  bus,
+		Settings: &nilSettings{},
+		EventBus: bus,
 	})
 	if err := p.Start(cfgSDK); err != nil {
 		t.Fatalf("Start: %v", err)

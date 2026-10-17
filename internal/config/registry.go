@@ -28,6 +28,16 @@ type ConfigDef struct {
 	Options     []string `json:"options,omitempty"`
 	Hidden      bool     `json:"hidden,omitempty"`
 	Category    string   `json:"category,omitempty"`
+
+	// Secret 标记该配置项为敏感值：**落盘加密且不回显**。
+	//
+	// ★ 与 Type=="password" 等价，但更显式。SDK 侧（pubsdk.ConfigDef）
+	// 一直有这个字段，只是内核这边没实现 —— 插件早就声明了意图却没有效果。
+	//
+	// 两种写法都会生效（见 isSecretKey）：
+	//   · Type: "password"            旧写法，兼容保留
+	//   · Secret: true                推荐，意图明确
+	Secret bool `json:"secret,omitempty"`
 }
 
 type ConfigRegistry struct {
@@ -36,6 +46,12 @@ type ConfigRegistry struct {
 	dbPath      string
 	defs        map[string]*ConfigDef
 	llmSnapFile string
+
+	// secrets 是「需要加密落盘」的键集合（由 def 推导，见 isSecretKey）。
+	//
+	// 为何缓存成集合而不是每次查 def：写入是热路径，而 def 查询要拿锁；
+	// 且 secret 判定必须对**无 def 的键**也能生效（见 secretByKeyPattern）。
+	secrets map[string]bool
 }
 
 func NewConfigRegistry(dbPath string) *ConfigRegistry {
@@ -47,7 +63,7 @@ func NewConfigRegistry(dbPath string) *ConfigRegistry {
 		panic(fmt.Sprintf("open config db: %v", err))
 	}
 	db.Exec("PRAGMA journal_mode=WAL")
-	r := &ConfigRegistry{db: db, dbPath: dbPath, defs: make(map[string]*ConfigDef)}
+	r := &ConfigRegistry{db: db, dbPath: dbPath, defs: make(map[string]*ConfigDef), secrets: make(map[string]bool)}
 	r.initCoreTable()
 	return r
 }
@@ -133,11 +149,19 @@ func (r *ConfigRegistry) IsPluginDisabled(name string) bool {
 }
 
 func (r *ConfigRegistry) ensurePluginTable(name string) {
-	table := r.pluginTableName(name)
 	r.db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
-	)`, table))
+	)`, r.pluginTableName(name)))
+}
+
+// ensurePluginTableErr 同 ensurePluginTable 但返回错误（显式加密写入需要它）。
+func (r *ConfigRegistry) ensurePluginTableErr(name string) error {
+	_, err := r.db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`, r.pluginTableName(name)))
+	return err
 }
 
 func (r *ConfigRegistry) pluginTableName(name string) string {
@@ -153,7 +177,11 @@ func (r *ConfigRegistry) pluginTableName(name string) string {
 func (r *ConfigRegistry) Register(key string, value interface{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, key, fmt.Sprint(value))
+	stored := fmt.Sprint(value)
+	if r.isSecretKey(key) {
+		stored, _ = sealForStorage(key, stored)
+	}
+	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, key, stored)
 }
 
 func (r *ConfigRegistry) RegisterDefault(key string, value interface{}) {
@@ -164,7 +192,12 @@ func (r *ConfigRegistry) RegisterDef(def ConfigDef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.defs[def.Key] = &def
-	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, def.Key, def.Default)
+	// 默认值也要加密落盘（否则声明了 secret 的项一启动就是明文）。
+	stored := def.Default
+	if r.isSecretKey(def.Key) {
+		stored, _ = sealForStorage(def.Key, stored)
+	}
+	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, def.Key, stored)
 }
 
 func (r *ConfigRegistry) GetDef(key string) *ConfigDef {
@@ -306,7 +339,12 @@ func (r *ConfigRegistry) Get(key string) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return val, nil
+	// 敏感项在库里是密文 ⇒ 对调用方透明解密（读接口语义不变）。
+	if plain, oerr := openFromStorage(key, val); oerr == nil {
+		return plain, nil
+	} else {
+		return nil, oerr
+	}
 }
 
 func (r *ConfigRegistry) Set(key string, value interface{}) error {
@@ -315,7 +353,12 @@ func (r *ConfigRegistry) Set(key string, value interface{}) error {
 	if strings.HasPrefix(key, "core.llm.") {
 		r.writeLLMSnapshotLocked()
 	}
-	_, err := r.db.Exec(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`, key, fmt.Sprint(value))
+	stored := fmt.Sprint(value)
+	// ★ 敏感项在**写库前**加密：库文件里只有密文。
+	if r.isSecretKey(key) {
+		stored, _ = sealForStorage(key, stored)
+	}
+	_, err := r.db.Exec(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`, key, stored)
 	if err == nil && strings.HasPrefix(key, "core.llm.sources.") {
 		rest := strings.TrimPrefix(key, "core.llm.sources.")
 		parts := strings.SplitN(rest, ".", 2)
@@ -455,6 +498,9 @@ func LoadLLMSnapshot(path string) (map[string]string, error) {
 }
 
 // listPrefixLocked 调用方须持有锁；返回 prefix 开头的全部键值。
+//
+// ★ 返回的是**解密后**的值（调用方都是内核内部可信路径，如
+// ToConfig / LLM 快照 / guard 基线）。
 func (r *ConfigRegistry) listPrefixLocked(prefix string) map[string]string {
 	out := make(map[string]string)
 	rows, err := r.db.Query(`SELECT key, value FROM config WHERE key LIKE ? ORDER BY key`, prefix+"%")
@@ -465,7 +511,12 @@ func (r *ConfigRegistry) listPrefixLocked(prefix string) map[string]string {
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err == nil {
-			out[k] = v
+			if plain, oerr := openFromStorage(k, v); oerr == nil {
+				out[k] = plain
+			} else {
+				// 解不开就不给值：宁可缺失（可诊断）也不把密文当明文交出去。
+				log.Printf("[config] listPrefix 解密 %s 失败，已跳过: %v", k, oerr)
+			}
 		}
 	}
 	return out
@@ -483,7 +534,14 @@ func (r *ConfigRegistry) Dump() map[string]interface{} {
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err == nil {
-			result[k] = v
+			// ★ 返回**明文**：Dump 的调用方都是内核内部可信路径
+			//（ToConfig 重建 LLMSource、WebUI 设置页、插件读自身/他人配置）。
+			// 本需求防的是「静态文件泄漏」，不是「内部读取」。
+			if plain, oerr := openFromStorage(k, v); oerr == nil {
+				result[k] = plain
+			} else {
+				log.Printf("[config] Dump 解密 %s 失败: %v", k, oerr)
+			}
 		}
 	}
 	return result
@@ -723,7 +781,7 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 	set("core.memory.documents", filepath.Join(dataDir, "memory", "documents"))
 	// 发行版默认启用本地向量空间。用 chineseclip（text+image、512 维、实测
 	// 稳态约 0.89GB、Apache-2.0）而不是 qwen3vl（视觉塔按需加载，峰值约 9.4GB）：
-    // 多数机器装不下后者。
+	// 多数机器装不下后者。
 	// 产物不在仓库里，用 scripts/export_chineseclip_onnx.py 生成到这个路径；
 	// 产物缺失时 homed 会打印明确错误并退回 fastText 文本路径（不静默假装启用）。
 	set("core.memory.multimodal_space.provider", "chineseclip")
@@ -885,7 +943,10 @@ func (r *ConfigRegistry) GetString(key, defaultVal string) string {
 	if err != nil {
 		return defaultVal
 	}
-	return v
+	if plain, oerr := openFromStorage(key, v); oerr == nil {
+		return plain
+	}
+	return defaultVal
 }
 
 func (r *ConfigRegistry) GetInt(key string, defaultVal int) int {
@@ -1154,7 +1215,11 @@ func (r *ConfigRegistry) SetPluginConfig(name, key string, value interface{}) er
 	defer r.mu.Unlock()
 	r.ensurePluginTable(name)
 	table := r.pluginTableName(name)
-	_, err := r.db.Exec(fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, table), key, fmt.Sprint(value))
+	stored := fmt.Sprint(value)
+	if r.isSecretKey("plugin." + name + "." + key) {
+		stored, _ = sealForStorage("plugin."+name+"."+key, stored)
+	}
+	_, err := r.db.Exec(fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, table), key, stored)
 	return err
 }
 
@@ -1183,17 +1248,65 @@ func (p *PluginSettings) Get(key string) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	return val, nil
+	// 敏感项透明解密
+	if plain, oerr := openFromStorage("plugin."+p.name+"."+key, val); oerr == nil {
+		return plain, nil
+	} else {
+		return nil, oerr
+	}
 }
 
 func (p *PluginSettings) Set(key string, value interface{}) error {
 	p.registry.mu.Lock()
 	defer p.registry.mu.Unlock()
-	_, err := p.registry.db.Exec(fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, p.table), key, fmt.Sprint(value))
+	stored := fmt.Sprint(value)
+	// ★ 插件敏感项同样加密落盘（插件无感知：它 Set 明文，Get 也得到明文）。
+	if p.isSecretKeyLocal(key) {
+		stored, _ = sealForStorage("plugin."+p.name+"."+key, stored)
+	}
+	_, err := p.registry.db.Exec(fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, p.table), key, stored)
 	return err
 }
 
-// Remove 删除插件配置中的单个键（用于插件删除时的自身配置清理）。
+// SetSecret 强制加密写入（不看键名，也不需 def）。
+//
+// ★ 为何要显式 API：键名模式无法覆盖所有情形 —— 插件可能用
+// `blob`、`payload`、`conn` 这类中性键名存凭据。显式声明意图比猜名字可靠。
+//
+// 未装配密钥时 **拒绝写入**（不静默存明文）：插件以为存了密文而
+// 实际是明文，是最危险的静默降级。空值例外（删除语义）。
+func (p *PluginSettings) SetSecret(key string, value interface{}) error {
+	stored := fmt.Sprint(value)
+	sealed := stored
+	if stored != "" {
+		var ok bool
+		sealed, ok = sealForStorage("plugin."+p.name+"."+key, stored)
+		if !ok {
+			return fmt.Errorf("config: 密钥未装配，拒绝以明文存储敏感项 %q", key)
+		}
+	}
+	p.registry.mu.Lock()
+	defer p.registry.mu.Unlock()
+	if err := p.registry.ensurePluginTableErr(p.name); err != nil {
+		return err
+	}
+	_, err := p.registry.db.Exec(
+		fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, p.table), key, sealed)
+	return err
+}
+
+// GetSecret 读取由 SetSecret 写入的值（透明解密）。
+func (p *PluginSettings) GetSecret(key string) (string, error) {
+	p.registry.mu.RLock()
+	defer p.registry.mu.RUnlock()
+	var val string
+	err := p.registry.db.QueryRow(
+		fmt.Sprintf(`SELECT value FROM %s WHERE key = ?`, p.table), key).Scan(&val)
+	if err != nil {
+		return "", err
+	}
+	return openFromStorage("plugin."+p.name+"."+key, val)
+}
 func (p *PluginSettings) Remove(key string) error {
 	p.registry.mu.Lock()
 	defer p.registry.mu.Unlock()
@@ -1226,10 +1339,18 @@ func (p *PluginSettings) RegisterDef(def ConfigDef) {
 	// 只有注册配置定义才创建插件配置表：任意 scope 的读写不得隐式建表，
 	// 避免非插件（如 SKILL 目录名）被注册成配置命名空间。
 	p.registry.ensurePluginTable(p.name)
-	p.registry.db.Exec(fmt.Sprintf(`INSERT OR IGNORE INTO %s (key, value) VALUES (?, ?)`, p.table), def.Key, def.Default)
-	qualified := "plugin." + p.name + "." + def.Key
+
+	localKey := def.Key                              // 表内用局部键
+	qualified := "plugin." + p.name + "." + localKey // defs 里用限定键
 	def.Key = qualified
-	p.registry.defs[def.Key] = &def
+	// ★ def 必须先入 defs：isSecretKey 靠它判定，而下面的默认值要加密。
+	p.registry.defs[qualified] = &def
+
+	stored := def.Default
+	if p.registry.isSecretKey(qualified) {
+		stored, _ = sealForStorage(qualified, stored)
+	}
+	p.registry.db.Exec(fmt.Sprintf(`INSERT OR IGNORE INTO %s (key, value) VALUES (?, ?)`, p.table), localKey, stored)
 }
 
 func (p *PluginSettings) ListDefs(prefix string) []*ConfigDef {

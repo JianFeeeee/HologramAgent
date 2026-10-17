@@ -4,18 +4,17 @@ import (
 	"context"
 	"log"
 	"path/filepath"
-	"strings"
 
 	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HomeAgent/internal/kernelmod/pluginhost"
 	"github.com/JianFeeeee/HomeAgent/internal/meta"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/clawhubadapter"
-	cli "github.com/JianFeeeee/HomeAgent/internal/plugins/cli"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/healthcheck"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/kbtree"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/pluginmgr"
-	webui "github.com/JianFeeeee/HomeAgent/internal/plugins/webui"
+	"github.com/JianFeeeee/HomeAgent/internal/security"
 
 	// 空白导入内置 provider：它们各自在 init 里注册到 pkg/embedding。
 	// 想把核心换成自己的模型，只需替换这一行（或另建一个发行版 main）。
@@ -89,102 +88,187 @@ func main() {
 	defer cfgReg.Close()
 	cfgReg.SeedDefaults(opt.dataDir)
 	// LLM 配置写前留档（config_set 写 core.llm.* 前自动快照），guard 恢复用基线
-	cfgReg.SetLLMSnapshotFile(filepath.Join(opt.dataDir, "llm_snapshot.json"))
-	cfg := cfgReg.ToConfig()
-
-	// ---- 基础设施层：记忆、技能 ----
-
-	mem, closeMem := initMemoryStack(opt.dataDir, cfgReg)
-	defer closeMem()
-
-	// 共享词嵌入：蒸馏提取（Phase 3 TransE 验证）与 Agent 上下文复用同一实例，
-	// 避免同一模型被二次加载（约 200k×300 维 ≈ 数百 MB 内存）。
-	embedder := memory.NewStaticEmbedder(strings.Split(cfgReg.GetString("core.agent.embedding_model_path", ""), ",")...)
-	mem.distiller.SetEmbedder(embedder)
-
-	// ---- Lua VM（LLM 协议适配） ----
-
-	luaVM, closeLuaVM := initLuaVM(cfg)
-	defer closeLuaVM()
-
-	// ---- 守护管理（代理生命周期管理） ----
-
-	sup := initSupervisor(cfg)
-
-	// ---- 变更追踪（overlayfs） ----
-
-	trk := initTracker(cfg, agentWorkDir)
-
+	// ★ 锚点：本块必须在 SetLLMSnapshotFile / ToConfig 之前（两者都会读 core.llm.*）。
 	// ========================================================================
-	// 内核 API：IOManager（IO 抽象层） + EventBus（事件总线）
-	// 所有插件通过这两个通道与核心交互
+	// ★ 安全模块必须在**任何读 core.llm.* 的操作之前**装配。
+	//
+	// 实测故障（2026-10-16，自己引入的）：安全块原先放在 ToConfig() 之后。
+	// 于是 ToConfig() 在**没有主密钥**的情况下读 core.llm.*.api_key ——
+	// 密文解不开，key 变成空串，而 initLLMProviders(cfg,...) 用的正是这份
+	// 早期快照 ⇒ 所有 LLM 调用 401 invalid api key。
+	//
+	// 症状极具误导性：日志里只有一行 `Dump 解密 ... 失败: security: 无可用主密钥`，
+	// 而 401 看起来像“key 配错了”。实际是**启动顺序**问题。
+	//
+	// 约束：安全块只依赖 cfgReg（不依赖 cfg），所以可以安全前移。
 	// ========================================================================
+	if cfgReg.GetBool("core.security.enabled", true) {
+		// ★ 先收敛数据目录与敏感文件权限（幂等），再读密钥。
+		//
+		// 顺序有意为之：内嵌主密钥把密钥放进了 0755 的二进制里，
+		// 而 config.db 出厂是 0644 —— 「能读二进制就能解密数据库」。
+		// 收紧到 0600/0750 是本机缓解手段，必须在服务开始读写之前生效。
+		//
+		// 失败不 Fatal（权限问题不该让服务不可用），但会逐条响亮记录。
+		if hr := security.HardenDataDir(opt.dataDir); len(hr.Changed) > 0 {
+			log.Printf("[homed] 已收紧 %d 项权限（内嵌密钥场景的必要缓解）: %v",
+				len(hr.Changed), hr.Changed)
+		}
+		key, keySrc, kerr := security.LoadOrCreateKey(opt.dataDir)
+		if kerr != nil {
+			log.Fatalf("[homed] 安全模块密钥初始化失败（拒绝以降级模式启动）: %v", kerr)
+		}
+		// E-1：若存在密钥环，装入历史钥（只读旧密文；当前钥仍由
+		// systemd credential/env/security.key 提供）。密钥环损坏或 current 不一致
+		// 必须响亮失败，不能猜一把钥继续启动。
+		oldKeys, rerr := security.LoadKeyring(opt.dataDir, key)
+		if rerr != nil {
+			log.Fatalf("[homed] 安全模块密钥环加载失败（拒绝静默选错钥）: %v", rerr)
+		}
+		// ★ 内嵌钥上台时，磁盘钥必须继续参与**解密**。
+		//
+		// 否则一台用磁盘钥加密过的老机器升级到内嵌了另一把钥的二进制后，
+		// 旧密文会全部解不开 ⇒ 服务起不来；用户此时若选择"重建库"，
+		// 凭据就**一次性全丢** —— 那恰好与内嵌的初衷（防丢）相反。
+		//
+		// 与 E-1 同一套语义：当前钥负责 Seal，旧钥只参与 Open。
+		if extra := security.AdditionalDecryptKeys(opt.dataDir, key); len(extra) > 0 {
+			oldKeys = append(oldKeys, extra...)
+		}
+		if len(oldKeys) > 0 {
+			log.Printf("[homed] 安全模块已装入 %d 把历史/额外密钥（E-1 平滑轮换 + 内嵌迁移）", len(oldKeys))
+		}
+		if _, serr := security.InitGlobal(security.Options{
+			Path:    filepath.Join(opt.dataDir, "security", "variables.json"),
+			KeyFn:   func() ([]byte, error) { return key, nil },
+			OldKeys: oldKeys,
+			Enabled: true,
+		}); serr != nil {
+			log.Fatalf("[homed] 安全模块变量库加载失败（不静默重建）: %v", serr)
+		}
+		// 配置落盘用的子密钥（域隔离：与别名密钥不共用）。
+		// 必须早于 EncryptExistingSecrets，后者依赖它。
+		if _, cerr := security.InitConfigCodecWithOldKeys(key, oldKeys); cerr != nil {
+			log.Fatalf("[homed] 配置加密子密钥派生失败: %v", cerr)
+		}
+		// 把库里仍是明文的敏感项就地加密（幂等；升级路径必须跑）。
+		if n, merr := cfgReg.EncryptExistingSecrets(); merr != nil {
+			// 不 Fatal：库可能是只读/被锁，而“部分为明文”不等于服务不可用。
+			// 但要**响亮告警**：这是用户必须知道的安全事实。
+			log.Printf("[homed] 存量敏感配置加密未完成（部分项仍为明文）: %v", merr)
+		} else if n > 0 {
+			log.Printf("[homed] 已加密 %d 条存量敏感配置", n)
+		}
+		log.Printf("[homed] 安全模块已启用（密钥来源 %s，变量 %d 条，配置落盘加密已开启）",
+			keySrc, security.Global().Count())
 
-	iom, evBus := initKernelAPI()
-
-	// ---- 文本记忆 + 记忆蒸馏管线 ----
-
-	textMem, closeTextMem := initTextMemory(cfg)
-	defer closeTextMem()
-
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-
-	startMemoryCandidateConsumer(ctx, iom, textMem, mem.db, mem.distiller)
-
-	// ---- LLM Provider 管理（多源，通过 Lua 适配器协议转换） ----
-
-	baseAPIKey := resolveBaseAPIKey(cfg)
-
-	providerMgr := initLLMProviders(cfg, luaVM, baseAPIKey)
-	provider := providerMgr.Default()
-
-	// L1 failback：受限 worker 启动即跑恢复梯子（probe→还原DNS/proxy→还原config+ReloadFromConfig→probe），
-	// 结果以退出码 exitRecovered=43 / exitRecoveryFailed=44 交回 guard，不进入主 agent 循环。
-	if opt.boot == "failback" {
-		runFailbackRecovery(opt.dataDir, cfgReg, luaVM, providerMgr, baseAPIKey)
+		// ★ E-2：备份跨机器恢复的诊断。
+		//
+		// 场景：把 config.db 备份恢复到另一台机器，而主密钥没一起搬过来
+		// ⇒ 库里密文是**旧机器密钥**加的，当前钥解不开。
+		// 此前这种状态只在“读某一条配置”时才暴露成“某个功能坏了”，
+		// 用户看到的是症状而不是原因。这里一次性说清事实与修复动作。
+		if okN, badN, aerr := cfgReg.AuditSecrets(); aerr == nil && badN > 0 {
+			log.Printf("[homed] ⚠ 检测到 %d 条密文无法用当前主密钥解开（可解 %d 条）—— "+
+				"最常见原因是：这份 config.db 来自**另一台机器/另一个密钥**。"+
+				"修复：把原机器的密钥一起带过来（systemd credential / %s / "+
+				"%s），或用旧密钥启动一次并执行重加密迁移。",
+				badN, okN, security.EnvKeyName, security.KeyringFileName)
+		}
+	} else {
+		log.Printf("[homed] 安全模块被显式关闭（core.security.enabled=false）—— 明文落盘且中转无防护")
 	}
 
-	// ---- 文档记忆 + 知识库 ----
+	// ========================================================================
+	// ★ 内核装配：公共结构体 + 模块注册表（用户设计）
+	//
+	// Group 0（上面到这里的部分：平台门/心跳/日志/配置库/安全块）是
+	// **副作用顺序**要求，不进调度器 —— 依赖图表达不了"此动作必须在
+	// 那个动作之前生效"（图表达的是"我产出数据给他"）。见 kmod_group0 说明
+	// 与 bootstrap_order_test.go 的结构性判据。
+	//
+	// 从 cfg 起全部改为**模块自声明依赖 + 注册表 + BFS 分层**：
+	//   · 公共数据统一在 kernelboot.KernelState（不再散落各包包级变量）
+	//   · 每个模块在 internal/kernelmod/<name>/ 里**自己声明** Requires/Provides
+	//   · 注册表是乱序的（顺序无意义，仅供查询"内核有哪些模块"）
+	ks := kernelboot.NewKernelState()
+	ks.CfgReg = cfgReg
+	ks.DataDir = opt.dataDir
+	ks.AgentWorkDir = agentWorkDir
+	ks.CLISocket = opt.cliSocket
+	ks.HTTPAddr = opt.httpAddr
+	ks.Ctx, ks.Stop = context.WithCancel(context.Background())
 
-	docStore, closeDocStore := initDocStore(cfg)
-	defer closeDocStore()
+	// ★ Group 0 的最后两步（读 core.llm.*，必须在安全块之后）：
+	//   它们归 config 模块的产物路径，但**执行点**在这里 —— 阶段依赖。
+	cfgReg.SetLLMSnapshotFile(filepath.Join(opt.dataDir, "llm_snapshot.json"))
+	ks.Cfg = cfgReg.ToConfig()
 
-	multimodalSpace, mmProviderName, mmErr, closeMultimodal := initMultimodalSpace(cfgReg)
-	defer closeMultimodal()
+	// 装配全部内核模块（缺依赖/环/重名 ⇒ 这里就报错，不必等运行期）。
+	//
+	// ★ 插件调度已**归位到内核模块**（`internal/kernelmod/pluginhost`，
+	// 用户方案 A）：它负责扫元数据缓存、按三形态分流、按依赖时机拉起。
+	// main 这里不再有插件调度逻辑 —— 只保留装配后的一点点收尾。
+	// ★★ failback 的插件**白名单必须在装配之前**设置。
+	//
+	// 原因：插件拉起已归位到 plugin-host 模块，而它在**装配期**执行
+	// ⇒ 白名单若在装配后才设，插件早已按全量拉起了（受限启动就失效了）。
+	//
+	// 这是把调度搬进模块后引入的**新时序要求** —— 原先调度在装配后，
+	// 所以把 allowlist 放在装配后也无害。迁移时必须重新核对这类顺序。
+	//
+	// 注意：白名单要的是 plugin.Registry，而它是 stage-host 的产物
+	// ⇒ 装配前拿不到。所以这里传 nil 的 registry 只算白名单名（logged），
+	// 真正的 SetLoadAllowlist 由装配期的钩子在 registry 就绪后执行。
+	pendingAllowlist := resolveFailbackAllowlist(cfgReg, opt.boot, opt.dataDir)
 
-	// 迁移必须在 store 扫盘**之前**：改名后扫盘一次到位，
-	// 避免先以旧名建索引、再改名造成内存键与盘上目录短暂不一致。
-	initKnowledgeMigration(cfg)
-	ks := initKnowledgeStore(cfg)
+	// 装配全部内核模块（缺依赖/环/重名 ⇒ 这里就报错，不必等运行期）。
+	//
+	// ★ 插件调度已**归位到内核模块**（`internal/kernelmod/pluginhost`，
+	// 用户方案 A）：它负责扫元数据缓存、按三形态分流、按依赖时机拉起。
+	// main 这里不再有插件调度逻辑 —— 只保留装配后的一点点收尾。
+	if _, err := RunKernelModules(ks, kernelAssembleHooks{
+		// 在 stage-host 就绪、插件真正拉起**之前**把白名单设上。
+		OnLayerDone: func(_ int, _ []kernelboot.Module) {
+			if pendingAllowlist != nil && ks.PluginRegistry != nil {
+				ks.PluginRegistry.SetLoadAllowlist(pendingAllowlist)
+			}
+		},
+	}); err != nil {
+		log.Fatalf("[homed] 内核装配失败: %v", err)
+	}
+	defer ks.CloseAll()
 
-	// ---- 人格设定 ----
+	cfg := ks.Cfg
+	luaVM := ks.LuaVM
+	sup := ks.Supervisor
+	trk := ks.Tracker
+	ctx := ks.Ctx
+	pluginReg := ks.PluginRegistry
+	agent := ks.Agent
 
-	personality := loadPersonality(cfg, cfgReg)
+	// 候选消费管线：常驻 goroutine，把 eventbus 的 memory_candidate 写进
+	// 文本记忆并喂给蒸馏管线。原顺序里它在 textmem 之后、provider 之前。
+	startMemoryCandidateConsumer(ctx, ks.IO, ks.TextMemory, ks.Memory.DB, ks.Memory.Distiller)
 
-	// ---- 阶段管道（StageHost）+ 插件系统（Registry） ----
+	// L1 failback：受限 worker 启动即跑恢复梯子，结果以退出码交回 guard。
+	if opt.boot == "failback" {
+		runFailbackRecovery(opt.dataDir, cfgReg, luaVM, ks.LLMManager, ks.BaseAPIKey)
+	}
 
-	stageHost, pluginReg := newStageAndRegistry(cfg, cfgReg, iom, evBus, mem.db, textMem,
-		docStore, ks, providerMgr, opt.dataDir)
-
-	// ---- Agent Core (需在插件加载前创建，因为插件 Configure 需要 StatusProvider) ----
-
-	agent := newMainAgent(cfg, cfgReg, provider, providerMgr, iom, mem.db, mem.indexer, trk,
-		docStore, ks, mem.social, textMem, personality, pluginReg, embedder,
-		multimodalSpace, mmProviderName, mmErr, stageHost, evBus)
-
-	wirePluginSDK(pluginReg, luaVM, baseAPIKey, sup, trk, cfg, stageHost, mem.indexer, agent)
-
-	// 为内置插件注入内核依赖（各插件通过 init() 自注册工厂）
-	cli.DefaultSocket = opt.cliSocket
-	// webui 监听地址覆盖：必须在 loadPlugins 之前设置，插件 Start 时会读它。
-	webui.SetListenOverride(resolveWebUIOverride(cfgReg, opt.httpAddr))
-
-	// ---- 依存句法分析器（内嵌 ONNX 模型 / 规则引擎） ----
-
-	initONNXParser(cfg, cfgReg)
-
-	loadPlugins(cfg, cfgReg, pluginReg, stageHost, opt.boot, opt.dataDir)
+	// ---- 插件已完成调度（plugin-host 模块做的事）----
+	//
+	// 装配期 plugin-host 已：
+	//   ① 扫目录建元数据缓存（ks.PluginCatalog）
+	//   ② 按三形态分流（自动启动 / 不自动启动 / 禁用）
+	//   ③ 拉起"声明设施已就绪"的插件；挂起"等更晚设施（如 agent）"的
+	//      （挂起项经 syncbus 在 agent 就绪时自动拉起，见 pluginhost/waiter.go）
+	if cat, ok := ks.PluginCatalog.(*pluginhost.PluginCatalog); ok {
+		log.Printf("[homed] 插件调度完成：元数据缓存 %d 个，已加载 %d 个",
+			cat.Size(), len(pluginReg.ListLoadedPlugins()))
+	} else {
+		log.Printf("[homed] 插件调度完成：已加载 %d 个", len(pluginReg.ListLoadedPlugins()))
+	}
 
 	// 插件加载完成后再回收空闲页：大值（如老版聊天记录）可能在这一步被搬走/删除，
 	// 而 SQLite 的 DELETE 不会缩小文件。
@@ -205,5 +289,12 @@ func main() {
 	// ---- 等待退出信号 ----
 	//
 	// 心跳已在 main 早期启动（见文件头部 startHeartbeatEarly），此处不再重复启动。
-	waitForShutdown(ctx, opt.dataDir, restartCh, stopHeartbeatEarly, pluginReg, trk, cfgReg, sup)
+	// stopKernelModules：热更新路径（os.Exit 跳过 defer）下也要跑模块关闭。
+	// CloseAll 幂等（第二次 Closers 已空）⇒ 与 defer 并存是安全的。
+	waitForShutdown(ctx, opt.dataDir, restartCh, stopHeartbeatEarly, pluginReg, trk, cfgReg, sup,
+		func() {
+			if err := ks.CloseAll(); err != nil {
+				log.Printf("[homed] 模块关闭: %v", err)
+			}
+		})
 }

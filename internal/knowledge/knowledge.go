@@ -132,7 +132,6 @@ type Store struct {
 	mu    sync.RWMutex
 	items map[string]*Knowledge
 
-
 	indexPath      string
 	denseCachePath string
 	denseDirty     bool

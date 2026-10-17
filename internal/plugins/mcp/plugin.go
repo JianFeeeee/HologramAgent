@@ -14,10 +14,10 @@ import (
 // MCP 服务器配置（来自 config_mcp 表或 skill.json）
 type serverConfig struct {
 	Name    string   `json:"name"`
-	Command string   `json:"command,omitempty"`  // stdio 模式
+	Command string   `json:"command,omitempty"` // stdio 模式
 	Args    []string `json:"args,omitempty"`
 	Env     []string `json:"env,omitempty"`
-	URL     string   `json:"url,omitempty"`      // SSE 模式
+	URL     string   `json:"url,omitempty"` // SSE 模式
 }
 
 func init() {

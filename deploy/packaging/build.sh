@@ -9,11 +9,64 @@ set -euo pipefail
 # 跨平台构建从那次起一直是坏的（Makefile 的单平台 build 不走这里，所以没暴露）。
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
-VERSION="${VERSION:-$(git -C "$PROJECT_ROOT" describe --tags --dirty 2>/dev/null || echo "0.8.0")}"
+# ★★ VERSION 必须是**语义化版本**（x.y.z），不能是 git describe 的原样输出。
+#
+# 2026-10-17 实测事故：当前分支没有 tag，`git describe` 回退成分支名
+#   backup/pre-identity-rewrite-20261005-51-g03d87a4e-dirty
+# 它被注入 meta.Version ⇒ 插件握手的主版本判据变成
+#   MajorVersion("backup/pre-...") = 整个字符串（没有 '.' 可截）
+# 而插件端是 "4" ⇒ **所有子进程插件握手失败**：
+#   proc: xxx.handshake: 主版本不匹配（内核 backup/pre-...，插件 SDK 1.4.0）
+# 内核自己是活的，但 40 个插件一个都起不来 —— 看起来像"插件全坏了"。
+#
+# 权威来源是 internal/meta/meta.go 的 Version 常量（发版时人工确认）。
+# git describe 只在**形如 vX.Y.Z-...** 时才可用（那说明确实在 tag 之后）。
+_meta_version() {
+  local mv
+  mv="$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$PROJECT_ROOT/internal/meta/meta.go" 2>/dev/null | head -1)"
+  case "$mv" in
+    [0-9]*.[0-9]*.[0-9]*) printf '%s' "$mv"; return 0 ;;
+  esac
+  return 1
+}
+if [ -z "${VERSION:-}" ]; then
+  _gd="$(git -C "$PROJECT_ROOT" describe --tags --dirty 2>/dev/null || true)"
+  case "$_gd" in
+    v[0-9]*.[0-9]*.[0-9]*) VERSION="${_gd#v}" ;;
+    *)
+      # ★ 不是 tag 描述 ⇒ 拒绝用它。退回 meta.Version（当前分支的权威版本）。
+      if VERSION="$(_meta_version)"; then
+        [ -n "$_gd" ] && echo "[BUILD] warn: git describe 给出非版本串（$_gd），改用 meta.Version=$VERSION" >&2
+      else
+        echo "[BUILD] ERROR: 拿不到合法版本号（git describe=$_gd，meta.Version 也读不出）。" >&2
+        echo "        请显式传 VERSION=x.y.z 后重试。" >&2
+        exit 1
+      fi
+      ;;
+  esac
+fi
+# 最终守卫：非 x.y.z 一律拒绝构建（否则会打出一个"插件全部握手失败"的包）
+case "$VERSION" in
+  [0-9]*.[0-9]*.[0-9]*) ;;
+  *) echo "[BUILD] ERROR: VERSION='$VERSION' 不是语义化版本 x.y.z；" \
+          "它会被当作插件协议主版本，导致所有子进程插件握手失败。" >&2
+     exit 1 ;;
+esac
 COMMIT="${COMMIT:-$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")}"
 BUILD_TIME="${BUILD_TIME:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 GO="${GO:-$(command -v go 2>/dev/null || echo "go")}"
-LDFLAGS="-X gitcode.com/JianFeeeee/HomeAgent/internal/meta.Version=${VERSION} -X gitcode.com/JianFeeeee/HomeAgent/internal/meta.Commit=${COMMIT} -X gitcode.com/JianFeeeee/HomeAgent/internal/meta.BuildTime=${BUILD_TIME}"
+# ★★ 模块路径必须是**当前**的 github.com/...，不能是历史的 gitcode.com/...
+#
+# `-X` 的包路径写错时 Go **不报错、静默忽略** ⇒ 注入的值保持源码默认
+# （Commit/BuildTime 变成字面量 "unknown"，Version 变成源码里的版本号）。
+# 构建日志全绿，只有 `binary --version` 才能看出来 —— 于是发行包带着
+# 错的溯源信息发出去。
+#
+# 实测（2026-10-17）：用旧路径构建 waiter，`--version` 输出
+#   `waiter 1.4.0 (commit unknown, built unknown)`
+# 而正确路径得到注入的值。
+LDFLAGS="-X github.com/JianFeeeee/HomeAgent/internal/meta.Version=${VERSION} -X github.com/JianFeeeee/HomeAgent/internal/meta.Commit=${COMMIT} -X github.com/JianFeeeee/HomeAgent/internal/meta.BuildTime=${BUILD_TIME}"
 
 # 版本与提交的**权威来源**是上面注入的 meta.Version / meta.Commit，不是 Go 自带的
 # VCS 戳。后者不进 build cache key（Go 文档明确说明 VCS 变化不会触发重建），
@@ -138,9 +191,28 @@ build_homed() {
   local _tags="${HOMED_TAGS-onnxruntime}"
   local -a _tagargs=()
   if [ -n "$_tags" ]; then _tagargs=(-tags "$_tags"); fi
+
+  # ★★ homed 必须与**它自己的**启动依赖图一起产出（2026-10-17 实测缺陷）。
+  #
+  # 内核启动时比对「磁盘图 digest」vs「二进制内嵌 digest」，不一致或读不到
+  # ⇒ **拒绝启动**（退出码 1）。本脚本原先既不生成图也不注入 digest
+  # ⇒ 用 `deploy/packaging/build.sh` 打出的 homed 装到机器上**起不来**：
+  #   kernelboot: 生产构建（内嵌 hash 非空）但读不到依赖图 …
+  #
+  # 注意这与 Makefile 是**两条独立构建路径**：只修 Makefile 不够。
+  # 图必须由**同一次构建**产出（digest 一一对应），不能复用别的版本的图。
+  local _graphgen="$BUILD_DIR/homed-depgraph${SUFFIX:+_$SUFFIX}"
+  echo "  [graph] 生成启动依赖图（编译期定序）..."
+  CGO_ENABLED=1 CC="$_cc" "$GO" build ${_tagargs[@]+"${_tagargs[@]}"} \
+    -o "$_graphgen" ./cmd/homed-depgraph/
+  local _graph_hash
+  _graph_hash="$("$_graphgen" -digest)"
+  "$_graphgen" -out "$BUILD_DIR/depgraph.bin"
+  echo "  [graph] digest=$_graph_hash"
+
   CGO_ENABLED=1 CC="$_cc" "$GO" build -buildvcs=false -trimpath -installsuffix dynlink \
     ${_tagargs[@]+"${_tagargs[@]}"} \
-    -ldflags "$LDFLAGS" -o "$out" ./cmd/homed/
+    -ldflags "$LDFLAGS -X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=$_graph_hash" -o "$out" ./cmd/homed/
   echo "  OK ($(file "$out" | sed 's/.*: //') | $(du -h "$out" | cut -f1))"
 }
 

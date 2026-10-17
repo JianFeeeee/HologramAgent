@@ -18,7 +18,7 @@ var weekRe = regexp.MustCompile(`^week_(\d{4})-W(\d{2})\.tar\.gz$`)
 var monthRe = regexp.MustCompile(`^month_(\d{4}-\d{2})\.tar\.gz$`)
 
 type fileGroup struct {
-	name string
+	name  string
 	files []string
 }
 

@@ -329,3 +329,44 @@ func TestExtraBag_SnapshotDetectsBagChange(t *testing.T) {
 		t.Fatalf("bag 身份翻转应恰好脏 1 字段（WriteDirty 漏检=绑帧写不回）, got %d", n)
 	}
 }
+
+// ★★★ 判据：内核写的 `comefrom` 必须能过 proc 桥到插件。
+//
+// 为什么必须单独判这一条：QQ 是 **proc 插件**（跨进程、共享段）。
+// 内核侧写对了 comefrom 不等于插件拿得到它 —— 若这个键在桥上丢失，
+// 插件会按"缺失 = user"处理 ⇒ 驻留子**照旧被拦**，而内核侧的判据全绿。
+// 这正是本仓反复吃过的"通道两端各修一半"的坑。
+//
+// 实测背景（2026-10-16）：驻留子的工具调用被 QQ 的用户权限门拦下，
+// 修法是内核在帧上写 comefrom、插件据此跳过用户权限模型。
+// 两端之间的**唯一**通路就是这条。
+func TestExtraBag_ComeFromRoundTrips(t *testing.T) {
+	for _, want := range []string{"internal", "user"} {
+		seg := newTestSeg(t)
+		src := &pubsdk.StageContext{
+			Extra: map[string]interface{}{
+				"input_source": "qq", // 与 comefrom 共存（真实场景就是这样）
+				"comefrom":     want,
+			},
+		}
+		if err := seg.WriteAll(src); err != nil {
+			t.Fatalf("WriteAll(%s): %v", want, err)
+		}
+		var dst pubsdk.StageContext
+		if err := seg.ReadInto(&dst); err != nil {
+			t.Fatalf("ReadInto(%s): %v", want, err)
+		}
+		got, ok := dst.Extra["comefrom"]
+		if !ok {
+			t.Fatalf("★ comefrom=%s 在 proc 桥上丢失 —— 插件会按 user 处理，"+
+				"驻留子照旧被拦（内核侧判据却是绿的）", want)
+		}
+		if s, _ := got.(string); s != want {
+			t.Errorf("comefrom 失真: 期望 %q 实际 %q (%T)", want, got, got)
+		}
+		// 与 input_source 共存时不得互相覆盖
+		if dst.Extra["input_source"] != "qq" {
+			t.Errorf("comefrom 写入了却把 input_source 弄丢了: %v", dst.Extra["input_source"])
+		}
+	}
+}

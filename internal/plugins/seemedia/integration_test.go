@@ -29,7 +29,8 @@ import (
 // PluginSDK 与真实块引用（块 ID 或其唯一前缀，与生产同一取字节路径）。
 //
 // ★ CAS 淘汰后不再有媒体存储可 Put：字节进块（MemoryBlock.Data），
-//   插件用 sdk.Memory().MediaBytes(ref) 取回 —— 这正是测试要钉的路径。
+//
+//	插件用 sdk.Memory().MediaBytes(ref) 取回 —— 这正是测试要钉的路径。
 func sdkWithVideo(t *testing.T, raw []byte) (*sdk.PluginSDK, string) {
 	t.Helper()
 	dir := t.TempDir()

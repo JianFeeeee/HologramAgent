@@ -48,6 +48,42 @@ func (h *coreHandler) handlePluginMgr(method string, params json.RawMessage) (in
 			return nil, err
 		}
 		return map[string]interface{}{"disabled": pm.IsPluginDisabled(p.Name)}, nil
+	case MethodPluginMgrStop:
+		pm := h.sdk.PluginMgr()
+		if pm == nil {
+			return nil, errUnavailable("plugin manager")
+		}
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		return nil, pm.StopPlugin(p.Name)
+	case MethodPluginMgrStart:
+		pm := h.sdk.PluginMgr()
+		if pm == nil {
+			return nil, errUnavailable("plugin manager")
+		}
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		return nil, pm.StartPlugin(p.Name)
+	case MethodPluginMgrIsRuntimeStopped:
+		pm := h.sdk.PluginMgr()
+		if pm == nil {
+			return nil, errUnavailable("plugin manager")
+		}
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"runtime_stopped": pm.IsPluginRuntimeStopped(p.Name)}, nil
 
 	}
 

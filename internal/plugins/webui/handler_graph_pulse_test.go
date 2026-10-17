@@ -80,11 +80,11 @@ func graphFixture() map[string]interface{} {
 		//   修复前 pulse 读的是它，而它永远落在窗口外 ⇒ 恒返回空。
 		"memory_blocks": []memory.MemoryBlock{
 			{ID: "b_old", Modality: memory.BlockModality("text"), Text: "老块",
-				Vector: []float64{0.1, 0.2, 0.3},
+				Vector:    []float64{0.1, 0.2, 0.3},
 				CreatedAt: old, UpdatedAt: now.Add(-8 * time.Hour)},
 			{ID: "b_new", Modality: memory.BlockModality("image"), Text: "刚学到的东西",
 				Data: []byte("png-bytes"), MIME: "image/png",
-				Vector: []float64{0.1, 0.2, 0.3},
+				Vector:    []float64{0.1, 0.2, 0.3},
 				CreatedAt: now, UpdatedAt: now},
 		},
 	}

@@ -502,3 +502,74 @@ func TestSupervisor_TrackAfterCloseKillsProcess(t *testing.T) {
 		t.Error("关停后冒出的进程应被立即结束")
 	}
 }
+
+// ★★★ 判据：**非法帧的报错必须可定位**（含内容摘要与修法）。
+//
+// ## 为什么必须有这条
+//
+// 原报错只有「收到非法 JSON 帧（N 字节）: invalid character 'x'」——
+//
+//	· **不显示内容** ⇒ 看不到是哪句话混进来了；
+//	· **不提原因** ⇒ 看起来像协议/内核故障，不像"插件自己 printf"。
+//
+// 实测代价：生产环境累计 **1038 条**这种报错（weather 113 / rss 103 /
+// calendar 102 / 第三方 huawei_smarthome 720），定位真因花了一整轮排查。
+//
+// ⇒ 本判据守两件事：
+//
+//	① `summarizeFrame` 真的能把坏帧压成可读单行（含控制字符处理与截断）；
+//	② readLoop 的报错**文本里含**原因与修法（否则等于没改）。
+func TestSummarizeFrameIsReadable(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantPart string
+	}{
+		{"[weather] started\n", "[weather] started"},
+		{"line1\r\nline2\n", "line1  line2"},
+		{"\x00\x01binary", "binary"},
+		{"  padded  ", "padded"},
+	}
+	for _, c := range cases {
+		got := summarizeFrame([]byte(c.in), 160)
+		if !strings.Contains(got, c.wantPart) {
+			t.Errorf("summarizeFrame(%q) = %q，期望含 %q", c.in, got, c.wantPart)
+		}
+		if strings.ContainsAny(got, "\n\r") {
+			t.Errorf("摘要不得含换行（会打散日志）: %q", got)
+		}
+	}
+	// 截断：长输入必须标注原长
+	long := strings.Repeat("x", 500)
+	got := summarizeFrame([]byte(long), 160)
+	if len(got) > 260 {
+		t.Errorf("超长输入未被截断: %d 字节", len(got))
+	}
+	if !strings.Contains(got, "500") {
+		t.Errorf("截断时必须标注原始字节数: %q", got)
+	}
+}
+
+// ★★★ 判据：readLoop 的非法帧报错**必须点明原因与修法**。
+//
+// ★ 源码扫描在此**恰当**：断言的是"报错文案里是否含某关键词"，
+//
+//	属于"模式存在性"，不是接线/顺序断言。
+func TestIllegalFrameErrorIsActionable(t *testing.T) {
+	src, err := os.ReadFile("process.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	// 必须提到"stdout 是协议通道"这个原因
+	for _, kw := range []string{"协议通道", "log.Printf"} {
+		if !strings.Contains(code, kw) {
+			t.Errorf("★ 非法帧报错未提及 %q —— 插件作者看不到"+
+				"「这是我自己 printf 造成的」这个关键信息", kw)
+		}
+	}
+	// 必须真的调用 summarizeFrame（否则摘要不会出现在日志里）
+	if !strings.Contains(code, "summarizeFrame(line") {
+		t.Error("★ readLoop 必须调用 summarizeFrame 把坏帧内容打进日志" +
+			"（否则只看到 invalid character 'x'，不知道是哪句话）")
+	}
+}

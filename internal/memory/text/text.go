@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +26,10 @@ type Event struct {
 
 // Memory — 文本记忆：追加写 JSONL，按时间/大小旋转
 type Memory struct {
+	pauseMu  sync.Mutex
+	paused   bool
+	pauseCh  chan struct{}
+	stopOnce sync.Once
 	dir      string
 	interval time.Duration
 	maxSize  int64
@@ -54,6 +59,7 @@ func New(dir string, opts ...Option) *Memory {
 		interval: 24 * time.Hour,
 		maxSize:  10 * 1024 * 1024,
 		stopCh:   make(chan struct{}),
+		pauseCh:  make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -72,8 +78,47 @@ func (m *Memory) Start() error {
 	return nil
 }
 
+// isPaused 报告是否处于伪关机。
+func (m *Memory) isPaused() bool {
+	m.pauseMu.Lock()
+	defer m.pauseMu.Unlock()
+	return m.paused
+}
+
+// Pause 伪关机：停止滚动写盘（可逆）。返回前持有写锁，
+// 保证**当前没有任何在途写入**。
+//
+// 语义（迁移依赖）：返回后到 Resume 之前，m.mu 保护的写路径
+// 仍可能被 Append 调用 —— 迁移时调用方应先停掉上游（插件/agent），
+// 本 Pause 只负责**后台定时写**这一路。
+func (m *Memory) Pause() error {
+	m.pauseMu.Lock()
+	m.paused = true
+	m.pauseMu.Unlock()
+	// 拿一次写锁再放开：确保在途的 rotateLocked 已结束
+	m.mu.Lock()
+	m.mu.Unlock()
+	return nil
+}
+
+// Resume 唤醒。
+func (m *Memory) Resume() error {
+	m.pauseMu.Lock()
+	was := m.paused
+	m.paused = false
+	m.pauseMu.Unlock()
+	if was {
+		select {
+		case m.pauseCh <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+// Stop 幂等（本仓 close 纪律：见 internal/safeclose）。
 func (m *Memory) Stop() {
-	close(m.stopCh)
+	safeclose.Safe(&m.stopOnce, m.stopCh)
 	m.mu.Lock()
 	if m.current != nil {
 		m.current.Close()
@@ -129,8 +174,20 @@ func (m *Memory) rotationLoop() {
 	ticker := time.NewTicker(m.interval / 2)
 	defer ticker.Stop()
 	for {
+		// ★ 伪关机门：迁移期间不能滚动写盘（见 kernelboot/lifecycle.go）
+		if m.isPaused() {
+			select {
+			case <-m.pauseCh:
+				continue
+			case <-m.stopCh:
+				return
+			}
+		}
 		select {
 		case <-ticker.C:
+			if m.isPaused() {
+				continue
+			}
 			m.mu.Lock()
 			if m.needRotate() {
 				m.rotateLocked()

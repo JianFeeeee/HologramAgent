@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"log"
 	"os"
 	"runtime"
@@ -36,6 +37,8 @@ type PushHandler func(reqID, typ, payload, meta string)
 // 授权状态由设备端本地存储（客户端鉴权），服务端不存储；
 // 未授权时收到 cmd 直接拒绝执行并回执 error。
 type Bridge struct {
+	stopOnce   sync.Once
+	doneOnce   sync.Once
 	mu         sync.RWMutex
 	gateway    string
 	token      string
@@ -297,11 +300,11 @@ func (b *Bridge) Stop() {
 	if !b.started {
 		return
 	}
-	select {
-	case <-b.stopCh:
+	// 幂等（本仓 close 纪律）。原写法是
+	//   select { case <-b.stopCh: return; default: close(b.stopCh) }
+	// 单线程安全，但**并发**下两个 goroutine 可同时落到 default ⇒ 双 close panic。
+	if !safeclose.Safe(&b.stopOnce, b.stopCh) {
 		return
-	default:
-		close(b.stopCh)
 	}
 	if b.ws != nil {
 		_ = b.ws.close()
@@ -442,7 +445,7 @@ func (b *Bridge) readLoop() {
 			b.ws = nil
 		}
 		b.mu.Unlock()
-		close(b.doneCh)
+		safeclose.Safe(&b.doneOnce, b.doneCh)
 	}()
 
 	for {

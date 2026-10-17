@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"sync"
 )
 
@@ -171,11 +172,12 @@ func (s *State) ReadLoop(ctx context.Context, cb func(string)) {
 			return
 		}
 		done := make(chan struct{})
+		var doneOnce sync.Once
 		var line string
 		var readErr error
 		go func() {
 			line, readErr = c.ReadLine()
-			close(done)
+			safeclose.Safe(&doneOnce, done)
 		}()
 		select {
 		case <-done:

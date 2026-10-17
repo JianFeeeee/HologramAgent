@@ -95,6 +95,12 @@ type Plugin struct {
 	httpAddr  string // 本实例的监听地址（默认 defaultHTTPAddr；来自 settings）
 	sdk       *sdk.PluginSDK
 	pluginDir string
+	// maxPackageBytes 是单个插件包 **压缩后** 的上限（0 = 不限）。
+	//
+	// 为什么是配置项而不是常量：内嵌运行时（node+pi 之类）就要 ~100MB，
+	// 硬编码一个数必然在某天成为纯粹的障碍。默认值给得很宽松（见
+	// defaultMaxPackageMB），有需要的部署可以调大或设为 0 关闭。
+	maxPackageBytes int64
 }
 
 func New(name string) *Plugin {
@@ -116,6 +122,18 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		Category: "pluginmgr",
 	})
 
+	s.Settings().RegisterDef(sdk.ConfigDef{
+		Key:         "max_package_mb",
+		Default:     defaultMaxPackageMB,
+		Type:        "int",
+		DisplayName: "插件包大小上限 (MB)",
+		Description: "单个插件包**压缩后**的字节上限；0 = 不限制。" +
+			"内嵌运行时（node/pi 等）的包实测约 99MB，旧上限 100MB 下余量仅 1MB —— " +
+			"需要更大就调高，或设 0 关闭限制。" +
+			"该值在**读入内存之前**生效，不是事后检查。",
+		Category: "pluginmgr",
+	})
+
 	// 只写本实例字段，**不写任何包级状态**（见 defaultHTTPAddr 注释）。
 	p.httpAddr = defaultHTTPAddr
 	if v, _ := s.Settings().Get("http_addr"); v != nil {
@@ -124,13 +142,43 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		}
 	}
 
-	if v, _ := s.Settings().GetCore("plugin.dir"); v != nil {
-		if dir, ok := v.(string); ok && dir != "" {
+	// ★ pluginDir 的正确来源是**内核**（PluginMgrAPI.PluginDir），
+	// 不是 core.plugin.dir 配置项。
+	//
+	// 实测教训（2026-10-15）：用 GetCore("plugin.dir") 读时，生产 config.db
+	// 里**根本没有这个键**（内核只是"播种"默认值，不一定落库），于是
+	// p.pluginDir 为空 —— 而所有以它为起点的功能（技能重扫、删除插件目录）
+	// 会**静默什么都不做**。安装却照常成功（那条路径用的是自己算的 dir），
+	// 所以症状是"局部静默失效"，极难发现。
+	//
+	// 先问内核，配置项只作兼容回退。
+	if mgr := p.pluginMgr(); mgr != nil {
+		if dir := strings.TrimSpace(mgr.PluginDir()); dir != "" {
 			p.pluginDir = dir
 		}
 	}
+	if p.pluginDir == "" {
+		if v, _ := s.Settings().GetCore("plugin.dir"); v != nil {
+			if dir, ok := v.(string); ok && dir != "" {
+				p.pluginDir = dir
+			}
+		}
+	}
+
+	// 上限也走"先给默认值再覆盖"，与本文件其他配置项一致
+	// （避免 settings 尚未就绪时拿到 0 而变成"无限制"）。
+	p.maxPackageBytes = int64(defaultMaxPackageMB) << 20
+	if v, _ := s.Settings().Get("max_package_mb"); v != nil {
+		p.maxPackageBytes = parseLimitMB(v)
+	}
 
 	p.registerTools(s)
+
+	// ★ 启动重扫随包 skill：移交只在**安装那一刻**发生，而 skill 落在
+	// 插件目录里（不在 skillmgr 的 skillsDir）⇒ worker 重启后它会**静默消失**。
+	// 延迟几秒是为了等 skillmgr 的订阅就绪（两者 Start 顺序不确定）；
+	// skillmgr 的 loadOne 幂等，重复到达无副作用。见 skill_handout.go。
+	p.scheduleStartupSkillRescan()
 
 	if p.httpAddr != "" {
 		p.startHTTPServer()
@@ -243,6 +291,160 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 			return map[string]interface{}{"error": "name is required"}, nil
 		}
 		return p.restartPlugin(name)
+	})
+
+	// ---- 持久启用/禁用（设计 §2.6.7.4）----
+	//
+	// 与 plugin_start/stop 的分工：
+	//   enable/disable ⇒ **持久**（写 disabled_plugins，跨重启保留）= 系统里"禁止运行"
+	//   start/stop     ⇒ **运行态**（不写配置）                = 现在关掉这个窗口
+	s.RegisterTool("plugin_disable", sdk.ToolDef{
+		Name: "plugin_disable",
+		Description: "**持久**禁用插件：停止它并写入禁用配置，**跨重启保留**（开机也不再自启）。" +
+			"如果只是想临时关掉它、不希望影响开机自启，请用 plugin_stop。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "插件名称",
+				},
+			},
+			"required": []string{"name"},
+		},
+		Serial: true,
+	}, func(args map[string]interface{}) (interface{}, error) {
+		name, _ := args["name"].(string)
+		if name == "" {
+			return map[string]interface{}{"error": "name is required"}, nil
+		}
+		mgr := p.pluginMgr()
+		if mgr == nil {
+			return nil, fmt.Errorf("内核插件管理面不可用")
+		}
+		if err := mgr.DisablePlugin(name, "agent"); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"status":     "disabled",
+			"name":       name,
+			"persistent": "已写入禁用配置（跨重启保留）",
+		}, nil
+	})
+
+	s.RegisterTool("plugin_enable", sdk.ToolDef{
+		Name: "plugin_enable",
+		Description: "**持久**启用插件：解除禁用配置并立即加载它（跨重启保留）。" +
+			"注意：它同时**清除禁用标记**，所以之后开机会自启；" +
+			"若只是想把 plugin_stop 关掉的插件开回来，用 plugin_start 更精确。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "插件名称",
+				},
+			},
+			"required": []string{"name"},
+		},
+		Serial: true,
+	}, func(args map[string]interface{}) (interface{}, error) {
+		name, _ := args["name"].(string)
+		if name == "" {
+			return map[string]interface{}{"error": "name is required"}, nil
+		}
+		mgr := p.pluginMgr()
+		if mgr == nil {
+			return nil, fmt.Errorf("内核插件管理面不可用")
+		}
+		if err := mgr.EnablePlugin(name); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"status":     "enabled",
+			"name":       name,
+			"persistent": "禁用标记已清除（之后开机会自启）",
+		}, nil
+	})
+
+	// ---- 运行态启停（设计 §2.6.7.4）----
+	//
+	// ★ 与 plugin_enable/plugin_disable 的分工（用户明确指出"只有 reload"的缺口）：
+	//
+	//	plugin_enable/disable ⇒ **持久**：写 disabled_plugins，跨重启保留
+	//	plugin_start/stop     ⇒ **运行态**：现在启停，不写任何配置
+	//
+	// 缺了这两个的直接后果：agent 想"临时关掉某插件看现象"只能调
+	// plugin_disable ⇒ 顺带把开机自启也关了 ⇒ 用户下次开机发现"怎么不启动了"。
+	s.RegisterTool("plugin_start", sdk.ToolDef{
+		Name: "plugin_start",
+		Description: "**运行态**启动一个插件：现在拉起它，**不改持久状态**（重启后仍按" +
+			"开机自启/禁用配置决定）。用于把 plugin_stop 关掉的插件开回来。" +
+			"注意：被**持久禁用**的插件会被拒绝，那种情况请用 plugin_enable。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "插件名称",
+				},
+			},
+			"required": []string{"name"},
+		},
+		Serial: true,
+	}, func(args map[string]interface{}) (interface{}, error) {
+		name, _ := args["name"].(string)
+		if name == "" {
+			return map[string]interface{}{"error": "name is required"}, nil
+		}
+		mgr := p.pluginMgr()
+		if mgr == nil {
+			return nil, fmt.Errorf("内核插件管理面不可用")
+		}
+		if err := mgr.StartPlugin(name); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"status": "started",
+			"name":   name,
+			// ★ 明确告知这是运行态操作，避免 agent 误以为改了持久设置
+			"persistent": "未改动（重启后按开机自启/禁用配置决定）",
+		}, nil
+	})
+
+	s.RegisterTool("plugin_stop", sdk.ToolDef{
+		Name: "plugin_stop",
+		Description: "**运行态**关闭一个插件：现在停掉它，**不改持久状态**" +
+			"（不会影响开机自启，重启后该插件正常加载）。用于临时腾出资源或隔离问题。" +
+			"与 plugin_disable 不同 —— 后者会**持久**禁用（跨重启保留）。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "插件名称",
+				},
+			},
+			"required": []string{"name"},
+		},
+		Serial: true,
+	}, func(args map[string]interface{}) (interface{}, error) {
+		name, _ := args["name"].(string)
+		if name == "" {
+			return map[string]interface{}{"error": "name is required"}, nil
+		}
+		mgr := p.pluginMgr()
+		if mgr == nil {
+			return nil, fmt.Errorf("内核插件管理面不可用")
+		}
+		if err := mgr.StopPlugin(name); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"status":     "stopped",
+			"name":       name,
+			"persistent": "未改动（开机自启设置不变，重启后会重新加载）",
+		}, nil
 	})
 
 	s.RegisterTool("plugin_remove", sdk.ToolDef{
@@ -370,9 +572,9 @@ func (p *Plugin) handlePlugins(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			data, err := io.ReadAll(r.Body)
+			data, err := readLimited(r.Body, p.maxPackageBytes)
 			if err != nil {
-				http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 				return
 			}
 			result, err := p.installFromData(data, false)
@@ -430,9 +632,21 @@ func (p *Plugin) handlePluginByID(w http.ResponseWriter, r *http.Request) {
 // ======== Core Logic ========
 
 func (p *Plugin) installFromPath(path string, overwrite bool) (interface{}, error) {
-	data, err := os.ReadFile(path)
+	// 本地文件同样走限流读：先 Stat 拿大小快速拒绝（避免白读一遍），
+	// 再用 readLimited 兜住"Stat 与读取之间文件变大"的竞态。
+	if p.maxPackageBytes > 0 {
+		if st, err := os.Stat(path); err == nil && st.Size() > p.maxPackageBytes {
+			return nil, errPackageTooLarge(p.maxPackageBytes)
+		}
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
+	}
+	defer f.Close()
+	data, err := readLimited(f, p.maxPackageBytes)
+	if err != nil {
+		return nil, err
 	}
 	return p.installFromData(data, overwrite)
 }
@@ -458,9 +672,14 @@ func (p *Plugin) installFromURL(rawURL string, overwrite bool) (interface{}, err
 		return nil, fmt.Errorf("download returned %s", resp.Status)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	// 先用 Content-Length 快速拒绝（覆盖绝大多数情况），再用 readLimited
+	// 兜住分块传输（Content-Length 缺失或撒谎）。
+	if p.maxPackageBytes > 0 && resp.ContentLength > p.maxPackageBytes {
+		return nil, errPackageTooLarge(p.maxPackageBytes)
+	}
+	data, err := readLimited(resp.Body, p.maxPackageBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, err
 	}
 
 	result, err := p.installFromData(data, overwrite)
@@ -548,6 +767,10 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 		}
 		os.RemoveAll(backup)
 
+		// ★ 随包 skill 移交（升级路径）：解压完成后才扫，否则目录还不完整。
+		// 失败不阻断 —— skill 登记是附带收益，插件本身已装好。
+		skillN, skillFailed := p.handOutPluginSkills(target, pkg.Name)
+
 		checksum := fmt.Sprintf("%x", sha256.Sum256(data))
 		action := "upgraded"
 		if cmpVersion(pkg.Version, oldVersion) < 0 {
@@ -556,15 +779,17 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 			action = "reinstalled"
 		}
 		return map[string]interface{}{
-			"status":           "installed",
-			"name":             pkg.Name,
-			"version":          pkg.Version,
-			"previous_version": oldVersion,
-			"entry":            pkg.Entry,
-			"checksum":         checksum,
-			"action":           action,
-			"reload_required":  true,
-			"config_kept":      true,
+			"status":            "installed",
+			"name":              pkg.Name,
+			"version":           pkg.Version,
+			"previous_version":  oldVersion,
+			"entry":             pkg.Entry,
+			"checksum":          checksum,
+			"action":            action,
+			"reload_required":   true,
+			"config_kept":       true,
+			"skills_registered": skillN,
+			"skills_failed":     skillFailed,
 		}, nil
 	}
 
@@ -577,13 +802,18 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 
 	checksum := fmt.Sprintf("%x", sha256.Sum256(data))
 
+	// ★ 随包 skill 移交（全新安装路径）。
+	skillN, skillFailed := p.handOutPluginSkills(target, pkg.Name)
+
 	return map[string]interface{}{
-		"status":   "installed",
-		"name":     pkg.Name,
-		"version":  pkg.Version,
-		"entry":    pkg.Entry,
-		"checksum": checksum,
-		"action":   "reload_required",
+		"status":            "installed",
+		"name":              pkg.Name,
+		"version":           pkg.Version,
+		"entry":             pkg.Entry,
+		"checksum":          checksum,
+		"action":            "reload_required",
+		"skills_registered": skillN,
+		"skills_failed":     skillFailed,
 	}, nil
 }
 
@@ -835,23 +1065,123 @@ type pluginPackage struct {
 	Platforms []string `json:"platforms,omitempty"`
 }
 
-func validatePackage(data []byte) (*pluginPackage, error) {
-	if len(data) > 100<<20 {
-		return nil, fmt.Errorf("package too large (>100MB)")
-	}
+const (
+	// defaultMaxPackageMB 是插件包默认上限（MB）。
+	//
+	// 为什么给这么大：内嵌运行时的插件包本身就接近 100MB
+	// （node 二进制约 50MB + pi 依赖闭包约 50MB，压缩后）。
+	// 这个值只作为"防止手滑传错文件"的兜底，真正的 DoS 防护
+	// 由 readLimited 在**读取前**按 Content-Length / LimitReader 完成。
+	//
+	// 需要更大（或不需要限制）时改插件设置 max_package_mb（0 = 不限）。
+	defaultMaxPackageMB = 512
+)
 
+// errPackageTooLarge 是统一的超限错误（三种入口共用）。
+func errPackageTooLarge(limit int64) error {
+	return fmt.Errorf("package too large (>%dMB)；如确需更大，请调整插件设置 max_package_mb（0 = 不限）", limit>>20)
+}
+
+// parseLimitMB 把配置值解析成字节上限（0 = 不限）。
+//
+// ★ 必须处理 string：插件配置从 DB 读出来是**字符串**
+// （config.PluginSettings.Get → openFromStorage 返回 string），
+// 不是 int/float64。初版照抄了 agentcli 的 `v.(float64)` 假设，
+// 于是 switch 一个分支都不匹配 ⇒ **配置被静默忽略**，
+// 用户改了 max_package_mb 却不生效，且没有任何提示。
+//
+// 兼容其它形态是为了稳健（不同装配路径可能给出不同静态类型），
+// 但 string 是真实路径，必须有判据钉住。
+func parseLimitMB(v interface{}) int64 {
+	var mb int64
+	switch n := v.(type) {
+	case string:
+		s := strings.TrimSpace(n)
+		if s == "" {
+			return int64(defaultMaxPackageMB) << 20
+		}
+		parsed, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			log.Printf("[pluginmgr] max_package_mb=%q 不是整数，回退默认 %dMB", s, defaultMaxPackageMB)
+			return int64(defaultMaxPackageMB) << 20
+		}
+		mb = parsed
+	case int:
+		mb = int64(n)
+	case int64:
+		mb = n
+	case float64:
+		mb = int64(n)
+	default:
+		log.Printf("[pluginmgr] max_package_mb 类型意外（%T），回退默认 %dMB", v, defaultMaxPackageMB)
+		return int64(defaultMaxPackageMB) << 20
+	}
+	if mb < 0 {
+		// 负数视为"不限"（与 0 同义），而不是"拒一切" ——
+		// 配置误填负号不该让插件系统完全不可用。
+		mb = 0
+	}
+	return mb << 20
+}
+
+// readLimited 读入 reader 并在 **读取过程中** 施加上限。
+//
+// ★ 为什么必须在这里做，而不是读完再检查：
+//
+// 原实现在 io.ReadAll 之后才 `len(data) > 100<<20`。那时内存**已经占用**，
+// 一个声明 `Content-Length: 10GB` 的请求可以先把进程撑爆再收到"包太大"的报错 ——
+// 限制形同虚设。读前限流才是有意义的防护（也是本次把上限变成配置项的前提：
+// 放宽一个无效检查不会带来新风险，放寛一个有效检查才会）。
+//
+// limit <= 0 表示不限制。
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return io.ReadAll(r)
+	}
+	// 多读 1 字节：能读到 limit+1 才说明确实超了，
+	// 否则恰好等于 limit 的包会被误判（边界差一）。
+	lr := io.LimitReader(r, limit+1)
+	data, err := io.ReadAll(lr)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errPackageTooLarge(limit)
+	}
+	return data, nil
+}
+
+// validatePackage 只做**结构合法性**校验（元数据、平台二进制、路径安全）。
+//
+// 大小不在这里判：它必须在读入内存之前决定，见 readLimited。
+// （曾经这里有一个 `len(data) > 100<<20` 的检查，属于"事后检查"，
+// 挡不住任何东西却会在有一天需要大包时成为障碍 —— 已移除。）
+func validatePackage(data []byte) (*pluginPackage, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("invalid zip: %w", err)
+	}
+
+	// ★ 路径检查必须遍历**全部**条目，与找 manifest 分开。
+	//
+	// 原实现把路径检查放在寻找 plugin.json 的循环里，而该循环找到
+	// manifest 后会 `break` —— 于是排在 plugin.json **之后**的条目
+	// 完全没被检查。hmapdev 打包出的 rawfile 条目恒在 plugin.json 之后，
+	// 正好落在检查盲区（实测发现）。
+	//
+	// 落盘侧（extractPackage）另有独立的 path traversal 检查，
+	// 所以这不是可利用漏洞；但"校验函数只校验了一部分还叫校验"本身就是缺陷，
+	// 且一旦将来有人复用 validatePackage 做准入判断就会出事。
+	for _, f := range reader.File {
+		if strings.Contains(f.Name, "..") || strings.HasPrefix(f.Name, "/") {
+			return nil, fmt.Errorf("invalid path: %s", f.Name)
+		}
 	}
 
 	var pkg pluginPackage
 	hasManifest := false
 
 	for _, f := range reader.File {
-		if strings.Contains(f.Name, "..") || strings.HasPrefix(f.Name, "/") {
-			return nil, fmt.Errorf("invalid path: %s", f.Name)
-		}
 		if f.FileInfo().IsDir() {
 			continue
 		}

@@ -90,13 +90,13 @@ type Registry struct {
 	docStore *doc.Store
 	// CAS 已淘汰（块自带负载，见 plan.md）。本注册表不保留媒体存储字段：
 	// 留着会诱导后来者再接线，走回头路。媒体字节走 sdk.Memory().MediaBytes。
-	ks         *knowledge.Store
-	mgr        *agentAPI.ProviderManager
-	cfgReg     *internalConfig.ConfigRegistry
-	plgDir     string
-	dataDir    string // 守护进程数据目录（注入给插件 SettingsAPI.DataDir）
-	lua        *luaVM.VM
-	baseKey    string
+	ks      *knowledge.Store
+	mgr     *agentAPI.ProviderManager
+	cfgReg  *internalConfig.ConfigRegistry
+	plgDir  string
+	dataDir string // 守护进程数据目录（注入给插件 SettingsAPI.DataDir）
+	lua     *luaVM.VM
+	baseKey string
 
 	regTool  sdk.ToolRegistrar
 	regStage sdk.StageRegistrar
@@ -121,6 +121,32 @@ type Registry struct {
 
 	knownDisabled map[string]bool
 	allowlist     map[string]bool
+
+	// runtimeStopped 是**运行态**关闭门（设计 §2.6.7.3）。
+	//
+	// ## 与 knownDisabled / disabled_plugins 的区别（关键）
+	//
+	//   disabled_plugins（配置）  = 持久禁用："是否**允许**加载"，跨重启保留
+	//   runtimeStopped（本字段）  = 运行态关闭："这一次不想让它跑"，**不**持久
+	//
+	// ## 为什么必须是两个门而不是一个
+	//
+	// 实测缺陷：`Enable()` 会调 `cfgReg.RemoveDisabledPlugin`，
+	// `DisablePlugin()` 会调 `cfgReg.AddDisabledPlugin` —— 全都是
+	// "改运行态**顺带**改持久态"。于是：
+	//   · agent 想临时关掉某插件 ⇒ 只能调 DisablePlugin ⇒ 顺带写了持久禁用
+	//     ⇒ 用户发现"我只是关了一下，怎么以后开机都不自启了"
+	//   · 想把刚才关的插件开回来 ⇒ EnablePlugin ⇒ 清了禁用标记
+	//     ⇒ 若它本来是"不自启"的，这个动作改掉了用户设置
+	//
+	// 所以需要一条**只改运行态**的路径。清除条件也不同：
+	//   · 持久禁用由"启用"清除（用户级决定）
+	//   · 运行态关闭由"启动"清除（会话级决定，重启自然复位）
+	//
+	// ★ 不持久是本设计的**有意选择**：运行态关闭 = "这一次不跑"，
+	// 不是"以后都不跑"。若它持久，agent 关掉一个插件后就再也没法让它
+	// 随内核起来 —— 那正是要修的毛病。
+	runtimeStopped map[string]bool
 
 	// pluginHashes 记录各插件二进制(plugin.so/plugin.bin/main.lua)的 SHA256，
 	// 供增量重载(Reload)对比：仅重载有变更的插件，避免全量 StopAll+Load 导致重复加载。
@@ -184,6 +210,7 @@ func NewRegistry() *Registry {
 		pluginAutoRestart: make(map[string]bool),
 		sdkRefs:           make(map[string]*sdk.PluginSDK),
 		knownDisabled:     make(map[string]bool),
+		runtimeStopped:    make(map[string]bool),
 		pluginHashes:      make(map[string]string),
 		pluginChannels:    make(map[string]*pluginChannelSet),
 	}
@@ -274,6 +301,9 @@ func (d *channelDevice) Execute(tool string, args map[string]interface{}) (inter
 func (d *channelDevice) ChannelDef() agentIO.ChannelDef { return d.chDef }
 
 func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
+	// 插件自己的安装目录：rawfile 资源与可写工作目录都挂在它下面。
+	pluginDir := filepath.Join(r.plgDir, name)
+
 	sett := sdk.NewSettings(name, r.cfgReg)
 	if sd, ok := sett.(interface{ SetDataDir(string) }); ok {
 		// 插件专属数据目录：<data>/plugin_data/<name>，保证存在
@@ -360,12 +390,19 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		EventBus:  r.evBus,
 		// 块自带负载（媒体字节在块的 Data），不再需要独立的媒体存储句柄。
 		// 插件名仅用于日志溯源（哪个插件写的块）。
-		Memory:         sdk.NewGraphMemoryWithPlugin(name, r.memDB),
-		TextMemory:     sdk.NewTextMemoryWithPlugin(name, r.textMem),
-		DocMemory:      sdk.NewDocMemoryWithPlugin(name, r.docStore),
-		Knowledge:      sdk.NewKnowledge(r.ks),
-		LLM:            sdk.NewLLM(r.mgr, r.cfgReg, r.lua, r.baseKey),
-		Settings:       sett,
+		Memory:     sdk.NewGraphMemoryWithPlugin(name, r.memDB),
+		TextMemory: sdk.NewTextMemoryWithPlugin(name, r.textMem),
+		DocMemory:  sdk.NewDocMemoryWithPlugin(name, r.docStore),
+		Knowledge:  sdk.NewKnowledge(r.ks),
+		LLM:        sdk.NewLLM(r.mgr, r.cfgReg, r.lua, r.baseKey),
+		Settings:   sett,
+		// ★ 变量库：桥接到进程级 security.Global()（**不另建存储**）。
+		// 内核未启用安全模块时它 Available()==false（不是 nil）。
+		Secrets: sdk.NewSecretsAPI(),
+		// ★ 随包资源：读 <插件目录>/rawfile/，可写目录 <插件目录>/work/。
+		// 内置插件（无独立目录）拿到的路径不存在，Read 会明确报错 ——
+		// 那是对的：它们本来就没有随包资源。
+		RawFiles:       sdk.NewRawFilesAPI(pluginDir),
 		RegTool:        regTool,
 		RegStage:       regStage,
 		RegAPI:         regAPI,
@@ -505,6 +542,17 @@ func (r *Registry) loadOne(plgDir, name string) bool {
 		r.mu.Lock()
 		r.knownDisabled[name] = true
 		r.mu.Unlock()
+		return false
+	}
+	// ② 运行态关闭门（设计 §2.6.7.3）。
+	//
+	// 与上面的持久禁用门**分开**：持久禁用由"启用"清除，运行态关闭由
+	// "启动"清除。复用一个门就会让"临时关一下"变成"以后都不自启"。
+	//
+	// 注意这一条也挡住 loadPlugins 的启动扫描 —— 若插件在启动前就被
+	// 运行态关闭（理论上不会，但保持语义一致），它不该被拉起。
+	if r.isRuntimeStopped(name) {
+		log.Printf("[plugin] %s 处于运行态关闭（runtime stop），跳过加载", name)
 		return false
 	}
 
@@ -841,6 +889,115 @@ func (r *Registry) Reload(dir string) (string, error) {
 	return fmt.Sprintf("reloaded %d plugins, %d unchanged", changed, remaining), nil
 }
 
+// LoadOneDir 加载**单个**插件目录（供按 syncbus 分阶段启动的调度器使用）。
+//
+// 与 Load(dir) 的区别：Load 扫描整个目录并加载所有插件；
+// 本方法只加载指定的那一个，让调用方（调度器）能控制**时机**。
+//
+// 复用 loadOne 的全部语义（禁用门、运行态门、工厂查找、握手超时……），
+// **不绕过**任何既有机制 —— 分阶段启动不该是本设计的特权路径。
+func (r *Registry) LoadOneDir(plgDir, name string) error {
+	if !r.allowlistAllows(name) {
+		return fmt.Errorf("plugin %s 不在本启动模式的允许清单内", name)
+	}
+	if r.loadOne(plgDir, name) {
+		return nil
+	}
+	return fmt.Errorf("加载插件 %s 失败（见内核日志）", name)
+}
+
+// LoadSkipping 加载目录下**除 skip 之外**的全部插件（供分阶段启动的"兜底"路径）。
+//
+// 语义与 Load(dir) 一致，只是把交给调度器的插件排除掉（它们由调度器按
+// 依赖就绪情况拉起），避免"调度器还没轮到、Load 先把它们全拉了"。
+//
+// ★ 这个排除是分阶段启动能生效的关键：若不做，Load 的全量扫描会把
+// 所有插件（含声明了依赖的）立刻加载，调度器就无事可做了。
+func (r *Registry) LoadSkipping(dir string, skip map[string]bool) error {
+	if dir == "" {
+		dir = r.plgDir
+	}
+	os.MkdirAll(dir, 0755)
+
+	loaded := map[string]bool{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			os.MkdirAll(dir, 0755)
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if skip[name] {
+			continue // 交给调度器按依赖就绪情况拉起
+		}
+		if !r.allowlistAllows(name) {
+			continue
+		}
+		if r.loadOne(filepath.Join(dir, name), name) {
+			loaded[name] = true
+		}
+	}
+
+	// 内置工厂（编译期注册、可能尚无目录）同样排除 skip 的那些
+	r.mu.RLock()
+	allFactories := make(map[string]NativeFactory, len(r.factories))
+	for name, f := range r.factories {
+		allFactories[name] = f
+	}
+	r.mu.RUnlock()
+	globalFactories.Range(func(key, val interface{}) bool {
+		name := key.(string)
+		if _, ok := allFactories[name]; !ok {
+			allFactories[name] = val.(NativeFactory)
+		}
+		return true
+	})
+
+	for name, factory := range allFactories {
+		if loaded[name] || skip[name] || !r.allowlistAllows(name) {
+			continue
+		}
+		if r.isDisabled(name) {
+			log.Printf("[plugin] %s is disabled, skipping", name)
+			r.mu.Lock()
+			r.knownDisabled[name] = true
+			r.mu.Unlock()
+			continue
+		}
+		plgDir := filepath.Join(dir, name)
+		os.MkdirAll(plgDir, 0755)
+		cfg := r.readConfig(plgDir)
+		p, err := factory(name, cfg)
+		if err != nil {
+			log.Printf("[plugin] factory %s: %v", name, err)
+			continue
+		}
+		if p == nil {
+			continue
+		}
+		plgSDK := r.buildSDK(name)
+		if err := p.Start(plgSDK); err != nil {
+			log.Printf("[plugin] start %s: %v", name, err)
+			continue
+		}
+		r.mu.Lock()
+		r.plugins[name] = p
+		r.pluginAutoRestart[name] = plgSDK.AutoRestart()
+		r.instances = append(r.instances, p)
+		r.mu.Unlock()
+		r.warnOutputOnlyChannels(name)
+		log.Printf("[plugin] loaded: %s", name)
+		loaded[name] = true
+	}
+	return nil
+}
+
 func (r *Registry) ReloadOne(name string) error {
 	plgDir := filepath.Join(r.plgDir, name)
 
@@ -1034,6 +1191,13 @@ func (r *Registry) ListDisabledPlugins() []sdk.DisabledPluginInfo {
 func (r *Registry) IsPluginDisabled(name string) bool { return r.isDisabled(name) }
 
 func (r *Registry) DisablePlugin(name, by string) error {
+	// ★ 自锁守卫（与 StopPlugin 同一类，设计 §2.6.7.4）。
+	//
+	// 持久禁用 pluginmgr 比运行态关闭更糟：agent 从此**永远**失去插件管理能力
+	// （重启也不恢复）。虽然 CLI/webui 可人工解禁，但 agent 侧是死锁。
+	if err := r.refuseSelfLock(name, "禁用"); err != nil {
+		return err
+	}
 	// 插件不存在（未安装）：拒绝并返回错误，避免把不存在的插件写进 disabled_plugins。
 	// 判断标准：已加载 / 已注册工厂（内置）/ 插件目录存在，任一命中视为已安装。
 	if !r.pluginInstalled(name) {
@@ -1076,6 +1240,152 @@ func (r *Registry) DisablePlugin(name, by string) error {
 }
 
 func (r *Registry) EnablePlugin(name string) error { return r.Enable(name) }
+
+// isRuntimeStopped 报告插件是否处于**运行态关闭**（设计 §2.6.7.3）。
+func (r *Registry) isRuntimeStopped(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.runtimeStopped[name]
+}
+
+// IsRuntimeStopped 是 isRuntimeStopped 的公开形式（工具层与判据用）。
+func (r *Registry) IsRuntimeStopped(name string) bool { return r.isRuntimeStopped(name) }
+
+// IsPluginRuntimeStopped 实现 sdk.PluginManager（命名与该接口其他方法一致）。
+func (r *Registry) IsPluginRuntimeStopped(name string) bool { return r.isRuntimeStopped(name) }
+
+// StopPlugin 是**运行态**关闭：现在停掉，但**不改任何持久状态**（设计 §2.6.7.4）。
+//
+// ## 与 DisablePlugin 的区别（这是本方法存在的全部理由）
+//
+//	DisablePlugin  ⇒ 停掉 + 写 disabled_plugins（**持久**）
+//	StopPlugin     ⇒ 停掉，**不写任何配置**（运行态，重启自然复位）
+//
+// 用户场景："我只是想临时关掉它看现象" —— 用 DisablePlugin 会顺带把
+// 开机自启也关掉，用户下次开机会发现"怎么不启动了"。
+//
+// ## 为何拒绝关闭"插件管理自身"
+//
+// pluginmgr 被关掉后，agent 就**失去了插件管理能力**，而重新启动它
+// **只能靠插件管理工具** —— 鸡生蛋，自锁且无解。
+// 所以这条必须在**内核层面**拦死，不能靠 agent 自觉（agent 可以犯错）。
+//
+// 同理拒绝 webui：它是人机界面，关掉后人就看不见了（可被外部手段恢复，
+// 但仍是坏体验，故一并拦）。
+func (r *Registry) StopPlugin(name string) error {
+	if err := r.refuseSelfLock(name, "关闭"); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	p, ok := r.plugins[name]
+	if !ok {
+		r.mu.Unlock()
+		// 不在运行：标记运行态关闭（幂等），使后续启动不会拉起它
+		r.mu.Lock()
+		r.runtimeStopped[name] = true
+		r.mu.Unlock()
+		return fmt.Errorf("plugin %s 未在运行（已标记为运行态关闭）", name)
+	}
+	r.runStopHandlers(name)
+	stopErr := p.Stop()
+	delete(r.plugins, name)
+	delete(r.sdkRefs, name)
+	for i, inst := range r.instances {
+		if inst.Name() == name {
+			r.instances = append(r.instances[:i], r.instances[i+1:]...)
+			break
+		}
+	}
+	r.runtimeStopped[name] = true
+	r.mu.Unlock()
+
+	// 摸掉注册面：否则旧闭包（工具/stage/通道）指向已死实例，
+	// 模型仍能看到并调用它们，只能拿到 ErrProcessExited。
+	// 与 ReloadOne/Disable 同一处置（那里不摸的后果见 ReloadOne 注释）。
+	r.detachPlugin(name)
+
+	if stopErr != nil {
+		log.Printf("[plugin] runtime stop %s（Stop 报错）: %v", name, stopErr)
+	}
+	log.Printf("[plugin] runtime stopped: %s（不改持久状态）", name)
+	return nil
+}
+
+// StartPlugin 是**运行态**启动：现在拉起，**不改持久状态**（设计 §2.6.7.4）。
+//
+// ## 为何不清除 disabled_plugins
+//
+// 与 EnablePlugin 的区别：EnablePlugin 会调 RemoveDisabledPlugin
+// ⇒ 若插件本来被持久禁用，这个动作把它**解禁**了（改了用户决定）。
+// StartPlugin 只清运行态门，持久禁用仍然生效：
+//
+//	· 被持久禁用的插件 ⇒ StartPlugin **拒绝**（提示先启用）
+//	  理由：持久禁用是用户的明确决定，绕过它加载等于违背用户意图
+//	· 只是运行态关闭的插件 ⇒ StartPlugin 正常拉起
+//
+// ## 重启后的语义
+//
+// runtimeStopped **不持久** ⇒ 重启后插件按 auto_start + disabled_plugins
+// 正常决定。这正是"关闭 ≠ 以后都不启动"的落点。
+func (r *Registry) StartPlugin(name string) error {
+	// 持久禁用优先：用户的明确决定不能被运行态操作绕过
+	if r.isDisabled(name) {
+		return fmt.Errorf("plugin %s 已被**持久禁用**，请先用 plugin_enable 启用（运行态启动不会解除持久禁用）", name)
+	}
+	// 清运行态门（必须在 loadOne 之前，否则会被门挡住）
+	r.mu.Lock()
+	wasStopped := r.runtimeStopped[name]
+	delete(r.runtimeStopped, name)
+	r.mu.Unlock()
+
+	// 已在运行 ⇒ 幂等成功（不重复加载）。
+	//
+	// ★ 判据必须看 **r.plugins**（真的加载了），不能看 PluginRuntime：
+	// 后者在"工厂已注册但插件并未加载"时也返回 ok=true（它答的是
+	// "这个插件**已安装**吗"，不是"**正在运行**吗"）。
+	// 用它会让 StartPlugin 在插件其实已停止时误返回成功 —— 实测抓到
+	// （TestStopThenStartRoundTrip：停止后启动，插件其实没被重新加载）。
+	r.mu.RLock()
+	_, running := r.plugins[name]
+	r.mu.RUnlock()
+	if running {
+		return nil
+	}
+
+	plgDir := filepath.Join(r.plgDir, name)
+	if r.loadOne(plgDir, name) {
+		if wasStopped {
+			log.Printf("[plugin] runtime started: %s（已清运行态关闭）", name)
+		} else {
+			log.Printf("[plugin] runtime started: %s", name)
+		}
+		return nil
+	}
+	// 加载失败 ⇒ 恢复运行态门，避免"启动失败但门被清了"导致状态不一致
+	r.mu.Lock()
+	if wasStopped {
+		r.runtimeStopped[name] = true
+	}
+	r.mu.Unlock()
+	return fmt.Errorf("启动插件 %s 失败（本身加载出错，或插件不存在）", name)
+}
+
+// refuseSelfLock 拦住会自锁的关闭/禁用操作（设计 §2.6.7.4）。
+//
+// 为何在内核层面拦而不是靠工具层校验：agent 可以犯错，
+// 而这几个操作一旦执行就**无法从 agent 侧恢复**（自锁）。
+// 内核拒绝是唯一可靠的位置。
+func (r *Registry) refuseSelfLock(name, action string) error {
+	switch name {
+	case "pluginmgr":
+		return fmt.Errorf("拒绝%s pluginmgr：它是 agent 的插件管理能力本身，"+
+			"%s后 agent 再也无法启动任何插件（只能靠外部手段恢复）", action, action)
+	case "webui":
+		return fmt.Errorf("拒绝%s webui：它是人机界面，%s后用户看不到系统状态"+
+			"（如需临时停用请用 plugin_disable，或从外部恢复）", action, action)
+	}
+	return nil
+}
 
 // StopAndUnload 停止并从注册表移除插件，但保留其配置表（config_<name>）。
 // 供插件更新/升级流程使用：换 so/文件不动配置，重装后配置原样生效。

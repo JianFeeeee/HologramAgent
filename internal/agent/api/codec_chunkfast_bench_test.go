@@ -12,11 +12,11 @@ import (
 )
 
 var benchChunks = map[string]string{
-	"content_zh": `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"这是一段来自真实流式响应的中文内容，用于测量解析开销。"},"finish_reason":null}]}`,
+	"content_zh":    `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"这是一段来自真实流式响应的中文内容，用于测量解析开销。"},"finish_reason":null}]}`,
 	"content_ascii": `{"id":"chatcmpl-abc","choices":[{"index":0,"delta":{"content":"hello world this is a longer ascii content chunk"},"finish_reason":null}]}`,
-	"toolcall": `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_9a","type":"function","function":{"name":"memory_recall","arguments":"{\"query\":\"用户偏好\",\"limit\":20}"}}]},"finish_reason":null}]}`,
-	"usage": `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}],"usage":{"prompt_tokens":3821,"completion_tokens":117,"total_tokens":3938,"prompt_cache_hit_tokens":3584,"prompt_cache_miss_tokens":237}}`,
-	"finish": `{"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	"toolcall":      `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_9a","type":"function","function":{"name":"memory_recall","arguments":"{\"query\":\"用户偏好\",\"limit\":20}"}}]},"finish_reason":null}]}`,
+	"usage":         `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}],"usage":{"prompt_tokens":3821,"completion_tokens":117,"total_tokens":3938,"prompt_cache_hit_tokens":3584,"prompt_cache_miss_tokens":237}}`,
+	"finish":        `{"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 }
 
 // BenchmarkChunkFast_Entry 走真实入口（含 C 路径 + 必要的回退）。
@@ -52,10 +52,11 @@ func BenchmarkChunkFast_GoOnly(b *testing.B) {
 // TestChunkFast_BenchGate 钉死当前事实：chunkFastEnabled 必须为 false。
 //
 // ★ 为什么把「一个优化是关的」也做成断言：
-//   「还没验证有效就先关着」是**容易丢失的状态** —— 后来者看到
-//   「快速路径写得挺全 + 6 万条差分测试全过」，很自然会以为它已生效，
-//   进而打开它、甚至删掉开关。而实测它**更慢**。
-//   断言把这个事实钉在测试里，开关一旦被改就立刻判红。
+//
+//	「还没验证有效就先关着」是**容易丢失的状态** —— 后来者看到
+//	「快速路径写得挺全 + 6 万条差分测试全过」，很自然会以为它已生效，
+//	进而打开它、甚至删掉开关。而实测它**更慢**。
+//	断言把这个事实钉在测试里，开关一旦被改就立刻判红。
 func TestChunkFast_BenchGate(t *testing.T) {
 	if chunkFastEnabled {
 		t.Fatalf("chunkFastEnabled 被打开了，但实测本架构比原实现慢：\n" +

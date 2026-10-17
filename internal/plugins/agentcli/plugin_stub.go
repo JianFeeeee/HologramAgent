@@ -16,6 +16,6 @@ func init() {
 
 type stubPlugin struct{}
 
-func (p *stubPlugin) Name() string                 { return "agentcli" }
+func (p *stubPlugin) Name() string                   { return "agentcli" }
 func (p *stubPlugin) Start(sdk *sdk.PluginSDK) error { return nil }
-func (p *stubPlugin) Stop() error                  { return nil }
+func (p *stubPlugin) Stop() error                    { return nil }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"io"
 	"os"
 	"os/exec"
@@ -12,13 +13,22 @@ import (
 )
 
 // StdioTransport 通过子进程 stdin/stdout 进行 JSON-RPC 通信
+// pendingRPC 是待应答通道 + 它自己的 close 守卫（本仓 close 纪律）。
+type pendingRPC struct {
+	ch   chan *rpcResponse
+	once sync.Once
+}
+
+func (p *pendingRPC) closeOnce() { safeclose.Safe(&p.once, p.ch) }
+
 type StdioTransport struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	mu     sync.Mutex
-	pending map[int]chan *rpcResponse
-	done    chan struct{}
+	doneOnce sync.Once
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	mu       sync.Mutex
+	pending  map[int]*pendingRPC
+	done     chan struct{}
 }
 
 func NewStdioTransport(command string, args []string, env []string) (*StdioTransport, error) {
@@ -46,7 +56,7 @@ func NewStdioTransport(command string, args []string, env []string) (*StdioTrans
 		cmd:     cmd,
 		stdin:   stdin,
 		stdout:  bufio.NewReader(stdout),
-		pending: make(map[int]chan *rpcResponse),
+		pending: make(map[int]*pendingRPC),
 		done:    make(chan struct{}),
 	}
 
@@ -60,24 +70,24 @@ func (t *StdioTransport) readLoop() {
 	for {
 		var resp rpcResponse
 		if err := dec.Decode(&resp); err != nil {
-			close(t.done)
+			safeclose.Safe(&t.doneOnce, t.done)
 			// 通知所有等待的请求
 			t.mu.Lock()
-			for _, ch := range t.pending {
-				close(ch)
+			for _, pr := range t.pending {
+				pr.closeOnce()
 			}
-			t.pending = make(map[int]chan *rpcResponse)
+			t.pending = make(map[int]*pendingRPC)
 			t.mu.Unlock()
 			return
 		}
 
 		t.mu.Lock()
-		ch, ok := t.pending[resp.ID]
+		pr, ok := t.pending[resp.ID]
 		delete(t.pending, resp.ID)
 		t.mu.Unlock()
 
 		if ok {
-			ch <- &resp
+			pr.ch <- &resp
 		}
 	}
 }
@@ -90,7 +100,7 @@ func (t *StdioTransport) Send(req *rpcRequest) (*rpcResponse, error) {
 
 	ch := make(chan *rpcResponse, 1)
 	t.mu.Lock()
-	t.pending[req.ID] = ch
+	t.pending[req.ID] = &pendingRPC{ch: ch}
 	t.mu.Unlock()
 
 	if _, err := t.stdin.Write(data); err != nil {

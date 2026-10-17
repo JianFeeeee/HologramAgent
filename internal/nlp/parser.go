@@ -48,9 +48,9 @@ func DefaultExtractorConfig() ExtractorConfig {
 
 // Extractor 三元组提取器
 type Extractor struct {
-	parser   Parser
-	fallack  Parser // 降级用 POS 模板解析器
-	embedder Vectorizer // 可选：用于 TransE 语义验证
+	parser    Parser
+	fallack   Parser     // 降级用 POS 模板解析器
+	embedder  Vectorizer // 可选：用于 TransE 语义验证
 	fusionCfg ExtractorConfig
 }
 
@@ -89,10 +89,11 @@ func (e *Extractor) FusionConfig() ExtractorConfig {
 }
 
 // Extract 从文本中提取三元组（完整四阶段流水线）
-//  Phase 1: 句法解析（LTP 分词 → POS 标注 → 依存句法树）
-//  Phase 2: 结构初筛（依存模板 / POS 模板 → 候选三元组 + syntax_conf）
-//  Phase 3: 语义验证（TransE h+r≈t → vector_conf）
-//  Phase 4: 融合裁决（线性加权 → 阈值截断 → 降序输出）
+//
+//	Phase 1: 句法解析（LTP 分词 → POS 标注 → 依存句法树）
+//	Phase 2: 结构初筛（依存模板 / POS 模板 → 候选三元组 + syntax_conf）
+//	Phase 3: 语义验证（TransE h+r≈t → vector_conf）
+//	Phase 4: 融合裁决（线性加权 → 阈值截断 → 降序输出）
 func (e *Extractor) Extract(text string) *TripleSet {
 	if text == "" {
 		return &TripleSet{Src: "", Err: nil}

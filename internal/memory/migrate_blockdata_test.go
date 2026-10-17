@@ -8,8 +8,9 @@ import (
 // BackfillBlockData 把旧 CAS（payload_digest）的字节搬进块自身的 data 列。
 //
 // ★ 测试不 import internal/memory/media：字节来源是注入的 resolver，
-//   正是为了让 memory 包对 CAS 零依赖（step⑥ 要删 media 包）。
-//   真实 CAS 读盘 + 生产数据 e2e 由 cmd/homed-media-backfill 承担。
+//
+//	正是为了让 memory 包对 CAS 零依赖（step⑥ 要删 media 包）。
+//	真实 CAS 读盘 + 生产数据 e2e 由 cmd/homed-media-backfill 承担。
 //
 // 判据是**不变量**而不是「函数被调过」：
 //  1. 回填后 BlockData(id) 能取回字节，且与来源逐字节一致

@@ -44,10 +44,16 @@ func drainFor(term ptyTerm, dur time.Duration) []byte {
 	buf := make([]byte, 4096)
 	var out []byte
 	for time.Now().Before(deadline) {
-		ch := make(chan struct{ N int; E error }, 1)
+		ch := make(chan struct {
+			N int
+			E error
+		}, 1)
 		go func() {
 			n, e := term.Read(buf)
-			ch <- struct{ N int; E error }{n, e}
+			ch <- struct {
+				N int
+				E error
+			}{n, e}
 		}()
 		select {
 		case r := <-ch:

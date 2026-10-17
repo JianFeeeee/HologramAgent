@@ -87,15 +87,27 @@ func (r *Registry) loadProc(dir, name string, config map[string]interface{}) (sd
 	// manifest 声明的能力集（§3.8 权限梯度）。
 	// 无 manifest 或未声明 capabilities 时不限制，保存存量插件行为。
 	var caps []string
+	// ★ 建链超时由插件**自行声明**（见 docs/zh/kernel-modularization-design.md §2.4.2）。
+	//
+	// 为何要读它而不是用内核默认 10s：实测生产启动 13 秒里 10 秒是串行等待
+	// 插件内部的重型初始化，而内核"猜"的 10s 对重插件不够、对轻插件浪费。
+	// 未声明时为 0 ⇒ HandshakeTimeout 回退到 proc.DefaultHandshakeTimeout，
+	// 与改动前**逐字一致**（存量插件零改动的硬约束）。
+	hsTimeout := time.Duration(0)
 	if mft := readManifest(dir); mft != nil {
 		caps = mft.Capabilities
 		if len(caps) > 0 {
 			log.Printf("[plugin] %s 声明能力: %v", name, caps)
 		}
+		hsTimeout = mft.HandshakeTimeout(proc.DefaultHandshakeTimeout)
+		if mft.HandshakeTimeoutSec > 0 {
+			log.Printf("[plugin] %s 声明建链超时 %s（内核默认 %s）",
+				name, hsTimeout, proc.DefaultHandshakeTimeout)
+		}
 	}
 
 	return procPluginAdapter{
-		Plugin: proc.New(name, binPath, dir, config, host, r.onProcCrash, caps...),
+		Plugin: proc.NewWithTimeout(name, binPath, dir, config, host, r.onProcCrash, hsTimeout, caps...),
 	}, nil
 }
 

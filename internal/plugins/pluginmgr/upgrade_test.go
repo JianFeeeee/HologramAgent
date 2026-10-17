@@ -15,13 +15,16 @@ import (
 )
 
 func TestCmpVersion(t *testing.T) {
-	cases := []struct{ a, b string; want int }{
+	cases := []struct {
+		a, b string
+		want int
+	}{
 		{"1.0.0", "1.0.0", 0},
 		{"1.0.1", "1.0.0", 1},
 		{"1.0.0", "1.0.1", -1},
 		{"1.0", "1.0.0", 0},
 		{"v2.0.0", "1.9.9", 1},
-		{"2.0.0", "10.0.0", -1}, // 数字比较而非字典序
+		{"2.0.0", "10.0.0", -1},     // 数字比较而非字典序
 		{"1.0.0-alpha", "1.0.0", 0}, // 非数字段按 0
 	}
 	for _, c := range cases {
@@ -39,6 +42,8 @@ func (m *pmSettings) DataDir() string { return "/tmp/mock_data" }
 
 func (m *pmSettings) Get(string) (interface{}, error)               { return nil, nil }
 func (m *pmSettings) Set(string, interface{}) error                 { return nil }
+func (m *pmSettings) SetSecret(string, interface{}) error           { return nil }
+func (m *pmSettings) GetSecret(string) (string, error)              { return "", nil }
 func (m *pmSettings) List(string) ([]string, error)                 { return nil, nil }
 func (m *pmSettings) GetCore(string) (interface{}, error)           { return nil, nil }
 func (m *pmSettings) SetCore(string, interface{}) error             { return nil }
@@ -56,6 +61,9 @@ func (m *pmSettings) Remove(string) error                           { return nil
 func (m *pmSettings) RemoveCore(string) error                       { return nil }
 func (m *pmSettings) RemovePlugin(string, string) error             { return nil }
 
+// IsSecret：E-3 起 SettingsAPI 要求实现（判断某键是否按密文存储）。
+func (m *pmSettings) IsSecret(string) bool { return false }
+
 // fakePluginMgr 记录调用；StopAndUnload 只记标志，不真正操作。
 type fakePluginMgr struct {
 	mu             sync.Mutex
@@ -68,6 +76,9 @@ func (f *fakePluginMgr) IsPluginDisabled(string) bool                  { return 
 func (f *fakePluginMgr) IsBuiltinPlugin(string) bool                   { return false }
 func (f *fakePluginMgr) DisablePlugin(string, string) error            { return nil }
 func (f *fakePluginMgr) EnablePlugin(string) error                     { return nil }
+func (f *fakePluginMgr) StopPlugin(string) error                       { return nil }
+func (f *fakePluginMgr) StartPlugin(string) error                      { return nil }
+func (f *fakePluginMgr) IsPluginRuntimeStopped(string) bool            { return false }
 func (f *fakePluginMgr) RemovePlugin(string) error                     { return nil }
 func (f *fakePluginMgr) StopAndUnload(name string) error {
 	f.mu.Lock()

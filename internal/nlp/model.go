@@ -13,10 +13,10 @@ type Triple struct {
 	Subject     string
 	Relation    string
 	Object      string
-	Score       float64   // syntax_conf：句法置信度（Phase 2 输出）
-	VectorConf  float64   // vector_conf：语义向量置信度（Phase 3 输出）
-	Src         string    // "dep" / "dep_coo" / "pos" / "fallback"
-	SentenceRef string    // 原始句子，用于LLM复审时修正
+	Score       float64 // syntax_conf：句法置信度（Phase 2 输出）
+	VectorConf  float64 // vector_conf：语义向量置信度（Phase 3 输出）
+	Src         string  // "dep" / "dep_coo" / "pos" / "fallback"
+	SentenceRef string  // 原始句子，用于LLM复审时修正
 }
 
 // TripleSet 提取结果

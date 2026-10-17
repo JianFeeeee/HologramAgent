@@ -20,10 +20,10 @@ type mockDevice struct {
 	mu             sync.Mutex
 }
 
-func (d *mockDevice) Name() string                           { return d.name }
-func (d *mockDevice) Type() DeviceType                       { return d.devType }
-func (d *mockDevice) Description() string                    { return d.desc }
-func (d *mockDevice) Tools() []ToolDef                       { return d.tools }
+func (d *mockDevice) Name() string        { return d.name }
+func (d *mockDevice) Type() DeviceType    { return d.devType }
+func (d *mockDevice) Description() string { return d.desc }
+func (d *mockDevice) Tools() []ToolDef    { return d.tools }
 func (d *mockDevice) Start() error {
 	d.mu.Lock()
 	d.startCallCount++
@@ -43,7 +43,7 @@ func (d *mockDevice) Stop() error {
 	return nil
 }
 func (d *mockDevice) OutputCapabilities() OutputCapability { return d.caps }
-func (d *mockDevice) ChannelDef() ChannelDef { return ChannelDef{} }
+func (d *mockDevice) ChannelDef() ChannelDef               { return ChannelDef{} }
 func (d *mockDevice) Execute(tool string, args map[string]interface{}) (interface{}, error) {
 	if d.executeFn != nil {
 		return d.executeFn(tool, args)
@@ -275,13 +275,13 @@ func TestExecuteToolNotFound(t *testing.T) {
 func TestListChannels(t *testing.T) {
 	m := NewIOManager()
 	m.RegisterDevice(&mockDevice{
-		name: "screen",
-		caps: CapText | CapImage,
+		name:    "screen",
+		caps:    CapText | CapImage,
 		devType: DeviceOutput,
 	})
 	m.RegisterDevice(&mockDevice{
-		name: "mic",
-		caps: 0,
+		name:    "mic",
+		caps:    0,
 		devType: DeviceInput,
 	})
 

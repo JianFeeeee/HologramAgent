@@ -9,13 +9,13 @@ import (
 
 func TestIsProtectedPath(t *testing.T) {
 	cases := map[string]bool{
-		"/etc/resolv.conf":        true,
-		"/etc/hosts":              true,
-		"/etc/apt/sources.list":   true,
-		"/etc/environment":        true,
-		"/tmp/foo.txt":            false,
-		"/home/user/x":            false,
-		"/usr/local/bin/homed":    false,
+		"/etc/resolv.conf":      true,
+		"/etc/hosts":            true,
+		"/etc/apt/sources.list": true,
+		"/etc/environment":      true,
+		"/tmp/foo.txt":          false,
+		"/home/user/x":          false,
+		"/usr/local/bin/homed":  false,
 	}
 	for p, want := range cases {
 		if got := IsProtectedPath(p); got != want {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -43,7 +44,9 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	s.SetAutoRestart(true)
 	p.maxDur = 24 * time.Hour
 	// 停止清理（取消倒计时）交由 stop handler：内核在调用 Stop() 之前执行。
-	s.RegisterStopHandler(func() { close(p.stopCh) })
+	// 幂等（本仓 close 纪律）：stop handler 由内核调用；若将来多一条
+	// 停机路径（重载/热更新）就会二次 close ⇒ panic。
+	s.RegisterStopHandler(safeclose.SafeFunc(p.stopCh))
 	// 删除清理：移除插件自身配置（删除专用回调，重载不触发）。
 	s.RegisterOnRemoveHandler(func() {
 		if err := s.Settings().Remove("max_duration"); err != nil {

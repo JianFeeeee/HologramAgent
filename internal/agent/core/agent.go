@@ -258,10 +258,10 @@ type AgentConfig struct {
 	Indexer     *memory.Indexer
 	Tracker     *tracker.Tracker
 
-	DocStore        *document.Store
-	Knowledge       *knowledge.Store
-	SocialStore     *social.SocialStore
-	TextMemory      *text.Memory
+	DocStore    *document.Store
+	Knowledge   *knowledge.Store
+	SocialStore *social.SocialStore
+	TextMemory  *text.Memory
 	// 媒体存储句柄已随 CAS 淘汰（块自带负载，见 plan.md）。
 	MultimodalSpace vector.MultimodalEmbedder
 	// EmbeddingProvider / EmbeddingError 是向量空间的配置身份与打开失败原因，
@@ -393,27 +393,27 @@ func New(cfg AgentConfig) *Agent {
 	}
 
 	a := &Agent{
-		id:                cfg.ID,
-		startTime:         time.Now(),
-		provider:          cfg.Provider,
-		providerManager:   cfg.ProviderManager,
-		io:                cfg.IO,
-		memory:            cfg.Memory,
-		graph:             graphMemoryOf(cfg),
-		kernelSource:      cfg.KernelSource,
-		parentID:          cfg.ParentID,
-		taskPrompt:        cfg.TaskPrompt,
-		dataDir:           cfg.DataDir,
-		indexer:           cfg.Indexer,
-		tracker:           cfg.Tracker,
-		context:           rc,
-		systemPrompt:      cfg.SystemPrompt,
-		ctx:               ctx,
-		cancel:            cancel,
-		docStore:          cfg.DocStore,
-		knowledge:         cfg.Knowledge,
-		social:            cfg.SocialStore,
-		textMem:           cfg.TextMemory,
+		id:              cfg.ID,
+		startTime:       time.Now(),
+		provider:        cfg.Provider,
+		providerManager: cfg.ProviderManager,
+		io:              cfg.IO,
+		memory:          cfg.Memory,
+		graph:           graphMemoryOf(cfg),
+		kernelSource:    cfg.KernelSource,
+		parentID:        cfg.ParentID,
+		taskPrompt:      cfg.TaskPrompt,
+		dataDir:         cfg.DataDir,
+		indexer:         cfg.Indexer,
+		tracker:         cfg.Tracker,
+		context:         rc,
+		systemPrompt:    cfg.SystemPrompt,
+		ctx:             ctx,
+		cancel:          cancel,
+		docStore:        cfg.DocStore,
+		knowledge:       cfg.Knowledge,
+		social:          cfg.SocialStore,
+		textMem:         cfg.TextMemory,
 		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
 		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
 		personality:       cfg.Personality,

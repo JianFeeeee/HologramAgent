@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -42,6 +43,7 @@ func init() {
 }
 
 type Plugin struct {
+	stopOnce      sync.Once
 	name          string
 	mu            sync.Mutex
 	reports       []llmReport
@@ -303,13 +305,10 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 
 func (p *Plugin) Stop() error {
 	// 幂等关闭：仅当 stopCh 未被关闭时 close。
-	p.mu.Lock()
-	select {
-	case <-p.stopCh:
-	default:
-		close(p.stopCh)
-	}
-	p.mu.Unlock()
+	// 用 safeclose 统一入口（本仓 close 纪律）。
+	// 原实现是 `select{case <-p.stopCh: default: close(...)}`：
+	// 单线程安全，但**并发**下两个 goroutine 可同时落到 default ⇒ 双 close panic。
+	safeclose.Safe(&p.stopOnce, p.stopCh)
 	return nil
 }
 

@@ -2,7 +2,9 @@ package log
 
 import (
 	"context"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -13,9 +15,10 @@ type ConfigProvider interface {
 }
 
 type Manager struct {
-	logDir string
-	cfg    ConfigProvider
-	done   chan struct{}
+	doneOnce sync.Once
+	logDir   string
+	cfg      ConfigProvider
+	done     chan struct{}
 }
 
 func NewManager(logDir string, cfg ConfigProvider) *Manager {
@@ -28,8 +31,13 @@ func (m *Manager) Start(ctx context.Context) {
 	go m.runLoop(ctx, "yearly", 24*time.Hour, m.yearlyTick, m.compressYearly)
 }
 
+// Stop 幂等（本仓 close 纪律：见 internal/safeclose）。
+//
+// 原先裸 `close(m.done)`：只在"单次停机"这一**隐式前提**下安全。
+// 一旦将来多一条调用路径（重载、热更新、defer + 显式），就会
+// `panic: close of closed channel` —— 而那种改动看起来与 close 无关。
 func (m *Manager) Stop() {
-	close(m.done)
+	safeclose.Safe(&m.doneOnce, m.done)
 }
 
 func (m *Manager) runLoop(ctx context.Context, name string, tickInterval time.Duration, nextFn func() time.Duration, work func(string) error) {

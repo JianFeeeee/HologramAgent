@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"io"
 	"log"
 	"os"
@@ -51,18 +52,31 @@ type OCNotification struct {
 	Params  json.RawMessage `json:"params"`
 }
 
+// pendingResp 是待应答通道 + 它自己的 close 守卫。
+//
+// 为什么需要 once：Close() 可能被多条路径调用（Stop / 重载 / 停机），
+// 而 `close(ch)` 二次即 panic（本仓 close 纪律，见 internal/safeclose）。
+// 这些 channel 是**按请求创建**的，不能共用一个全局 Once ⇒ 每个自带一个。
+type pendingResp struct {
+	ch   chan []byte
+	once sync.Once
+}
+
+func (p *pendingResp) closeOnce() { safeclose.Safe(&p.once, p.ch) }
+
 type sidecarProcess struct {
-	name    string
-	dir     string
-	cmd     *exec.Cmd
-	stdin   *bufio.Writer
-	mu      sync.Mutex
-	nextID  int
-	closed  bool
-	stopped bool
+	readerReadyOnce sync.Once
+	name            string
+	dir             string
+	cmd             *exec.Cmd
+	stdin           *bufio.Writer
+	mu              sync.Mutex
+	nextID          int
+	closed          bool
+	stopped         bool
 
 	// 异步 reader
-	pending     map[int]chan<- []byte
+	pending     map[int]*pendingResp
 	notifyCh    chan OCNotification
 	readerStop  chan struct{}
 	readerWg    sync.WaitGroup
@@ -75,7 +89,7 @@ func newSidecarProcess(name, dir string, cmd *exec.Cmd, stdin *bufio.Writer, std
 		dir:         dir,
 		cmd:         cmd,
 		stdin:       stdin,
-		pending:     make(map[int]chan<- []byte),
+		pending:     make(map[int]*pendingResp),
 		notifyCh:    make(chan OCNotification, 1024),
 		readerStop:  make(chan struct{}),
 		readerReady: make(chan struct{}),
@@ -91,7 +105,7 @@ func (s *sidecarProcess) readLoop(r io.Reader) {
 	scanner := bufio.NewScanner(bufio.NewReader(r))
 	// 加大 scanner buffer 防止长行截断
 	scanner.Buffer(make([]byte, 0, 1024*64), 1024*64)
-	close(s.readerReady)
+	safeclose.Safe(&s.readerReadyOnce, s.readerReady)
 
 	for {
 		select {
@@ -119,12 +133,11 @@ func (s *sidecarProcess) readLoop(r io.Reader) {
 
 		if base.ID != nil {
 			s.mu.Lock()
-			ch, ok := s.pending[*base.ID]
+			pr, ok := s.pending[*base.ID]
 			delete(s.pending, *base.ID)
 			s.mu.Unlock()
 			if ok {
-				ch <- []byte(line)
-				close(ch)
+				pr.ch <- []byte(line)
 			}
 		} else if base.Method != "" {
 			var notif OCNotification
@@ -226,7 +239,7 @@ func (s *sidecarProcess) call(method string, params interface{}) ([]byte, error)
 	}
 	s.nextID++
 	id := s.nextID
-	s.pending[id] = ch
+	s.pending[id] = &pendingResp{ch: ch}
 
 	req := sidecarRequest{
 		JSONRPC: "2.0",
@@ -324,9 +337,9 @@ func (s *sidecarProcess) CallTool(name string, args map[string]interface{}) (str
 
 func (s *sidecarProcess) CallProvider(providerType string, args map[string]interface{}) (string, error) {
 	data, err := s.call("provider/call", map[string]interface{}{
-		"type": providerType,
+		"type":   providerType,
 		"action": "execute",
-		"args": args,
+		"args":   args,
 	})
 	if err != nil {
 		return "", err
@@ -366,8 +379,8 @@ func (s *sidecarProcess) Close() {
 	s.readerWg.Wait()
 
 	s.mu.Lock()
-	for id, ch := range s.pending {
-		close(ch)
+	for id, pr := range s.pending {
+		pr.closeOnce()
 		delete(s.pending, id)
 	}
 	s.mu.Unlock()

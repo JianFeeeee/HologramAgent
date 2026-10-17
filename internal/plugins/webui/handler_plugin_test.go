@@ -54,6 +54,13 @@ func (m *mockPluginMgr) ReloadPlugins() (string, error) {
 }
 func (m *mockPluginMgr) ReloadOne(name string) error     { return nil }
 func (m *mockPluginMgr) StopAndUnload(name string) error { return nil }
+
+// ★ SDK 1.4.0 起 PluginManager 新增 3 个"运行期停/启"方法（与持久禁用以区分）。
+// mock 必须跟上接口 —— 否则本包**编译失败**（不是判据红，是整个包挂），
+// 表现为 `webui [build failed]`，容易被误读成"webui 坏了"。
+func (m *mockPluginMgr) StopPlugin(name string) error            { return nil }
+func (m *mockPluginMgr) StartPlugin(name string) error           { return nil }
+func (m *mockPluginMgr) IsPluginRuntimeStopped(name string) bool { return false }
 func (m *mockPluginMgr) PluginMetas() map[string]sdk.PluginMeta {
 	return nil
 }

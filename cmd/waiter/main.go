@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 )
 
 const (
@@ -47,6 +48,7 @@ func startSpinner(label string) func() {
 	}
 	done := make(chan struct{})
 	var once sync.Once
+	var doneOnce sync.Once
 	go func() {
 		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
@@ -63,7 +65,7 @@ func startSpinner(label string) func() {
 	}()
 	stop := func() {
 		once.Do(func() {
-			close(done)
+			safeclose.Safe(&doneOnce, done)
 			fmt.Print(clearLine)
 		})
 	}

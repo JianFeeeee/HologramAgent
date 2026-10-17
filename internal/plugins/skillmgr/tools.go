@@ -191,7 +191,7 @@ func (p *Plugin) registerSetEnabled(v bool) {
 func (p *Plugin) registerCreate() {
 	name := tp + "create"
 	p.sdk.RegisterTool(name, sdk.ToolDef{
-		Name: name,
+		Name:        name,
 		Description: "创建新技能骨架：生成标准 SKILL.md 模板写入 skills/<name>/。创建后在 content 参数填入完整文档内容并再次调用以落盘生效（两步式），或直接传 content 一步完成。",
 		Parameters: map[string]interface{}{
 			"type": "object",

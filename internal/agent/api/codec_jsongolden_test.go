@@ -113,10 +113,10 @@ func TestJSONGolden_StringDecode(t *testing.T) {
 		`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`,
 		`\u0041`, `\u00e9`, `\u4f60\u597d`, `\ud83d\ude00`, `\u0000`,
 		`mixed \u4e2d\u6587 and ascii`,
-		`\ud83d` + `real`,       // 孤立高代理
-		`\udc00` + `real`,       // 孤立低代理
-		`\ud83dx`,               // 高代理 + 非转义
-		`\ud83d\u0041`,          // 高代理 + 非低代理
+		`\ud83d` + `real`, // 孤立高代理
+		`\udc00` + `real`, // 孤立低代理
+		`\ud83dx`,         // 高代理 + 非转义
+		`\ud83d\u0041`,    // 高代理 + 非低代理
 		"\xff", "\xfe", "\xff\xfe", "\xc3", "\xc3\x28", "\xe0\x80\x80",
 		"\xed\xa0\x80", "\xf5\x80\x80\x80", "\xf0\x9f\x98\x80", // 正常 4 字节
 		"a\xffb", "\x80", "\xbf",
@@ -255,11 +255,12 @@ func TestJSONScanABIVersion(t *testing.T) {
 // goUnquoteBody 用 encoding/json 自身解码一个 JSON 字符串体（raw = 不含两端引号）。
 //
 // ★ 正确做法是**直接把 body 原样**放进引号里交给 Unmarshal ——
-//   body 里本来就带着它自己的转义（`\n` 是两个字节），若在此处再转义一遍，
-//   就把「转义序列」变成了「字面量」，参照值会整体跑偏。
-//   实测踩过：初版对 body 里的 `\` 和 `"` 做了二次转义，
-//   导致 Go 侧期望 `\n`（两字节）而 C 侧正确给出换行符 ——
-//   测试报了一堆「分歧」，其实错的是测试自己的参照。
+//
+//	body 里本来就带着它自己的转义（`\n` 是两个字节），若在此处再转义一遍，
+//	就把「转义序列」变成了「字面量」，参照值会整体跑偏。
+//	实测踩过：初版对 body 里的 `\` 和 `"` 做了二次转义，
+//	导致 Go 侧期望 `\n`（两字节）而 C 侧正确给出换行符 ——
+//	测试报了一堆「分歧」，其实错的是测试自己的参照。
 func goUnquoteBody(body string) (string, error) {
 	var out string
 	if err := json.Unmarshal([]byte(`"`+body+`"`), &out); err != nil {

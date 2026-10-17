@@ -9,8 +9,9 @@ import (
 // MemoryBlockView 是块的最小只读视图（供星图轮询端点）。
 //
 // ★ 不直接用 memory.MemoryBlock：那是内核内部类型，而本包是**插件边界**。
-//   SDK 接口只暴露端点真正要用的字段（原来是先 GraphData 全量再转成
-//   graphBlockView 做同样的事，只是绕了一圈）。
+//
+//	SDK 接口只暴露端点真正要用的字段（原来是先 GraphData 全量再转成
+//	graphBlockView 做同样的事，只是绕了一圈）。
 type MemoryBlockView struct {
 	ID        string    `json:"id"`
 	Modality  string    `json:"modality"`

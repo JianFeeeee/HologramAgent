@@ -91,5 +91,3 @@ func cleanupAll(logDir, prefix string) {
 		}
 	}
 }
-
-

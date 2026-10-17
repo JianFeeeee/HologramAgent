@@ -281,11 +281,12 @@ func TestStressBlockUnion_BackfillConcurrentWithRecall(t *testing.T) {
 // ── 4. 删除与读取并发：只能看到「完整内容」或「不存在」────────────
 //
 // ★ 为何不用 media 块：生产**没有**按块 ID 删媒体块的路径。
-//   删除发生在实体级（DeleteEntity 按 text_content 匹配）与
-//   孤块清理（PurgeOrphans 只扫 text_content != ''）。
-//   所以这里用 DeleteEntity 这个**真实路径**，分两步验证：
-//     (a) 被删 текст块的字节在删除过程中不会被读到半截
-//     (b) 删完后块与负载一起消失（块 union 的核心承诺：字节随块同生共灭）
+//
+//	删除发生在实体级（DeleteEntity 按 text_content 匹配）与
+//	孤块清理（PurgeOrphans 只扫 text_content != ''）。
+//	所以这里用 DeleteEntity 这个**真实路径**，分两步验证：
+//	  (a) 被删 текст块的字节在删除过程中不会被读到半截
+//	  (b) 删完后块与负载一起消失（块 union 的核心承诺：字节随块同生共灭）
 func TestStressBlockUnion_DeleteConcurrentWithRead(t *testing.T) {
 	g := newBlockTestGraph(t)
 

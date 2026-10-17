@@ -1,18 +1,93 @@
 [Unit]
-Description=HomeAgent - Personal AI Home Assistant
+Description=HomeAgent - 24/7 AI Butler
 Documentation=https://github.com/trueagent/HomeAgent
 After=network-online.target docker.service
 Wants=network-online.target
 
+# ★★ 为什么默认就走 guard（父守护）模式（2026-10-17 对齐本机生产实例）
+#
+# guard 是**双进程**架构：
+#   homed --role=guard  只负责拉起/看护 worker，自己不初始化内核
+#   homed --role=agent  worker，跑真正的新版模块化启动（依赖图定序 + BFS 分层）
+#
+# 它带来的能力是单进程模式**没有**的：
+#   · 崩溃自愈：worker 崩了 guard 用**当前二进制**重新拉起
+#   · 安全模式：连续崩溃超 max_restarts → 自动进 failback 受限启动
+#     （只加载 webui/pluginmgr/recoverydiag，跑恢复梯子）
+#   · 卡死检测：IPC PING + 心跳 mtime，带启动宽限
+#   · 热更新：worker 以 exit 42 优雅退出 → guard 用新二进制重拉，
+#     **不经过 systemd**、不计崩遣次数、guard 进程保持存活
+#
+# 为什么不是 drop-in：单文件发行时 drop-in 容易被漏装。写在主单元里，
+# 装完即是生产同款行为。要回退成单进程，只需把 ExecStart 的 --role=guard 去掉。
+
 [Service]
-Type=simple
-ExecStart=/usr/bin/homed -data /var/lib/homeagent
+# Type=exec（不是 simple）：simple 会在 fork 后**立刻**认为启动完成，
+# 于是 ExecStartPost 与 LoadCredential 的建立可能竞争。exec 会等到
+# exec() 真正成功才继续，凭据目录与 ExecStartPost 的顺序才是确定的。
+Type=exec
+
+# ★ guard 模式（与本机生产实例一致）。
+#   数据目录默认 /var/lib/homeagent（Debian 惯例）；迁移到别的目录时
+#   必须**同时**改这里和 core.daemon.data_dir —— 两者不等价，见 README。
+ExecStart=/usr/bin/homed --role=guard --data /var/lib/homeagent
+
 Restart=always
 RestartSec=10
-Environment=ONNXRUNTIME_DIR=/usr/lib/homeagent/onnxruntime
+
+# ★ 指数退避（对齐本机 zz-restart-backoff.conf）
+#
+# 为什么需要：RestartSec=10 是**固定**间隔，而 StartLimitBurst/Interval
+# 在这些长驻 agent 上是故意放松的（收紧会让故障单元进入终态 failed、
+# 必须人工 reset-failed —— 与"自愈"相反）。结果就是一个永久坏掉的服务
+# 以固定频率无限重试，systemd 一句都不说。
+# 实测（2026-09-05，llmsproxy）：每 5 秒拉一次，连拉 79 分钟 = 836 次重启。
+#
+# RestartSteps 让间隔从 RestartSec 起指数递增到 RestartMaxDelaySec：
+# 崩溃循环会衰减到每 5 分钟一次，服务不会被放弃（病根修好后自己回来），
+# 日志也不再被刷爆。
+RestartSteps=6
+RestartMaxDelaySec=5min
+
+# 关机上限 25s（对齐本机 zz-shutdown-timeout.conf）。
+# 实测本服务正常退出 <1s；给 guard 转发 SIGTERM → 等 worker → Kill 留足余量，
+# 而默认 90s 在本机从未用到，属于纯粹的风险敞口。
+TimeoutStopSec=25s
+
+# KillMode=control-group（默认）：guard 与 worker 同 cgroup，
+# 一起收，双保险不留孤儿进程。
+KillMode=control-group
+
+WorkingDirectory=/var/lib/homeagent
 StateDirectory=homeagent
-StartLimitBurst=3
-StartLimitInterval=60s
+Environment=HOME=/root
+# onnx 运行库随包安装（不在 /opt，见 packaging/package-linux.sh）
+Environment=ONNXRUNTIME_DIR=/usr/lib/homeagent/onnxruntime
+
+# ★ 主密钥生产注入（security/key.go）
+#
+# 优先级：LoadCredential > HOMED_SECURITY_KEY(env) > <datadir>/security.key
+#
+# 为何用 LoadCredential：环境变量对同用户进程**可见**
+# （/proc/<pid>/environ），任何以该用户身份运行的进程都能读到主密钥。
+# LoadCredential 把内容放到 tmpfs（$CREDENTIALS_DIRECTORY，仅本进程 0400），
+# 不在磁盘留副本、也不进 environ。
+#
+# 生成密钥（一次性，然后妥善保管）：
+#   head -c 32 /dev/urandom | xxd -p -c 64 | sudo tee /etc/homeagent/security.key
+#   sudo chmod 600 /etc/homeagent/security.key
+#
+# ⚠ 该文件就是数据的主密钥：**丢了它，已加密的变量全部解不开**（响亮失败，
+#   不会静默重建）。请与备份一并保管。
+#
+# ⚠ 未配置时**不要**留一个空文件 —— 凭据目录一旦被设置而凭据缺失，内核会
+#   **拒绝启动**（不静默回退到磁盘密钥）。若要用磁盘密钥路径，删掉下面这行。
+#
+# ⚠ 从旧版（/var/lib/homeagent/security.key 磁盘钥）升级时：
+#   内核支持"磁盘钥 + 内嵌钥"并存解密（AdditionalDecryptKeys），
+#   所以先放 /etc/homeagent/security.key 与旧磁盘钥**同一份内容**再启用本行，
+#   否则旧密文解不开。
+LoadCredential=homed_security_key:/etc/homeagent/security.key
 
 # Security hardening
 NoNewPrivileges=true
@@ -21,6 +96,10 @@ ProtectHome=true
 PrivateTmp=true
 PrivateDevices=false
 DevicePolicy=closed
+# 只允许读主密钥所在目录，其余系统路径保持只读
+ReadOnlyPaths=/etc/homeagent
+# 插件需要写自己目录 + 数据目录 + 插件沙箱
+ReadWritePaths=/var/lib/homeagent
 # Audio devices
 DeviceAllow=/dev/snd rw
 DeviceAllow=/dev/dsp rw

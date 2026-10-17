@@ -532,40 +532,41 @@ func doLastResort(cfg *guardConfig) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  L2 自杀防护（2026-10-11）
 //
-//  # 要防的是什么
+//	 L2 自杀防护（2026-10-11）
 //
-//  doLastResort(restart_app) 会执行 `systemctl restart <unit>`。而启用 guard 的
-//  标准做法正是让 systemd 管理 `homed --role=guard` —— 也就是说 **<unit> 就是
-//  guard 自己所在的单元**。
+//	 # 要防的是什么
 //
-//  于是 spawnWorker 失败时形成死循环：
+//	 doLastResort(restart_app) 会执行 `systemctl restart <unit>`。而启用 guard 的
+//	 标准做法正是让 systemd 管理 `homed --role=guard` —— 也就是说 **<unit> 就是
+//	 guard 自己所在的单元**。
 //
-//	guard: doLastResort → systemctl restart homeagent
-//	       → SIGTERM 杀掉自己 → systemd 按 Restart=always 拉起新 guard
-//	       → 新 guard 再 spawn 失败 → 再自杀 ……
+//	 于是 spawnWorker 失败时形成死循环：
 //
-//  每轮都白跑一遍完整启动，且日志被刷爆。这与 2026-09-05 那次 systemd 审计
-//  记录的事故同类（坏配置导致 836 次重启、79 分钟）。
+//		guard: doLastResort → systemctl restart homeagent
+//		       → SIGTERM 杀掉自己 → systemd 按 Restart=always 拉起新 guard
+//		       → 新 guard 再 spawn 失败 → 再自杀 ……
 //
-//  # 正确解法不是「换个单元名」
+//	 每轮都白跑一遍完整启动，且日志被刷爆。这与 2026-09-05 那次 systemd 审计
+//	 记录的事故同类（坏配置导致 836 次重启、79 分钟）。
 //
-//  换成别的服务（重启 llmsproxy 之类）语义完全不对——L2 的本意是
-//  「重启我自己」。而 systemd 的 Restart=already(always) 已经提供了这件事：
+//	 # 正确解法不是「换个单元名」
 //
-//	guard 自行退出 == systemd 重新拉起 == 重启整个单元
+//	 换成别的服务（重启 llmsproxy 之类）语义完全不对——L2 的本意是
+//	 「重启我自己」。而 systemd 的 Restart=already(always) 已经提供了这件事：
 //
-//  所以自指时应当**直接退出**，效果与 restart_app 完全等价，且没有自杀窗口。
+//		guard 自行退出 == systemd 重新拉起 == 重启整个单元
 //
-//  # 为何还要保留 restart_command
+//	 所以自指时应当**直接退出**，效果与 restart_app 完全等价，且没有自杀窗口。
 //
-//  两种部署形态都合法：
-//   - systemd 管 guard（推荐）：自指 → 退出即可
-//   - 别的守护器管 guard（如 supervisor/前台 shell）：此时 guard 不是
-//     systemd 单元的 MainPID，restart_command 可能指向一个**正确**的其它单元，
-//     或者根本不该执行
-//  故不删除，只在「确实是自指」时改走退出路径，并留下明确日志。
+//	 # 为何还要保留 restart_command
+//
+//	 两种部署形态都合法：
+//	  - systemd 管 guard（推荐）：自指 → 退出即可
+//	  - 别的守护器管 guard（如 supervisor/前台 shell）：此时 guard 不是
+//	    systemd 单元的 MainPID，restart_command 可能指向一个**正确**的其它单元，
+//	    或者根本不该执行
+//	 故不删除，只在「确实是自指」时改走退出路径，并留下明确日志。
 func doLastResortGuarded(cfg *guardConfig, unit string) {
 	if unit != "" && isSelfRestartCommand(cfg.RestartCommand, unit) {
 		log.Printf("[guard] last_resort=restart_app 但 restart_command 指向自身单元 %q："+

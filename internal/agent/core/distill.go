@@ -605,7 +605,7 @@ func isTemplateSummary(s string) bool {
 }
 
 func (a *Agent) emitMemoryCandidate(source, input, response string, toolResults []ToolResultItem, toolsUsed []string) {
-	a.io.EmitOutput("memory", "memory_candidate", map[string]interface{}{
+	payload := map[string]interface{}{
 		"source":       source,
 		"input":        input,
 		"response":     response,
@@ -613,7 +613,11 @@ func (a *Agent) emitMemoryCandidate(source, input, response string, toolResults 
 		"tools_used":   toolsUsed,
 		"agent_id":     string(a.id),
 		"timestamp":    time.Now().Unix(),
-	})
+	}
+	// ★ 记忆候选是**不经 context** 的另一条持久化侧路（走 EmitOutput）。
+	// 不在这里拦，明文会直接进长期记忆 —— 而记忆跨会话保留、每轮被召回。
+	scrubMemoryCandidate(payload)
+	a.io.EmitOutput("memory", "memory_candidate", payload)
 }
 
 func (a *Agent) processConsolidation(evt *agentIO.InputEvent, input string) {

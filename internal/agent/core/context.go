@@ -351,10 +351,17 @@ func (c *RelevanceContext) Save() error {
 	return os.WriteFile(c.savePath, data, 0644)
 }
 
+// Append 追加一条事件。
+//
+// ★ 这里是**持久化记忆的唯一咽喉**：全部 5 处写 context 的调用都经过它
+// （另一处 InsertByTimestamp 同样处理）。所以明文拦截放在这里，
+// 而不是在每个调用点 —— 逐个补必漏（实测踩到：只拦了 f.Msgs，
+// 而 f.CleanInput / f.ToolResults / f.Response 都是独立副本）。
 func (c *RelevanceContext) Append(evt ContextEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	scrubEventSecrets(&evt)
 	c.computeVector(&evt)
 	c.events = append(c.events, &evt)
 
@@ -365,6 +372,7 @@ func (c *RelevanceContext) InsertByTimestamp(evt ContextEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	scrubEventSecrets(&evt) // 同 Append：咽喉处拦截
 	c.computeVector(&evt)
 
 	idx := sort.Search(len(c.events), func(i int) bool {

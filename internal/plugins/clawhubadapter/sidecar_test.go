@@ -15,24 +15,30 @@ type mockSettings struct{}
 
 func (m *mockSettings) DataDir() string { return "/tmp/mock_data" }
 
-func (m *mockSettings) Get(key string) (interface{}, error) { return nil, nil }
-func (m *mockSettings) Set(key string, value interface{}) error { return nil }
-func (m *mockSettings) List(prefix string) ([]string, error) { return nil, nil }
-func (m *mockSettings) GetCore(key string) (interface{}, error) { return nil, nil }
-func (m *mockSettings) SetCore(key string, value interface{}) error { return nil }
-func (m *mockSettings) ListCore(prefix string) ([]string, error) { return nil, nil }
-func (m *mockSettings) GetPlugin(plugin, key string) (interface{}, error) { return nil, nil }
+func (m *mockSettings) Get(key string) (interface{}, error)                   { return nil, nil }
+func (m *mockSettings) Set(key string, value interface{}) error               { return nil }
+func (m *mockSettings) SetSecret(key string, value interface{}) error         { return nil }
+func (m *mockSettings) GetSecret(key string) (string, error)                  { return "", nil }
+func (m *mockSettings) List(prefix string) ([]string, error)                  { return nil, nil }
+func (m *mockSettings) GetCore(key string) (interface{}, error)               { return nil, nil }
+func (m *mockSettings) SetCore(key string, value interface{}) error           { return nil }
+func (m *mockSettings) ListCore(prefix string) ([]string, error)              { return nil, nil }
+func (m *mockSettings) GetPlugin(plugin, key string) (interface{}, error)     { return nil, nil }
 func (m *mockSettings) SetPlugin(plugin, key string, value interface{}) error { return nil }
-func (m *mockSettings) ListPlugin(plugin, prefix string) ([]string, error) { return nil, nil }
-func (m *mockSettings) RegisterDef(def pubsdk.ConfigDef) {}
-func (m *mockSettings) Defs(prefix string) []*pubsdk.ConfigDef { return nil }
-func (m *mockSettings) Dump() map[string]interface{} { return nil }
-func (m *mockSettings) Plugins() []string { return nil }
-func (m *mockSettings) DefsCore(prefix string) []*sdk.ConfigDef { return nil }
+func (m *mockSettings) ListPlugin(plugin, prefix string) ([]string, error)    { return nil, nil }
+
+// IsSecret：E-3 起 SettingsAPI 要求实现（判断某键是否按密文存储）。
+// 判据实现返回 false（mock 里没有密文语义），够用即可。
+func (m *mockSettings) IsSecret(key string) bool                          { return false }
+func (m *mockSettings) RegisterDef(def pubsdk.ConfigDef)                  {}
+func (m *mockSettings) Defs(prefix string) []*pubsdk.ConfigDef            { return nil }
+func (m *mockSettings) Dump() map[string]interface{}                      { return nil }
+func (m *mockSettings) Plugins() []string                                 { return nil }
+func (m *mockSettings) DefsCore(prefix string) []*sdk.ConfigDef           { return nil }
 func (m *mockSettings) DefsPlugin(plugin, prefix string) []*sdk.ConfigDef { return nil }
-func (m *mockSettings) Remove(key string) error { return nil }
-func (m *mockSettings) RemoveCore(key string) error { return nil }
-func (m *mockSettings) RemovePlugin(plugin, key string) error { return nil }
+func (m *mockSettings) Remove(key string) error                           { return nil }
+func (m *mockSettings) RemoveCore(key string) error                       { return nil }
+func (m *mockSettings) RemovePlugin(plugin, key string) error             { return nil }
 
 func TestLaunchSidecarNoMainJS(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -205,8 +211,8 @@ func TestConcurrentCalls(t *testing.T) {
 			if err != nil {
 				t.Errorf("concurrent call %d: %v", n, err)
 			}
-			if result != fmt.Sprintf("%d", n + n*2) {
-				t.Errorf("call %d: expected %d, got %s", n, n + n*2, result)
+			if result != fmt.Sprintf("%d", n+n*2) {
+				t.Errorf("call %d: expected %d, got %s", n, n+n*2, result)
 			}
 			done <- true
 		}(i)

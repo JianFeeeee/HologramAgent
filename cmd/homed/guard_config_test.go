@@ -245,16 +245,18 @@ func TestSnapshotBeforeDefaultsTrue(t *testing.T) {
 // TestStartupGraceAllowsInit 钉住「启动宽限期」这一部署关键行为。
 //
 // ★ 场景（2026-10-12 生产部署实测触发的故障）：
-//   停机 34s 后重启，heartbeat 文件 mtime 停在上一代 worker（已过期），
-//   新 worker 要先做完全部重型初始化（chineseclip + 静态词向量 + 知识重建，
-//   冷启动 5–8s）才开始写心跳。guard 的 5s ticker 先到、拿旧 mtime 判 stale
-//   → 把还在加载的 worker SIGKILL → 连续 6 次重启、guard 进入 failback
-//   Safe-Mode（服务降级）。
+//
+//	停机 34s 后重启，heartbeat 文件 mtime 停在上一代 worker（已过期），
+//	新 worker 要先做完全部重型初始化（chineseclip + 静态词向量 + 知识重建，
+//	冷启动 5–8s）才开始写心跳。guard 的 5s ticker 先到、拿旧 mtime 判 stale
+//	→ 把还在加载的 worker SIGKILL → 连续 6 次重启、guard 进入 failback
+//	Safe-Mode（服务降级）。
 //
 // 不变量：
-//  (a) 宽限期内，即使心跳文件 mtime 极旧，也**不许**判杀
-//  (b) 宽限期满后，陈旧心跳**必须**判杀（卡死的 worker 不能靠宽限躲过去）
-//  (c) 宽限期满后，新鲜心跳不许判杀（误杀健康 worker 同样是事故）
+//
+//	(a) 宽限期内，即使心跳文件 mtime 极旧，也**不许**判杀
+//	(b) 宽限期满后，陈旧心跳**必须**判杀（卡死的 worker 不能靠宽限躲过去）
+//	(c) 宽限期满后，新鲜心跳不许判杀（误杀健康 worker 同样是事故）
 func TestStartupGraceAllowsInit(t *testing.T) {
 	dir := t.TempDir()
 	hb := filepath.Join(dir, "heartbeat")

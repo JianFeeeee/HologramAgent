@@ -45,7 +45,8 @@ const contextWindowUnknown = -1
 // 标称窗口 ≠ 有效窗口：接近满时注意力涣散，调用方应取 70-80% 为目标利用率。
 //
 // ★ 分支顺序即语义：先匹配者胜出（例：gpt-4-turbo 必须先于裸 gpt-4）。
-//   C 侧 ha_codec_model_context_window 必须保持同一顺序。
+//
+//	C 侧 ha_codec_model_context_window 必须保持同一顺序。
 func modelContextWindowPure(model string) int {
 	model = strings.ToLower(model)
 	switch {

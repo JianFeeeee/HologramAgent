@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -55,6 +56,8 @@ type terminalWatch struct {
 }
 
 type TerminalSession struct {
+	stopOnce  sync.Once
+	doneOnce  sync.Once
 	id        string
 	command   string
 	cmd       *exec.Cmd
@@ -105,7 +108,7 @@ func (t *TerminalSession) Close() {
 	t.closed = true
 	t.mu.Unlock()
 
-	close(t.stopCh)
+	safeclose.Safe(&t.stopOnce, t.stopCh)
 	// 终止进程并释放 PTY（幂等；readLoop 自然退出时已调过就直接返回）。
 	t.releaseResources()
 	// 等 readLoop 走完退出流程（它会发最后的 output/停止事件）。
@@ -156,6 +159,7 @@ func (t *TerminalSession) IsExpired() bool {
 }
 
 type Plugin struct {
+	stopChOnce     sync.Once
 	name           string
 	mu             sync.Mutex
 	wg             sync.WaitGroup
@@ -435,8 +439,12 @@ func (p *Plugin) Stop() error {
 	// 幂等：Stop 可能被多条路径调到（StopAndUnload 后再 StopAll、
 	// 停机与热重载交错）。close 一个已关闭的 channel 会 panic，
 	// 故用 Once 兜住。
+	// ★ 不能写成 p.stopOnce.Do(func(){ safeclose.Safe(&p.stopOnce, ...) })：
+	// sync.Once 不可重入 ⇒ 外层 Do 持锁、内层 Do 等同一把锁 ⇒ **自锁死锁**
+	// （实测：agentcli 测试 600s 超时，栈显示 sync.(*Once).Do 嵌套）。
+	// 正确做法：close 的守卫用**独立的** once。
 	p.stopOnce.Do(func() {
-		close(p.stopCh)
+		safeclose.Safe(&p.stopChOnce, p.stopCh)
 		p.shutdown()
 	})
 	return nil
@@ -919,7 +927,7 @@ func (t *TerminalSession) releaseResources() {
 
 func (p *Plugin) readLoop(t *TerminalSession, s *sdk.PluginSDK) {
 	defer p.wg.Done()
-	defer close(t.done)
+	defer safeclose.Safe(&t.doneOnce, t.done)
 
 	// 无论从哪个分支退出，都释放进程与 PTY。
 	//

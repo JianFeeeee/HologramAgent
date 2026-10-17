@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 )
 
 // 媒体与记忆块的生命周期辅助。
@@ -64,6 +65,7 @@ func (a *Agent) reembedStaleMedia() {
 	log.Printf("[media] 启动向量迁移: %d 个图像块 → fp=%s dim=%d workers=%d",
 		len(targets), shortFP(fp), a.multimodalSpace.Dim(), workers)
 
+	var jobsOnce sync.Once
 	jobs := make(chan memory.MemoryBlock, workers*2)
 	var done, failed int64
 	var wg sync.WaitGroup
@@ -89,7 +91,7 @@ func (a *Agent) reembedStaleMedia() {
 				i+1, len(targets), atomic.LoadInt64(&done), failed)
 		}
 	}
-	close(jobs)
+	safeclose.Safe(&jobsOnce, jobs)
 	wg.Wait()
 	log.Printf("[media] 向量迁移完成: 成功=%d 失败=%d 总计=%d fp=%s",
 		done, failed, len(targets), shortFP(fp))

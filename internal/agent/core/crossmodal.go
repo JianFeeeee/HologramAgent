@@ -19,11 +19,11 @@ import (
 // memory.RecallBlocks（读块自己的向量），因此不存在「召回已无处可归的
 // 内容」这回事——能召回的必然是被某层持有的块。
 type CrossModalHit struct {
-	Doc        *document.Doc        // 文本路命中的文档；视觉路命中时为 nil
-	Media      *memory.MemoryBlock  // 视觉路命中的媒体块；文本路命中时也可能带关联块
-	MediaScore float64              // 视觉路原始 cosine（无则 0）
-	DocScore   float64              // 文本路原始 cosine（无则 0）
-	Fused      float64              // 归一化加权融合分，供最终排序
+	Doc        *document.Doc       // 文本路命中的文档；视觉路命中时为 nil
+	Media      *memory.MemoryBlock // 视觉路命中的媒体块；文本路命中时也可能带关联块
+	MediaScore float64             // 视觉路原始 cosine（无则 0）
+	DocScore   float64             // 文本路原始 cosine（无则 0）
+	Fused      float64             // 归一化加权融合分，供最终排序
 	// 该媒体同时被两路命中时 DoubleHit=true —— 双信号确认，应排在只被
 	// 一路命中的候选之前。
 	DoubleHit bool

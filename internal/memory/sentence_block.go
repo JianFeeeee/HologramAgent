@@ -238,6 +238,7 @@ func putTripleBlocksTx(tx *sql.Tx, t Triple, sessionID string, turnID int) (stri
 //   - 原句块 blk_src_<sha256(text)[:12]>
 //   - 实体块 blk_ent_<sha256(name)[:12]>
 //   - 蒸馏块 blk_<sha256(sentence+subject+dim+value)[:12]>
+//
 // 而媒体块此前用时间戳+序号（blk_<unixnano>_<n>），是唯一的例外。
 //
 // 淘汰 CAS 之后，块自己承载内容，于是「同一份内容只应有一个块」这条

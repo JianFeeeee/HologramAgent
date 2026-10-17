@@ -4,7 +4,41 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
 DIST_DIR="${PROJECT_ROOT}/dist/linux"
-VERSION="${VERSION:-$(git -C "$PROJECT_ROOT" describe --tags --dirty 2>/dev/null || echo "0.8.0")}"
+# ★★ VERSION 解析必须与 build.sh 用**同一套规则**（2026-10-17 统一）。
+#
+# 原实现只看 git describe，而无 tag 分支上它返回**分支名**：
+#   backup/pre-identity-rewrite-20261005-56-g98850e1
+# 下面的守卫会拒绝它（正确），但要求人**手动传 VERSION** 才能打包 ——
+# 而 build.sh 早已能自动回退到 meta.Version。两个脚本行为不一致的结果是：
+# 同一个版本，走 build.sh 打得出来，走 package-linux.sh 打不出来。
+#
+# 更要紧的是：若有人为了"让它跑通"去掉守卫，分支名就会进 meta.Version，
+# 而那是**插件协议主版本**的来源 ⇒ 22 个子进程插件全部握手失败（真事故）。
+#
+# ⇒ 统一为：git describe 只在形如 vX.Y.Z 时采用，否则回退 meta.Version。
+_meta_version() {
+  local mv
+  mv="$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$PROJECT_ROOT/internal/meta/meta.go" 2>/dev/null | head -1)"
+  case "$mv" in
+    [0-9]*.[0-9]*.[0-9]*) printf '%s' "$mv"; return 0 ;;
+  esac
+  return 1
+}
+if [ -z "${VERSION:-}" ]; then
+  _gd="$(git -C "$PROJECT_ROOT" describe --tags --dirty 2>/dev/null || true)"
+  case "$_gd" in
+    v[0-9]*.[0-9]*.[0-9]*) VERSION="${_gd#v}" ;;
+    *)
+      if VERSION="$(_meta_version)"; then
+        [ -n "$_gd" ] && echo "[PKG] warn: git describe 给出非版本串（$_gd），改用 meta.Version=$VERSION" >&2
+      else
+        echo "[PKG] ERROR: 拿不到合法版本号（git describe=$_gd）。请显式传 VERSION=x.y.z。" >&2
+        exit 1
+      fi
+      ;;
+  esac
+fi
 
 # git describe 给出的是 v1.0.0-68-gba0b5a1-dirty 这类描述串，它不是合法的包版本：
 # deb 的 Version 必须以数字开头，rpm 的 Version 不允许 '-'（那是版本/发布的分隔符）。
@@ -368,10 +402,79 @@ stage_variant() {
 
   local initconfig_bin="$BUILD_DIR/initconfig_$suffix"
 
+  # ★★ 启动依赖图必须与 homed **同目录**（2026-10-17 实测缺陷）。
+  #
+  # 内核启动时会比对
+  #   「磁盘图的 digest」 vs 「二进制内嵌的 digest」
+  # 读不到图 ⇒ 生产构建（内嵌 hash 非空）**直接拒绝启动**：
+  #   kernelboot: 生产构建（内嵌 hash 非空）但读不到依赖图
+  #               <dir>/depgraph.bin: no such file or directory
+  #   ⇒ 退出码 1，内核完全起不来。
+  #
+  # 原先 stage_variant 只拷 homed/waiter ⇒ **每个 deb/tar 包里的 homed
+  # 都起不来**。实测确认：只放 homed 不放图，启动即失败退出 1。
+  #
+  # 图由 `make build` 产出到 build/depgraph.bin（与 homed 同一次构建，
+  # digest 一一对应；手工复制别的版本的图会 digest 不符，同样拒绝启动）。
+  stage_depgraph() {
+    local staging="$1"
+    if [ -f "$BUILD_DIR/depgraph.bin" ]; then
+      cp "$BUILD_DIR/depgraph.bin" "$staging/usr/bin/depgraph.bin"
+      chmod 644 "$staging/usr/bin/depgraph.bin"
+    else
+      echo "ERROR: 缺少 $BUILD_DIR/depgraph.bin —— 内核与依赖图必须来自同一次构建。" >&2
+      echo "       先跑 make build（它会生成图并注入 digest），再打包。" >&2
+      return 1
+    fi
+  }
+
+  # stage_hmapdev：插件工具链（init/build/package .hmap）
+  #
+  # 放在 /usr/bin 而不是 /usr/lib：它是使用者直接调用的命令，
+  # 与 homed/waiter 同级更符合直觉（hmapdev 自身按 PATH 找 SDK store）。
+  stage_hmapdev() {
+    local staging="$1"
+    local hv
+    hv="$(ls "$BUILD_DIR"/hmapdev* 2>/dev/null | grep -vE '\.(exe)$' | head -1)"
+    if [ -z "$hv" ]; then
+      # 退而求其次：从 SDK 源码现编一个（CGO 无关，快）
+      echo "  [hmapdev] build/ 下没有 hmapdev，尝试现编..."
+      ( cd "$PROJECT_ROOT/third_party/homeagent-sdk/tools/hmapdev" && \
+        CGO_ENABLED=0 go build -trimpath -o "$BUILD_DIR/hmapdev" . ) || {
+        echo "ERROR: 无法获得 hmapdev（插件工具链），拒绝打包。" >&2
+        return 1; }
+      hv="$BUILD_DIR/hmapdev"
+    fi
+    install -m 0755 "$hv" "$staging/usr/bin/hmapdev"
+    echo "  hmapdev:    $hv ($(du -h "$hv" | cut -f1))"
+  }
+
+  # stage_sdk：与本次工具链同源的 SDK 源码（含 sdk/ tools/ skills/ meta/）。
+  #
+  # 为什么要随包发：hmapdev 需要按插件声明的 sdk 版本解析依赖；没有本地 SDK
+  # store 时它会去网上拉（内网/受限出口环境直接失败）。随包带一份 →
+  # 「装完即可离线构建插件」，且版本与内核严格同源（防版本漂移）。
+  stage_sdk() {
+    local staging="$1"
+    local sdk_src="$PROJECT_ROOT/third_party/homeagent-sdk"
+    local sdk_dst="$staging/usr/lib/homeagent/sdk"
+    [ -d "$sdk_src" ] || { echo "ERROR: 找不到 SDK 源码 $sdk_src" >&2; return 1; }
+    mkdir -p "$sdk_dst"
+    for item in go.mod go.sum LICENSE README.md sdk meta tools skills; do
+      [ -e "$sdk_src/$item" ] && cp -a "$sdk_src/$item" "$sdk_dst/"
+    done
+    # 不带陈旧工具链产物：那是上次构建留下的，可能与本次源码不符。
+    rm -rf "$sdk_dst/tools/vscode-hmapdev/node_modules" 2>/dev/null || true
+    local sv
+    sv="$(grep -oE 'Version = "[0-9.]+"' "$sdk_src/meta/meta.go" 2>/dev/null | head -1 | grep -oE '[0-9.]+')"
+    echo "  sdk:        $sdk_dst (v${sv:-?}, $(du -sh "$sdk_dst" | cut -f1))"
+  }
+
   case "$variant" in
     full)
       cp "$BUILD_DIR/homed_$suffix" "$staging/usr/bin/homed"
       cp "$BUILD_DIR/waiter_$suffix" "$staging/usr/bin/waiter"
+      stage_depgraph "$staging"
       cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
       [ -f "$initconfig_bin" ] && cp "$initconfig_bin" "$staging/usr/bin/initconfig"
       stage_setup "$staging"
@@ -382,10 +485,26 @@ stage_variant() {
     server)
       cp "$BUILD_DIR/homed_$suffix" "$staging/usr/bin/homed"
       cp "$BUILD_DIR/waiter_$suffix" "$staging/usr/bin/waiter"
+      stage_depgraph "$staging"
       cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
       [ -f "$initconfig_bin" ] && cp "$initconfig_bin" "$staging/usr/bin/initconfig"
       stage_setup "$staging"
       stage_license "$staging"
+      stage_multimodal_assets "$staging"
+      ;;
+    toolchain)
+      # 内核 + CLI + 依赖图 + 插件工具链 + SDK（开发者/自建一体化）
+      cp "$BUILD_DIR/homed_$suffix" "$staging/usr/bin/homed"
+      cp "$BUILD_DIR/waiter_$suffix" "$staging/usr/bin/waiter"
+      stage_depgraph "$staging"
+      stage_hmapdev "$staging"
+      stage_sdk "$staging"
+      cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
+      [ -f "$initconfig_bin" ] && cp "$initconfig_bin" "$staging/usr/bin/initconfig"
+      stage_setup "$staging"
+      stage_license "$staging"
+      # ★★ onnx 运行库 + 模型必须进包（用户明确要求，2026-10-17）。
+      # 否则装到干净机器上「默认启用但用不了」——本地向量空间会静默降级。
       stage_multimodal_assets "$staging"
       ;;
     client)
@@ -723,7 +842,7 @@ main() {
   # 不重算 SHA256SUMS，旧的它会一直躺在 dist 里，看上去像在为这一批残缺产物背书。
   rm -f "$DIST_DIR/SHA256SUMS"
 
-  for variant in full server client; do
+  for variant in full server client toolchain; do
     echo ""
     echo "=============================================="
     echo "  Packaging: $variant"
