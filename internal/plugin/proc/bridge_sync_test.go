@@ -167,7 +167,21 @@ func TestHmapdevTemplateImplementsAllPluginMgrMethods(t *testing.T) {
 		"tools", "hmapdev", "templates", "proc_main.go.tmpl")
 	src, err := os.ReadFile(tmplPath)
 	if err != nil {
-		t.Fatalf("读模板: %v", err)
+		// ★ 文件缺失必须 **skip 而不是 fail**（2026-10-17 CI 实测）：
+		//
+		// `third_party/homeagent-sdk/tools/` 在 .gitignore 里（SDK 仓自治，
+		// 本仓不跟踪）。所以：
+		//   · 本机（完整 SDK 检出）有该文件 ⇒ 判据能跑
+		//   · CI（只 checkout 本仓）没有该文件 ⇒ 原本 Fatalf ⇒ **CI 必红**
+		//
+		// 我第一次提交时只在本机验证，没看 CI，于是这个判据让
+		// "Go build / vet / test" 和 "Build linux/amd64" 双红，把 PR 卡住。
+		//
+		// skip 不是放弃检查：跨仓一致性由 **SDK 仓自己的判据**守着
+		// （third_party/homeagent-sdk/tools/hmapdev/scaffold_stdout_test.go
+		//  等），那边是模板的真实归属地。本判据在本机开发时仍然生效。
+		t.Skipf("跳过：SDK 仓的 tools/ 不在本仓跟踪范围（.gitignore），"+
+			"跨仓一致性由 SDK 仓判据守护。缺文件: %v", err)
 	}
 	// 只看 procPluginMgr 的方法块。
 	//
