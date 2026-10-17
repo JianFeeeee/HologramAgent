@@ -535,7 +535,10 @@ var TABS = {
 	//   教训：依赖分析必须覆盖**整个调用链**（render → 内部调用的 update*），
 	//   只看入口函数的直接引用会漏。kernel 拉过一次后不再重拉
 	//   （见 starmapFetchBlock 的节流），152KB 只在首屏付一次。
-	overview: { fetch: ["status", "runtime", "kernel"], render: ["renderOverview"] },
+	overview: {
+		fetch: ["status", "runtime", "kernel"],
+		render: ["renderOverview"],
+	},
 	chat: {
 		fetch: ["status", "proxyServices", "terminals", "cmdHistory"],
 		render: ["renderChat"],
@@ -2123,7 +2126,7 @@ function buildChatLayout() {
 		__("对话", "Chat") +
 		' <span id="chat-stage" class="badge" style="font-size:10px;font-weight:400;display:none">' +
 		escHtml(state.chatStage || "") +
-		'</span>' +
+		"</span>" +
 		// 用量徐标：本会话累计 token 与缓存命中率。
 		// 内核一直在推 agent_llm_chain（带 usage/usage_session），
 		// 前端此前从未订阅 ⇒ 「发了但没人收到」，页面上看不到成本。
@@ -2930,7 +2933,9 @@ function smAdaptGraph(d) {
 
 	// 1) 节点：块 → 星图节点
 	var nodes = blocks.map((b) => {
-		var text = String(b.text || "").replace(/\s+/g, " ").trim();
+		var text = String(b.text || "")
+			.replace(/\s+/g, " ")
+			.trim();
 		// 媒体块没有正文（只有 digest/描述）——用工具名与模态拼一个可读名，
 		// 否则它们全叫「」在图上无法区分。
 		var name = text;
@@ -3733,7 +3738,6 @@ function starmapLayoutRelax(flat, nodes, edges, maxR) {
 // 本块由 tools/starmap-sync.mjs 从 shared/starmap/layout.js 生成 —— 请改共享源，不要直接改这里。
 // ===== END shared:starmap/layout =====
 
-
 // ===== 布局 Worker 调度 =====
 //
 // starmapLayoutWorkerAvailable 只在浏览器支持且脚本可加载时为真；
@@ -3772,7 +3776,10 @@ function starmapRequestLayout(flat, maxR, nodeDegs, onDone) {
 		var seq = ++starmapLayoutSeq;
 		// 图指纹做种子：同一张图每次打开得到同一布局（可复现）。
 		var seed = starmapGraphSeed();
-		var nodes = starmapNodes.map((nd) => ({ id: nd.id, mention_count: nd.mention_count || 0 }));
+		var nodes = starmapNodes.map((nd) => ({
+			id: nd.id,
+			mention_count: nd.mention_count || 0,
+		}));
 		var idx = {};
 		for (var i = 0; i < starmapNodes.length; i++) idx[starmapNodes[i].id] = i;
 		var edges = [];
@@ -3878,12 +3885,14 @@ function renderChatUsage(u, single, source) {
 		(hasRate
 			? __("缓存 ", "cache ") + Math.round(u.cache_hit_rate * 100) + "%"
 			: __("缓存 —", "cache —"));
-	var tip = [source || "",
+	var tip = [
+		source || "",
 		__("调用 ", "calls ") + (u.calls || 0),
 		"prompt " + (u.prompt || 0),
 		"completion " + (u.completion || 0),
 		"cache_read " + (u.cache_read || 0),
-		"cache_miss " + (u.cache_miss || 0)];
+		"cache_miss " + (u.cache_miss || 0),
+	];
 	tip.push(
 		hasRate
 			? __("命中率 ", "hit rate ") + (u.cache_hit_rate * 100).toFixed(1) + "%"
@@ -3893,8 +3902,13 @@ function renderChatUsage(u, single, source) {
 				),
 	);
 	if (single && single.total) {
-		tip.push(__("本次 ", "last call ") + "prompt " + (single.prompt || 0) +
-			" / completion " + (single.completion || 0));
+		tip.push(
+			__("本次 ", "last call ") +
+				"prompt " +
+				(single.prompt || 0) +
+				" / completion " +
+				(single.completion || 0),
+		);
 	}
 	el.title = tip.filter(Boolean).join("\n");
 	el.style.display = "";
@@ -5448,7 +5462,10 @@ function connectSSE() {
 					// toast(m, isError)：第二参是**布尔**，传字符串会被当 falsy。
 					// 这里用 true：插件崩溃是需要用户知道的问题，不是普通提示。
 					toast(
-						__("插件 " + nm + " 异常退出，内核正在重启它", "Plugin " + nm + " crashed; kernel is restarting it"),
+						__(
+							"插件 " + nm + " 异常退出，内核正在重启它",
+							"Plugin " + nm + " crashed; kernel is restarting it",
+						),
 						true,
 					);
 				} catch (_) {}
@@ -6479,14 +6496,14 @@ function starmapStartMerge(fromID, toID) {
 	starmapStartDissolve([fromID], 0);
 	// ② 目标块在停顿之后重生（不是立即）
 	var dst = idx[toID];
-		if (dst) {
-			var delayed = Date.now() + SM_DISSOLVE_MS + SM_MERGE_APPEAR_DELAY;
-			var timer = setTimeout(() => {
-				if (dst && dst.parent) {
-					dst.userData.growAt = Date.now();
-					starmapMorphAdd(dst); // 重生也要注册
-				}
-			}, SM_DISSOLVE_MS + SM_MERGE_APPEAR_DELAY);
+	if (dst) {
+		var delayed = Date.now() + SM_DISSOLVE_MS + SM_MERGE_APPEAR_DELAY;
+		var timer = setTimeout(() => {
+			if (dst && dst.parent) {
+				dst.userData.growAt = Date.now();
+				starmapMorphAdd(dst); // 重生也要注册
+			}
+		}, SM_DISSOLVE_MS + SM_MERGE_APPEAR_DELAY);
 		if (state.starmapMergeTimers) state.starmapMergeTimers.push(timer);
 		else state.starmapMergeTimers = [timer];
 		// 记录重生时刻，供 tick 区分“合入重生”与普通生长（前者更短）
@@ -6518,7 +6535,9 @@ function starmapSpawnParticles(mesh) {
 			),
 			born: Date.now(),
 			life: 700 + Math.random() * 500,
-			color: mesh.material.color ? mesh.material.color.clone() : new THREE.Color(0x8b9dc4),
+			color: mesh.material.color
+				? mesh.material.color.clone()
+				: new THREE.Color(0x8b9dc4),
 		});
 	}
 	starmapEnsureParticleSystem();
@@ -6528,8 +6547,14 @@ function starmapEnsureParticleSystem() {
 	if (starmapParticles) return;
 	var geo = new THREE.BufferGeometry();
 	var cap = SM_PARTICLE_MAX;
-	geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(cap * 3), 3));
-	geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(cap * 3), 3));
+	geo.setAttribute(
+		"position",
+		new THREE.BufferAttribute(new Float32Array(cap * 3), 3),
+	);
+	geo.setAttribute(
+		"color",
+		new THREE.BufferAttribute(new Float32Array(cap * 3), 3),
+	);
 	var mat = new THREE.PointsMaterial({
 		size: 0.6,
 		vertexColors: true,
@@ -6572,7 +6597,8 @@ function starmapTickParticles(now) {
 		colAttr.setXYZ(j, q.color.r * f, q.color.g * f, q.color.b * f);
 	}
 	// 未用到的槽位置到远处，避免上一帧的残留粒子“卡”在原地。
-	for (var k = live.length; k < SM_PARTICLE_MAX; k++) posAttr.setXYZ(k, 1e6, 1e6, 1e6);
+	for (var k = live.length; k < SM_PARTICLE_MAX; k++)
+		posAttr.setXYZ(k, 1e6, 1e6, 1e6);
 	posAttr.needsUpdate = true;
 	colAttr.needsUpdate = true;
 	starmapParticles.geometry.setDrawRange(0, live.length);
@@ -6746,10 +6772,13 @@ function starmapPickPulseTargets(hint) {
 	// 排序结果按 baseVer 缓存复用（图不变则排序不变）。
 	var sorted = starmapMeshByWeight;
 	if (sorted === null || starmapMeshByWeightVer !== starmapLabelBaseVer) {
-		sorted = starmapNodeMeshes.slice().sort((a, b) => (
-				((b.userData.nodeData || {}).mention_count || 0) -
-				((a.userData.nodeData || {}).mention_count || 0)
-			));
+		sorted = starmapNodeMeshes
+			.slice()
+			.sort(
+				(a, b) =>
+					((b.userData.nodeData || {}).mention_count || 0) -
+					((a.userData.nodeData || {}).mention_count || 0),
+			);
 		starmapMeshByWeight = sorted;
 		starmapMeshByWeightVer = starmapLabelBaseVer;
 	}
@@ -6901,7 +6930,10 @@ function starmapTickMorph(now) {
 
 		// —— 生长（插入 / 合入后重生）——
 		if (ud.growAt) {
-			var dur = ud.mergeGrowAt && ud.mergeGrowAt === ud.growAt ? SM_MERGE_GROW_MS : SM_GROW_MS;
+			var dur =
+				ud.mergeGrowAt && ud.mergeGrowAt === ud.growAt
+					? SM_MERGE_GROW_MS
+					: SM_GROW_MS;
 			var gp = (now - ud.growAt) / dur;
 			if (gp >= 1) {
 				ud.growAt = null;
@@ -6919,7 +6951,8 @@ function starmapTickMorph(now) {
 			// 视觉上像是“凭空出现”而非“长出来”。
 			var scale = 0.05 + 0.95 * Math.max(0, eased);
 			m.scale.setScalar(ud.baseScale * scale);
-			if (m.material) m.material.emissiveIntensity = ud.baseEmissive + 0.9 * (1 - gp);
+			if (m.material)
+				m.material.emissiveIntensity = ud.baseEmissive + 0.9 * (1 - gp);
 		}
 	});
 	// 已完成的从活跃集移除（本次遍历后，不做边遍历边删）。
@@ -7248,7 +7281,7 @@ function smLegend() {
 		var label = lbl ? __(lbl[0], lbl[1]) : k;
 		return (
 			escHtml(label) +
-			" <span style=\"color:var(--text-muted)\">" +
+			' <span style="color:var(--text-muted)">' +
 			Math.round((smPresentTypes[k] * 100) / total) +
 			"%</span>"
 		);
@@ -7344,34 +7377,34 @@ function starmapShowDetail(mesh) {
 
 	var rows = [];
 	rows.push(
-		'<div class="sm-detail-title">' +
-		escHtml(String(nd.name || id)) +
-		"</div>",
+		'<div class="sm-detail-title">' + escHtml(String(nd.name || id)) + "</div>",
 	);
 	rows.push(
 		'<div class="sm-detail-meta">' +
-		escHtml(String(nd.type || "block")) +
-		" · " +
-		escHtml(String(nd.source || "-")) +
-		(nd.scene ? " · " + escHtml(String(nd.scene)) : "") +
-		"</div>",
+			escHtml(String(nd.type || "block")) +
+			" · " +
+			escHtml(String(nd.source || "-")) +
+			(nd.scene ? " · " + escHtml(String(nd.scene)) : "") +
+			"</div>",
 	);
 	if (nb.length) {
 		rows.push('<div class="sm-detail-rel">');
 		for (var j = 0; j < nb.length; j++) {
 			rows.push(
 				'<div class="sm-detail-relrow"><span class="sm-detail-arrow">' +
-				nb[j].dir +
-				"</span>" +
-				escHtml(String(nb[j].rel || "关联")) +
-				' <span class="sm-detail-nb">' +
-				escHtml(String(nb[j].name || "").slice(0, 20)) +
-				"</span></div>",
+					nb[j].dir +
+					"</span>" +
+					escHtml(String(nb[j].rel || "关联")) +
+					' <span class="sm-detail-nb">' +
+					escHtml(String(nb[j].name || "").slice(0, 20)) +
+					"</span></div>",
 			);
 		}
 		rows.push("</div>");
 	} else {
-		rows.push('<div class="sm-detail-rel">' + __("无关联", "no relations") + "</div>");
+		rows.push(
+			'<div class="sm-detail-rel">' + __("无关联", "no relations") + "</div>",
+		);
 	}
 	rows.push(
 		'<div class="sm-detail-id">' + escHtml(String(id).slice(0, 28)) + "</div>",
@@ -7498,7 +7531,9 @@ function starmapMakeLabelPlan() {
 		var nm = mesh.userData._labelText;
 		if (nm === undefined) {
 			var nd = mesh.userData.nodeData || {};
-			nm = String(nd.name || nd.id || "").replace(/\s+/g, " ").trim();
+			nm = String(nd.name || nd.id || "")
+				.replace(/\s+/g, " ")
+				.trim();
 			// 名字过长时截断：星图是“索引”，长句应该点开看而不是在图上读完。
 			if (nm.length > 18) nm = nm.slice(0, 17) + "…";
 			mesh.userData._labelText = nm;
@@ -7558,7 +7593,12 @@ var starmapMeshByWeight = null,
 function starmapDrawLabels() {
 	if (!starmapRen || !starmapCam || !starmapNodeMeshes.length) {
 		if (starmapLabelCtx && starmapLabelCanvas) {
-			starmapLabelCtx.clearRect(0, 0, starmapLabelCanvas.width, starmapLabelCanvas.height);
+			starmapLabelCtx.clearRect(
+				0,
+				0,
+				starmapLabelCanvas.width,
+				starmapLabelCanvas.height,
+			);
 		}
 		return;
 	}
@@ -7591,11 +7631,15 @@ function starmapDrawLabels() {
 		cw +
 		"x" +
 		ch;
-		// ★ 节流：相机拖动（OrbitControls 阻尼）会让 camKey 每帧都变，
+	// ★ 节流：相机拖动（OrbitControls 阻尼）会让 camKey 每帧都变，
 	//   若每帧重建 plan（3190 项）+ measureText，拖动时就是持续掉帧。
 	//   标签是文字层，10fps 的刷新肉眼已看不出滞后（图形仍是 60fps）。
 	var nowMs = Date.now();
-	if (nowMs - starmapLabelLastDraw < SM_LABEL_MIN_INTERVAL || camKey === starmapLabelLastCamKey) return;
+	if (
+		nowMs - starmapLabelLastDraw < SM_LABEL_MIN_INTERVAL ||
+		camKey === starmapLabelLastCamKey
+	)
+		return;
 	starmapLabelLastCamKey = camKey;
 	starmapLabelLastDraw = nowMs;
 
@@ -7832,7 +7876,8 @@ function toggleSecretVisibility(inpId) {
 	var btn = el.parentElement ? el.parentElement.querySelector("button") : null;
 	if (btn) btn.textContent = showing ? __("显示", "Show") : __("隐藏", "Hide");
 }
-if (typeof window !== "undefined") window.toggleSecretVisibility = toggleSecretVisibility;
+if (typeof window !== "undefined")
+	window.toggleSecretVisibility = toggleSecretVisibility;
 
 function renderSettingsSidebar() {
 	var el = document.querySelector(".settings-tabs");
@@ -8071,7 +8116,7 @@ function renderOneSettings() {
 					escHtml(ph) +
 					'" onchange="markDirty(\'' +
 					k +
-					"')\" style=\"flex:1\" autocomplete=\"new-password\">" +
+					'\')" style="flex:1" autocomplete="new-password">' +
 					'<button type="button" class="btn-sm" style="flex:0 0 auto" onclick="toggleSecretVisibility(\'' +
 					inpId +
 					"')\">" +
@@ -8424,7 +8469,10 @@ async function saveSetting(k) {
 // 用**全等**而不是 includes：真 key 里恰好含这两个字符的概率极低，
 // 但反过来说，只要不是"整个值就是掩码"，就一律放行 —— 宁可放行也不误杀真值。
 function isSecretPlaceholderValue(v) {
-	return typeof v === "string" && v.trim() === "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+	return (
+		typeof v === "string" &&
+		v.trim() === "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+	);
 }
 
 function renderConfigDisabled() {
@@ -8767,7 +8815,12 @@ setInterval(() => {
 // ★ 关机必须**二次确认且说清后果**：它不像重启那样能自己回来，
 //   误点一次就得 ssh 上去恢复。用原生 confirm（与其它危险操作一致）。
 async function kernelRestart() {
-	if (!confirm("重启内核？\n\n服务会断线约数秒，之后自动恢复。\n正在进行中的对话可能中断。")) return;
+	if (
+		!confirm(
+			"重启内核？\n\n服务会断线约数秒，之后自动恢复。\n正在进行中的对话可能中断。",
+		)
+	)
+		return;
 	await doKernelControl("restart", "内核正在重启，页面将在数秒后自动重连…");
 	// 重启：轮询等它回来
 	waitForKernelBack();
@@ -8781,7 +8834,10 @@ async function kernelShutdown() {
 	) {
 		return;
 	}
-	await doKernelControl("shutdown", "内核正在关闭。需要人工执行 systemctl start 才能再启动。");
+	await doKernelControl(
+		"shutdown",
+		"内核正在关闭。需要人工执行 systemctl start 才能再启动。",
+	);
 	// 关机：不再轮询（它不会自己回来），把页面标记为已停
 	document.body.innerHTML =
 		'<div style="display:flex;height:100vh;align-items:center;justify-content:center;' +
