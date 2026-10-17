@@ -75,6 +75,9 @@ type PluginStageCleaner interface {
 }
 
 type Registry struct {
+	// kernelCtl 是内核重启/关机通道（装配时注入，可 nil）。
+	// 只对声明了该能力的内置插件可见（目前是 WebUI）。
+	kernelCtl sdk.KernelControlAPI
 	mu        sync.RWMutex
 	plugins   map[string]sdk.Plugin
 	instances []sdk.Plugin
@@ -228,15 +231,48 @@ func (r *Registry) SetPluginDir(dir string)                                 { r.
 func (r *Registry) SetDataDir(dir string)                                   { r.dataDir = dir }
 func (r *Registry) SetLuaVM(vm *luaVM.VM)                                   { r.lua = vm }
 func (r *Registry) SetBaseAPIKey(key string)                                { r.baseKey = key }
-func (r *Registry) SetToolRegistrar(fn sdk.ToolRegistrar)                   { r.regTool = fn }
-func (r *Registry) SetStageRegistrar(fn sdk.StageRegistrar)                 { r.regStage = fn }
-func (r *Registry) SetAPIRegistrar(fn sdk.APIRegistrar)                     { r.regAPI = fn }
-func (r *Registry) SetToolCleaner(tc PluginToolCleaner)                     { r.toolCleaner = tc }
-func (r *Registry) SetStatusProvider(sp sdk.StatusAPI)                      { r.status = sp }
-func (r *Registry) SetSupervisor(sup sdk.SupervisorAPI)                     { r.sup = sup }
-func (r *Registry) SetTracker(trk *tracker.Tracker)                         { r.trk = trk }
-func (r *Registry) SetConfig(cfg *types.Config)                             { r.cfg = cfg }
-func (r *Registry) SetStageHost(sh sdk.ToolSource)                          { r.stageHost = sh }
+
+// kernelControlAllowed 决定某个内置插件能否拿到内核重启/关机通道。
+//
+// ★ 为什么必须白名单，而不是"有就给"：
+//
+//	这条通道能让**整个服务停下来**（关机后不会自己回来）。
+//	内置插件是编译进内核的，但它们的代码同样可能被改坏或有 bug；
+//	把这种能力发给每一个内置插件，等于整个攻击面 = 全部内置插件。
+//
+// 目前只给 WebUI：它是有登录鉴权的管理界面，用户已经决定信任它。
+// 将来要开放给别的插件，必须逐个评估（它有没有鉴权、会不会误触发）。
+var kernelControlAllowed = map[string]bool{
+	"webui": true,
+}
+
+// SetKernelControl 注入内核重启/关机通道（由 cmd/homed 装配时调用）。
+//
+// ★ 为何用 setter 而不是构造参数：internal/plugin 不能 import cmd/homed
+//
+//	（那是反向依赖，且 cmd 包不可被 import）。用接口 + setter 打破方向。
+func (r *Registry) SetKernelControl(k sdk.KernelControlAPI) { r.kernelCtl = k }
+
+// kernelControlFor 按插件名决定是否授予内核控制通道。
+//
+// 未在白名单里的插件拿到 nil —— SDK 侧 KernelControl() 返回 nil，
+// 调用方（插件自己）必须判 nil 并如实告知用户"当前环境不支持"。
+func (r *Registry) kernelControlFor(name string) sdk.KernelControlAPI {
+	if r.kernelCtl == nil || !kernelControlAllowed[name] {
+		return nil
+	}
+	return r.kernelCtl
+}
+
+func (r *Registry) SetToolRegistrar(fn sdk.ToolRegistrar)   { r.regTool = fn }
+func (r *Registry) SetStageRegistrar(fn sdk.StageRegistrar) { r.regStage = fn }
+func (r *Registry) SetAPIRegistrar(fn sdk.APIRegistrar)     { r.regAPI = fn }
+func (r *Registry) SetToolCleaner(tc PluginToolCleaner)     { r.toolCleaner = tc }
+func (r *Registry) SetStatusProvider(sp sdk.StatusAPI)      { r.status = sp }
+func (r *Registry) SetSupervisor(sup sdk.SupervisorAPI)     { r.sup = sup }
+func (r *Registry) SetTracker(trk *tracker.Tracker)         { r.trk = trk }
+func (r *Registry) SetConfig(cfg *types.Config)             { r.cfg = cfg }
+func (r *Registry) SetStageHost(sh sdk.ToolSource)          { r.stageHost = sh }
 
 // SetDeviceAuthQuery 注入"设备是否已授权"的查询（D4）。
 //
@@ -410,6 +446,7 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		RegOutputUnreg: regOutputUnreg,
 		RegInput:       regInput,
 		PluginMgr:      r,
+		KernelControl:  r.kernelControlFor(name),
 
 		Status:     r.status,
 		Supervisor: r.sup,

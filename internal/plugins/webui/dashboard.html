@@ -140,6 +140,35 @@
           >
             EN
           </button>
+          <!-- 内核控制：重启 / 关机。
+               放在导航底部而不是页面里，是因为它们作用于**整个服务**，
+               不属于任何一个标签页。 -->
+          <button
+            class="theme-btn"
+            id="kernel-restart-btn"
+            onclick="kernelRestart()"
+            title="重启内核（服务约断线数秒后自动重连）"
+            aria-label="重启内核"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+              <path d="M21 3v6h-6" />
+            </svg>
+          </button>
+          <button
+            class="theme-btn"
+            id="kernel-shutdown-btn"
+            onclick="kernelShutdown()"
+            title="关闭内核（需人工 systemctl start 才能再启动）"
+            aria-label="关闭内核"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M12 3v9" />
+              <path d="M6.3 6.3a8 8 0 1 0 11.4 0" />
+            </svg>
+          </button>
           <button
             class="btn btn-ghost btn-sm"
             onclick="logout()"

@@ -256,7 +256,25 @@ func runGuard(dataDir string) {
 
 		switch outcome {
 		case workerCleanExit:
+			// ★ 先看 worker 有没有留下控制指令（用户点了关机）。
+			//
+			// 这条指令来自心跳文件：worker 在退出前最后几次心跳里写了
+			// `cmd=shutdown`。此时 worker 已经退干净，由 guard 决定
+			// "这次退出去该不该被 systemd 重新拉起"。
+			//
+			// 为什么要读心跳而不是让 worker 直接 systemctl stop：
+			//   · worker 是被守护方，自己停服务等于在父进程眼皮底下自杀
+			//   · 只有 guard 知道防护上下文（unit 名、当前是否 failback 中）
+			//   · 决策集中在一处，不散在两个进程里
+			if c := consumeHeartbeatCmd(hbPath); c.OK && c.Cmd == hbCmdShutdown {
+				log.Printf("[guard] worker 已退出且留下关机指令（%s）—— 执行 systemctl stop，不再拉起",
+					c.Reason)
+				stopOwnUnit(ownUnit)
+				return
+			}
 			log.Printf("[guard] worker exited cleanly, guard exiting")
+			// ★ 注意：这里 `return` 后 guard 退出，systemd（Restart=always）
+			// 会重新拉起整个 unit —— 这正是"重启"的既有语义，保持不动。
 			return
 		case workerRestartRequested:
 			log.Printf("[guard] worker requested restart, respawning")

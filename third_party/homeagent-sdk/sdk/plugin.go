@@ -480,6 +480,7 @@ type PluginSDK struct {
 	rawFiles       RawFilesAPI
 	events         EventSubscriber
 	plgMgr         PluginMgrAPI
+	kernelCtl      KernelControlAPI
 
 	// proxyReg 是反代声明的注册回调（内置插件经 RegisterProxy 声明服务）。
 	// 与上面的 API 字段同受 apiMu 保护——写方是内核注入，读方是插件 Start
@@ -821,6 +822,25 @@ func (s *PluginSDK) PluginMgr() PluginMgrAPI {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()
 	return s.plgMgr
+}
+
+// SetKernelControlAPI sets the kernel control API (restart/shutdown).
+// Called by the bridge at startup; nil means "not available".
+func (s *PluginSDK) SetKernelControlAPI(k KernelControlAPI) {
+	s.apiMu.Lock()
+	s.kernelCtl = k
+	s.apiMu.Unlock()
+}
+
+// KernelControl returns the kernel control API (restart / shutdown).
+//
+// 可能为 nil（宿主没接这条通道，或插件没有 kernel-control 能力组）。
+// 调用方必须判 nil —— 拿到 nil 时应当如实告知用户"当前环境不支持"，
+// 而不是假装点了没反应的按钮还能用。
+func (s *PluginSDK) KernelControl() KernelControlAPI {
+	s.apiMu.RLock()
+	defer s.apiMu.RUnlock()
+	return s.kernelCtl
 }
 
 // ---- IO Convenience Methods ----

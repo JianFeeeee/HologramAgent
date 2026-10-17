@@ -227,7 +227,30 @@ func startHeartbeat(dataDir string, ctx context.Context) func() {
 	// 心跳：每 5s 触碰 <data>/heartbeat，guard 据此判定工作进程是否存活/卡死
 	hbPath := filepath.Join(dataDir, "heartbeat")
 	writeHB := func() {
-		if f, err := os.OpenFile(hbPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		// ★ 若有待发的控制指令，**整文件重写**（保留 t= 行 + cmd= 行）。
+		//
+		// 为什么不能继续 append：guard 消费指令后会重写文件清除 cmd 行；
+		// 若这里仍 append，历史 cmd 行会越积越多（每次读到的还是第一条）。
+		// 无指令时保持原来的 append 语义（历史行为不变，只刷 mtime）。
+		if content := nextHeartbeatWrite(hbPath, time.Now().Unix()); content != "" {
+			if err := os.WriteFile(hbPath, []byte(content), 0644); err == nil {
+				return
+			}
+		}
+		// ★ 心跳文件必须**滚动**，不能无限 append（2026-10-17 实测：14.6MB）。
+		//
+		// heartbeat 的唯一职责是让 guard 看到 mtime 变新（见下面的注释）。
+		// 历史行**没有任何读者** —— 唯一读内容的是 consumeHeartbeatCmd，
+		// 而它只关心 cmd= 行。所以累加历史行纯属浪费：
+		//   · 每 5s 12 字节 ⇒ 约 70 天长到 14.6MB（生产实测就是这个量级）
+		//   · consumeHeartbeatCmd 要 ReadFile 整个文件 ⇒ 白白读 14.6MB
+		//   · 长期跑下去还会一直涨（磁盘与读取成本都随天数线性增长）
+		//
+		// 改成截断重写：只保留**当前**这一行。mtime 语义完全不变
+		// （文件仍在每次心跳被写），而体积恒定在十几字节。
+		//
+		// 用 O_TRUNC 而不是 O_APPEND：内容不再需要累积。
+		if f, err := os.OpenFile(hbPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
 			fmt.Fprintf(f, "t=%d\n", time.Now().Unix())
 			f.Close()
 		}

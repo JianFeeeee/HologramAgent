@@ -63,6 +63,20 @@ const (
 	// 这是**最敏感**的一组：能重载其他插件意味着能间接影响它们的状态。
 	CapPluginMgr Capability = "plugin_mgr"
 
+	// CapKernelControl 控制**内核本身**的生死（重启/关机）。
+	//
+	// 这是整个能力表里**最危险**的一档：它不改变某个插件的状态、
+	// 也不改配置，而是让**整个服务**停下来。
+	//
+	// 与 CapPluginMgr 的区别（别混）：
+	//   CapPluginMgr     能重载**别的插件** —— 影响一个插件
+	//   CapKernelControl 能重启/关机**内核** —— 影响全部插件 + 全部用户
+	//
+	// 关机之后服务不会自己回来（systemd Restart=always 由 guard 显式
+	// systemctl stop 压制），必须人工介入。因此默认**不授予**任何插件，
+	// 必须由 manifest 显式声明。
+	CapKernelControl Capability = "kernel_control"
+
 	// CapCrossPluginSettings 读写**其他插件**的配置与内核核心配置。
 	//
 	// 与 CapCore 里的「读写自己的配置」区分开：跨插件配置读写能改别人的行为，
@@ -160,11 +174,14 @@ var methodCapability = map[string]Capability{
 	MethodEventsUnsubscribe: CapEvents,
 
 	// ---- 插件管理 ----
-	MethodPluginReloadOne:           CapPluginMgr,
-	MethodPluginListLoaded:          CapPluginMgr,
-	MethodPluginIsDisabled:          CapPluginMgr,
-	MethodPluginMgrStop:             CapPluginMgr,
-	MethodPluginMgrStart:            CapPluginMgr,
+	MethodPluginReloadOne:  CapPluginMgr,
+	MethodPluginListLoaded: CapPluginMgr,
+	MethodPluginIsDisabled: CapPluginMgr,
+	MethodPluginMgrStop:    CapPluginMgr,
+	MethodPluginMgrStart:   CapPluginMgr,
+	// 内核生命周期控制：单独一档，见 CapKernelControl 的注释。
+	MethodKernelRestart:             CapKernelControl,
+	MethodKernelShutdown:            CapKernelControl,
 	MethodPluginMgrIsRuntimeStopped: CapPluginMgr,
 
 	// ---- 跨插件 / 核心配置 ----

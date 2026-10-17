@@ -118,10 +118,12 @@ type Handler struct {
 	knowledge     sdk.KnowledgeAPI
 	tracker       sdk.TrackerAPI
 	settings      sdk.SettingsAPI
-	pluginMgr     sdk.PluginManager
-	status        sdk.StatusAPI
-	term          sdk.TerminalAPI
-	llm           sdk.LLMAPI
+	// kernelCtl 是内核重启/关机通道。nil = 该部署没接（端点会明确报不可用）。
+	kernelCtl sdk.KernelControlAPI
+	pluginMgr sdk.PluginManager
+	status    sdk.StatusAPI
+	term      sdk.TerminalAPI
+	llm       sdk.LLMAPI
 
 	// hostPort 是 webui 实际监听的 ":port"（用于推导服务入口链接）。
 	hostPort string
@@ -183,6 +185,8 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		st   sdk.StatusAPI
 		term sdk.TerminalAPI
 		llm  sdk.LLMAPI
+		// kc 是内核重启/关机通道；nil 表示该部署没接（端点会明确报不可用）。
+		kc sdk.KernelControlAPI
 	)
 	if s != nil {
 		sup, mem, idx = s.Supervisor(), s.Memory(), s.Indexer()
@@ -191,6 +195,7 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		se, pm = s.Settings(), s.PluginMgr()
 		st, llm = s.Status(), s.LLM()
 		term = s.Terminal()
+		kc = s.KernelControl()
 	}
 	h := &Handler{
 		sdk:          s,
@@ -204,6 +209,7 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		knowledge:    ks,
 		tracker:      tr,
 		settings:     se,
+		kernelCtl:    kc,
 		pluginMgr:    pm,
 		status:       st,
 		term:         term,
@@ -474,6 +480,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/login", h.handleLogin)
 	mux.HandleFunc("/api/v1/logout", h.handleLogout)
 	mux.HandleFunc("/api/v1/status", h.requireAPI(h.handleStatus))
+	// 内核控制：重启 / 关机。
+	//
+	// 都要鉴权：能停服务的人必须是已认证的管理者。这两个端点比"读状态"
+	// 危险一个量级 —— 关机之后只能 ssh 上去才能恢复。
+	mux.HandleFunc("/api/v1/kernel/restart", h.requireAPI(h.handleKernelRestart))
+	mux.HandleFunc("/api/v1/kernel/shutdown", h.requireAPI(h.handleKernelShutdown))
 	mux.HandleFunc("/api/v1/agents", h.requireAPI(h.handleAgents))
 	mux.HandleFunc("/api/v1/agents/", h.requireAPI(h.handleAgentByID))
 	mux.HandleFunc("/api/v1/memory", h.requireAPI(h.handleMemory))

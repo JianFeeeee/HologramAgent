@@ -282,6 +282,14 @@ func main() {
 
 	restartCh := startSupervisorRuntime(sup, trk, agent)
 
+	// 内核控制通道（WebUI 的重启/关机按钮走这里）。
+	//
+	// ★ 必须在插件加载**之前**注入：WebUI 在 Start 里取
+	//   s.KernelControl()，注入晚了它拿到 nil ⇒ 按钮永远报"不可用"。
+	//   装配顺序在模块化内核里由依赖图决定，而本行位于 agent 模块之后、
+	//   plugin-host 拉起插件之前 —— 正是需要的位置。
+	pluginReg.SetKernelControl(&kernelControlImpl{restartCh: restartCh})
+
 	log.Printf("[homed] main agent started, model=%s base=%s sources=%d adapters=%d",
 		cfg.LLM.Model, cfg.LLM.BaseURL, len(cfg.LLM.Sources), len(luaVM.ListAdapters()))
 	log.Printf("[homed] kernel ready, waiting for plugin IO...")

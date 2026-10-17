@@ -317,6 +317,8 @@ type SDKConfig struct {
 	RegOutputUnreg OutputChannelUnregistrar
 	RegInput       InputChannelRegistrar
 	PluginMgr      PluginManager
+	// KernelControl 是内核重启/关机通道（WebUI 用）。nil = 未接该能力。
+	KernelControl KernelControlAPI
 
 	Status     StatusAPI
 	Supervisor SupervisorAPI
@@ -353,6 +355,9 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	base.SetDocMemoryAPI(cfg.DocMemory)
 	base.SetKnowledgeAPI(cfg.Knowledge)
 	base.SetLLMAPI(cfg.LLM)
+	if cfg.KernelControl != nil {
+		base.SetKernelControlAPI(cfg.KernelControl)
+	}
 	return &PluginSDK{
 		PluginSDK: base,
 		settings:  cfg.Settings,

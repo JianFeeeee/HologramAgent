@@ -213,6 +213,14 @@ const (
 	MethodPluginMgrStart            = "plugin.mgrStart"            // 52
 	MethodPluginMgrIsRuntimeStopped = "plugin.mgrIsRuntimeStopped" // 53
 
+	// ---- 内核控制（重启/关机，供 WebUI 等界面插件用）----
+	//
+	// ★ 同样是**必须桥接**的方法：子进程插件走本桥，未登记的方法会被
+	// corehandler 直接拒（"未知 method"）。WebUI 是子进程插件，
+	// 不走这里就点不动按钮。
+	MethodKernelRestart  = "kernel.restart"  // 54
+	MethodKernelShutdown = "kernel.shutdown" // 55
+
 	// 共享段锁仲裁（新增，无对应 method id —— C ABI 下不存在跨进程锁概念）
 	MethodStageLock   = "stage.lock"
 	MethodStageUnlock = "stage.unlock"
