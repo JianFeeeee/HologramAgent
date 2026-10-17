@@ -258,6 +258,33 @@ dynamic flowing hair and fabric,
 
 ---
 
+## 素材清单（assets/branding/）
+
+| 文件 | 尺寸 | 用途 | alpha |
+|------|------|------|-------|
+| `mascot-xiaozhai.webp` | 1024×1024 | **主立绘**（坐姿全身，官方展示用） | ✅ 真 alpha |
+| `mascot-xiaozhai-avatar.webp` | 512×512 | **头像**（头部方裁，脸居中） | ✅ 真 alpha |
+| `mascot-xiaozhai-sheet.webp` | 1024×1536 | 设定总图（配色/通道线/道具标注） | — |
+| `mascot-xiaozhai-portrait.webp` | 1024×1536 | 半身胸像（三只工具特写清晰） | — |
+| `mascot-xiaozhai-turnaround.webp` | 1200×800 | 三视图（正/侧/背） | — |
+
+**为什么主图与头像分两个文件**：主图是全身坐姿，直接塞进 30px 圆形头像里
+（`object-fit: cover` 会把画面中心裁成正方形）只会剩裙子、看不到脸。
+头像版是**头部方裁**，圆形裁切后脸正好居中。
+
+运行期副本（由上面两张生成，勿单独手改）：
+
+| 路径 | 尺寸 | 说明 |
+|------|------|------|
+| `internal/plugins/webui/mascot.webp` | 256×256 | WebUI 对外 `/mascot.webp`（嵌入二进制） |
+| `cmd/gui/renderer/mascot.webp` | 128×128 | GUI 聊天头像 + agent 光标（以 data URL 注入） |
+
+这两个文件的 alpha 由 `internal/plugins/webui/mascot_asset_test.go` 判定：
+直接读 WebP 容器头，要求 VP8X Alpha 标志位与 `ALPH` chunk 同时存在。
+换素材时若塞进一张「白底图」或「棋盘格图」，判据会红。
+
+---
+
 ## 设计注意事项
 
 1. **三色丝带是核心识别元素**，在任何立绘/插画中必须保留

@@ -1417,8 +1417,11 @@
         object-fit: cover;
         display: block;
       }
+      /* mascot.webp 是**头部方裁**（脸居中），cover 已能把脸填满圆形。
+         原先 scale(1.5) 是给「全身立绘裁圆」补的——现在图本身换了，
+         再放大 1.5 会切掉两侧发绳与呆毛，所以降到 1.25 只做轻微推近。 */
       .msg-assistant .msg-avatar img {
-        transform: scale(1.5);
+        transform: scale(1.25);
       }
       .msg-avatar svg {
         display: block;

@@ -45,7 +45,8 @@ const gzipMinLength = 1024 // 与 nginx 的 gzip_min_length 对齐
 // gzipCompressibleContentType 判定是否值得压。
 //
 // 压「已经压缩过」的类型是纯浪费：webp/png/jpeg/gzip/zip 再压一遍
-// 几乎不缩小，却要付 CPU + 掉帧。webui 自带 mascot.webp（133KB）就是这类。
+// 几乎不缩小，却要付 CPU + 掉帧。webui 自带 mascot.webp（约 25KB）就是这类
+// ——注意体积大小与本判定无关：值得压的是「文本」，不是「大文件」。
 //
 // ★ text/event-stream 明确**不**列（虽然它在通用规则里可压）：
 // 压它会毁掉 flush 语义。宁可漏压也不要压坏流。

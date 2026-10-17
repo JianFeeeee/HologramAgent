@@ -2,7 +2,7 @@
 
 # HomeAgent 插件开发指南
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 概述
 
@@ -36,7 +36,7 @@ type Plugin interface {
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 一、快速开始：使用 hmapdev 工具链
 
@@ -241,7 +241,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/plugins \
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 二、Go 插件开发详解
 
@@ -531,7 +531,7 @@ outputCh := s.OutputChan()
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 三、Lua 插件开发详解
 
@@ -673,7 +673,7 @@ end)
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 四、内置插件
 
@@ -738,7 +738,7 @@ import (
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 五、最佳实践
 
@@ -752,7 +752,7 @@ import (
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 六、插件管理
 
@@ -792,7 +792,7 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 七、示例插件参考
 

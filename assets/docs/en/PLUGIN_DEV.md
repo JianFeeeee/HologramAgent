@@ -2,7 +2,7 @@
 
 # HomeAgent Plugin Development Guide
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## Overview
 
@@ -35,7 +35,7 @@ type Plugin interface {
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 1. Quick Start: Using the hmapdev Toolchain
 
@@ -243,7 +243,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/plugins \
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 2. Go Plugin Development in Detail
 
@@ -538,7 +538,7 @@ outputCh := s.OutputChan()
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 3. Lua Plugin Development in Detail
 
@@ -680,7 +680,7 @@ Each `attachments` item: `{ digest=, mime=, name=, data=<base64> }`; with `data`
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 4. Built-in Plugins
 
@@ -745,7 +745,7 @@ import (
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 5. Best Practices
 
@@ -759,7 +759,7 @@ import (
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 6. Plugin Management
 
@@ -801,7 +801,7 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 
 ---
 
-<img src="../../assets/branding/mascot-xiaozhai.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
+<img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 7. Example Plugin Reference
 

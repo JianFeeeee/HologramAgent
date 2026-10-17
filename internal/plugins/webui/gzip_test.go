@@ -112,7 +112,7 @@ func TestGzipSkipsSmallResponses(t *testing.T) {
 
 // TestGzipSkipsAlreadyCompressedTypes 钉住「已压缩类型不压」。
 //
-// mascot.webp（133KB）在内。webp/png/jpeg/gzip 再压一遍几乎不缩小，
+// mascot.webp 在内。webp/png/jpeg/gzip 再压一遍几乎不缩小，
 // 纯浪费 CPU——而 CPU 正是压缩要省的东西。
 func TestGzipSkipsAlreadyCompressedTypes(t *testing.T) {
 	for _, ct := range []string{"image/webp", "image/png", "application/zip", "application/gzip"} {

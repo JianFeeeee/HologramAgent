@@ -84,18 +84,24 @@ server {
 
 所有 listener 走 `requestAnimationFrame` 节流；标签页隐藏时暂停粒子。
 
-## 为什么最终没有图
+## 看板娘素材：从「没法用」到「能用了」
 
-试过放看板娘立绘，失败，最后决定不放。过程留在这里，免得下次重复踩：
+> 结论先写在这：**素材侧的问题已经解决**（现役 `mascot-xiaozhai.webp` 自带真 alpha，
+> 1024×1024）。下面保留当年的失败记录，因为「为什么当时不行」这件事本身
+> 仍是有用约束——它解释了为什么不能拿一张白底图硬塞进深色版面。
 
-原图 `mascot-xiaozhai.webp` 是**不透明** WebP（无 alpha），白底 + 蓝紫渐变外框。
+### 当年为什么不行
+
+试过放看板娘立绘，失败，最后决定不放。
+
+原图（旧版）是**不透明** WebP（无 alpha），白底 + 蓝紫渐变外框。
 直接用 = 深色页面上一个刺眼的白色方块；抠图又不可行：
 
 ```bash
 python3 -c "
 from PIL import Image
 im = Image.open('assets/branding/mascot-xiaozhai.webp')
-print(im.mode)  # RGB —— 没有 alpha 通道
+print(im.mode)  # 旧版是 RGB —— 没有 alpha 通道
 "
 ```
 
@@ -104,8 +110,28 @@ print(im.mode)  # RGB —— 没有 alpha 通道
 「圆角卡面 + 发光边框 + 底部渐隐」，视觉上能接受，但本质上是在方形图上盖装饰，
 而非让图融入页面。
 
-结论：**这类素材要么重新出一张带透明通道的图，要么就不放**。
-现在 Hero 是单栏文字，版面反而更稳。
+### 现在为什么能了
+
+新版素材走的是另一条路：出图时背景就是**棋盘格提示**，再按「背格连通域 +
+中性灰判据」抠成真 alpha，落盘为带 `ALPH` chunk 的 WebP。
+
+```bash
+python3 -c "
+from PIL import Image
+im = Image.open('assets/branding/mascot-xiaozhai.webp')
+print(im.mode)  # RGBA
+"
+```
+
+同一件事在代码里也有判据钉住：`internal/plugins/webui/mascot_asset_test.go`
+直接读 WebP 容器头，断言 VP8X 的 Alpha 标志位与 `ALPH` chunk 同时存在——
+防止日后有人把一张「看起来透明」的棋盘格 JPEG 换进来。
+
+### 但版面仍未放图
+
+素材不再是阻碍，**但这不等于 Hero 就该放图**。现版面是单栏文字，加图会改变
+信息密度与首屏节奏，属于设计取舍而非素材问题——所以这一步没有动。
+要放的话，素材已经就绪。
 
 ## 插件卡片
 
