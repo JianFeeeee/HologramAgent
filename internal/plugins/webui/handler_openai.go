@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -221,8 +222,9 @@ func (h *Handler) streamOpenAI(ctx context.Context, w http.ResponseWriter, model
 		v, _ := p["reasoning_content"].(string)
 		return v, v != ""
 	})
+	var doneOnce sync.Once
 	defer func() {
-		close(done)
+		safeclose.Safe(&doneOnce, done)
 		wg.Wait()
 		for _, u := range unsubs {
 			u()

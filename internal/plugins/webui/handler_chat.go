@@ -6,10 +6,12 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"encoding/json"
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 	"net/http"
 )
@@ -66,8 +68,9 @@ const maxChatHistory = 200
 const maxChatMsgCache = 256
 
 type chatMsgEntry struct {
-	done chan struct{}
-	resp *agentIO.OutputEvent
+	done     chan struct{}
+	doneOnce sync.Once // close 纪律：见 internal/safeclose
+	resp     *agentIO.OutputEvent
 }
 
 func (h *Handler) claimChatMsg(id string) (*chatMsgEntry, bool) {
@@ -90,7 +93,9 @@ func (h *Handler) claimChatMsg(id string) (*chatMsgEntry, bool) {
 // completeChatMsg 记录首次处理结果并唤醒所有等待的同 ID 重放请求。
 func (h *Handler) completeChatMsg(e *chatMsgEntry, resp *agentIO.OutputEvent) {
 	e.resp = resp
-	close(e.done)
+	// 幂等（本仓 close 纪律）：同一 chat ID 若重复完成（重放/重试），
+	// 裸 close 会 panic。e.done 是"等待者被唤醒"的信号，重复唤醒无意义。
+	safeclose.Safe(&e.doneOnce, e.done)
 }
 
 func (h *Handler) loadChatHistory() {
@@ -322,7 +327,10 @@ func (h *Handler) persistChatLocked() {
 
 // chatPersistLoop 把聊天记录按节流节奏落盘，直到 Close。
 func (h *Handler) chatPersistLoop() {
-	defer close(h.chatLoopDone)
+	// 幂等（本仓 close 纪律）：本循环理论上只跑一次，但循环可能在
+	// 重载/重建 handler 时被再次启动 ⇒ 裸 close 会 panic。
+	var loopDoneOnce sync.Once
+	defer safeclose.Safe(&loopDoneOnce, h.chatLoopDone)
 	timer := time.NewTimer(chatSaveThrottle)
 	timer.Stop()
 	defer timer.Stop()
@@ -382,7 +390,7 @@ func (h *Handler) flushChat() {
 // 由插件 Stop 调用；不这样做会丢掉最后一轮对话。
 func (h *Handler) Close() {
 	h.chatCloseOnce.Do(func() {
-		close(h.chatStop)
+		safeclose.Safe(&h.chatStopOnce2, h.chatStop)
 		<-h.chatLoopDone
 	})
 }
@@ -663,12 +671,13 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	// 写入侧用短超时(50ms)兜底，比立即丢弃更友好。
 	writeCh := make(chan string, 2048)
 	writerDone := make(chan struct{})
+	var writerDoneOnce sync.Once
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[SSE] writer panic: %v", r)
 			}
-			close(writerDone)
+			safeclose.Safe(&writerDoneOnce, writerDone)
 		}()
 		// 批量合并窗口：16ms 内收集的增量一次性 flush，降 flush 次数、
 		// 避免高频小包拖慢 socket 写导致 writeCh 积压丢 delta。

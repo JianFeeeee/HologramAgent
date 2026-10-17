@@ -35,6 +35,25 @@ func (s *settingsImpl) Set(key string, value interface{}) error {
 	}
 	return s.reg.PluginConfig(s.pluginName).Set(key, value)
 }
+
+// SetSecret 强制加密写入（不看键名）。
+//
+// 未装配密钥时拒绝写入：插件以为存了密文而实际是明文，是最危险的静默降级。
+func (s *settingsImpl) SetSecret(key string, value interface{}) error {
+	if s.reg == nil {
+		return nil
+	}
+	return s.reg.PluginConfig(s.pluginName).SetSecret(key, value)
+}
+
+// GetSecret 读取 SetSecret 写入的值。
+func (s *settingsImpl) GetSecret(key string) (string, error) {
+	if s.reg == nil {
+		return "", nil
+	}
+	return s.reg.PluginConfig(s.pluginName).GetSecret(key)
+}
+
 func (s *settingsImpl) Remove(key string) error {
 	if s.reg == nil {
 		return nil
@@ -114,6 +133,10 @@ func (s *settingsImpl) RegisterDef(def ConfigDef) {
 		Key: def.Key, Type: def.Type, DisplayName: def.DisplayName, Description: def.Description,
 		Category: def.Category, Options: def.Options,
 		Default: stringifyDefault(def.Default),
+		// ★ Secret 必须透传：丢了它，插件声明的敏感项就退化成普通项
+		//（明文落盘 + 在设置页回显）。初版这三处都漏了这个字段，
+		// 导致 SDK 里早就存在的 Secret 字段从来没生效过。
+		Secret: def.Secret,
 	})
 }
 func (s *settingsImpl) Defs(prefix string) []*ConfigDef {
@@ -127,11 +150,24 @@ func (s *settingsImpl) Defs(prefix string) []*ConfigDef {
 		cpy := ConfigDef{
 			Key: d.Key, Type: d.Type, DisplayName: d.DisplayName, Description: d.Description,
 			Category: d.Category, Options: d.Options, Default: d.Default,
+			Secret: d.Secret,
 		}
 		out[i] = &cpy
 	}
 	return out
 }
+
+// IsSecret 报告某个键是否敏感（E-3：WebUI 屏蔽明文用）。
+//
+// 判定完全委托给 config registry —— 展示与落盘加密必须**同一套判定**，
+// 否则会出现“加密了但界面照旧显示明文”的漏洞。
+func (s *settingsImpl) IsSecret(key string) bool {
+	if s.reg == nil {
+		return false
+	}
+	return s.reg.IsSecret(key)
+}
+
 func (s *settingsImpl) Dump() map[string]interface{} {
 	if s.reg == nil {
 		return nil
@@ -168,6 +204,7 @@ func mapDefs(defs []*internalConfig.ConfigDef) []*ConfigDef {
 		out[i] = &ConfigDef{
 			Key: d.Key, Type: d.Type, DisplayName: d.DisplayName, Description: d.Description,
 			Category: d.Category, Options: d.Options, Default: d.Default,
+			Secret: d.Secret,
 		}
 	}
 	return out

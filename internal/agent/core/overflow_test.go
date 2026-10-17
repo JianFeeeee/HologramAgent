@@ -221,6 +221,7 @@ func TestOverflow_并发安全(t *testing.T) {
 	}
 	wg.Wait()
 }
+
 // ── T5（变异项）：帧内恢复预算耗尽 ⇒ 终止而非死循环 ──
 //
 // 为什么要单独测：这个防护一度是**死代码**（TaskFrame.OverflowRecover 声明了
@@ -309,8 +310,8 @@ func TestOverflow_T9_topK随窗口变化(t *testing.T) {
 		return newOverflowAgent(window, 30, 20, 400) // maxContextSize=30（默认）
 	}
 
-	small := build(10_000)      // 小窗口
-	large := build(1_000_000)   // 大窗口（用户关心的 1M 场景）
+	small := build(10_000)    // 小窗口
+	large := build(1_000_000) // 大窗口（用户关心的 1M 场景）
 
 	topKSmall := small.contextTopK()
 	topKLarge := large.contextTopK()

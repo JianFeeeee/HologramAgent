@@ -144,7 +144,8 @@ func (s strSpan) valid() bool { return s.p != nil && s.n > 0 }
 // bytes 把 span 变成 Go 字节切片（此处才产生一次拷贝）。
 //
 // ★ 用途：把「已定位的原始子树」交给 json.Unmarshal —— 用同一 Go 类型
-//   unmarshal 同一形状，是本层保证「类型检查语义与原实现一致」的手段。
+//
+//	unmarshal 同一形状，是本层保证「类型检查语义与原实现一致」的手段。
 func (s strSpan) bytes() []byte {
 	if s.p == nil || s.n == 0 {
 		return nil
@@ -172,7 +173,6 @@ func (s strSpan) firstByte() byte {
 // 定位
 // ---------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------
 // 取值（C 可判定的热分支）
 // ---------------------------------------------------------------------
@@ -180,8 +180,9 @@ func (s strSpan) firstByte() byte {
 // decBuf 是解码/反转义用的可写缓冲。
 //
 // ★ 尺寸必须按输入长度定：C 侧要求 cap >= len*3+4（最坏每字节一个 U+FFFD），
-//   不足时它会返回 0 让调用方回退 Go（宁可慢也不截断）。
-//   每次调用 1 次分配（原来整块 Unmarshal 是 12~21 次）—— 这是主要的节省点。
+//
+//	不足时它会返回 0 让调用方回退 Go（宁可慢也不截断）。
+//	每次调用 1 次分配（原来整块 Unmarshal 是 12~21 次）—— 这是主要的节省点。
 func decBuf(n int) []byte { return make([]byte, n*3+8) }
 
 // stringifyC 对应 Go stringifyContent 的**C 可判定分支**
@@ -199,7 +200,6 @@ func stringifyC(val strSpan) (string, bool) {
 	}
 	return string(buf[:int(outLen)]), true
 }
-
 
 // ---------------------------------------------------------------------
 // 顶层 helper：大小写不敏感（struct 字段语义）与根对象校验
@@ -253,7 +253,6 @@ func sseRootObject(doc strSpan) bool {
 	return C.go_root_object(doc.p, doc.n) == 1
 }
 
-
 // ---------------------------------------------------------------------
 // 批量定位（第三刀的重做：一次 cgo 调用代替 5+ 次）
 // ---------------------------------------------------------------------
@@ -302,9 +301,9 @@ const (
 	kindArray  = 4
 	kindOther  = 5
 
-	chunkOK         = 0
-	chunkFallback   = -1
-	chunkTypeFail   = -2
+	chunkOK       = 0
+	chunkFallback = -1
+	chunkTypeFail = -2
 )
 
 // locateChunkBatch 一次调用完成整块定位。
@@ -348,5 +347,3 @@ func locateChunkBatch(data string) chunkLocateResult {
 	out.finish = string(s[co.finish_off : co.finish_off+co.finish_len])
 	return out
 }
-
-

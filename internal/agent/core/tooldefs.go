@@ -9,6 +9,7 @@ import (
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
 	"github.com/JianFeeeee/HomeAgent/internal/meta"
 	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HomeAgent/internal/security"
 	sdkmeta "github.com/JianFeeeee/homeagentsdk/meta"
 )
 
@@ -356,6 +357,8 @@ func init() {
 		"get_plugin_tools", "llm_list_sources",
 		// 文档：检索
 		"doc_query",
+		// 安全模块：列举变量（只读，无共享写）
+		"secret_list",
 	} {
 		declareParallelTool(name)
 	}
@@ -401,6 +404,14 @@ func (a *Agent) buildToolDefs() []interface{} {
 			"mode":    map[string]interface{}{"type": "string", "description": "default | custom | later"},
 			"content": map[string]interface{}{"type": "string", "description": "自定义人格内容（mode=custom 时必填）"},
 		}, "mode"))
+	}
+
+	// 安全模块的变量库工具（文档 C8）。
+	//
+	// 仅当安全模块真的启用时才暴露：未启用时变量库不可用，
+	// 把工具给模型只会让它反复撞到"安全模块未启用"（无谓往返）。
+	if security.Global() != nil {
+		tools = append(tools, secretToolDefs()...)
 	}
 
 	if a.memory != nil {

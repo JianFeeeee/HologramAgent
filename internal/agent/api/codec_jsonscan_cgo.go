@@ -110,10 +110,11 @@ func cjsMembersInit(m *C.ha_json_members, s string) bool {
 // cjsMembersStep 推进一次迭代，只把**键**交回 Go。
 //
 // ★ 为什么只返回键：cgo 规则禁止把「Go 指针指向的 Go 指针」传给 C
-//   （cgo argument has Go pointer to unpinned Go pointer）——若把 key 与
-//   value 两个 span 都交回 Go，再在同一个调用里传回 C，就会构成
-//   「Go 切片 → Go 指针 → Go 指针」的未固定链，运行时直接 panic。
-//   所以每次跨语言只搬运**一个**字符串，其余信息留到下一次调用。
+//
+//	（cgo argument has Go pointer to unpinned Go pointer）——若把 key 与
+//	value 两个 span 都交回 Go，再在同一个调用里传回 C，就会构成
+//	「Go 切片 → Go 指针 → Go 指针」的未固定链，运行时直接 panic。
+//	所以每次跨语言只搬运**一个**字符串，其余信息留到下一次调用。
 //
 // ★ 值 span 只在需要时**在 C 侧**用（见 cjsWalkMembers）。
 func cjsMembersStep(m *C.ha_json_members) (key string, ok bool) {
@@ -201,9 +202,10 @@ func cjsWalkMembers(s string) (inited bool, count int, complete bool) {
 // JSON 值，尾部除空白外不得有残留。
 //
 // ★ 为什么测试不能只调 ha_json_skip：skip 的语义是「跳过这里的一个值」，
-//   它成功返回并不能证明「整串就是这一个值」。实测 `{"a":1}{"b":2}`
-//   在 skip 下成功，而 json.Valid=false —— 这正是两者职责的差别。
-//   内核协议层要的是严格语义，故这里显式做尾部校验。
+//
+//	它成功返回并不能证明「整串就是这一个值」。实测 `{"a":1}{"b":2}`
+//	在 skip 下成功，而 json.Valid=false —— 这正是两者职责的差别。
+//	内核协议层要的是严格语义，故这里显式做尾部校验。
 func cjsSkipStrict(s string) bool {
 	p, n := cstr2(s)
 	return C.go_skip_strict(p, n) == 1

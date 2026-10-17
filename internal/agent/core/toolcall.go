@@ -122,6 +122,8 @@ func (a *Agent) executeToolCallInner(tc agentAPI.ToolCall, channel string, turnS
 		return toolOutcome{Text: a.executeChildResultTool(tc)}
 	case strings.HasPrefix(tc.Name, "llm_"):
 		return toolOutcome{Text: a.executeLLMTool(tc)}
+	case strings.HasPrefix(tc.Name, "secret_"):
+		return toolOutcome{Text: a.executeSecretTool(tc)}
 		// ★★ 2026-10-06：describe_image / transcribe_audio / ocr_image 已移出内核，
 		//   改为内置插件 multimodal（见 internal/plugins/multimodal）。
 		//   理由：它们要读本地文件（IO），而内核承诺零 IO。

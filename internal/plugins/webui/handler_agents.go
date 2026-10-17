@@ -231,12 +231,39 @@ func (h *Handler) handleRollback(w http.ResponseWriter, r *http.Request, agentID
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rollback_initiated", "agent": string(agentID), "snap": string(snapID)})
 }
 
+// handleAgentAction 处理 start/stop/restart。
+//
+// ★ restart 是**热更新入口**（此前是 501 桩）：
+// 换掉 /usr/local/bin/homed 之后调它，worker 会以退出码 42 优雅退出，
+// guard 随即用**新二进制**重新拉起 —— 不必 systemctl restart，
+// 也不打断 guard（双进程架构的父进程）。
+//
+// stop/start 仍返回 501：它们的语义在「单 worker + guard 自动拉起」
+// 架构下没有独立意义（stop 之后 guard 立刻会把它拉回来）。
 func (h *Handler) handleAgentAction(w http.ResponseWriter, r *http.Request, agentID types.AgentID, action string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": fmt.Sprintf("agent %s action not implemented by supervisor", action)})
+	switch action {
+	case "restart":
+		if h.supervisor == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "supervisor not available"})
+			return
+		}
+		if err := h.supervisor.Restart(string(agentID)); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{
+			"status": "restarting",
+			"agent":  string(agentID),
+			"note": "worker 将优雅退出（exit 42），guard 随后用当前二进制重新拉起；" +
+				"若刚替换过 /usr/local/bin/homed，新版本即在此刻生效",
+		})
+	default:
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": fmt.Sprintf("agent %s action not implemented by supervisor", action)})
+	}
 }
 
 // handleRuntime 返回**只含运行态**的小快照：调度器（排队/四级中断队列/中断栈）、

@@ -25,7 +25,8 @@ import (
 // newKnowledgeHandler 构造一个带知识库的 Handler。
 //
 // ★ 不再有“媒体存储”参数：CAS 淘汰后媒体字节随引用自带（KnowledgeMediaRef.Data），
-//   写知识不需要任何外部存储 —— 因此也不存在“存储未初始化”的失败态。
+//
+//	写知识不需要任何外部存储 —— 因此也不存在“存储未初始化”的失败态。
 func newKnowledgeHandler(t *testing.T) (*Handler, *knowledge.Store, string, func()) {
 	t.Helper()
 	dir := t.TempDir()
@@ -462,8 +463,9 @@ func TestKnowledgeUploadTextFileBecomesContent(t *testing.T) {
 // 上传的媒体必须真能取回字节，否则引用是死的。
 //
 // ★ CAS 淘汰后字节的归属变了：不再是全局内容寻址库，而是**条目目录自带的文件**
-//   （与 content.md 同生共灭）。所以判据也从“按 digest 向存储读回”改为
-//   “按条目记录的 File 从条目目录读回，且与上传字节逐字节一致”。
+//
+//	（与 content.md 同生共灭）。所以判据也从“按 digest 向存储读回”改为
+//	“按条目记录的 File 从条目目录读回，且与上传字节逐字节一致”。
 func TestKnowledgeUploadedMediaRetrievable(t *testing.T) {
 	h, ks, dir, done := newKnowledgeHandler(t)
 	defer done()

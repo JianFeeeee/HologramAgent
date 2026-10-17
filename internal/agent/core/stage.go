@@ -53,13 +53,18 @@ func (a *Agent) publishEvent(evtType events.EventType, payload map[string]interf
 }
 
 func (a *Agent) stageCtxFromInput(input, userID, groupID string) *sdk.StageContext {
-	return &sdk.StageContext{
+	ctx := &sdk.StageContext{
 		RawMessage: input,
 		UserID:     userID,
 		GroupID:    groupID,
 		Phase:      sdk.StageOnInput,
 		Extra:      make(map[string]interface{}),
 	}
+	// ★ 来源标识必须在**帧的起点**就写入，不能只写在工具帧上：
+	// 插件可能在 on_input 阶段就据此决定是否介入（而那个阶段早于工具帧构造）。
+	// 见 comefrom.go 的完整说明。
+	stampComeFrom(ctx.Extra, a.comefromForAgent())
+	return ctx
 }
 
 func (a *Agent) injectSourceContext(stageCtx *sdk.StageContext, evt *agentIO.InputEvent) {

@@ -96,7 +96,7 @@ func TestEstimateNeverBelowRealWorldFloors(t *testing.T) {
 func TestEstimateMonotonicNonDecreasingInBytes(t *testing.T) {
 	prev := 0
 	for n := 1; n <= 64; n++ {
-		s := strings.Repeat("a", n)       // ASCII 侧
+		s := strings.Repeat("a", n) // ASCII 侧
 		got := estimateTokensPure(s)
 		if got < prev {
 			t.Fatalf("estimate(\"a\"×%d)=%d < 前值 %d —— 非单调", n, got, prev)
@@ -105,7 +105,7 @@ func TestEstimateMonotonicNonDecreasingInBytes(t *testing.T) {
 	}
 	prev = 0
 	for n := 1; n <= 64; n++ {
-		s := strings.Repeat("你", n)      // CJK 侧
+		s := strings.Repeat("你", n) // CJK 侧
 		got := estimateTokensPure(s)
 		if got < prev {
 			t.Fatalf("estimate(\"你\"×%d)=%d < 前值 %d —— 非单调", n, got, prev)

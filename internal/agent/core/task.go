@@ -534,6 +534,8 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 		ToolResults: f.ToolResults,
 	}
 	a.bindEventMedia(&turnEvt, a.drainMediaBlocks())
+	// ★ 明文拦截发生在 a.context.Append **内部**（见 context.go 的 Append），
+	// 不是在每个调用点 —— 写 context 的地方有 5 处，逐个补必漏。
 	a.context.Append(turnEvt)
 
 	a.emitResponse(evt, f.Response, f.turnUsage)
@@ -1353,6 +1355,15 @@ func (f *TaskFrame) buildToolContexts() {
 			Extra:    copyExtraMap(base.Extra),
 			NoMemory: base.NoMemory,
 		}
+		// ★ **工具调用帧必须带来源标识**（comefrom）：
+		// 通道插件的权限门（before_toolcall）靠它区分"这是用户请求"还是
+		// "这是 agent 内部委派"。缺了它，驻留子的工具调用会被按**用户**
+		// 权限模型判定 ⇒ 合法工作全被拦（2026-10-16 现场实证，见 comefrom.go）。
+		//
+		// 从 base 继承（StageCtx 已由 stageCtxFromInput 标过）；copyExtraMap
+		// 会把该键一并复制，这里只在因某种路径缺失时补一个**保守值**
+		// （保守 = 按旧语义当作用户请求，宁可多查一次也不再出现"静默越权"）。
+		stampComeFrom(f.toolCtxs[i].Extra, comeFromUser)
 		// Phase 由 runStage 每次调用时设置，此处不预置。
 	}
 }

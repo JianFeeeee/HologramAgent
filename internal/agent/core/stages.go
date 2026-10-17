@@ -7,10 +7,15 @@ import (
 	"sync"
 
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HomeAgent/internal/security"
 )
 
 type StageHost struct {
+	// frozenFn 报告内核是否处于伪关机（迁移中）。nil = 永不冻结。
+	// 用函数而不是直接引用 plugin.Registry，避免 agent/core 反向依赖 plugin 包。
+	frozenFn    func() bool
 	mu          sync.RWMutex
 	toolDefs    []sdk.ToolDef
 	tools       map[string]sdk.ToolHandler
@@ -156,6 +161,16 @@ func (h *StageHost) ExecuteTool(name string, args map[string]interface{}) (ret i
 	if handler == nil {
 		return nil, fmt.Errorf("tool %s has nil handler", name)
 	}
+	// ★ 安全模块入向回填：这里是**插件工具调用的唯一入口**，
+	// 填在这里就覆盖了全部插件 —— 插件本身完全无感知。
+	//
+	// 为何必须填而不是拒绝：模型手上只有别名（它从未见过明文），
+	// 而插件需要真凭据。回填是二者之间唯一的通道。
+	if s := security.Global(); s != nil && args != nil {
+		if n, used := s.FillMap(args); n > 0 {
+			log.Printf("[security] 工具 %s 参数回填 %d 处（别名 %v）", name, n, used)
+		}
+	}
 	return handler(args)
 }
 
@@ -237,6 +252,7 @@ func (h *StageHost) RunStage(stage sdk.Stage, ctx *sdk.StageContext) {
 	}
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(entries))
+	var errChOnce sync.Once
 	for _, entry := range entries {
 		wg.Add(1)
 		go func(fn sdk.StageHandler) {
@@ -252,7 +268,7 @@ func (h *StageHost) RunStage(stage sdk.Stage, ctx *sdk.StageContext) {
 		}(entry.fn)
 	}
 	wg.Wait()
-	close(errCh)
+	safeclose.Safe(&errChOnce, errCh)
 
 	var errs []string
 	for err := range errCh {

@@ -212,9 +212,9 @@ func randJSONValue(rng *rand.Rand, depth int) interface{} {
 		return []interface{}{randJSONValue(rng, depth-1)}
 	case 2:
 		return map[string]interface{}{
-			"prompt_tokens":    rng.Intn(9999),
-			"total_tokens":     rng.Intn(9999),
-			"completion":       rng.Intn(999),
+			"prompt_tokens":           rng.Intn(9999),
+			"total_tokens":            rng.Intn(9999),
+			"completion":              rng.Intn(999),
 			"prompt_cache_hit_tokens": rng.Intn(10),
 		}
 	default:
@@ -241,7 +241,7 @@ func TestChunkFast_RandomJSON(t *testing.T) {
 		case 0:
 			obj["choices"] = []interface{}{map[string]interface{}{
 				"index":         rng.Intn(3),
-				"delta":        map[string]interface{}{"content": randJSONValue(rng, 2)},
+				"delta":         map[string]interface{}{"content": randJSONValue(rng, 2)},
 				"finish_reason": []interface{}{nil, "", "stop", "length"}[rng.Intn(4)],
 			}}
 		case 1:

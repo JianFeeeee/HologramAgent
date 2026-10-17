@@ -2,11 +2,13 @@ package core
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HomeAgent/internal/security"
 )
 
 func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
@@ -73,6 +75,20 @@ func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
 	args["payload"] = stageCtx.FinalText
 
 	if dev := a.io.GetDevice(channel); dev != nil {
+		// ★ 安全模块入向回填：把 @{别名} 换回明文。
+		//
+		// 位置在**插件 stage 之后、设备 Execute 之前**是有讲究的：
+		//   · 放在 stage 之前 ⇒ 插件会看到明文（不可，插件在信任边界外）
+		//   · 放在 Execute 之后 ⇒ 设备已收到带别名的载荷（功能坏了）
+		// 所以只能夹在中间：插件看不到，设备拿到真的。
+		//
+		// 注意单独处理 payload：args 里的其它字段（channel 等）不需要回填。
+		if s := security.Global(); s != nil {
+			if filled, n, used := s.Fill(args["payload"].(string)); n > 0 {
+				args["payload"] = filled
+				log.Printf("[security] 通道 %s 载荷回填 %d 处（别名 %v）", channel, n, used)
+			}
+		}
 		result, err := dev.Execute("output", args)
 		if err != nil {
 			return fmt.Sprintf("通过 [%s] 通道发送失败: %v", channel, err)

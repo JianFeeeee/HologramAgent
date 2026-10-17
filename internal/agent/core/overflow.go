@@ -232,7 +232,7 @@ func (a *Agent) raiseContextOverflow(pruned int) {
 // overflowNotice 构造超页中断消息。
 //
 // 抽成纯函数是为了可测：这条消息的措辞不是装饰，它是 agent 唯一的认知输入
-//（L4 任务按调度器设计拿不到被打断者的上下文）。「查不到不等于不存在」这句
+// （L4 任务按调度器设计拿不到被打断者的上下文）。「查不到不等于不存在」这句
 // 直接对应 v4 实测的一类真实失败 —— HA 对检索不到的事实回答
 // 「库里根本没有 X，任何数字都是编的」，因为它不知道有内容被移走了。
 func overflowNotice(pruned int) string {

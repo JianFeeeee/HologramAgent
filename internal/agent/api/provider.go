@@ -17,6 +17,8 @@ import (
 	"time"
 
 	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	"github.com/JianFeeeee/HomeAgent/internal/security"
 )
 
 // ContentBlock 定义多模态内容块，用于图片/音频等非文本输入。
@@ -945,7 +947,8 @@ func (p *LuaAdaptedProvider) ChatStream(ctx context.Context, req *CompletionRequ
 	ch := make(chan StreamChunk, 64)
 	go func() {
 		defer resp.Body.Close()
-		defer close(ch)
+		var chOnce sync.Once
+		defer safeclose.Safe(&chOnce, ch)
 
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -1037,7 +1040,8 @@ func (p *LuaAdaptedProvider) ChatStream(ctx context.Context, req *CompletionRequ
 		}
 		out := make(chan StreamChunk, 64)
 		go func() {
-			defer close(out)
+			var outOnce sync.Once
+			defer safeclose.Safe(&outOnce, out)
 			out <- first
 			for ck := range ch {
 				out <- ck
@@ -1094,7 +1098,28 @@ func (m *ProviderManager) Reset() {
 	m.status = make(map[string]*providerStatus)
 }
 
+// Register 登记一个 provider。
+//
+// ★ 这里是**安全模块的唯一挂载点**：出向改写的装饰器包在这里，
+// 就覆盖了全部取用路径（Get / Default / OrderedProviders /
+// ResolveForModel 都从同一张 map 取，已核）。
+//
+// 为何不逐个改调用方：CodeGraph 交叉验证显示 NewLuaAdaptedProvider 有 6 个
+// 调用者（含插件运行时动态注册 llm_impl.go:115、failback.go:28），
+// 逐个改必漏；而且插件新增 provider 时无人在意去挂装饰器。
+//
+// 安全模块未启用时 security.Global() 返回 nil ⇒ 装饰器完全不介入，零成本。
 func (m *ProviderManager) Register(name string, p Provider) {
+	// 出向明文 → 别名（防泄漏）。未启用时原样透传。
+	//
+	// 守卫：已是本层装饰过的实例就不再包一层。
+	// 双重包裹本身无害（第二遍看到的已无明文，是空转），但会白跑一遗
+	// 正则扫描 —— 而热路径上每条消息都扫一遍，不值得。
+	if store := security.Global(); store != nil {
+		if _, alreadyWrapped := p.(*secureProviderDecorator); !alreadyWrapped {
+			p = WrapProviderForSecurity(p, store)
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.providers[name] = p

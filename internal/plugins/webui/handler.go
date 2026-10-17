@@ -106,21 +106,22 @@ func init() {
 }
 
 type Handler struct {
-	sdk        *sdk.PluginSDK
-	supervisor sdk.SupervisorAPI
-	memory     sdk.MemoryAPI
-	indexer    sdk.IndexerAPI
-	adapter    sdk.AdapterAPI
-	config     sdk.ConfigAPI
-	startTime  time.Time
-	textMem    sdk.TextMemoryAPI
-	knowledge  sdk.KnowledgeAPI
-	tracker    sdk.TrackerAPI
-	settings   sdk.SettingsAPI
-	pluginMgr  sdk.PluginManager
-	status     sdk.StatusAPI
-	term       sdk.TerminalAPI
-	llm        sdk.LLMAPI
+	chatStopOnce2 sync.Once // close 纪律：chatStop 的幂等守卫
+	sdk           *sdk.PluginSDK
+	supervisor    sdk.SupervisorAPI
+	memory        sdk.MemoryAPI
+	indexer       sdk.IndexerAPI
+	adapter       sdk.AdapterAPI
+	config        sdk.ConfigAPI
+	startTime     time.Time
+	textMem       sdk.TextMemoryAPI
+	knowledge     sdk.KnowledgeAPI
+	tracker       sdk.TrackerAPI
+	settings      sdk.SettingsAPI
+	pluginMgr     sdk.PluginManager
+	status        sdk.StatusAPI
+	term          sdk.TerminalAPI
+	llm           sdk.LLMAPI
 
 	// hostPort 是 webui 实际监听的 ":port"（用于推导服务入口链接）。
 	hostPort string
@@ -487,6 +488,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/network", h.requireAPI(h.handleNetwork))
 	mux.HandleFunc("/api/v1/config", h.requireAPI(h.handleConfig))
 	mux.HandleFunc("/api/v1/settings", h.requireAPI(h.handleSettings))
+	mux.HandleFunc("/api/v1/settings/reveal", h.requireAPI(h.handleSettingsReveal))
 	mux.HandleFunc("/api/v1/settings/", h.requireAPI(h.handleSettings))
 	mux.HandleFunc("/api/v1/knowledge", h.requireAPI(h.handleKnowledge))
 	mux.HandleFunc("/api/v1/knowledge/", h.requireAPI(h.handleKnowledge))

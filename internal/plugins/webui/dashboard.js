@@ -7806,6 +7806,18 @@ function pluginDisplayName(p) {
 	return name;
 }
 
+// toggleSecretVisibility 在「遮蔽 / 明文」间切换敏感输入框。
+// 内联 onclick 需要全局可见，故挂到 window。
+function toggleSecretVisibility(inpId) {
+	var el = document.getElementById(inpId);
+	if (!el) return;
+	var showing = el.type === "text";
+	el.type = showing ? "password" : "text";
+	var btn = el.parentElement ? el.parentElement.querySelector("button") : null;
+	if (btn) btn.textContent = showing ? __("显示", "Show") : __("隐藏", "Hide");
+}
+if (typeof window !== "undefined") window.toggleSecretVisibility = toggleSecretVisibility;
+
 function renderSettingsSidebar() {
 	var el = document.querySelector(".settings-tabs");
 	if (!el) return;
@@ -8025,6 +8037,30 @@ function renderOneSettings() {
 					"')\">" +
 					selOpts +
 					"</select>";
+			} else if (typ === "password" || m?.secret) {
+				// 敏感项：默认遮蔽，点「显示」才明文。
+				//
+				// 两种声明都走这里：Type=="password"（旧写法）与 Secret:true
+				// （新写法）。值本身是明文（内核透明解密），遮蔽只防肩窥/截屏，
+				// 不靠前端做保密 —— 真正的保护在落盘加密那一层。
+				inp =
+					"<label>" +
+					label +
+					'</label><div style="display:flex;gap:6px;align-items:center">' +
+					'<input type="password" id="' +
+					inpId +
+					'" value="' +
+					escHtml(sv) +
+					'" placeholder="' +
+					escHtml(ph) +
+					'" onchange="markDirty(\'' +
+					k +
+					"')\" style=\"flex:1\" autocomplete=\"new-password\">" +
+					'<button type="button" class="btn-sm" style="flex:0 0 auto" onclick="toggleSecretVisibility(\'' +
+					inpId +
+					"')\">" +
+					__("显示", "Show") +
+					"</button></div>";
 			} else if (typ === "text") {
 				inp =
 					"<label>" +
@@ -8323,6 +8359,19 @@ function markDirty(k) {
 async function saveSetting(k) {
 	var inp = document.getElementById("inp-" + k.replace(/\./g, "_"));
 	if (!inp) return;
+	// ★ 掩码占位符**不是值**，绝不能回传。
+	//
+	// 真实故障（2026-10-16）：列表接口为防泄漏把敏感值换成 `••••••••`，
+	// 而设置页「保存」按钮会**一并回传**该组的全部字段（含刚被掩码的 api_key）
+	// ⇒ 掩码被当真值存进内核 ⇒ 下游（commondev 的 pi 源导入器）把掩码
+	// 写进 auth.json ⇒ 模型调用 401 invalid api key。
+	//
+	// 两层防护：这里（前端不回传）与后端（PUT 拒绝占位符）。
+	// 前端这层必须独立成立：后端拒绝会让整组保存失败，用户以为"保存坏了"。
+	if (isSecretPlaceholderValue(inp.value)) {
+		// 未改动密钥时静默跳过（不该弹错——用户只是想改别的字段）
+		return;
+	}
 	var val;
 	var m = state.meta?.[k];
 	if (m?.type === "bool") {
@@ -8352,6 +8401,14 @@ async function saveSetting(k) {
 	} catch (e) {
 		toast(__("保存失败: ", "Save failed: ") + e.message, true);
 	}
+}
+
+// isSecretPlaceholderValue 判定输入框里的是否是掩码占位符（而非真实值）。
+//
+// 用**全等**而不是 includes：真 key 里恰好含这两个字符的概率极低，
+// 但反过来说，只要不是"整个值就是掩码"，就一律放行 —— 宁可放行也不误杀真值。
+function isSecretPlaceholderValue(v) {
+	return typeof v === "string" && v.trim() === "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
 }
 
 function renderConfigDisabled() {

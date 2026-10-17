@@ -53,7 +53,6 @@ package api
 //   ③ 一条**永不静默回退**的机制：若未来把它切回默认开启，
 //      TestChunkFast_BenchGate 会立刻用基准把它按回去。
 
-
 import "encoding/json"
 
 const chunkFastEnabled = false

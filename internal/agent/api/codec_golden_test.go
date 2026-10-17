@@ -176,4 +176,3 @@ func TestGolden_TruncateAlwaysPrefix(t *testing.T) {
 		}
 	}
 }
-

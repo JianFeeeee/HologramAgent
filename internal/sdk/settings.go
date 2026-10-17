@@ -15,6 +15,11 @@ type SettingsAPI interface {
 	RemoveCore(key string) error
 	// RemovePlugin 删除另一个插件配置表中的单个键。
 	RemovePlugin(plugin, key string) error
+	// IsSecret 报告某个（全局或 "plugin.<name>." 前缀的）键是否敏感。
+	//
+	// 用途：需要在**展示**环节屏蔽明文的地方（如 WebUI 设置面）。
+	// 它与落盘加密共用同一套判定，避免“已加密但界面照旧显示”的漏洞。
+	IsSecret(key string) bool
 }
 
 type ConfigDef = pubsdk.ConfigDef
