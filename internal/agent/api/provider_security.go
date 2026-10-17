@@ -44,6 +44,45 @@ func WrapProviderForSecurity(p Provider, store *security.Store) Provider {
 func (d *secureProviderDecorator) Name() string          { return d.inner.Name() }
 func (d *secureProviderDecorator) MaxContextTokens() int { return d.inner.MaxContextTokens() }
 
+// ★★ 模态能力必须**透传**给被包装的 provider。
+//
+// ## 缺陷（2026-10-17 生产实测）
+//
+// `ProviderManager.Register` 在 security 启用时把每个 provider 包成
+// secureProviderDecorator。而本装饰器原先只实现了 Name/MaxContextTokens/
+// Chat/ChatStream —— **漏了 ModalProvider 的两个方法**。
+//
+// 后果是一条完整的静默失效链：
+//
+//	配置 core.llm.sources.llmsproxy.vision = true       （本来就是对的）
+//	  → LuaAdaptedProvider.Vision = true
+//	  → Register 把它包成 *secureProviderDecorator
+//	  → ProviderSupportsVision(p) 做 p.(ModalProvider) 断言
+//	  → ★ 装饰器没有 SupportsVision ⇒ 断言失败 ⇒ 返回 false
+//	  → prepareToolBlocks 判定"主模型不支持图片"
+//	  → see_image 的 image_url 被当成需要回退的块
+//	  → resolveModalFallback 找不到可用视觉源 ⇒ 回「没有可用的视觉回退源」
+//
+// 症状极具误导性：模型是能看图的（配置对、后端支持），但内核一口咬定
+// 不支持，用户以为是模型配置问题、以为是缓存没热生效、以为要重启。
+//
+// ⇒ 装饰器只负责**改写请求内容**，不该改变能力声明。所有 ModalProvider
+//
+//	方法一律透传。
+func (d *secureProviderDecorator) SupportsVision() bool {
+	if mp, ok := d.inner.(ModalProvider); ok {
+		return mp.SupportsVision()
+	}
+	return false
+}
+
+func (d *secureProviderDecorator) SupportsAudio() bool {
+	if mp, ok := d.inner.(ModalProvider); ok {
+		return mp.SupportsAudio()
+	}
+	return false
+}
+
 // scrubRequest 逐条消息改写（**原地**改，因为 req 是要发出去的那一份）。
 func (d *secureProviderDecorator) scrubRequest(req *CompletionRequest) {
 	if req == nil {
