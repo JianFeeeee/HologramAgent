@@ -662,9 +662,9 @@ async function renderAll(force) {
 	//   唯独这一步没有。而它跑在 render **之前**，一旦炸后面全不执行。
 	var needs = spec.fetch || [];
 	await Promise.all(
-		needs.map(function (n) {
+		needs.map((n) => {
 			// 单块失败只记日志，不影响同批其它块与后续渲染。
-			return starmapFetchBlock(n).catch(function (e) {
+			return starmapFetchBlock(n).catch((e) => {
 				console.error("starmapFetchBlock(" + n + ")", e);
 			});
 		}),
@@ -2929,7 +2929,7 @@ function smAdaptGraph(d) {
 	}
 
 	// 1) 节点：块 → 星图节点
-	var nodes = blocks.map(function (b) {
+	var nodes = blocks.map((b) => {
 		var text = String(b.text || "").replace(/\s+/g, " ").trim();
 		// 媒体块没有正文（只有 digest/描述）——用工具名与模态拼一个可读名，
 		// 否则它们全叫「」在图上无法区分。
@@ -2964,7 +2964,7 @@ function smAdaptGraph(d) {
 	// 2) 边：只保留两端都在节点集里的边（端点缺失的边画不出来，
 	//    留着只会让度数统计偏大）。
 	var byID = {};
-	nodes.forEach(function (n) {
+	nodes.forEach((n) => {
 		byID[n.id] = n;
 	});
 	var edges = [];
@@ -2985,7 +2985,7 @@ function smAdaptGraph(d) {
 	// 块体系里没有 mention_count 这一列（那是旧实体表的概念），而星图的
 	// 节点大小/布局/标签优先级都靠它。度数是最好的替代：被引用越多的块
 	// 越大 —— 与「越常被提起的实体越大」是同一个直觉。
-	edges.forEach(function (e) {
+	edges.forEach((e) => {
 		byID[e.source_id].mention_count++;
 		byID[e.target_id].mention_count++;
 	});
@@ -3298,7 +3298,7 @@ function buildChatStarmapGraph() {
 	if (starmapLayoutWorkerAvailable()) {
 		// 异步：先把节点画出来（初始环带摆位已可用），布局在后台算，
 		// 算完再原地更新 mesh 位置。用户立刻看到图，随后图自己舒展开。
-		starmapRequestLayout(flat, maxR, nodeDegs, function (arr) {
+		starmapRequestLayout(flat, maxR, nodeDegs, (arr) => {
 			applyFlat(arr);
 			for (var k = 0; k < starmapNodeMeshes.length; k++) {
 				var p2 = pos[starmapNodeMeshes[k].userData.nodeId];
@@ -3479,7 +3479,7 @@ function starmapRebuildGlowInstances(pos) {
 //   已建好的边几何体会留在旧坐标上（图看着“线错位”）。所以需要一个
 //   可重复调用的构建函数，而不是内联在 buildChatStarmapGraph 里。
 function starmapBuildEdges(pos) {
-	starmapEdgeLines.forEach(function (l) {
+	starmapEdgeLines.forEach((l) => {
 		starmapScene.remove(l);
 		if (l.geometry) l.geometry.dispose();
 		if (l.material) l.material.dispose();
@@ -3751,13 +3751,13 @@ function starmapRequestLayout(flat, maxR, nodeDegs, onDone) {
 	try {
 		if (!starmapLayoutWorker) {
 			starmapLayoutWorker = new Worker("/static/starmap-layout-worker.js");
-			starmapLayoutWorker.onerror = function () {
+			starmapLayoutWorker.onerror = () => {
 				// 脚本 404 / 语法错：标记不可用，此后走串行回退。
 				// 不抛出去（会让整个 buildChatStarmapGraph 中断、图建不出来）。
 				starmapLayoutWorkerBroken = true;
 				starmapLayoutWorker = null;
 			};
-			starmapLayoutWorker.onmessage = function (ev) {
+			starmapLayoutWorker.onmessage = (ev) => {
 				var m = ev.data || {};
 				var cb = starmapLayoutPending[m.seq];
 				if (!cb) return;
@@ -3772,9 +3772,7 @@ function starmapRequestLayout(flat, maxR, nodeDegs, onDone) {
 		var seq = ++starmapLayoutSeq;
 		// 图指纹做种子：同一张图每次打开得到同一布局（可复现）。
 		var seed = starmapGraphSeed();
-		var nodes = starmapNodes.map(function (nd) {
-			return { id: nd.id, mention_count: nd.mention_count || 0 };
-		});
+		var nodes = starmapNodes.map((nd) => ({ id: nd.id, mention_count: nd.mention_count || 0 }));
 		var idx = {};
 		for (var i = 0; i < starmapNodes.length; i++) idx[starmapNodes[i].id] = i;
 		var edges = [];
@@ -3784,7 +3782,7 @@ function starmapRequestLayout(flat, maxR, nodeDegs, onDone) {
 			if (s === undefined || t === undefined || s === t) continue;
 			edges.push([s, t]);
 		}
-		starmapLayoutPending[seq] = function (positions, err) {
+		starmapLayoutPending[seq] = (positions, err) => {
 			if (err || !positions) {
 				// Worker 算失败：串行回退，至少图能出来。
 				starmapLayoutRelax(flat, starmapNodes, starmapEdges, maxR);
@@ -4016,10 +4014,27 @@ async function sendChat() {
 	rerenderChat(true);
 	// 触发式 POST：短超时仅确认受理；回复靠 SSE 流式渲染（对齐 GUI 行为）。
 	try {
+		// ★★ 受理超时（2026-10-17 内测故障修复）
+		//
+		// 原来写死 15s。实测（用户日志）agent 正常任务就要 **52.5 秒**
+		// （22 个工具：skill_info/memory_recall/cmd_run×6/terminal_create…），
+		// 于是 15s 一到前端就 abort：
+		//
+		//   20:58:36  POST /chat 开始，agent 开始干活
+		//   20:58:52  ★ 15s abort → 服务端记 status=504 (15.89s)
+		//   20:59:29  agent 仍然正常跑完 52.5 秒并返回 —— 但连接已断，
+		//             回复送不回去，用户只看到「已取消（用户停止）」
+		//
+		// 危害不只是"慢"：它让用户以为自己误触了停止，或者以为系统坏了。
+		//
+		// 现在：不再有固定超时。这个 POST 是"触发式"的 —— 真正渲染靠 SSE
+		// （见下方 finally 的 armTurnWatchdog），所以**没必要**在这里抢时间。
+		// 只保留一个远大于任何正常任务的上限（10 分钟），用于兜住
+		// "连 TCP 都建不起来"这类真故障，避免请求永远挂着。
 		var ctrl = new AbortController();
 		var ackTimer = setTimeout(() => {
 			ctrl.abort();
-		}, 15000);
+		}, 600000);
 		var r = null;
 		try {
 			r = await api("/chat", {
@@ -4030,12 +4045,15 @@ async function sendChat() {
 		} catch (ackErr) {
 			// 同步超时/失败：不阻塞 UI，等 SSE 兑底；明确提示"可能已发送"
 			console.warn("[sendChat] trigger failed: " + ackErr.message);
+			// 措辞要点：这不是"失败"，而是"受理确认没等到"。
+			// agent 很可能正在正常干活（实测 52 秒的任务很常见），
+			// 所以**不要**让用户以为出了问题而重发 —— 重发会造成两条任务。
 			toast(
 				__(
-					"请求超时（可能已发送，请稍候或在收到回复前勿重复发送）",
-					"Request timeout (may have been sent; wait for reply before resending)",
+					"已发出，AI 正在处理（复杂任务可能要一两分钟）。请等待回复，不要重复发送。",
+					"Sent — the AI is working (complex tasks may take a minute or two). Please wait; do not resend.",
 				),
-				true,
+				false,
 			);
 			r = null;
 		} finally {
@@ -6463,7 +6481,7 @@ function starmapStartMerge(fromID, toID) {
 	var dst = idx[toID];
 		if (dst) {
 			var delayed = Date.now() + SM_DISSOLVE_MS + SM_MERGE_APPEAR_DELAY;
-			var timer = setTimeout(function () {
+			var timer = setTimeout(() => {
 				if (dst && dst.parent) {
 					dst.userData.growAt = Date.now();
 					starmapMorphAdd(dst); // 重生也要注册
@@ -6728,12 +6746,10 @@ function starmapPickPulseTargets(hint) {
 	// 排序结果按 baseVer 缓存复用（图不变则排序不变）。
 	var sorted = starmapMeshByWeight;
 	if (sorted === null || starmapMeshByWeightVer !== starmapLabelBaseVer) {
-		sorted = starmapNodeMeshes.slice().sort(function (a, b) {
-			return (
+		sorted = starmapNodeMeshes.slice().sort((a, b) => (
 				((b.userData.nodeData || {}).mention_count || 0) -
 				((a.userData.nodeData || {}).mention_count || 0)
-			);
-		});
+			));
 		starmapMeshByWeight = sorted;
 		starmapMeshByWeightVer = starmapLabelBaseVer;
 	}
@@ -6860,7 +6876,7 @@ function starmapMorphAdd(mesh) {
 function starmapTickMorph(now) {
 	if (!starmapMorphSet || starmapMorphSet.size === 0) return; // 常见路径：零开销
 	var done = [];
-	starmapMorphSet.forEach(function (m) {
+	starmapMorphSet.forEach((m) => {
 		var ud = m.userData;
 
 		// —— 消散 ——
@@ -7227,7 +7243,7 @@ function smLegend() {
 		if ((smPresentTypes[k] * 100) / total >= 1) major.push(k);
 		else minor += smPresentTypes[k];
 	});
-	var parts = major.map(function (k) {
+	var parts = major.map((k) => {
 		var lbl = SM_TYPE_LABELS[k];
 		var label = lbl ? __(lbl[0], lbl[1]) : k;
 		return (
@@ -7314,7 +7330,7 @@ function starmapShowDetail(mesh) {
 
 	// 邻居：从边表现算（最多 12 条，多了也读不过来）。
 	var byID = {};
-	starmapNodes.forEach(function (n) {
+	starmapNodes.forEach((n) => {
 		byID[n.id] = n;
 	});
 	var nb = [];
@@ -7496,7 +7512,7 @@ function starmapMakeLabelPlan() {
 		});
 	}
 	// dim 按权重降序（重要的先占位），hot 一律排到最后。
-	plan.sort(function (a, b) {
+	plan.sort((a, b) => {
 		if (a.kind !== b.kind) return a.kind === "hot" ? 1 : -1;
 		return b.mc - a.mc;
 	});
@@ -8741,3 +8757,87 @@ setInterval(renderAll, 15000);
 setInterval(() => {
 	syncChatFromHistory().catch(() => {});
 }, 30000);
+
+// ===== 内核控制：重启 / 关机 =====
+//
+// 两个动作都会让内核进程消失，区别是：
+//   · 重启 → guard 用当前二进制重拉，断线数秒后页面可自动重连
+//   · 关机 → systemd 不再拉起，必须人工 systemctl start
+//
+// ★ 关机必须**二次确认且说清后果**：它不像重启那样能自己回来，
+//   误点一次就得 ssh 上去恢复。用原生 confirm（与其它危险操作一致）。
+async function kernelRestart() {
+	if (!confirm("重启内核？\n\n服务会断线约数秒，之后自动恢复。\n正在进行中的对话可能中断。")) return;
+	await doKernelControl("restart", "内核正在重启，页面将在数秒后自动重连…");
+	// 重启：轮询等它回来
+	waitForKernelBack();
+}
+
+async function kernelShutdown() {
+	if (
+		!confirm(
+			"关闭内核？\n\n⚠ 关机后**不会自动启动**，必须到机器上执行：\n\n    systemctl start homeagent\n\n确认要关闭吗？",
+		)
+	) {
+		return;
+	}
+	await doKernelControl("shutdown", "内核正在关闭。需要人工执行 systemctl start 才能再启动。");
+	// 关机：不再轮询（它不会自己回来），把页面标记为已停
+	document.body.innerHTML =
+		'<div style="display:flex;height:100vh;align-items:center;justify-content:center;' +
+		'font:16px/1.6 system-ui;color:#888;text-align:center;padding:2em">' +
+		"<div><h2 style='margin:0 0 .5em'>内核已关闭</h2>" +
+		"<p>需要人工启动：<code>systemctl start homeagent</code></p></div></div>";
+}
+
+async function doKernelControl(action, okMsg) {
+	var reason = "WebUI 操作";
+	try {
+		var r = await api("/kernel/" + action, {
+			method: "POST",
+			body: JSON.stringify({ reason: reason }),
+		});
+		if (r && r.error) {
+			toast(r.error, true);
+			return false;
+		}
+		toast(okMsg);
+		return true;
+	} catch (e) {
+		// ★ 这里**可能是正常的**：内核收到请求后很快就退出了，
+		// fetch 因此拿到 connection reset。不能一律当失败报错。
+		if (action === "restart") {
+			toast("内核已收到重启请求（连接中断属正常）");
+			return true;
+		}
+		toast("请求已发出（连接中断属正常）");
+		return true;
+	}
+}
+
+// waitForKernelBack 在重启后轮询 /status 直到内核回来，然后刷新页面。
+//
+// 最长等 60s：实测冷启动 1.5-2s，但机器忙时可能更久；
+// 超时就明确告诉用户"没回来，请查看服务状态"，而不是无限转圈。
+async function waitForKernelBack() {
+	var deadline = Date.now() + 60000;
+	var showed = false;
+	while (Date.now() < deadline) {
+		await new Promise((r) => setTimeout(r, 1500));
+		try {
+			var r = await fetch("/api/v1/status", { credentials: "include" });
+			if (r.ok) {
+				toast("内核已恢复，正在刷新…");
+				await new Promise((r2) => setTimeout(r2, 600));
+				location.reload();
+				return;
+			}
+		} catch (_) {
+			// 还在重启中，继续等
+		}
+		if (!showed) {
+			showed = true;
+		}
+	}
+	toast("内核 60 秒内未恢复。请检查：systemctl status homeagent", true);
+}
