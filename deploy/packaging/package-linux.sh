@@ -4,7 +4,41 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
 DIST_DIR="${PROJECT_ROOT}/dist/linux"
-VERSION="${VERSION:-$(git -C "$PROJECT_ROOT" describe --tags --dirty 2>/dev/null || echo "0.8.0")}"
+# ★★ VERSION 解析必须与 build.sh 用**同一套规则**（2026-10-17 统一）。
+#
+# 原实现只看 git describe，而无 tag 分支上它返回**分支名**：
+#   backup/pre-identity-rewrite-20261005-56-g98850e1
+# 下面的守卫会拒绝它（正确），但要求人**手动传 VERSION** 才能打包 ——
+# 而 build.sh 早已能自动回退到 meta.Version。两个脚本行为不一致的结果是：
+# 同一个版本，走 build.sh 打得出来，走 package-linux.sh 打不出来。
+#
+# 更要紧的是：若有人为了"让它跑通"去掉守卫，分支名就会进 meta.Version，
+# 而那是**插件协议主版本**的来源 ⇒ 22 个子进程插件全部握手失败（真事故）。
+#
+# ⇒ 统一为：git describe 只在形如 vX.Y.Z 时采用，否则回退 meta.Version。
+_meta_version() {
+  local mv
+  mv="$(sed -n 's/^[[:space:]]*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$PROJECT_ROOT/internal/meta/meta.go" 2>/dev/null | head -1)"
+  case "$mv" in
+    [0-9]*.[0-9]*.[0-9]*) printf '%s' "$mv"; return 0 ;;
+  esac
+  return 1
+}
+if [ -z "${VERSION:-}" ]; then
+  _gd="$(git -C "$PROJECT_ROOT" describe --tags --dirty 2>/dev/null || true)"
+  case "$_gd" in
+    v[0-9]*.[0-9]*.[0-9]*) VERSION="${_gd#v}" ;;
+    *)
+      if VERSION="$(_meta_version)"; then
+        [ -n "$_gd" ] && echo "[PKG] warn: git describe 给出非版本串（$_gd），改用 meta.Version=$VERSION" >&2
+      else
+        echo "[PKG] ERROR: 拿不到合法版本号（git describe=$_gd）。请显式传 VERSION=x.y.z。" >&2
+        exit 1
+      fi
+      ;;
+  esac
+fi
 
 # git describe 给出的是 v1.0.0-68-gba0b5a1-dirty 这类描述串，它不是合法的包版本：
 # deb 的 Version 必须以数字开头，rpm 的 Version 不允许 '-'（那是版本/发布的分隔符）。

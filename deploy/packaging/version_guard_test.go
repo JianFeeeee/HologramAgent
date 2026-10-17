@@ -115,3 +115,33 @@ func repoRoot(t *testing.T) string {
 	// deploy/packaging → 上两级
 	return filepath.Dir(filepath.Dir(wd))
 }
+
+// ★★★ 判据：两个打包脚本必须用**同一套**版本解析规则。
+//
+// 2026-10-17 实测不一致：build.sh 已能自动回退 meta.Version，而
+// package-linux.sh 仍只看 git describe ⇒ 同一个版本，走 build.sh 打得出来、
+// 走 package-linux.sh 报"请显式设置 VERSION"。
+//
+// 危害不只是"要手动传参"：运维为了跑通会去掉守卫，而分支名一旦进
+// meta.Version 就是**插件协议主版本** ⇒ 22 个插件全部握手失败（真事故）。
+func TestBothPackagingScriptsShareVersionRules(t *testing.T) {
+	root := repoRoot(t)
+	scripts := map[string]string{
+		"build.sh":         filepath.Join(root, "deploy", "packaging", "build.sh"),
+		"package-linux.sh": filepath.Join(root, "deploy", "packaging", "package-linux.sh"),
+	}
+	for name, pth := range scripts {
+		b, err := os.ReadFile(pth)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		src := string(b)
+		// 两者都必须：① 从 meta/meta.go 回退 ② 校验 git describe 形态
+		if !strings.Contains(src, "internal/meta/meta.go") {
+			t.Fatalf("★ %s 未从 meta/meta.go 取权威版本 ⇒ 无 tag 分支上会拿到分支名", name)
+		}
+		if !strings.Contains(src, "v[0-9]*.[0-9]*.[0-9]*") {
+			t.Fatalf("★ %s 未校验 git describe 的形态 ⇒ 分支名会漏过去", name)
+		}
+	}
+}
