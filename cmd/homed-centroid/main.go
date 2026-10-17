@@ -11,8 +11,9 @@
 //   - 库增长后中心过期（中心是块集的均值，块集变了它就偏）
 //
 // 用法：
-//   homed-centroid -db <graph.db>                      # 自动取库内指纹
-//   homed-centroid -db <graph.db> -fingerprint <hex>   # 显式指定
+//
+//	homed-centroid -db <graph.db>                      # 自动取库内指纹
+//	homed-centroid -db <graph.db> -fingerprint <hex>   # 显式指定
 package main
 
 import (

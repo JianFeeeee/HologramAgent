@@ -91,6 +91,8 @@ type CoreSDK interface {
 	PluginName() string
 
 	Settings() pubsdk.SettingsAPI
+	// Secrets 是**全进程共享**的变量库（非 per-plugin）。
+	Secrets() pubsdk.SecretsAPI
 	Memory() pubsdk.MemoryAPI
 	TextMemory() pubsdk.TextMemoryAPI
 	DocMemory() pubsdk.DocMemoryAPI
@@ -173,6 +175,7 @@ func (h *coreHandler) Handle(method string, params json.RawMessage) (interface{}
 		return h.handleTextMemory(method, params)
 
 	case MethodSettingsGet, MethodSettingsSet, MethodSettingsRegisterDef,
+		MethodSettingsSetSecret, MethodSettingsGetSecret,
 		MethodSettingsGetCore, MethodSettingsSetCore, MethodSettingsListCore,
 		MethodSettingsGetPlugin, MethodSettingsSetPlugin, MethodSettingsListPlugin,
 		MethodSettingsList, MethodSettingsDefs, MethodSettingsDump, MethodSettingsPlugins,
@@ -189,7 +192,8 @@ func (h *coreHandler) Handle(method string, params json.RawMessage) (interface{}
 	case MethodLifecycleAutoRestart:
 		return h.handleLifecycle(method, params)
 
-	case MethodPluginReloadOne, MethodPluginListLoaded, MethodPluginIsDisabled:
+	case MethodPluginReloadOne, MethodPluginListLoaded, MethodPluginIsDisabled,
+		MethodPluginMgrStop, MethodPluginMgrStart, MethodPluginMgrIsRuntimeStopped:
 		return h.handlePluginMgr(method, params)
 
 	case MethodStageLock, MethodStageUnlock:
@@ -197,6 +201,10 @@ func (h *coreHandler) Handle(method string, params json.RawMessage) (interface{}
 
 	case MethodEventsSubscribe, MethodEventsUnsubscribe:
 		return h.handleEvents(method, params)
+
+	case MethodSecretsAvailable, MethodSecretsStore, MethodSecretsList,
+		MethodSecretsForget, MethodSecretsFill, MethodSecretsEncrypt, MethodSecretsDecrypt:
+		return h.secrets(method, params)
 
 	case MethodArenaAlloc, MethodArenaFree:
 		return h.handleArena(method, params)
@@ -552,6 +560,19 @@ func (h *coreHandler) settings(method string, params json.RawMessage) (interface
 	case MethodSettingsRegisterDef:
 		sett.RegisterDef(p.Def)
 		return nil, nil
+	// ---- 密文读写（强制加密，不看键名）----
+	//
+	// 与 Set/Get 的区别：这两个**必然**走加密路径，用于插件用
+	// `blob`/`payload`/`conn` 这类中性键名存凭据的场景 ——
+	// 光靠键名模式猜不出它是敏感的。
+	case MethodSettingsSetSecret:
+		return nil, sett.SetSecret(p.Key, p.Value)
+	case MethodSettingsGetSecret:
+		v, err := sett.GetSecret(p.Key)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"value": v}, nil
 	case MethodSettingsGetCore:
 		v, err := sett.GetCore(p.Key)
 		if err != nil {

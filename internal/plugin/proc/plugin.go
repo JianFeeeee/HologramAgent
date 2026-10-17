@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
@@ -43,6 +45,11 @@ type Plugin struct {
 	// caps 是 manifest 声明的能力集（§3.8 权限梯度）。
 	caps *capabilitySet
 
+	// handshakeTimeout 是插件**自行声明**的建链超时（manifest 的
+	// handshake_timeout_sec）。<=0 ⇒ 用 DefaultHandshakeTimeout。
+	// 见 docs/zh/kernel-modularization-design.md §2.4.2。
+	handshakeTimeout time.Duration
+
 	// ownerID 是本插件在共享槽池里的身份（由 Host 分配）。
 	// 内核用它校验 arena.free 的归属，并在插件退出时回收残留槽。
 	ownerID uint32
@@ -61,19 +68,33 @@ type Plugin struct {
 // New 创建子进程插件（不启动进程）。
 //
 // host 必须是全部子进程插件共用的实例（由 registry 创建一次）。
-// New 创建子进程插件（不启动进程）。
-//
-// host 必须是全部子进程插件共用的实例（由 registry 创建一次）。
 // capabilities 来自 manifest 的 capabilities 字段；为空时不限制（存量插件向后兼容）。
+//
+// 建链超时用内核默认值。需要按插件声明覆盖时用 NewWithTimeout。
 func New(name, bin, dir string, config map[string]interface{}, host *Host, onCrash func(string, error), capabilities ...string) *Plugin {
+	return NewWithTimeout(name, bin, dir, config, host, onCrash, 0, capabilities...)
+}
+
+// NewWithTimeout 同 New，但可指定**建链（握手）超时**。
+//
+// timeout <= 0 ⇒ 用 DefaultHandshakeTimeout（与 New 行为一致）。
+//
+// ## 为何单独一个构造函数而不是改 New 的签名
+//
+// `New` 末尾是变参 `capabilities ...string`。中间插一个 duration 参数
+// 会让所有调用点错位（值会静默地用错），而编译器**不会**报错
+// （变参位置可吞类型兼容的实参）——那是本仓最怕的"静默错误"。
+// 加一个新构造函数既保持旧签名不变，又把新能力显式化。
+func NewWithTimeout(name, bin, dir string, config map[string]interface{}, host *Host, onCrash func(string, error), timeout time.Duration, capabilities ...string) *Plugin {
 	return &Plugin{
-		name:    name,
-		bin:     bin,
-		dir:     dir,
-		config:  config,
-		host:    host,
-		onCrash: onCrash,
-		caps:    newCapabilitySet(capabilities),
+		name:             name,
+		bin:              bin,
+		dir:              dir,
+		config:           config,
+		host:             host,
+		onCrash:          onCrash,
+		caps:             newCapabilitySet(capabilities),
+		handshakeTimeout: timeout,
 	}
 }
 
@@ -131,13 +152,24 @@ func (p *Plugin) Start(core CoreSDK) error {
 	p.handler.invokeStageFn = p.invokeStage
 	p.handler.invokeOutput = p.invokeOutput
 
+	// ★ 显式把插件目录传给**插件进程**（随机化之前的隐式 cwd 不可靠：
+	// 插件自己 chdir 后就失效，而 rawfile 的路径解析依赖它）。
+	pluginEnv := append([]string{}, p.env...)
+	pluginEnv = append(pluginEnv,
+		"HA_PLUGIN_DIR="+p.dir,
+		"HA_PLUGIN_RAWFILE_DIR="+filepath.Join(p.dir, "rawfile"),
+		"HA_PLUGIN_WORK_DIR="+filepath.Join(p.dir, "work"),
+	)
+
 	proc, err := Spawn(p.name, p.bin, Options{
 		Dir: p.dir,
+		// 插件自行声明的建链超时（<=0 时 Spawn 内部回退到默认值）。
+		HandshakeTimeout: p.handshakeTimeout,
 		// 共享段的传递机制按平台不同（shmpass_*.go）：
 		// Unix 经 ExtraFiles 传继承 fd（3=统一共享内存区域 SuperBlock+StageContext+EvtRing，
 		// 4=事件通知 eventfd）；Windows 无 fd 继承语义，改用命名内核对象，名字经环境变量传入。
 		// 权威定义在 shmpass_unix.go 的 procExtraFilesForShm，修改时三处必须同步。
-		Env:         append(p.env, p.host.procEnvForShm()...),
+		Env:         append(pluginEnv, p.host.procEnvForShm()...),
 		ExtraFiles:  p.host.procExtraFilesForShm(),
 		ShmSize:     p.host.shmSize,
 		EvtRingSize: evtTotalSize,

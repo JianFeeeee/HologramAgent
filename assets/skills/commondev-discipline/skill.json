@@ -1,0 +1,6 @@
+{
+  "name": "commondev-discipline",
+  "description": "commondev 主管式多仓库开发流水线的使用与开发纪律：为每个工程对话新建驻留子并划入其通道、投递必须落同一 session、复核必须含变异阶段；以及 hmap 插件开发纪律（plg.json、SDK 版本、产物形态、Serial/ParallelSafe、外部插件能力边界、凭据与孤儿清理）",
+  "version": "1.0.0",
+  "author": "HomeAgent"
+}

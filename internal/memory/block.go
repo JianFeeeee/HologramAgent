@@ -40,15 +40,15 @@ type MemoryBlock struct {
 	//
 	// 落盘形态随所在层而定：L0/L1 的块内联在 JSON 里（Data 序列化为 base64），
 	// L3 的块落 SQLite 的 BLOB 列。无论哪层，字节都不脱离块单独存在。
-	Data []byte `json:"data,omitempty"`
-	MIME          string        `json:"mime,omitempty"`
-	Size          int64         `json:"size,omitempty"`
-	Width         int           `json:"width,omitempty"`
-	Height        int           `json:"height,omitempty"`
-	Vector        []float64     `json:"vector,omitempty"`
-	Fingerprint   string        `json:"fingerprint,omitempty"`
-	Source        string        `json:"source,omitempty"`
-	Tool          string        `json:"tool,omitempty"`
+	Data        []byte    `json:"data,omitempty"`
+	MIME        string    `json:"mime,omitempty"`
+	Size        int64     `json:"size,omitempty"`
+	Width       int       `json:"width,omitempty"`
+	Height      int       `json:"height,omitempty"`
+	Vector      []float64 `json:"vector,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	Tool        string    `json:"tool,omitempty"`
 	// Scene 是这个块所属的场景键（可空）。
 	//
 	// 块是记忆流水线里最细的「子项目」：一段转写、一张图的描述、一份附件。
@@ -295,6 +295,7 @@ func (g *GraphDB) MemoryBlocks() ([]MemoryBlock, error) {
 //	结果媒体与召回测试大面积变红（列数不匹配 ⇒ 读失败）。
 //
 //	单靠“记得同步”不可靠；提成常量后新增查询直接复用。
+//
 // blockColumns 是 memory_blocks 的**元数据**列清单，供所有常规读取复用。
 //
 // ★ 为何**不含 data**：媒体负载动辄数 MB（生产实测：图均 495KB、最大 2.7MB），

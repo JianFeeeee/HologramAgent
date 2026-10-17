@@ -38,6 +38,10 @@ func (a *sdkAdapter) PreActionSnapshot(id string) (*types.Snapshot, error) {
 	return a.d.PreActionSnapshot(types.AgentID(id))
 }
 
+func (a *sdkAdapter) Restart(id string) error {
+	return a.d.Restart(types.AgentID(id))
+}
+
 func (a *sdkAdapter) RollbackAgent(id string, snapID string) error {
 	if a.d == nil {
 		return errors.New("supervisor not available")

@@ -16,6 +16,7 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/memory"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/distill"
 	"github.com/JianFeeeee/HomeAgent/internal/nlp"
+	"github.com/JianFeeeee/HomeAgent/internal/safeclose"
 )
 
 type RawRecord struct {
@@ -40,6 +41,10 @@ type DistillerConfig struct {
 }
 
 type Distiller struct {
+	pauseMu  sync.Mutex
+	paused   bool
+	pauseCh  chan struct{}
+	inflight sync.WaitGroup
 	mu       sync.Mutex
 	db       *memory.GraphDB
 	rawPath  string
@@ -93,6 +98,7 @@ func NewDistiller(db *memory.GraphDB, dataDir string, cfg DistillerConfig) *Dist
 		cfg:     cfg,
 		ctx:     ctx,
 		cancel:  cancel,
+		pauseCh: make(chan struct{}, 1),
 	}
 }
 
@@ -253,13 +259,92 @@ func (d *Distiller) distillLoop() {
 	ticker := time.NewTicker(d.cfg.Interval)
 	defer ticker.Stop()
 	for {
+		// ★ 伪关机门（Quiesce/Resume）：迁移数据目录时必须完全不写。
+		//
+		// 为什么不用 cancel：cancel 是**不可逆**的，恢复只能重建整个 Distiller
+		// （而它持有 rawPath/records 状态）。迁移要"停下来→搬→再起来" ⇒ 需要可逆。
+		if paused := d.waitNotPaused(); paused {
+			return
+		}
 		select {
 		case <-ticker.C:
+			if d.isPaused() {
+				continue // 暂停期间跳过本轮，避免"刚好卡在检查后开始写"
+			}
+			d.inflight.Add(1)
 			d.distillOnce()
+			d.inflight.Done()
 		case <-d.ctx.Done():
 			return
 		}
 	}
+}
+
+// waitNotPaused 阻塞到未被暂停；返回 true 表示 ctx 已取消（应退出循环）。
+func (d *Distiller) waitNotPaused() bool {
+	for d.isPaused() {
+		select {
+		case <-d.pauseCh: // 被 Resume 唤醒，重新检查
+		case <-d.ctx.Done():
+			return true
+		}
+	}
+	return false
+}
+
+func (d *Distiller) isPaused() bool {
+	d.pauseMu.Lock()
+	defer d.pauseMu.Unlock()
+	return d.paused
+}
+
+// Pause 伪关机：停止写入并**等待在途蒸馏完成**（可逆）。
+//
+// 语义保证（迁移依赖这三条）：
+//  1. 返回后**不会再有新的** distillOnce 开始
+//  2. 已在跑的那次 distillOnce 会**跑完**（inflight 归零才返回）
+//     ——否则迁移会搬走一个写了一半的库
+//  3. 幂等：重复 Pause 不报错
+func (d *Distiller) Pause() error {
+	d.pauseMu.Lock()
+	if d.paused {
+		d.pauseMu.Unlock()
+		return nil
+	}
+	d.paused = true
+	d.pauseMu.Unlock()
+
+	// 等在途的那一次结束（最多等到 ctx 取消）
+	//
+	// ★ 用 safeclose.Safe 而不是裸 close：本仓 close 纪律要求"只要调 close
+	// 就要有前置检查"（见 internal/safeclose 的判据）。这里虽然当前只有
+	// 一个 goroutine 会 close，但将来加一条错误/超时/重连路径就可能变成两次，
+	// 而那次改动看起来与 close 无关 ⇒ 退出路径 panic。
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	go func() { d.inflight.Wait(); safeclose.Safe(&doneOnce, done) }()
+	select {
+	case <-done:
+		return nil
+	case <-d.ctx.Done():
+		return nil
+	}
+}
+
+// Resume 唤醒：允许再次写入。
+func (d *Distiller) Resume() error {
+	d.pauseMu.Lock()
+	was := d.paused
+	d.paused = false
+	d.pauseMu.Unlock()
+	if was {
+		// 唤醒所有在 waitNotPaused 上等的循环（非阻塞广播）
+		select {
+		case d.pauseCh <- struct{}{}:
+		default:
+		}
+	}
+	return nil
 }
 
 func (d *Distiller) distillOnce() {

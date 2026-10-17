@@ -9,14 +9,14 @@ import (
 )
 
 var (
-	kernel32                       = syscall.NewLazyDLL("kernel32.dll")
-	procGetConsoleMode             = kernel32.NewProc("GetConsoleMode")
-	procSetConsoleMode             = kernel32.NewProc("SetConsoleMode")
-	procGetStdHandle               = kernel32.NewProc("GetStdHandle")
+	kernel32           = syscall.NewLazyDLL("kernel32.dll")
+	procGetConsoleMode = kernel32.NewProc("GetConsoleMode")
+	procSetConsoleMode = kernel32.NewProc("SetConsoleMode")
+	procGetStdHandle   = kernel32.NewProc("GetStdHandle")
 )
 
 const (
-	stdInputHandle  = ^uint32(9) + 1 // -10
+	stdInputHandle                  = ^uint32(9) + 1 // -10
 	enableVirtualTerminalProcessing = 0x0004
 	enableProcessedOutput           = 0x0001
 	enableWrapAtEOLOutput           = 0x0002

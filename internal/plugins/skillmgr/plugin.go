@@ -55,7 +55,7 @@ type SkillEntry struct {
 }
 
 type Plugin struct {
-	name     string
+	name      string
 	skillsDir string
 
 	mu     sync.RWMutex

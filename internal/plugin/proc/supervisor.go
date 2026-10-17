@@ -2,6 +2,7 @@ package proc
 
 import (
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"log"
 	"sort"
 	"sync"
@@ -137,7 +138,8 @@ func (s *Supervisor) StopAll(timeout time.Duration) {
 	}
 
 	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
+	var doneOnce sync.Once
+	go func() { wg.Wait(); safeclose.Safe(&doneOnce, done) }()
 
 	if timeout <= 0 {
 		timeout = stopGracePeriod * 2

@@ -1,6 +1,7 @@
 // Package recovery 实现 L1 failback 的确定性恢复梯子与 guard↔worker 之间的
 // 恢复任务/结果文件协议。整个梯子无 token 消耗（除 rescue 源 QuickChat 复检外）：
-//   probe(main 可达) → 还原 DNS/proxy → probe → 还原 config 快照+ReloadFromConfig → probe
+//
+//	probe(main 可达) → 还原 DNS/proxy → probe → 还原 config 快照+ReloadFromConfig → probe
 package recovery
 
 import (
@@ -79,12 +80,12 @@ func LoadTask(path string) (*Task, error) {
 type Result struct {
 	Attempt        int       `json:"attempt"`
 	Success        bool      `json:"success"`
-	Cause          string    `json:"cause"`            // 判定出的根因类（取 diag / 梯子命中）
-	NetworkOK      bool      `json:"network_ok"`       // 网络（resolv/hosts）是否与基线一致
-	RestoredNet    []string  `json:"restored_net"`     // 已还原的网络文件
-	ConfigRestored bool      `json:"config_restored"`  // 是否还原 LLM 配置快照
-	QuickChatOK    bool      `json:"quickchat_ok"`     // 最后用 rescue 源复检是否可达
-	Steps          []string  `json:"steps"`            // 走过的恢复步骤
+	Cause          string    `json:"cause"`           // 判定出的根因类（取 diag / 梯子命中）
+	NetworkOK      bool      `json:"network_ok"`      // 网络（resolv/hosts）是否与基线一致
+	RestoredNet    []string  `json:"restored_net"`    // 已还原的网络文件
+	ConfigRestored bool      `json:"config_restored"` // 是否还原 LLM 配置快照
+	QuickChatOK    bool      `json:"quickchat_ok"`    // 最后用 rescue 源复检是否可达
+	Steps          []string  `json:"steps"`           // 走过的恢复步骤
 	Message        string    `json:"message"`
 	Timestamp      time.Time `json:"timestamp"`
 }
@@ -106,12 +107,12 @@ type ConfigRestorer func() (int, error)
 
 // Ladder 确定性恢复梯子。
 type Ladder struct {
-	ResultFile      string
-	Attempt         int
-	Probe           Prober
-	RestoreNetwork  NetworkRestorer
-	RestoreConfig   ConfigRestorer
-	Log             func(format string, args ...interface{})
+	ResultFile     string
+	Attempt        int
+	Probe          Prober
+	RestoreNetwork NetworkRestorer
+	RestoreConfig  ConfigRestorer
+	Log            func(format string, args ...interface{})
 }
 
 // Run 执行一次恢复梯子并返回结论（同时持久化到 ResultFile）。错误仅表示梯子

@@ -146,14 +146,17 @@ func TestRealPlugin_DeepSearchStatusInvoke(t *testing.T) {
 // CAPTCHA 等**外部条件**，与代码是否正确无关。
 //
 // 此前这条测试把它们一视同仁地判红：实测失败信息是
-//   brave(Suspended: too many requests), duckduckgo(CAPTCHA), google cse(Suspended: ...)
+//
+//	brave(Suspended: too many requests), duckduckgo(CAPTCHA), google cse(Suspended: ...)
+//
 // 于是「上游限流」被当成「搜索能力坏了」。更糟的是它**不可控地随机红**：
 // 用 A/B 对照实测（同一时段连跑 20 轮）干净树也复现 2 次失败，
 // 与任何代码改动无关 —— 这种判据会让真正的回归淹没在噪声里。
 //
 // 现在的语义：
-//   上游限流/CAPTCHA ⇒ t.Skip（带明确理由，不静默通过）
-//   其他异常         ⇒ t.Fatalf/Fail（真回归）
+//
+//	上游限流/CAPTCHA ⇒ t.Skip（带明确理由，不静默通过）
+//	其他异常         ⇒ t.Fatalf/Fail（真回归）
 func upstreamUnavailable(text string) bool {
 	// 插件只有在「无任何结果」时才输出这句；有结果时不会出现。
 	return strings.Contains(text, "未返回结果")

@@ -1,0 +1,18 @@
+{
+  "_comment": "内核模块依赖声明（过渡期形态）。模块接口接入后由登记包自动产出，此文件废止。",
+  "_note": "requires 是\"我需要谁已就绪\"（设施名），不是\"我要在谁之后\"。",
+  "modules": [
+    {"name": "config",   "provides": ["config", "config-write"]},
+    {"name": "security", "provides": ["crypto", "keystore"], "requires": ["config"]},
+    {"name": "memory",   "provides": ["memory"],   "requires": ["config"]},
+    {"name": "lua",      "provides": ["lua"],      "requires": ["config"]},
+    {"name": "llm",      "provides": ["llm"],      "requires": ["lua", "keystore"]},
+    {"name": "tracker",  "provides": ["tracker"],  "requires": ["config"]},
+    {"name": "textmem",  "provides": ["textmem"],  "requires": ["config"]},
+    {"name": "docmem",   "provides": ["docmem"],   "requires": ["config"]},
+    {"name": "knowledge","provides": ["knowledge"],"requires": ["config", "docmem"]},
+    {"name": "multimodal","provides": ["multimodal"],"requires": ["config"]},
+    {"name": "stagehost","provides": ["stagehost","plugins"], "requires": ["memory", "textmem"]},
+    {"name": "agent",    "provides": ["agent"],    "requires": ["llm", "memory", "stagehost", "tracker", "knowledge"]}
+  ]
+}

@@ -90,10 +90,19 @@ var methodCapability = map[string]Capability{
 	// 自身配置读写与元信息属基础能力
 	MethodSettingsGet:         CapCore,
 	MethodSettingsSet:         CapCore,
+	MethodSettingsSetSecret:   CapCore,
+	MethodSettingsGetSecret:   CapCore,
 	MethodSettingsList:        CapCore,
 	MethodSettingsDefs:        CapCore,
 	MethodSettingsRegisterDef: CapCore,
 	MethodSettingsDataDir:     CapCore,
+	MethodSecretsAvailable:    CapCore,
+	MethodSecretsStore:        CapCore,
+	MethodSecretsList:         CapCore,
+	MethodSecretsForget:       CapCore,
+	MethodSecretsFill:         CapCore,
+	MethodSecretsEncrypt:      CapCore,
+	MethodSecretsDecrypt:      CapCore,
 	// 生命周期自述（插件声明自己是否可自动重启）
 	MethodLifecycleAutoRestart: CapCore,
 	// 多模态内容块注入是工具返回值的一部分，不越权
@@ -151,9 +160,12 @@ var methodCapability = map[string]Capability{
 	MethodEventsUnsubscribe: CapEvents,
 
 	// ---- 插件管理 ----
-	MethodPluginReloadOne:  CapPluginMgr,
-	MethodPluginListLoaded: CapPluginMgr,
-	MethodPluginIsDisabled: CapPluginMgr,
+	MethodPluginReloadOne:           CapPluginMgr,
+	MethodPluginListLoaded:          CapPluginMgr,
+	MethodPluginIsDisabled:          CapPluginMgr,
+	MethodPluginMgrStop:             CapPluginMgr,
+	MethodPluginMgrStart:            CapPluginMgr,
+	MethodPluginMgrIsRuntimeStopped: CapPluginMgr,
 
 	// ---- 跨插件 / 核心配置 ----
 	MethodSettingsGetCore:    CapCrossPluginSettings,

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 
@@ -170,6 +171,7 @@ type EvtConsumer struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	done     chan struct{}
+	doneOnce sync.Once // close 纪律：见 internal/safeclose
 }
 
 type evtfdReader interface {
@@ -214,7 +216,7 @@ func (c *EvtConsumer) Run() {
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()
-		close(c.done)
+		safeclose.Safe(&c.doneOnce, c.done)
 	}()
 
 	buf := make([]byte, 8)
@@ -303,7 +305,7 @@ func (c *EvtConsumer) drainEvents() {
 // 若要在 Stop 之后释放 ringData（host.Close 会 munmap 整个区域），
 // 必须先 Stop() 再 Wait()。
 func (c *EvtConsumer) Stop() {
-	c.stopOnce.Do(func() { close(c.stop) })
+	safeclose.Safe(&c.stopOnce, c.stop)
 }
 
 // Wait 阻塞至 Run 退出。返回后 drainEvents 保证不会再访问 ringData。

@@ -166,6 +166,22 @@ const (
 	MethodSettingsDump        = "settings.dump"        // 44
 	MethodSettingsPlugins     = "settings.plugins"     // 45
 	MethodSettingsDataDir     = "settings.dataDir"     // 51
+	// 密文读写（强制加密，不看键名）—— 与 settings.set/get 的区别是
+	// 这两个**必然**走加密路径，用于插件用中性键名存凭据的场景。
+	MethodSettingsSetSecret = "settings.setSecret" // 52
+	MethodSettingsGetSecret = "settings.getSecret" // 53
+
+	// 变量库（全局共享，非 per-plugin；见 internal/security 与 corehandler_secrets.go）。
+	//
+	// 与 settings 的分工是本质的：settings 是**每个插件自己的**配置，
+	// secrets 是**全进程共享**的变量库单例（主/子/驻留子 agent 与全部插件共用）。
+	MethodSecretsAvailable = "secrets.available" // 32
+	MethodSecretsStore     = "secrets.store"     // 33
+	MethodSecretsList      = "secrets.list"      // 34
+	MethodSecretsForget    = "secrets.forget"    // 35
+	MethodSecretsFill      = "secrets.fill"      // 36
+	MethodSecretsEncrypt   = "secrets.encrypt"   // 46
+	MethodSecretsDecrypt   = "secrets.decrypt"   // 47
 
 	// LLM 源（原 case 19/20/37）
 	MethodLLMListSources   = "llm.listSources"   // 19
@@ -188,6 +204,14 @@ const (
 	MethodPluginReloadOne  = "plugin.reloadOne"  // 48
 	MethodPluginListLoaded = "plugin.listLoaded" // 49
 	MethodPluginIsDisabled = "plugin.isDisabled" // 50
+	// ---- 运行态启停（设计 §2.6.7）：与 isDisabled（持久态）分开 ----
+	//
+	// ★ 为何必须桥接：子进程插件走本桥，未在此登记的方法会被
+	// corehandler 直接拒（"未知 method"）⇒ SDK 上加了方法但插件**调不通**。
+	// 同进程插件（.so）直接调 SDK，不受影响 —— 这个不对称容易漏。
+	MethodPluginMgrStop             = "plugin.mgrStop"             // 51
+	MethodPluginMgrStart            = "plugin.mgrStart"            // 52
+	MethodPluginMgrIsRuntimeStopped = "plugin.mgrIsRuntimeStopped" // 53
 
 	// 共享段锁仲裁（新增，无对应 method id —— C ABI 下不存在跨进程锁概念）
 	MethodStageLock   = "stage.lock"

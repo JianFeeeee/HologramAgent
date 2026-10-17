@@ -678,3 +678,24 @@ go test -count=1 ./... && go test -race -count=1 ./internal/agent/... ./internal
 - 本设计在 `feature/input-semantics` 之后的特性分支上开发，完成后合回 `main`。
 - 若需要动公开 SDK（例如新增 `agent_*` 控制面原语、通道授权字段），按"**只增不减、签名不改**"
   追加，并按 `docs/git-branching.md` §八 的接线清单同步（含 hmapdev 模板）与 SDK 仓版本（§七）。
+
+---
+
+## 18. 与 `kernel-modularization-design.md` 的关系
+
+本文 §4.1 的 **inputch 共享总线**（父与驻留子共用同一份 `ChannelRegistry`）是
+`kernel-modularization-design.md` §5 引用的"运行期共享总线的**既有先例**"：
+
+| | 本文的 inputch 共享总线 | 该文的启动期依赖声明 |
+|---|---|---|
+| 时机 | **运行期**（消息路由、按 Owner 投递） | **启动期**（模块装配顺序） |
+| 机制 | 共享登记表 + 惰性查找 | `Requires`/`Provides` + 拓扑排序 |
+| 失败语义 | 找不到 owner ⇒ 兜底给根并留痕（**不吞输入**） | 缺依赖 ⇒ **拒绝启动** |
+
+**★ 两者不可互相替代**：inputch 总线解决的是"运行期谁处理这条消息"，
+它对"启动顺序"没有任何保证；而启动期需要的是**拓扑确定性**，
+不是"事件到达时再决定"（见该文 §2.2 的反对理由）。
+
+**实测关联**（2026-10-16）：驻留子被通道插件的用户权限模型误拦，
+修法是在工具调用帧上加 `comefrom` 标识（内核侧 `internal/agent/core/comefrom.go`）。
+这**不是**装配顺序问题，而是**运行期身份传递**问题——正好印证上表的区分。

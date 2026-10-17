@@ -143,9 +143,9 @@ func TestLadderExhausted(t *testing.T) {
 	p.set("after-network", false)
 	p.set("after-config", false)
 	l := &Ladder{
-		ResultFile: ResultPath(dir),
-		Attempt:    1,
-		Probe:      p.probe,
+		ResultFile:     ResultPath(dir),
+		Attempt:        1,
+		Probe:          p.probe,
 		RestoreNetwork: func() ([]string, error) { return nil, nil },
 		RestoreConfig:  func() (int, error) { return 0, nil },
 	}

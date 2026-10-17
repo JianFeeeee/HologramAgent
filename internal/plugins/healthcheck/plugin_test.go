@@ -32,7 +32,7 @@ func (tc *toolCapture) RegisterTool(name string, def sdk.ToolDef, handler sdk.To
 	return nil
 }
 func (tc *toolCapture) RegisterStage(stage sdk.Stage, handler sdk.StageHandler) {}
-func (tc *toolCapture) RegisterAPI(name string) error                          { return nil }
+func (tc *toolCapture) RegisterAPI(name string) error                           { return nil }
 
 func newTestSDK(cfg sdk.SDKConfig) *sdk.PluginSDK {
 	if cfg.Settings == nil {
@@ -558,5 +558,3 @@ func TestReportsToChecks(t *testing.T) {
 		t.Error("fail report must NOT pass")
 	}
 }
-
-

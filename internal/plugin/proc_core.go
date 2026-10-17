@@ -34,6 +34,14 @@ func (c procCore) PluginName() string { return c.sdk.PluginName() }
 // errUnavailable，若把「类型化的 nil」透过去，判空会失效——插件收到的是
 // panic 而不是"能力不可用"。
 
+// Secrets 转发到内核的**全局**变量库（进程级单例，不是 per-plugin 配置）。
+func (c procCore) Secrets() pubsdk.SecretsAPI {
+	if v := c.sdk.Secrets(); v != nil {
+		return v
+	}
+	return nil
+}
+
 func (c procCore) Settings() pubsdk.SettingsAPI {
 	if s := c.sdk.Settings(); s != nil {
 		return s

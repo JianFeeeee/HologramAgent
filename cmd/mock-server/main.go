@@ -26,11 +26,11 @@ type Kernel struct {
 }
 
 type Setting struct {
-	Settings map[string]interface{}            `json:"settings"`
-	Meta     map[string]interface{}            `json:"meta"`
-	Plugins  []string                          `json:"plugins"`
-	PluginMeta map[string]interface{}          `json:"plugin_meta"`
-	DisabledPlugins []string                   `json:"disabled_plugins"`
+	Settings        map[string]interface{} `json:"settings"`
+	Meta            map[string]interface{} `json:"meta"`
+	Plugins         []string               `json:"plugins"`
+	PluginMeta      map[string]interface{} `json:"plugin_meta"`
+	DisabledPlugins []string               `json:"disabled_plugins"`
 }
 
 type Plugin struct {
@@ -42,12 +42,12 @@ type Plugin struct {
 }
 
 type PluginInfo struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Version     string        `json:"version"`
-	Enabled     bool          `json:"enabled"`
-	Builtin     bool          `json:"builtin"`
-	Tools       []PluginTool  `json:"tools"`
+	Name        string       `json:"name"`
+	Description string       `json:"description"`
+	Version     string       `json:"version"`
+	Enabled     bool         `json:"enabled"`
+	Builtin     bool         `json:"builtin"`
+	Tools       []PluginTool `json:"tools"`
 }
 
 type PluginTool struct {

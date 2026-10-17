@@ -2,6 +2,8 @@ package proc
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -28,40 +30,47 @@ func TestCapability_AllMethodsClassified(t *testing.T) {
 		MethodOutputInvoke:  true,
 	}
 
-	// 插件→内核的全部 method（手工清单，与 protocol.go 对照）
-	pluginToKernel := []string{
-		MethodHandshake,
-		MethodToolRegister, MethodStageRegister, MethodOutputRegister,
-		MethodAPIRegister, MethodInputRegister,
-		MethodIOInjectText, MethodIOInjectInterrupt, MethodIOInjectTextNoMem,
-		MethodIOInjectSync, MethodIOSetToolBlocks,
-		MethodIOInjectMedia, MethodIOInjectMediaSync, MethodIOInjectInterruptMedia,
-		MethodLifecycleAutoRestart,
-		MethodMemoryRecall, MethodMemoryCommit, MethodMemoryIntrospect,
-		MethodMemoryMerge, MethodMemoryPurge,
-		MethodDocQuery, MethodDocInsert, MethodDocRemove, MethodDocStats,
-		MethodDocInsertMedia,
-		MethodKnowledgeSearch, MethodKnowledgeAdd, MethodKnowledgeList,
-		MethodTextMemoryAppend,
-		MethodSettingsGet, MethodSettingsSet, MethodSettingsRegisterDef,
-		MethodSettingsGetCore, MethodSettingsSetCore, MethodSettingsListCore,
-		MethodSettingsGetPlugin, MethodSettingsSetPlugin, MethodSettingsListPlugin,
-		MethodSettingsList, MethodSettingsDefs, MethodSettingsDump,
-		MethodSettingsPlugins, MethodSettingsDataDir,
-		MethodLLMListSources, MethodLLMSetSource, MethodLLMCurrentSource,
-		MethodSocialGetPerson, MethodSocialGetNetwork, MethodSocialGetTrait,
-		MethodSocialGetRelation, MethodSocialListPersons,
-		MethodEventsSubscribe, MethodEventsUnsubscribe,
-		MethodPluginReloadOne, MethodPluginListLoaded, MethodPluginIsDisabled,
-		MethodStageLock, MethodStageUnlock,
+	// ★ 从 protocol.go **源码**提取全部 method 常量，而不是维护手工清单。
+	//
+	// 为什么改：初版是手写清单，于是「新增 method 忘了登记能力」时
+	// 清单里也没有它 —— 测试照样绿，守卫形同虚设（这正是初版的目的所在，
+	// 却因实现方式而失效）。源码扫描让覆盖面**自动**跟上常量定义。
+	src, err := os.ReadFile("protocol.go")
+	if err != nil {
+		t.Fatalf("读 protocol.go 失败: %v", err)
+	}
+	re := regexp.MustCompile(`(?m)^\s*(Method[A-Za-z0-9_]+)\s*=\s*"([^"]+)"`)
+	matches := re.FindAllStringSubmatch(string(src), -1)
+	if len(matches) < 40 {
+		t.Fatalf("只从 protocol.go 提取到 %d 个 method 常量 —— 正则或文件结构变了，"+
+			"请修正本判据（否则它会假绿）", len(matches))
 	}
 
-	for _, m := range pluginToKernel {
-		if kernelToPlugin[m] {
-			continue
+	seen := 0
+	for _, m := range matches {
+		value := m[2]
+		if kernelToPlugin[value] {
+			continue // 内核→插件方向：不经 Handle，无需能力
 		}
-		if _, ok := capabilityOf(m); !ok {
-			t.Errorf("method %q 未登记能力归属 —— 会按 CapCore 放行，绕过权限检查", m)
+		seen++
+		if _, ok := capabilityOf(value); !ok {
+			t.Errorf("method %q (%s) 未登记能力归属 —— 会按 CapCore 放行，绕过权限检查",
+				value, m[1])
+		}
+	}
+	if seen == 0 {
+		t.Fatal("没有校验到任何 method —— 判据失效")
+	}
+
+	// 反向：能力表里的每一项都必须是 protocol.go 里真实存在的 method。
+	// 防「改了 method 名却只改一处」这类错位。
+	declared := map[string]bool{}
+	for _, m := range matches {
+		declared[m[2]] = true
+	}
+	for method := range methodCapability {
+		if !declared[method] {
+			t.Errorf("能力表里的 %q 在 protocol.go 里不存在（常量改名后漏改？）", method)
 		}
 	}
 }

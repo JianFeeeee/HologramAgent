@@ -201,6 +201,39 @@ func (d *Daemon) handleFailure(id types.AgentID, agent *agentInstance) {
 	d.restartAgent(id, agent)
 }
 
+// Restart 主动请求重建本单元（**热更新入口**）。
+//
+// ## 为什么需要这个导出方法
+//
+// 「换二进制而不 systemd restart」的能力一直都存在：worker 以
+// exitRestartRequested(42) 优雅退出 → guard 检测到 42 → 用**新二进制**
+// 重新拉起 worker（cmd/homed/guard.go 的 workerRestartRequested 分支）。
+//
+// 但此前**没有任何外部办法触发它** —— restartHandler 只被
+// handleFailure（健康检查失败）调用。于是"热更新"成了一项
+// 只有崩溃时才生效的能力，运维实际只能 systemctl restart。
+//
+// 本方法把那条通道接出来：语义与"健康检查判定需要重建"完全一致，
+// 但由人主动发起。
+//
+// ## 与 systemctl restart 的区别（为何优先用它）
+//
+//   - 不经过 systemd，**guard 进程保持存活**（双进程架构里 guard 是父）
+//   - 不计入失败轮次（agent.failCount 清零）
+//   - 有优雅停机：停插件、flush 配置、关 tracker、sup.Shutdown()
+//
+// 返回错误表示"没有注册真实重启通道"——那种情况下**不会**假装成功。
+func (d *Daemon) Restart(id types.AgentID) error {
+	d.mu.RLock()
+	agent, ok := d.agents[id]
+	d.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("agent %s 未注册", id)
+	}
+	d.restartAgent(id, agent)
+	return nil
+}
+
 func (d *Daemon) restartAgent(id types.AgentID, agent *agentInstance) {
 	agent.state = types.AgentStateStopped
 	agent.failCount = 0

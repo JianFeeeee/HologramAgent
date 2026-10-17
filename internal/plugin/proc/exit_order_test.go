@@ -17,7 +17,9 @@ import (
 // 解除整块 mmap）。
 //
 // 若 Exited() 先于 onExit 返回而关闭，就会出现：
-//   等待者 → 释放映射 → onExit 仍在读那块内存 → SIGSEGV
+//
+//	等待者 → 释放映射 → onExit 仍在读那块内存 → SIGSEGV
+//
 // 这正是 2026-09-25 全量测试偶发崩溃的根因（栈见 process.go 的 markExited 注释）。
 //
 // ============================ 为什么用原子标志而非 channel ============================
@@ -25,6 +27,7 @@ import (
 // 用一个在回调里置位的原子量 + 在收到关闭信号后立刻读它：
 //   - 修复前：关闭先发生，回调尚未跑 ⇒ 读到 false ⇒ 判红
 //   - 修复后：回调先跑完再关闭 ⇒ 读到 true ⇒ 判绿
+//
 // 用 atomic 而非普通 bool 是为了让「回调的写」与「测试的读」之间
 // 有明确的同步语义（否则是数据竞态，-race 下会报）。
 func TestProcess_OnExitCompletesBeforeExitedCloses(t *testing.T) {

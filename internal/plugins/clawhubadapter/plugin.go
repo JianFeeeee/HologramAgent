@@ -20,6 +20,7 @@ import (
 
 	"github.com/JianFeeeee/HomeAgent/internal/events"
 	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -44,6 +45,7 @@ func init() {
 }
 
 type Plugin struct {
+	stopChOnce   sync.Once
 	name         string
 	skillsDir    string
 	simulatorDir string
@@ -54,8 +56,8 @@ type Plugin struct {
 	dispatcher   *RegistryDispatcher
 	httpClient   *http.Client
 
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // pluginSingleton 内核单例引用（Start 时设置），供 SendToChannel/ChannelSender 使用
@@ -308,41 +310,41 @@ func (p *Plugin) ipcGoroutine(s *sdk.PluginSDK) {
 			p.mu.Lock()
 			simDir := p.simulatorDir
 			p.mu.Unlock()
-		if simDir == "" {
-			continue
-		}
-
-		// 1. Write settings snapshot for CLI config:get/config:list
-		settings := s.Settings().Dump()
-		if data, err := json.MarshalIndent(settings, "", "  "); err == nil {
-			os.WriteFile(filepath.Join(simDir, ".settings.json"), data, 0644)
-		}
-
-		// 2. Process pending settings changes from CLI config:set
-		pendingPath := filepath.Join(simDir, ".settings-pending.json")
-		if data, err := os.ReadFile(pendingPath); err == nil {
-			var pending map[string]interface{}
-			if json.Unmarshal(data, &pending) == nil {
-				for k, v := range pending {
-					s.Settings().Set(k, v)
-				}
+			if simDir == "" {
+				continue
 			}
-			os.Remove(pendingPath)
-		}
 
-		// 3. Process reload requests from CLI plugin:install
-		reloadPath := filepath.Join(simDir, ".reload-request")
-		if data, err := os.ReadFile(reloadPath); err == nil {
-			name := strings.TrimSpace(string(data))
-			if name != "" {
-				if err := p.reloadPlugin(name); err != nil {
-					log.Printf("[clawhubadapter] reload from CLI: %v", err)
-				} else {
-					log.Printf("[clawhubadapter] reloaded plugin from CLI request: %s", name)
-				}
+			// 1. Write settings snapshot for CLI config:get/config:list
+			settings := s.Settings().Dump()
+			if data, err := json.MarshalIndent(settings, "", "  "); err == nil {
+				os.WriteFile(filepath.Join(simDir, ".settings.json"), data, 0644)
 			}
-			os.Remove(reloadPath)
-		}
+
+			// 2. Process pending settings changes from CLI config:set
+			pendingPath := filepath.Join(simDir, ".settings-pending.json")
+			if data, err := os.ReadFile(pendingPath); err == nil {
+				var pending map[string]interface{}
+				if json.Unmarshal(data, &pending) == nil {
+					for k, v := range pending {
+						s.Settings().Set(k, v)
+					}
+				}
+				os.Remove(pendingPath)
+			}
+
+			// 3. Process reload requests from CLI plugin:install
+			reloadPath := filepath.Join(simDir, ".reload-request")
+			if data, err := os.ReadFile(reloadPath); err == nil {
+				name := strings.TrimSpace(string(data))
+				if name != "" {
+					if err := p.reloadPlugin(name); err != nil {
+						log.Printf("[clawhubadapter] reload from CLI: %v", err)
+					} else {
+						log.Printf("[clawhubadapter] reloaded plugin from CLI request: %s", name)
+					}
+				}
+				os.Remove(reloadPath)
+			}
 		}
 	}
 }
@@ -983,7 +985,9 @@ func (p *Plugin) loadOCPlugin(s *sdk.PluginSDK, dir, name string) error {
 	data, listErr := mgr.call("plugins/list", nil)
 	if listErr == nil && data != nil {
 		var result struct {
-			Plugins []struct{ Name string `json:"name"` } `json:"plugins"`
+			Plugins []struct {
+				Name string `json:"name"`
+			} `json:"plugins"`
 		}
 		if json.Unmarshal(data, &result) == nil {
 			for _, pl := range result.Plugins {
@@ -1131,7 +1135,8 @@ func ChannelSender() *Plugin {
 	return pluginSingleton
 }
 
-func (p *Plugin) loadPySidecar(s *sdk.PluginSDK, dir, name string) error {	simPath := filepath.Join(p.simulatorDir, "pysim.py")
+func (p *Plugin) loadPySidecar(s *sdk.PluginSDK, dir, name string) error {
+	simPath := filepath.Join(p.simulatorDir, "pysim.py")
 	if err := os.MkdirAll(p.simulatorDir, 0755); err != nil {
 		return fmt.Errorf("create simulator dir: %w", err)
 	}
@@ -1225,8 +1230,9 @@ func (p *Plugin) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// 关停 ipcGoroutine（stopCh），避免重载后旧 goroutine 残留导致线程累积
+	// 见 agentcli 同类注释：Once 不可重入，close 的守卫必须用独立 once。
 	p.stopOnce.Do(func() {
-		close(p.stopCh)
+		safeclose.Safe(&p.stopChOnce, p.stopCh)
 	})
 	for _, sp := range p.sidecars {
 		sp.Close()
@@ -1264,8 +1270,8 @@ func hasOCExtensions(pkgPath string) bool {
 	}
 	var pkg struct {
 		OpenClaw *struct {
-			Extensions         interface{} `json:"extensions"`
-			RuntimeExtensions  interface{} `json:"runtimeExtensions"`
+			Extensions        interface{} `json:"extensions"`
+			RuntimeExtensions interface{} `json:"runtimeExtensions"`
 		} `json:"openclaw"`
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {

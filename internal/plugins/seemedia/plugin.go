@@ -306,7 +306,8 @@ func (p *Plugin) handleSeeVideo(args map[string]interface{}) (interface{}, error
 // mediaBytes 按媒体块引用取回字节与 MIME。
 //
 // ★ CAS 淘汰后插件取媒体的唯一路径：块 ID（内容派生）就是媒体身份。
-//   取不到时返回 ok=false（“这个引用没媒体”是常态，不是错误）。
+//
+//	取不到时返回 ok=false（“这个引用没媒体”是常态，不是错误）。
 func (p *Plugin) mediaBytes(ref string) (data []byte, mime string, ok bool, err error) {
 	if p.sdk == nil || p.sdk.Memory() == nil {
 		return nil, "", false, fmt.Errorf("记忆系统不可用")

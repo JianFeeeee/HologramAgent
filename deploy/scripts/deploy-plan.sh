@@ -73,6 +73,25 @@ do_backup() {
   cp -a /etc/systemd/system/$SVC "$BAK/" 2>/dev/null || true
   info "已备份到: $BAK"
   info "  homed.bin / adapters / unit 文件"
+
+  # ★ E-2：数据备份必须**连密钥一起**，否则恢复到别的机器时解不开。
+  #
+  # 背景：config.db 里的敏感项与变量库 variables.json 是 AES-GCM 加密的，
+  # 密钥来自 systemd credential / $HOMED_SECURITY_KEY / <data>/security.key。
+  # 只搬 config.db 而不搬密钥 ⇒ 新机器上密文全部解不开。内核会在启动时
+  # 审计并告警（“检测到 N 条密文无法用当前主密钥解开”），但那时已经太晚。
+  #
+  # ⚠ 密钥与数据**必须分开保管**：把两者放进同一个 tar 包，
+  #   等于把加密降级成明文（拿到包的人两者都有）。
+  info ""
+  info "★ 数据备份提示（E-2）："
+  info "  config.db / variables.json 里的密钥字段是加密存储的。"
+  info "  跨机器恢复必须同时具备**原机器的密钥**，否则内核会报「密文无法解开」。"
+  info "  密钥位置（按优先级）：systemd credential homed_security_key"
+  info "                        \$HOMED_SECURITY_KEY"
+  info "                        ${DATA}/security.key （+ security.keyring 若有轮换）"
+  info "  ⚠ 请把密钥与数据**分开存放**：放同一个包里等于没有加密。"
+  info "  同机恢复只需照常恢复数据目录，密钥不变即可。"
   # 回滚命令
   cat > "$BAK/ROLLBACK.sh" <<RB
 #!/bin/bash

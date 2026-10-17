@@ -9,11 +9,12 @@ import (
 // prodCopySrc 返回生产库副本路径。
 //
 // ★ 优先读环境变量 HA_PROD_DB；未设置时用一个**占位路径**，
-//   它在 CI 与绝大多数机器上都不存在 ⇒ 上层 os.ReadFile 失败 ⇒ t.Skip。
 //
-//   取快照用（不要直接指生产库，判据会写）：
-//	sqlite3 <生产库> ".backup /tmp/graph-copy.db"
-//	HA_PROD_DB=/tmp/graph-copy.db go test -run ProdCopy ./internal/memory/
+//	  它在 CI 与绝大多数机器上都不存在 ⇒ 上层 os.ReadFile 失败 ⇒ t.Skip。
+//
+//	  取快照用（不要直接指生产库，判据会写）：
+//		sqlite3 <生产库> ".backup /tmp/graph-copy.db"
+//		HA_PROD_DB=/tmp/graph-copy.db go test -run ProdCopy ./internal/memory/
 func prodCopySrc() string {
 	if p := os.Getenv("HA_PROD_DB"); p != "" {
 		return p

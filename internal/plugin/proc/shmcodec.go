@@ -325,7 +325,6 @@ func (s *Segment) ReadInto(sc *pubsdk.StageContext) error {
 		}
 	}
 
-
 	var respPtr *string
 	if s.getFlag(flagResponseSet) {
 		r, err := getStr(fResponse)

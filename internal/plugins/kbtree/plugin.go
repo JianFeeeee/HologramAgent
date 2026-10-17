@@ -52,7 +52,7 @@ type Plugin struct {
 	// expose 是暴露范围（nil/空 = 全部可见）。见 scope.go。
 	expose *scope
 	// kn 是知识库句柄的测试注入口（生产从 sdkRef 取）。
-	kn sdk.KnowledgeAPI
+	kn     sdk.KnowledgeAPI
 	server *http.Server
 	mux    *http.ServeMux
 	// 启动时未显式配置 token 则自动生成（与 remotedevice 同策略）

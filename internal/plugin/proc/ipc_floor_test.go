@@ -62,9 +62,10 @@ func BenchmarkIPC_OSFloorRawPipeEcho(b *testing.B) {
 // BenchmarkIPC_MinimalRPC 最简 RPC 往返：无载荷、不经共享帧。
 //
 // ★ 选 output.invoke 而不是 tool.invoke：前者不要求插件注册任何东西，
-//   插件会回一个「未实现」错误 —— 但**往返已经完成**。
-//   本基准测的是**传输成本**，因此应答内容无关紧要
-//   （且 Call 的错误已被忽略，不会中断计时）。
+//
+//	插件会回一个「未实现」错误 —— 但**往返已经完成**。
+//	本基准测的是**传输成本**，因此应答内容无关紧要
+//	（且 Call 的错误已被忽略，不会中断计时）。
 func BenchmarkIPC_MinimalRPC(b *testing.B) {
 	bin := buildBenchPlugin(b, "echoplugin.go")
 	p, err := Spawn("echo", bin, Options{Handler: noopHandler})

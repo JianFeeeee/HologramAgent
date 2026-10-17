@@ -2,6 +2,7 @@ package proc
 
 import (
 	"fmt"
+	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
 	"sync"
 	"time"
 )
@@ -76,9 +77,10 @@ func (l *stageLock) Acquire(plugin string) error {
 	l.ownerMu.Unlock()
 
 	acquired := make(chan struct{})
+	var acquiredOnce sync.Once
 	go func() {
 		l.mu.Lock()
-		close(acquired)
+		safeclose.Safe(&acquiredOnce, acquired)
 	}()
 
 	select {
