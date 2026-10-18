@@ -315,6 +315,65 @@ func (a *Agent) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
 	return rc.agent.sched.takeAllPendingEvents(), nil
 }
 
+// FinishResident 是**驻留子终结的唯一入口**：停止调度 → 回收残余任务 →
+// 处置 → 收割记忆 → 销毁。
+//
+// ## 它修的是什么竞态（2026-10-18）
+//
+// 原实现把这件事拆成三步，由控制面工具依次调用：
+//
+//	ApplyResidual(id, policy)   // 取队列
+//	ReclaimResident / DestroyResident(id)
+//
+// 于是取完到销毁之间有一个窗口：子仍在运行、继续收新消息、开始执行，
+// 而它马上会被销毁 —— 那些任务的结果**永远无人认领**，且日志无痕迹
+// （既不在"残余清单"里，也没跑到出结果）。用 ResponseCh 的同步调用方
+// 更糟：Stop 的 drainPendingInterrupts 会给它补一个 "skipped"，
+// 调用方看到"已跳过"，而任务其实执行过。
+//
+// ## 为什么是"停止调度"而不是"冻结队列"
+//
+// 我第一版加过 `scheduler.freeze`（让 nextRef 返回 nextNone）。那是错的：
+//
+//	· 它凭空多出一个状态位，而调度器**本来就有**停止语义 —— `ctx.Done()`；
+//	· 真正的问题是 schedulerLoop 只在"队列空"时才 select ctx.Done，
+//	  只要队列非空就永远不看它（见 schedulerLoop 里的修复）。
+//	· 一个状态机的缺陷用另一个状态去掩盖，会让"到底谁负责停"变得含糊。
+//
+// 现在：cancel 关 ctx.Done ⇒ 调度循环在**下一次取任务前**就退出
+// （不再取新任务），已在执行的那一条跑完后循环自然结束。
+// 等它真正停下，再回收队列 —— 此刻队列是静止的，回收没有歧义。
+func (a *Agent) FinishResident(id string, policy ResidualPolicy, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
+	a.residentMu.Lock()
+	rc := a.residents[id]
+	a.residentMu.Unlock()
+	if rc == nil || rc.agent == nil {
+		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
+	}
+	child := rc.agent
+
+	// ① 停止调度：关 ctx.Done。调度循环在下次取任务前退出。
+	child.cancel()
+	// ② 等它真的停下（已在执行的那条会跑完，不再取新的）。
+	child.sched.waitSchedulerStopped(schedStopTimeout, id)
+
+	// ③ 此刻队列静止，回收残余任务没有歧义。
+	events := child.sched.takeAllPendingEvents()
+	n, msg, err = a.applyResidualEvents(id, events, policy)
+	if err != nil {
+		return n, msg, err
+	}
+
+	// ④ 收割记忆（必须在 Destroy 之前 —— Destroy 会关掉 temp）。
+	if onDestroy != nil {
+		if herr := onDestroy(rc); herr != nil {
+			return n, msg, herr
+		}
+	}
+	// ⑤ 销毁（内部会 Stop 子、关 temp、放通道）。
+	return n, msg, a.DestroyResident(id)
+}
+
 // ApplyResidual 按父给出的策略处置一个驻留子的残余任务。
 //
 // keep：逐条转回父自己的队列（保留原事件，含 ResponseCh 与来源/通道）；
@@ -323,10 +382,23 @@ func (a *Agent) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
 // 无论哪种，带 ResponseCh 的都要给终态，否则 cli/a2a 这类无超时同步调用方
 // 会永久挂起（设计 §7 I5）。
 func (a *Agent) ApplyResidual(id string, policy ResidualPolicy) (int, string, error) {
-	events, err := a.TakeResidual(id)
-	if err != nil {
-		return 0, "", err
+	// ⚠️ 本函数只取残余、**不终止子**，因此取完之后子仍在运行 ——
+	// 控制面工具请用 FinishResident（停止调度 + 取 + 处置 + 销毁，一步完成），
+	// 否则"取完到销毁之间"子还会收新任务，那些任务的结果随销毁丢失。
+	//
+	// 保留它是为了 TakeResidual 的配对语义（先取后自己决定），以及既有判据。
+	a.residentMu.Lock()
+	rc := a.residents[id]
+	a.residentMu.Unlock()
+	if rc == nil || rc.agent == nil {
+		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
 	}
+	events := rc.agent.sched.takeAllPendingEvents()
+	return a.applyResidualEvents(id, events, policy)
+}
+
+// applyResidualEvents 按策略处置已取走的残余任务（keep 转回父 / drop 留痕丢弃）。
+func (a *Agent) applyResidualEvents(id string, events []*agentIO.InputEvent, policy ResidualPolicy) (int, string, error) {
 	if len(events) == 0 {
 		return 0, "无残余任务", nil
 	}
@@ -475,6 +547,30 @@ func (a *Agent) CompressResident(id string) (int, error) {
 // → 丢弃 temp → **取消**该驻留子。
 //
 // keep 由父决定"哪些纳入记忆"；为 nil 时表示全部合入。
+// harvestResidentMemory 把子 temp 里的活跃三元组收割进主记忆，返回合入条数。
+//
+// 必须在 Destroy **之前**调用：Destroy 会 Close 掉 temp。
+func (a *Agent) harvestResidentMemory(rc *residentChild, keep ...func([]InputchRecord, []memory.Triple) []memory.Triple) (int, error) {
+	if rc == nil || rc.light == nil || rc.light.Temp() == nil || a.mainGraph() == nil {
+		return 0, nil
+	}
+	exported, err := rc.light.Temp().ExportTriples(0)
+	if err != nil {
+		return 0, fmt.Errorf("读取子 temp 失败: %w", err)
+	}
+	selected := exported
+	if len(keep) > 0 && keep[0] != nil {
+		selected = keep[0](rc.info().Table, exported)
+	}
+	if len(selected) == 0 {
+		return 0, nil
+	}
+	if _, _, err := a.mainGraph().Commit(selected, "reclaim/"+rc.id, 0); err != nil {
+		return 0, fmt.Errorf("合入主记忆失败: %w", err)
+	}
+	return len(selected), nil
+}
+
 func (a *Agent) ReclaimResident(id string, keep func([]InputchRecord, []memory.Triple) []memory.Triple) (ResidentInfo, error) {
 	a.residentMu.Lock()
 	rc, ok := a.residents[id]
@@ -484,23 +580,13 @@ func (a *Agent) ReclaimResident(id string, keep func([]InputchRecord, []memory.T
 	}
 	info := rc.info()
 
-	var promoted int
 	// 收割：读 temp 的全部活跃三元组（比通过图记录选择更直接）。
-	if rc.light != nil && rc.light.Temp() != nil && a.mainGraph() != nil {
-		exported, err := rc.light.Temp().ExportTriples(0)
-		if err != nil {
-			return info, fmt.Errorf("读取子 temp 失败: %w", err)
-		}
-		selected := exported
-		if keep != nil {
-			selected = keep(info.Table, exported)
-		}
-		if len(selected) > 0 {
-			if _, _, err := a.mainGraph().Commit(selected, "reclaim/"+id, 0); err != nil {
-				return info, fmt.Errorf("合入主记忆失败: %w", err)
-			}
-			promoted = len(selected)
-		}
+	//
+	// 逻辑抽到 harvestResidentMemory，供 FinishResident 的 onDestroy 复用 ——
+	// 那里也必须**在 Destroy 之前**收割（Destroy 会关掉 temp）。
+	promoted, herr := a.harvestResidentMemory(rc, keep)
+	if herr != nil {
+		return info, herr
 	}
 
 	// 收割完成 ⇒ 取消该驻留子（回收是取消语义，≠ 压缩）。

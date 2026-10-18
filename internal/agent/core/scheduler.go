@@ -1233,6 +1233,27 @@ func (a *Agent) schedulerLoop() {
 	}()
 
 	for {
+		// ★★ 退出检查必须在**取任务之前**（2026-10-18 修）。
+		//
+		// 原实现只在"队列空"分支里 select ctx.Done：
+		//
+		//	if kind == nextNone {
+		//		select { ... case <-a.ctx.Done(): return }
+		//	}
+		//
+		// 于是只要队列里有任务，循环就**永远不会看 ctx.Done** ——
+		// 一直取、一直执行，直到队列被取空才可能退出。
+		//
+		// 这就是"cancel 了却停不下来"的根因：销毁流程调 child.cancel()
+		// 之后，子仍把队列里的任务全取走执行，而那些任务的结果随销毁丢失。
+		// （之前我为此加了一个 freeze 标志绕过 —— 那是把一个状态机的
+		//   缺陷用另一个状态掩盖；正确的修法是在这里尊重 ctx。）
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+		}
+
 		a.pumpInbox()
 
 		t, f, kind := a.sched.nextRef()
@@ -1259,6 +1280,35 @@ func (a *Agent) schedulerLoop() {
 		}
 		a.executeNewTask(t)
 	}
+}
+
+// schedStopTimeout 是等调度器停下的上限。
+//
+// 不能无限等：子可能正跑一个长工具调用（几十秒）。超时就如实记日志并继续 ——
+// 宁可让那条正在执行的任务由 Stop 的 drainPendingInterrupts 补一个终态，
+// 也不要让父的控制面调用永久挂住。
+const schedStopTimeout = 5 * time.Second
+
+// waitSchedulerStopped 等调度循环不再持有运行中的任务。
+//
+// 前提：调用方已 cancel（关 ctx.Done）。调度循环在**下次取任务前**看到
+// ctx.Done 就退出（见 schedulerLoop 顶部的修复），于是 running 归零。
+//
+// 为什么不用一个 frozen 标志：调度器本来就有停止语义（ctx），
+// 再引入一个状态会让"谁负责停"含糊，且忘了解除就永久僵住。
+func (s *scheduler) waitSchedulerStopped(timeout time.Duration, name string) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		running := s.running
+		s.mu.Unlock()
+		if running == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	log.Printf("[resident] %s 调度器 %s 内未停止（仍在执行任务），"+
+		"残余任务可能少回收一条（那条会由 Stop 补终态）", name, timeout)
 }
 
 // pumpInbox 把 channel 里**已就绪**的输入搬进就绪队列（非阻塞）。

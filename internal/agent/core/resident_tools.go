@@ -125,27 +125,35 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 	case "reclaim":
 		id := strArg(tc, "id")
 		// 残余任务先由父**显式**决定保留还是丢弃（用户 2026-09-19 要求）。
-		// 不传 residual 时默认 keep：宁可多做一件，不可默默丢一条。
-		residual, rmsg, rerr := a.ApplyResidual(id, residualPolicyOf(tc))
-		if rerr != nil {
-			return fmt.Sprintf("处置残余任务失败: %v", rerr)
+		//
+		// ★ 用 FinishResident 一把做完，不要拆成 ApplyResidual + ReclaimResident：
+		// 拆开时"解冻到销毁"之间子会继续收新任务，那些任务的结果随子一起丢失
+		// 且不留痕迹（详见 FinishResident 的说明）。
+		// onDestroy 里做记忆收割：读子 temp 的活跃三元组并合入主记忆。
+		// 必须在 Destroy 之前 —— Destroy 会关掉 temp（这正是原先
+		// ReclaimResident 内部做的顺序）。
+		var promoted int
+		residual, rmsg, ferr := a.FinishResident(id, residualPolicyOf(tc),
+			func(rc *residentChild) error {
+				p, herr := a.harvestResidentMemory(rc)
+				if herr != nil {
+					return fmt.Errorf("合入主记忆失败: %w", herr)
+				}
+				promoted = p
+				return nil
+			})
+		if ferr != nil {
+			return fmt.Sprintf("回收失败: %v", ferr)
 		}
-		info, err := a.ReclaimResident(id, reclaimKeepAll)
-		if err != nil {
-			return fmt.Sprintf("回收失败: %v", err)
-		}
-		return fmt.Sprintf("残余任务（%d 条）：%s\n已回收（temp 中选中的记录已合入主记忆，该驻留子已取消）: %s",
-			residual, rmsg, MarshalResidentInfo(info))
+		return fmt.Sprintf("残余任务（%d 条）：%s\n已回收（temp 中选中的记录已合入主记忆，promoted=%d，该驻留子已取消）",
+			residual, rmsg, promoted)
 
 	case "destroy":
 		id := strArg(tc, "id")
 		// 同上：销毁前先把残余任务交出去，否则它们会随子一起无声消失。
-		residual, rmsg, rerr := a.ApplyResidual(id, residualPolicyOf(tc))
-		if rerr != nil {
-			return fmt.Sprintf("处置残余任务失败: %v", rerr)
-		}
-		if err := a.DestroyResident(id); err != nil {
-			return fmt.Sprintf("销毁失败: %v", err)
+		residual, rmsg, ferr := a.FinishResident(id, residualPolicyOf(tc), nil)
+		if ferr != nil {
+			return fmt.Sprintf("销毁失败: %v", ferr)
 		}
 		return fmt.Sprintf("残余任务（%d 条）：%s\n已销毁并移除该驻留子", residual, rmsg)
 

@@ -484,6 +484,22 @@ func TestResidualKeepReturnsTasksToParent(t *testing.T) {
 	child := root.residents[info.ID].agent
 	root.residentMu.Unlock()
 
+	// ★ 必须先停住子的调度器，再入队 —— 否则它不是确定性测试。
+	//
+	// SpawnResident 末尾会 child.Start()（产品行为：子创建即开工），
+	// 于是子会在两次 enqueue 之间取走一条开始执行。而"正在执行"的那条
+	// **不属于"尚未处理"**（TakeResidual 只取 queue/interrupt/immediate，
+	// 不取 s.running）⇒ 本测试断言的 2 条就只剩 1 条可回收。
+	// 实测：约 1/30 概率失败于 `应处置 2 条，实际 1`。
+	//
+	// 这不是产品缺陷：真实场景里残余任务是"子已停止、队列里剩下的"，
+	// 天然静止；本测试要验的是**转交逻辑**（含 ResponseCh 保留），
+	// 不是子的生命周期。先 cancel + 等静止，就得到确定的初始状态。
+	//
+	// 注意必须用 cancel（调度器本来就有停止语义）而不是任何自定义标志位。
+	child.cancel()
+	child.sched.waitSchedulerStopped(schedStopTimeout, info.ID)
+
 	// 给子塞两条尚未处理的残余任务（一条带同步回执、一条不带=模拟 qq）
 	syncCh := make(chan *agentIO.OutputEvent, 1)
 	child.sched.enqueue(newInputTask(&agentIO.InputEvent{
@@ -535,6 +551,11 @@ func TestResidualDropNotifiesSyncCaller(t *testing.T) {
 	root.residentMu.Lock()
 	child := root.residents[info.ID].agent
 	root.residentMu.Unlock()
+
+	// ★ 同 TestResidualKeepReturnsTasksToParent：先停住子调度器再入队。
+	// 否则子可能先把这条取走执行，于是"残余任务"为 0 条，断言失效。
+	child.cancel()
+	child.sched.waitSchedulerStopped(schedStopTimeout, info.ID)
 
 	respCh := make(chan *agentIO.OutputEvent, 1)
 	child.sched.enqueue(newInputTask(&agentIO.InputEvent{
