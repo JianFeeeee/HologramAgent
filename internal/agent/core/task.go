@@ -964,7 +964,11 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	pluginName := a.resolveToolPlugin(tc.Name)
 	log.Printf("[agent] executing tool: %s (plugin=%s, id=%s)", tc.Name, pluginName, tc.ID)
 	if tc.RawArguments != "" {
-		log.Printf("[agent] tool %s raw_arguments: %s", tc.Name, truncateStr(tc.RawArguments, 300))
+		// ★ 脱敏后再落盘：模型给的参数正常是别名（sec_xxx），但插件工具
+		// 可能被直接传明文（例如模型自己拼了一个 key）。日志是永久的，
+		// 一旦落盘就再也收不回来。
+		log.Printf("[agent] tool %s raw_arguments: %s", tc.Name,
+			scrubForLog(truncateStr(tc.RawArguments, 300), "raw_args:"+tc.Name))
 	}
 
 	sdkTC := sdk.ToolCall{ID: tc.ID, Name: tc.Name, Plugin: pluginName, Arguments: tc.Arguments}
@@ -1028,7 +1032,10 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	f.CurResult = result
 	f.CurRaw = outcome.Raw
 	f.ToolResults = append(f.ToolResults, ToolResultItem{Name: f.CurTool.Name, Output: result})
-	log.Printf("[agent] tool %s result: %s", f.CurTool.Name, truncateStr(result, 100))
+	// ★ 工具输出可能含服务端回显的凭据（实测场景：enc_shell 跑 curl 拿 200，
+	// 响应体里带着上游 key 的完整值）。这一行以前原样打印。
+	log.Printf("[agent] tool %s result: %s", f.CurTool.Name,
+		scrubForLog(truncateStr(result, 100), "tool_result:"+f.CurTool.Name))
 
 	// Success 此前是**唯一**赋值点且硬编码 true ⇒ 该字段恒真、结构上不可能为
 	// false。工具失败是以 nil error + 错误**值**返回的，所以判据必须看返回值。

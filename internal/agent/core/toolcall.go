@@ -14,6 +14,7 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HomeAgent/internal/security"
 )
 
 // 工具执行超时的默认值与硬上限。
@@ -153,6 +154,43 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 			te := newToolError("panic", "", fmt.Sprintf("工具 %s 执行崩溃: %v", tc.Name, r),
 				"这是工具自身故障（不是你的参数问题），请勿原样重试；可换用其他工具或告知用户。")
 			out = toolOutcome{Text: te.Error(), Raw: te}
+		}
+		// ★★ 出向脱敏（2026-10-18 补）：工具返回值在交给模型**之前**必须清洗。
+		//
+		// ## 原缺陷
+		//
+		// 安全模块只做了**入向**回填（StageHost.ExecuteTool 里 FillMap，
+		// 把别名换成真凭据给插件用），**从不处理出向**。于是：
+		//
+		//	模型调 enc_shell 跑 curl → 服务端把 key 回显在响应体里
+		//	→ 工具原样返回 → f.CurResult → f.Msgs（role=tool）
+		//	→ **明文 key 直接进了模型上下文**
+		//
+		// 实测证据（2026-10-18 08:48，/home/newqqagent/log）：
+		//   `[security] 工具 enc_shell 参数回填 1 处（别名 [sec_...]）`  ← 入向有
+		//   紧随其后 `tool enc_shell result: {...}`                        ← 出向无
+		//
+		// ## 为什么 scrubbing 已有却不管用
+		//
+		// `scrubEventSecrets` 只在 `RelevanceContext.Append`（写上下文/记忆）
+		// 时运行 —— 那是**工具结果已经发出去之后**。同一轮里模型看到的是
+		// 未清洗的 f.Msgs。记忆侧干净、当轮泄漏，是最坏的组合：事后查不到。
+		//
+		// ## 为什么放在这个 defer 里
+		//
+		// executeToolCallOutcome 有多个 return 出口（插件工具、io 工具、
+		// 设备授权拒绝、不存在、panic），逐个加必然漏。defer 是唯一
+		// 能覆盖全部分支的位置，且 panic 路径也一起覆盖。
+		if out.Text != "" {
+			if st := security.Global(); st != nil {
+				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, security.Patterns); len(evts) > 0 {
+					out.Text = clean
+					for _, e := range evts {
+						log.Printf("[security] 工具输出 %s 拦截 %s（模式 %s，%d 字节）",
+							tc.Name, e.Alias, e.Kind, e.Len)
+					}
+				}
+			}
 		}
 	}()
 
