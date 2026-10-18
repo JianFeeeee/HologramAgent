@@ -574,6 +574,21 @@ func pluginEntryHash(plgDir string) string {
 }
 
 func (r *Registry) loadOne(plgDir, name string) bool {
+	return r.loadOneOpt(plgDir, name, false)
+}
+
+// loadOneOpt 是 loadOne 的显式版本。
+//
+// explicitStart=true 表示这是**agent 显式拉起**（plugin_start），
+// 此时**忽略 auto_start**：插件声明"不自动启动"是"别在开机时拉起我"，
+// 不是"永远不许启动"。
+//
+// ★ 2026-10-18 补：在此之前**外部插件的 auto_start 完全不生效** ——
+// Load 的目录扫描无条件调 loadOne，没有任何地方读 plugin.json 的
+// auto_start。也就是说这个字段在 plg.json → plugin.json 一路写得出来，
+// 内核却从不看它：声明 auto_start=false 的插件照样开机自启。
+// （内置模块那条走的是 kernelboot/scheduler.go，与外部插件是两条路。）
+func (r *Registry) loadOneOpt(plgDir, name string, explicitStart bool) bool {
 	if r.isDisabled(name) {
 		log.Printf("[plugin] %s is disabled, skipping", name)
 		r.mu.Lock()
@@ -590,6 +605,25 @@ func (r *Registry) loadOne(plgDir, name string) bool {
 	// 运行态关闭（理论上不会，但保持语义一致），它不该被拉起。
 	if r.isRuntimeStopped(name) {
 		log.Printf("[plugin] %s 处于运行态关闭（runtime stop），跳过加载", name)
+		return false
+	}
+
+	// ③ auto_start 门（2026-10-18 补：此前外部插件从不检查这个字段）。
+	//
+	// plugin.json 的 auto_start=false 表示"**启用**但不随内核自启"，
+	// 用于按需加载的插件（纯工具型，没人调用时不该占进程与工具槽位）。
+	//
+	// 三种启动形态在这里交汇：
+	//
+	//	自动启动       auto_start 缺省/true  + 启动扫描 ⇒ 拉起
+	//	启用但不自启   auto_start=false      + 启动扫描 ⇒ **跳过**（本门）
+	//	               同上                  + plugin_start ⇒ 拉起（explicitStart）
+	//	禁用           持久禁用清单 ⇒ 上面的 isDisabled 门挡住，连 plugin_start 也拒
+	//
+	// ★ explicitStart 是关键：声明 false 是"别在开机时拉起我"，
+	// 不是"永远不许启动"。没有这个区分，按需插件就再也起不来了。
+	if !explicitStart && !r.shouldAutoStart(plgDir, name) {
+		log.Printf("[plugin] %s 声明 auto_start=false（按需加载），跳过启动扫描；用 plugin_start 可拉起", name)
 		return false
 	}
 
@@ -1064,7 +1098,7 @@ func (r *Registry) ReloadOne(name string) error {
 	r.detachPlugin(name)
 	r.closeDynamic(removed)
 
-	ok := r.loadOne(plgDir, name)
+	ok := r.loadOneOpt(plgDir, name, true)
 	if !ok {
 		return fmt.Errorf("reload plugin %s failed", name)
 	}
@@ -1277,6 +1311,18 @@ func (r *Registry) DisablePlugin(name, by string) error {
 }
 
 func (r *Registry) EnablePlugin(name string) error { return r.Enable(name) }
+
+// shouldAutoStart 读 plugin.json 的 auto_start（缺省 = true）。
+//
+// 读不到 manifest 时返回 true：宁可多启动一个（与旧行为一致），
+// 也不要因为清单文件损坏而让插件静默不启动 —— 后者更难查。
+func (r *Registry) shouldAutoStart(plgDir, name string) bool {
+	mft := readManifest(plgDir)
+	if mft == nil {
+		return true
+	}
+	return mft.ShouldAutoStart()
+}
 
 // isRuntimeStopped 报告插件是否处于**运行态关闭**（设计 §2.6.7.3）。
 func (r *Registry) isRuntimeStopped(name string) bool {
