@@ -401,7 +401,61 @@ func applyInjectOpts(payload map[string]interface{}, opts InjectOptions) {
 	if opts.Priority != "" {
 		payload["priority"] = opts.Priority
 	}
+	// ★ 合并插件的 payload 扩展，但**不允许覆盖内核保留键**。
+	//
+	// 为什么必须拦：这些键是内核语义（`content` 是正文、`context_policy`
+	// 决定裁剪、`priority` 决定抢占级别…）。允许插件覆盖意味着
+	// 一个插件能伪造“这条注入不记记忆”或“这条要立即打断”——
+	// 那是权限提升，不是便利。
+	//
+	// 拦的方式是**跳过**而不是拒绝整次注入：插件可能只想带一个业务字段，
+	// 因顺手多写了一个保留键就让整条注入失败，代价太大。静默跳过 + 不报错
+	// 会不会让调试变难？会在内核日志里看到，因为这是“插件想改内核语义”，
+	// 属于应当被看见的事件（见下方 log）。
+	for k, v := range opts.Payload {
+		if IsReservedPayloadKey(k) {
+			log.Printf("[io] 注入 payload 试图覆盖内核保留键 %q（已忽略）——"+
+				"该键由内核语义决定，插件不可改写", k)
+			continue
+		}
+		payload[k] = v
+	}
 }
+
+// reservedPayloadKeys 是**内核语义键**，插件不得通过 InjectOptions.Payload 覆盖。
+//
+// 来源：实测 grep 全部 `Payload["..."]` 的读取点（internal/agent、internal/plugins），
+// 再加注入路径自身写入的键。新增内核语义键时必须同步这个集合，
+// 否则新键就成了新的提权面。
+var reservedPayloadKeys = map[string]bool{
+	// —— 注入路径自身写入的
+	"no_memory":      true,
+	"context_policy": true,
+	"recall_policy":  true,
+	"scene_policy":   true,
+	"cleaner_name":   true,
+	"priority":       true,
+	"type":           true,
+	"content":        true,
+	// —— 内核读取的语义键（见 grep 结果）
+	"interrupt":         true,
+	"interrupt_source":  true,
+	"interrupt_channel": true,
+	"stop":              true,
+	"command":           true,
+	"scene":             true,
+	"source":            true,
+	"channel":           true,
+	"media_blocks":      true,
+	"media_type":        true,
+}
+
+// IsReservedPayloadKey 报告 k 是否为内核语义键。
+//
+// 导出给 core 用：emitResponse 把 payload 透传到 stageCtx.Extra 时，
+// 也要用**同一份**保留字清单——否则两处清单会漂移，
+// 一边拦一边放，等于没拦。
+func IsReservedPayloadKey(k string) bool { return reservedPayloadKeys[k] }
 
 func (m *IOManager) InjectInputOpts(source, eventType string, payload map[string]interface{}, opts InjectOptions) {
 	applyInjectOpts(payload, opts)

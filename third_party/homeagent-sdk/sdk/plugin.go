@@ -150,6 +150,36 @@ type InjectOptions struct {
 	// 排队注入（InjectText*/InjectInputSync）没有级别：它们本就是“不需及时处理”
 	// 的那一类，可被任何中断打断。
 	Priority string
+
+	// Payload 是本次注入要额外并入事件 payload 的字段（**不透明**）。
+	//
+	// ## 为什么需要它（2026-10-18）
+	//
+	// QQ 插件的「对方正在输入中」必须只在**自己引起的** before_output 里发，
+	// 而且要知道发给谁。但两条路都断了：
+	//
+	//	· `on_input` 的 stageCtx 是局部变量（runStage 完就丢）
+	//	· `before_output` 的 stageCtx 是内核**新建**的（emitResponse）
+	//	⇒ 两者**不共享 Extra**，插件拿不到“这轮是谁引起的”
+	//
+	// ## 为什么挂在 InjectOptions 而不是新造一个 Meta 字段
+	//
+	// 第一版我加了 `InjectOptions.Meta` —— 错的。它把同一件事做了两遍：
+	// `InputEvent.Payload` **本来就是通道送入内核的请求体**，身份信息本该
+	// 就在那里。但 `IOInjector` 接口全是 `(source, channel, text, opts)`，
+	// 插件无法直接给 payload 加字段 —— 所以 payload 需要一个扩展口，
+	// 而不是一个平行的新概念。
+	//
+	// 叫 Payload 而不是 Meta 还有一个好处：经内核实测确认，
+	// 它能让 HTTP/CLI/ACP 等**所有注入路径**共用同一套机制。
+	//
+	// ## 内核怎么处理
+	//
+	// 与真 payload 合并（同名键以本字段为准，但**内核保留字不允许覆盖**，
+	// 否则插件能伪造 `context_policy`/`content` 等内核语义），
+	// 然后在 emitResponse 里把**非内核保留键**原样透传到 `stageCtx.Extra`。
+	// 内核不解释其中任何业务字段。
+	Payload map[string]interface{}
 }
 
 // 中断优先级取值。

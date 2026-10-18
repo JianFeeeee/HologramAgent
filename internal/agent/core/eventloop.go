@@ -389,6 +389,36 @@ func (a *Agent) emitResponse(evt *agentIO.InputEvent, response string, turnUsage
 		Phase:     sdk.StageBeforeOutput,
 		Extra:     map[string]interface{}{"output_channel": ch},
 	}
+	// ★ 把输入事件的 payload **原样透传**给 before_output / after_output。
+	//
+	// ## 为什么必须在这里透传（2026-10-18）
+	//
+	// 本函数**新建**了 stageCtx，而 `on_input` 的 stageCtx 是局部变量
+	// （stageCtxFromInput）—— 两者**不共享 Extra**。
+	//
+	// 后果：插件在 before_output 里只能读全局状态猜“这轮是谁引起的”，
+	// 并发时会串号（QQ 的「对方正在输入中」就踩到这个：A 的指示打到 B 身上）。
+	//
+	// ## 为什么是“透传 payload”而不是新造一个字段
+	//
+	// `InputEvent.Payload` 本就是通道送入内核的请求体，身份信息本就该在那里。
+	// 我第一版加了 `InjectOptions.Meta` 专用的透传键 —— 那是把同一件事做了两遍，
+	// 而且只服务注入路径，HTTP/CLI/ACP 无法共用。
+	//
+	// 现在：插件用 `InjectOptions.Payload` 声明业务字段（内核不解释），
+	// 这里把它连同 `input_source` 一起带到 stageCtx.Extra。
+	// 任何注入路径都能用同一套机制。
+	if evt != nil {
+		stageCtx.Extra["input_source"] = evt.Source
+		for k, v := range evt.Payload {
+			// 内核语义键不往 Extra 里塞：它们的归宿是内核自己的处理逻辑，
+			// 不是插件可见的上下文（塞了反而干扰插件读 Extra）。
+			if agentIO.IsReservedPayloadKey(k) {
+				continue
+			}
+			stageCtx.Extra[k] = v
+		}
+	}
 	a.runStage(sdk.StageBeforeOutput, stageCtx)
 	response = stageCtx.FinalText
 
