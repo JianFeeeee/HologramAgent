@@ -47,6 +47,18 @@ type ConfigRegistry struct {
 	defs        map[string]*ConfigDef
 	llmSnapFile string
 
+	// seeded 是**本次运行确实播种进 DB** 的键集合。
+	//
+	// 用途：GetXxx 在 DB 里查不到行时是否该回退到 ConfigDef.Default。
+	//
+	//	全新安装 → 键已播种 → 回退用 ConfigDef.Default（正常）
+	//	老安装   → 该版本新增的键**没有**播种 → 必须返回调用方给的零值，
+	//	           否则升级即被注入新默认值（实测后果：静默加载 1.8GB 向量模型）
+	//
+	// 换句话说：ConfigDef.Default 是「该键若有初始行，值应该是多少」，
+	// 而不是「老安装也该被当成有这个值」。
+	seeded map[string]bool
+
 	// secrets 是「需要加密落盘」的键集合（由 def 推导，见 isSecretKey）。
 	//
 	// 为何缓存成集合而不是每次查 def：写入是热路径，而 def 查询要拿锁；
@@ -63,7 +75,7 @@ func NewConfigRegistry(dbPath string) *ConfigRegistry {
 		panic(fmt.Sprintf("open config db: %v", err))
 	}
 	db.Exec("PRAGMA journal_mode=WAL")
-	r := &ConfigRegistry{db: db, dbPath: dbPath, defs: make(map[string]*ConfigDef), secrets: make(map[string]bool)}
+	r := &ConfigRegistry{db: db, dbPath: dbPath, defs: make(map[string]*ConfigDef), secrets: make(map[string]bool), seeded: make(map[string]bool)}
 	r.initCoreTable()
 	return r
 }
@@ -191,6 +203,14 @@ func (r *ConfigRegistry) RegisterDefault(key string, value interface{}) {
 func (r *ConfigRegistry) RegisterDef(def ConfigDef) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.registerDefLocked(def)
+}
+
+// registerDefLocked 是 RegisterDef 的不加锁版本：登记 ConfigDef + 落库播种。
+//
+// 供**已持 r.mu** 的路径调用（如 SeedDefaults）。分出来是必须的：
+// RegisterDef 自己会 Lock，在持锁路径里直接调它 = 自死锁（sync.Mutex 不可重入）。
+func (r *ConfigRegistry) registerDefLocked(def ConfigDef) {
 	r.defs[def.Key] = &def
 	// 默认值也要加密落盘（否则声明了 secret 的项一启动就是明文）。
 	stored := def.Default
@@ -198,6 +218,9 @@ func (r *ConfigRegistry) RegisterDef(def ConfigDef) {
 		stored, _ = sealForStorage(def.Key, stored)
 	}
 	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, def.Key, stored)
+	// 记录「本次运行确实为这个键铺了初始行」—— GetXxx 只对这类键回退到
+	// ConfigDef.Default（见 defDefault 的说明）。
+	r.seeded[def.Key] = true
 }
 
 func (r *ConfigRegistry) GetDef(key string) *ConfigDef {
@@ -685,13 +708,16 @@ func (r *ConfigRegistry) SeedDefaults(dataDir string) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.seedDBValues(dataDir)
-	r.seedCoreDefs(dataDir)
+	fresh := r.seedDBValues(dataDir)
+	// ★ fresh 必须传下去：seedCoreDefs 的 reg() 会落库，必须受同一个
+	// 「老安装只补标记、不播种」的守卫约束。
+	r.seedCoreDefs(dataDir, fresh)
 	// 扫描 config DB 中已有的 core.llm.sources.<name> 并注册 defs
 	r.scanAndRegisterSourceDefsLocked()
 }
 
-func (r *ConfigRegistry) seedDBValues(dataDir string) {
+// seedDBValues 播种「有独立默认值语义」的键，并返回**本次是否全新安装**。
+func (r *ConfigRegistry) seedDBValues(dataDir string) bool {
 	// 新鲜度判据不能是「config 表非空」。
 	//
 	// 发行包的 postinst 会先跑 setup.sh → initconfig，而 initconfig 会写一行
@@ -711,23 +737,23 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 	var hasMarker, hasLegacy int
 	r.db.QueryRow(`SELECT COUNT(*) FROM config WHERE key = ?`, markerKey).Scan(&hasMarker)
 	if hasMarker > 0 {
-		return
+		return false
 	}
 	r.db.QueryRow(`SELECT COUNT(*) FROM config WHERE key = 'core.daemon.data_dir'`).Scan(&hasLegacy)
 	if hasLegacy > 0 {
 		r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, markerKey, "1")
-		return
+		return false
 	}
 
 	tx, err := r.db.Begin()
 	if err != nil {
-		return
+		return false
 	}
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`)
 	if err != nil {
-		return
+		return false
 	}
 	defer stmt.Close()
 
@@ -735,21 +761,6 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 
 	// 人格设定：与其它默认值同批播种（老安装不会被注入——那是刻意的）。
 	// 存量安装里若还有人 personality 文件，它优先于本项（见 cmd/homed/main.go）。
-	set("core.agent.personal_prompt", DefaultPersonaPrompt)
-
-	set("webui.listen_addr", ":8080")
-	set("core.daemon.data_dir", dataDir)
-	set("core.daemon.heartbeat_interval", "15s")
-	set("core.daemon.check_interval", "30s")
-	set("core.daemon.log_level", "info")
-	set("core.llm.provider", "deepseek")
-	set("core.llm.model", "deepseek-v4-flash")
-	set("core.llm.base_url", "https://api.deepseek.com")
-	set("core.llm.api_key", "")
-	set("core.llm.adapter", "deepseek")
-	set("core.llm.temperature", "0.7")
-	set("core.llm.max_tokens", "4096")
-	set("core.llm.thinking_enabled", "false")
 
 	for name, props := range defaultSources {
 		p := "core.llm.sources." + name
@@ -761,20 +772,6 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 		set(p+".adapter_path", props["adapter_path"])
 	}
 
-	set("core.defaults.image", "homeagent/agent-base:latest")
-	set("core.defaults.openclaw_enabled", "true")
-	set("core.defaults.snapshot.interval", "10m")
-	set("core.defaults.snapshot.max_snapshots", "20")
-	set("core.defaults.snapshot.pre_action", "true")
-	set("core.defaults.snapshot.post_action", "false")
-	set("core.defaults.rollback.max_retries", "3")
-	set("core.defaults.rollback.health_threshold", "3")
-	set("core.defaults.rollback.cooldown_period", "30s")
-	set("core.defaults.rollback.auto_rollback", "true")
-	set("core.defaults.resource.cpu", "2")
-	set("core.defaults.resource.memory", "2g")
-	set("core.defaults.resource.disk", "10g")
-	set("core.defaults.resource.network", "true")
 	set("core.plugin.dir", filepath.Join(dataDir, "plugins"))
 	set("core.memory.graph", filepath.Join(dataDir, "memory", "graph.db"))
 	set("core.memory.text", filepath.Join(dataDir, "memory", "text"))
@@ -784,32 +781,14 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 	// 多数机器装不下后者。
 	// 产物不在仓库里，用 scripts/export_chineseclip_onnx.py 生成到这个路径；
 	// 产物缺失时 homed 会打印明确错误并退回 fastText 文本路径（不静默假装启用）。
-	set("core.memory.multimodal_space.provider", "chineseclip")
 	set("core.memory.multimodal_space.options.model_dir",
 		filepath.Join(dataDir, "models", "chinese-clip-vit-b16-onnx"))
 	set("core.knowledge.path", filepath.Join(dataDir, "knowledge"))
 	set("core.log.path", filepath.Join(dataDir, "log"))
 
-	set("core.agent.max_tool_turns", "10")
-	set("core.agent.max_context_size", "30")
 	// 上下文预算的可调阈值（原为硬编码，0 = 沿用历史默认）。
-	set("core.agent.context.utilization_percent", "80")
-	set("core.agent.context.max_target_tokens", "600000")
-	set("core.agent.context.memory_ratio_percent", "0")
-	set("core.agent.context.protected_count", "10")
 	// 积压转投默认**关闭**（false）：它让内核替父做决策（设计 §7 的刻意例外），
 	// 所以必须由部署方显式打开，而不是默默改变系统行为。
-	set("core.agent.offload_enabled", "false")
-	set("core.agent.offload_busy_after", "5m")
-	set("core.agent.offload_min_pending", "3")
-	set("core.agent.offload_max_residents", "2")
-	set("core.agent.distill_interval", "30m")
-	set("core.agent.archive_interval", "60m")
-	set("core.agent.review_interval", "120m")
-	set("core.agent.merge_interval", "120m")
-	set("core.agent.workdir", "")
-	set("core.agent.embedding_model_path", "")
-	set("core.agent.onnx_model_path", "")
 	// ❗这里**故意不播种** core.agent.system_prompt。
 	//
 	// 历史教训（生产实测）：当年用 fmt.Sprintf("… HΔ-Kernel v%s …", meta.Version)
@@ -821,22 +800,45 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) {
 	// 由 TestDefaultPersonaPromptHasNoVersionLiterals 钉住）承载。
 	// 存量库里已被播种的旧文本由 migrateSeededSystemPrompt 一次性去版本化。
 
-	set("core.input_processing.image.fallback_provider", "")
-	set("core.input_processing.image.fallback_model", "")
-	set("core.input_processing.image.describe_prompt", "请详细描述这张图片的内容，包括其中的文字、物体、人物、场景等信息。")
-	set("core.input_processing.image.ocr_enabled", "true")
-	set("core.input_processing.image.ocr_prompt", "请识别这张图片中的所有文字内容，按原文输出。仅输出文字本身，不要添加额外描述。")
-	set("core.input_processing.audio.fallback_provider", "")
-	set("core.input_processing.audio.fallback_model", "")
-	set("core.input_processing.audio.describe_prompt", "请转写这段音频的内容。")
-
 	set(markerKey, "1")
 
 	tx.Commit()
+	return true
 }
 
-func (r *ConfigRegistry) seedCoreDefs(dataDir string) {
-	reg := func(d ConfigDef) { r.defs[d.Key] = &d }
+// seedCoreDefs 登记全部 ConfigDef，并（仅全新安装时）把它们播种进 DB。
+//
+// fresh=false（老安装）时**只登记、不落库**：ConfigDef 仍会被读取路径
+// 当作默认值使用（GetXxx 回退到它），但不会凭空往老 DB 里插行 ——
+// 否则升级即被注入新默认值（例如突然加载一个 1.8GB 的向量模型）。
+func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
+	// ■ 默认值的唯一来源 = ConfigDef.Default。
+	//
+	// 以前同一份默认值有三处字面量：seedDBValues 的 61 行 set()、
+	// seedCoreDefs 的 reg()、以及每个读取点传的回退值。改一处漏两处
+	// 就是静默的行为漂移（2026-10-18 把 offload_busy_after 从 5m 改成 1m
+	// 时，四处都得手工对齐）。
+	//
+	// 现在：set() 的纯重复行已删除，读取点不再传字面量，只剩这里一处。
+	//
+	// ■ 但并非所有键都该**播种进 DB**。有 8 个键是「只登记、不播种」：
+	//
+	//	core.agent.system_prompt            —— 播种会把版本号冻死在 DB 里
+	//	core.defaults.llm_endpoints         —— 空默认值，播种无意义
+	//	core.memory.multimodal_space.options.*（6 个）—— provider 私有选项
+	//
+	// 这些键必须用 regMeta()（只登记），否则就是把「配置项可见」误当成
+	// 「该有初始行」。实测代价：TestSeedDefaultsDoesNotSeedSystemPrompt
+	// 与 TestSeedDefaultsDoesNotInjectIntoLegacyInstall 双双变红。
+	// 登记 + （仅全新安装时）播种
+	reg := func(d ConfigDef) {
+		if fresh {
+			r.registerDefLocked(d)
+			return
+		}
+		r.defs[d.Key] = &d
+	}
+	regMeta := func(d ConfigDef) { r.defs[d.Key] = &d } // 只登记，永不播种
 
 	// 人格设定（人格卡的配置项化）：默认模板见 DefaultPersonaPrompt。
 	// 高级用户仍可用 <dataDir>/personal/personal.md 覆盖它。
@@ -850,7 +852,7 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string) {
 	reg(ConfigDef{Key: "core.daemon.heartbeat_interval", Default: "15s", Type: "duration", DisplayName: "心跳间隔", Description: "Agent 心跳检查间隔", Category: "daemon"})
 	reg(ConfigDef{Key: "core.daemon.check_interval", Default: "30s", Type: "duration", DisplayName: "检查间隔", Description: "网络状态检查间隔", Category: "daemon"})
 	reg(ConfigDef{Key: "core.daemon.log_level", Default: "info", Type: "select", DisplayName: "日志级别", Description: "日志输出级别", Options: []string{"debug", "info", "warn", "error"}, Category: "daemon"})
-	reg(ConfigDef{Key: "core.defaults.llm_endpoints", Default: "", Type: "string", DisplayName: "探活端点", Description: "健康检查的 LLM 探活端点，逗号分隔；留空自动取 LLM 源 base_url", Category: "daemon"})
+	regMeta(ConfigDef{Key: "core.defaults.llm_endpoints", Default: "", Type: "string", DisplayName: "探活端点", Description: "健康检查的 LLM 探活端点，逗号分隔；留空自动取 LLM 源 base_url", Category: "daemon"})
 
 	reg(ConfigDef{Key: "core.llm.provider", Default: "deepseek", Type: "string", DisplayName: "默认提供商", Description: "默认 LLM 提供商名称，需匹配 sources 中的定义", Category: "llm"})
 	reg(ConfigDef{Key: "core.llm.model", Default: "deepseek-v4-flash", Type: "string", DisplayName: "默认模型", Description: "默认 LLM 模型名称", Category: "llm"})
@@ -895,18 +897,20 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string) {
 	//   块自带负载（MemoryBlock.Data），媒体记忆不再有独立的存储开关/路径。
 	reg(ConfigDef{Key: "core.memory.multimodal_space.provider", Default: "chineseclip", Type: "string", DisplayName: "多模态向量 provider", Description: "从公共 provider 注册表（pkg/embedding）按名字打开的多模态向量空间。内置：chineseclip（默认，text+image，512 维，实测稳态约 0.89GB（加载峰值 1.59GB），Apache-2.0）、qwen3vl（text+image，2048 维，峰值约 9.4GB，视觉塔按需加载；视频已实现但未纳入契约）、http（外部向量 API）。也可是第三方注册的名字。两者均需 onnxruntime 构建标签。留空禁用多模态向量检索，只保留 fastText 文本路径。provider 的模型文件、预处理与运行时全在 provider 内部，核心不做任何模型假设。修改后需重启生效。", Category: "memory"})
 	reg(ConfigDef{Key: "core.memory.multimodal_space.options.model_dir", Default: filepath.Join(dataDir, "models", "chinese-clip-vit-b16-onnx"), Type: "string", DisplayName: "provider 模型目录", Description: "provider 自定义选项（以 options. 开头的键会去掉前缀后原样传给 provider，核心不解释其含义）。对内置 chineseclip：Chinese-CLIP 产物目录（用 scripts/export_chineseclip_onnx.py 生成）。对内置 qwen3vl：Qwen3-VL ONNX 产物目录（用 scripts/export_qwen3vl_embedding_onnx.py 生成）。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.endpoint", Default: "", Type: "string", DisplayName: "provider 服务端点", Description: "provider 自定义选项。对内置 http：外部多模态向量服务的端点 URL（POST，接受 modality/side/text/data/mime，返回 embedding）。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.api_key", Default: "", Type: "password", DisplayName: "provider 服务密钥", Description: "provider 自定义选项。对内置 http：作为 Bearer token 发送。可选。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.model", Default: "", Type: "string", DisplayName: "provider 模型标识", Description: "provider 自定义选项。对内置 http：外部服务使用的模型名，作为 vec_model 持久化。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.dimension", Default: "0", Type: "int", DisplayName: "provider 向量维度", Description: "provider 自定义选项。对内置 http：服务返回的特征向量维度，必须与实际返回值一致。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.timeout", Default: "30s", Type: "duration", DisplayName: "provider 请求超时", Description: "provider 自定义选项。对内置 http：单次向量请求的超时时间。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.fingerprint", Default: "", Type: "string", DisplayName: "provider 空间指纹", Description: "provider 自定义选项。对内置 http：向量空间版本标识（留空时根据 model+dim 自动生成）。指纹变化会触发历史向量重算。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.endpoint", Default: "", Type: "string", DisplayName: "provider 服务端点", Description: "provider 自定义选项。对内置 http：外部多模态向量服务的端点 URL（POST，接受 modality/side/text/data/mime，返回 embedding）。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.api_key", Default: "", Type: "password", DisplayName: "provider 服务密钥", Description: "provider 自定义选项。对内置 http：作为 Bearer token 发送。可选。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.model", Default: "", Type: "string", DisplayName: "provider 模型标识", Description: "provider 自定义选项。对内置 http：外部服务使用的模型名，作为 vec_model 持久化。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.dimension", Default: "0", Type: "int", DisplayName: "provider 向量维度", Description: "provider 自定义选项。对内置 http：服务返回的特征向量维度，必须与实际返回值一致。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.timeout", Default: "30s", Type: "duration", DisplayName: "provider 请求超时", Description: "provider 自定义选项。对内置 http：单次向量请求的超时时间。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.fingerprint", Default: "", Type: "string", DisplayName: "provider 空间指纹", Description: "provider 自定义选项。对内置 http：向量空间版本标识（留空时根据 model+dim 自动生成）。指纹变化会触发历史向量重算。", Category: "memory"})
 	reg(ConfigDef{Key: "core.knowledge.path", Default: filepath.Join(dataDir, "knowledge"), Type: "string", DisplayName: "知识库路径", Description: "知识库存储目录", Category: "paths"})
 	reg(ConfigDef{Key: "core.log.path", Default: filepath.Join(dataDir, "log"), Type: "string", DisplayName: "日志目录", Description: "日志文件输出目录", Category: "paths"})
 
 	reg(ConfigDef{Key: "core.agent.max_tool_turns", Default: "10", Type: "int", DisplayName: "最大工具轮次", Description: "单次请求允许的最大工具调用轮数", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.offload_enabled", Default: "false", Type: "bool", DisplayName: "积压任务自动转投", Description: "主 agent 长时间忙时，把积压任务自动转投给内核拉起的驻留子（需重启生效）", Category: "agent"})
-	reg(ConfigDef{Key: "core.agent.offload_busy_after", Default: "5m", Type: "string", DisplayName: "转投触发忙时长", Description: "运行任务持续超过该时长才考虑转投（如 5m）", Category: "agent"})
+	// 1m 而非 5m：实测本机正常任务最长 1.2 分钟，5 分钟的阈值意味着
+	// offloadLoop 永远在 `busyFor < 5m` 处返回 —— 配置开着却一行日志都没有。
+	reg(ConfigDef{Key: "core.agent.offload_busy_after", Default: "1m", Type: "duration", DisplayName: "转投触发忙时长", Description: "运行任务持续超过该时长才考虑转投（如 1m）", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.offload_min_pending", Default: "3", Type: "int", DisplayName: "转投最少积压条数", Description: "积压少于该条数时不值得拉起驻留子", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.offload_max_residents", Default: "2", Type: "int", DisplayName: "转投驻留子上限", Description: "自动转投最多拉起几个驻留子（人工创建的不计）", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.max_context_size", Default: "30", Type: "int", DisplayName: "最大上下文", Description: "上下文窗口中保留的最大消息条数", Category: "agent"})
@@ -921,7 +925,7 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string) {
 	reg(ConfigDef{Key: "core.agent.workdir", Default: "", Type: "string", DisplayName: "工作目录", Description: "Agent 命令执行的默认工作目录（如 cmd_run 工具的 fallback），留空使用内核所在目录", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.embedding_model_path", Default: "", Type: "string", DisplayName: "预训练词嵌入模型路径", Description: "预训练词嵌入模型路径（word2vec 文本格式），支持逗号分隔多个模型。路径后可加 #topN 规格只加载前 N 个词向量（如 /data/cc.zh.300.vec#top50000）以控制常驻内存，词频降序命中覆盖绝大部分文本。空则使用 TF-IDF 回退。修改后需重启生效。", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.onnx_model_path", Default: "", Type: "string", DisplayName: "ONNX 模型路径", Description: "依存句法分析 ONNX 模型文件路径。留空使用二进制内嵌模型/规则引擎。修改后需重启生效。", Category: "agent"})
-	reg(ConfigDef{Key: "core.agent.system_prompt", Default: "", Type: "text", DisplayName: "系统身份提示词", Description: "Agent 的系统提示词，定义身份和行为规则。留空则使用编译时内置默认值。支持版本占位符（随构建实时展开，避免写死版本号随发版说谎）：{{kernel_version}}、{{kernel_commit}}、{{sdk_version}}。修改后需重启生效。", Category: "agent"})
+	regMeta(ConfigDef{Key: "core.agent.system_prompt", Default: "", Type: "text", DisplayName: "系统身份提示词", Description: "Agent 的系统提示词，定义身份和行为规则。留空则使用编译时内置默认值。支持版本占位符（随构建实时展开，避免写死版本号随发版说谎）：{{kernel_version}}、{{kernel_commit}}、{{sdk_version}}。修改后需重启生效。", Category: "agent"})
 
 	reg(ConfigDef{Key: "core.input_processing.image.fallback_provider", Default: "", Type: "string", DisplayName: "图片回退提供商", Description: "当主 LLM 不支持图片处理时使用的提供商（留空则自动降级为文字描述）", Category: "input"})
 	reg(ConfigDef{Key: "core.input_processing.image.fallback_model", Default: "", Type: "string", DisplayName: "图片回退模型", Description: "图片回退提供商使用的模型名", Category: "input"})
@@ -935,9 +939,25 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string) {
 
 // helpers
 
+// defDefault 取已注册 ConfigDef 的 Default 字符串表示。
+// 调用方必须已持有 r.mu（RLock 即可）。
+func (r *ConfigRegistry) defDefault(key string) (string, bool) {
+	if !r.seeded[key] {
+		return "", false
+	}
+	def := r.defs[key]
+	if def == nil || def.Default == "" {
+		return "", false
+	}
+	return def.Default, true
+}
+
 func (r *ConfigRegistry) GetString(key, defaultVal string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if ds, ok := r.defDefault(key); ok {
+		defaultVal = ds
+	}
 	var v string
 	err := r.db.QueryRow(`SELECT value FROM config WHERE key = ?`, key).Scan(&v)
 	if err != nil {
@@ -952,6 +972,11 @@ func (r *ConfigRegistry) GetString(key, defaultVal string) string {
 func (r *ConfigRegistry) GetInt(key string, defaultVal int) int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if ds, ok := r.defDefault(key); ok {
+		if n, err := strconv.Atoi(ds); err == nil {
+			defaultVal = n
+		}
+	}
 	var v string
 	err := r.db.QueryRow(`SELECT value FROM config WHERE key = ?`, key).Scan(&v)
 	if err != nil {
@@ -967,6 +992,11 @@ func (r *ConfigRegistry) GetInt(key string, defaultVal int) int {
 func (r *ConfigRegistry) GetDuration(key string, defaultVal time.Duration) time.Duration {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if ds, ok := r.defDefault(key); ok {
+		if d, err := parseDurationExtended(ds); err == nil {
+			defaultVal = d
+		}
+	}
 	var v string
 	err := r.db.QueryRow(`SELECT value FROM config WHERE key = ?`, key).Scan(&v)
 	if err != nil {
@@ -1013,6 +1043,11 @@ func parseDurationExtended(s string) (time.Duration, error) {
 func (r *ConfigRegistry) GetBool(key string, defaultVal bool) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if ds, ok := r.defDefault(key); ok {
+		if b, err := strconv.ParseBool(ds); err == nil {
+			defaultVal = b
+		}
+	}
 	var v string
 	err := r.db.QueryRow(`SELECT value FROM config WHERE key = ?`, key).Scan(&v)
 	if err != nil {

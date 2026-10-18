@@ -45,7 +45,13 @@ type OffloadOptions struct {
 // 且它会让日志/账单里凭空多出一个 agent 在干活。默认关闭、由部署方显式打开，
 // 与「显式才是特权」（scheduler.DefaultLevel 的同一条理由）一致。
 const (
-	defaultOffloadBusyAfter   = 5 * time.Minute
+	// defaultOffloadBusyAfter 是「忙多久算长任务」的默认值。
+	//
+	// 2026-10-18 从 5 分钟调成 1 分钟：实测本机正常任务最长 1.2 分钟，
+	// 5 分钟的阈值意味着**永远触发不了** —— 配置开着却一行日志都没有
+	// （这正是"看着有、实际没跑"的典型）。1 分钟能覆盖真实的忙不过来的场景，
+	// 又不至于把正常的一次工具循环误判成长任务。
+	defaultOffloadBusyAfter   = 1 * time.Minute
 	defaultOffloadMinPending  = 3
 	defaultOffloadMaxResident = 2
 )

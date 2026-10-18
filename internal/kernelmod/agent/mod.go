@@ -168,11 +168,18 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 		// 界面上改它没有任何效果，且不报任何错。同一类「死配置」正是
 		// 本次把阈值接入配置系统时要一并修掉的。
 		MaxContextSize: cfgReg.GetInt("core.agent.max_context_size", 30),
+		// 默认值**不在这里写**：ConfigRegistry 的 GetXxx 会从已注册的
+		// ConfigDef.Default 取（见 registry.go 的 defDefault）。这里传的
+		// 字面量只是「连 ConfigDef 都没注册」时的兜底，正常路径不会用到。
+		//
+		// 2026-10-18 的教训：把 busy_after 从 5m 改成 1m 时，同一个默认值
+		// 散落在 seedDBValues/sedCoreDefs/读取点 三处，得手工对齐一遍，
+		// 漏一处就是静默的行为漂移。现在只剩 ConfigDef 一处。
 		Offload: agentCore.OffloadOptions{
 			Enabled:      cfgReg.GetBool("core.agent.offload_enabled", false),
-			BusyAfter:    cfgReg.GetDuration("core.agent.offload_busy_after", 5*time.Minute),
-			MinPending:   cfgReg.GetInt("core.agent.offload_min_pending", 3),
-			MaxResidents: cfgReg.GetInt("core.agent.offload_max_residents", 2),
+			BusyAfter:    cfgReg.GetDuration("core.agent.offload_busy_after", 0),
+			MinPending:   cfgReg.GetInt("core.agent.offload_min_pending", 0),
+			MaxResidents: cfgReg.GetInt("core.agent.offload_max_residents", 0),
 		},
 		ContextSavePath:    filepath.Join(cfg.Daemon.DataDir, "memory", "context.json"),
 		EmbeddingModelPath: cfgReg.GetString("core.agent.embedding_model_path", ""),
