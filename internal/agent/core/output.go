@@ -11,6 +11,23 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/security"
 )
 
+// executeOutputSendTool 执行一次 output_send__{通道}。
+//
+// turnExtra 是**本轮输入事件的非保留 payload 字段**（由调用方从帧上取）。
+//
+// ## 为什么需要它（2026-10-18）
+//
+// `before_output` 被两个语义共用：
+//
+//	emitResponse（eventloop.go）  = 一轮的回复，turn 边界
+//	本函数（output.go）           = 单次 output_send__* 的工具输出
+//
+// **真正把消息发出去的是后者**。而它原先构造 stageCtx 时连 Extra 都没初始化
+// （实测日志 `extra_keys=0`），插件在这里读不到任何本轮身份 ——
+// QQ 的「对方正在输入中」因此一次都没能触发。
+//
+// 通道插件在这个时点需要知道"这条消息是发给谁的"，所以把本轮 payload
+// 透传进来（与 emitResponse 用同一套 Extra 语义）。
 func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
 	channel := strings.TrimPrefix(tc.Name, "output_send__")
 	payload, _ := tc.Arguments["payload"].(string)
@@ -61,9 +78,27 @@ func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
 		args["meta"] = meta
 	}
 
+	// ★ Extra 必须有 output_channel：本函数是"发往某通道"，而这个键是
+	// 插件在该时点唯一能据以判断目标通道的凭据。
+	// 原先这里连 Extra 都没初始化（nil）——插件读不到任何上下文。
+	// Extra 必须带三个键，缺一不可：
+	//
+	//	output_channel  目标通道（插件据此判断"是不是发给我的"）
+	//	output_meta     本次发送的 meta 原文（QQ 的 user_id/group_id 在里面）
+	//	output_type     输出类型（text/image/file…）
+	//
+	// ★ output_meta 是关键（2026-10-18）：本函数是**真正把消息发出去**的
+	// 时点，通道插件在这里需要知道"这条发给谁"才能驱动「对方正在输入中」。
+	// 原先 stageCtx 连 Extra 都没初始化（nil）⇒ 实测 `extra_keys=0`
+	// ⇒ QQ 的打字指示器一次都没能触发。
 	stageCtx := &sdk.StageContext{
 		FinalText: payload,
 		Phase:     sdk.StageBeforeOutput,
+		Extra: map[string]interface{}{
+			"output_channel": channel,
+			"output_meta":    meta,
+			"output_type":    rawType,
+		},
 	}
 	a.runStage(sdk.StageBeforeOutput, stageCtx)
 	if stageCtx.Response != nil {
@@ -90,6 +125,17 @@ func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
 			}
 		}
 		result, err := dev.Execute("output", args)
+		// ★ after_output：消息**已真正送达**之后触发一次。
+		//
+		// 与前面的 before_output 成对（同一份 Extra）。通道插件用它收尾
+		// 打字指示器之类"发出前开始、发出后结束"的状态。
+		//
+		// 为什么必须在这里：output.go 这条路径此前**没有** after_output，
+		// 而它才是"消息真的发出去了"的时刻。缺了它，插件只能在轮次边界
+		// （emitResponse 的 after_output）收尾 —— 而一轮可能发多条消息，
+		// 中间那些永远收不了尾（实测：状态一直挂着）。
+		stageCtx.Phase = sdk.StageAfterOutput
+		a.runStage(sdk.StageAfterOutput, stageCtx)
 		if err != nil {
 			return fmt.Sprintf("通过 [%s] 通道发送失败: %v", channel, err)
 		}
