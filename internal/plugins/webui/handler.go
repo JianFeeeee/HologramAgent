@@ -486,6 +486,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 危险一个量级 —— 关机之后只能 ssh 上去才能恢复。
 	mux.HandleFunc("/api/v1/kernel/restart", h.requireAPI(h.handleKernelRestart))
 	mux.HandleFunc("/api/v1/kernel/shutdown", h.requireAPI(h.handleKernelShutdown))
+	// 数据目录一致性（两处来源不等价，不一致会数据分裂；见 datadir_status.go）
+	mux.HandleFunc("/api/v1/system/data-dir", h.requireAPI(h.handleDataDirStatus))
 	mux.HandleFunc("/api/v1/agents", h.requireAPI(h.handleAgents))
 	mux.HandleFunc("/api/v1/agents/", h.requireAPI(h.handleAgentByID))
 	mux.HandleFunc("/api/v1/memory", h.requireAPI(h.handleMemory))

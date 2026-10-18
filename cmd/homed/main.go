@@ -15,6 +15,7 @@ import (
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/kbtree"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/pluginmgr"
 	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HomeAgent/internal/systemd"
 
 	// 空白导入内置 provider：它们各自在 init 里注册到 pkg/embedding。
 	// 想把核心换成自己的模型，只需替换这一行（或另建一个发行版 main）。
@@ -203,6 +204,29 @@ func main() {
 	//   它们归 config 模块的产物路径，但**执行点**在这里 —— 阶段依赖。
 	cfgReg.SetLLMSnapshotFile(filepath.Join(opt.dataDir, "llm_snapshot.json"))
 	ks.Cfg = cfgReg.ToConfig()
+
+	// ★ 数据目录一致性检查（2026-10-18 接线）。
+	//
+	// 内核有**两处**数据目录来源，且不等价：
+	//   -data <dir>              ← systemd 单元，决定 ks.DataDir
+	//   core.daemon.data_dir     ← 数据库，决定 ks.Cfg.Daemon.DataDir
+	//
+	// 不一致时数据会**分裂**：图记忆（memory/graph.db）在 -data 那个目录，
+	// 而文本/知识/文档在 DB 那个目录 ⇒ 检索跨目录、备份会漏。
+	// 生产当前两者一致，所以从没暴露；但 WebUI 允许改 core.daemon.data_dir
+	// 而**没有任何提示**，用户改完重启就会发现"数据丢了"。
+	//
+	// 这里只告警 + 给出可直接粘贴的修复命令，**不改任何东西**：
+	// 静默改 systemd 单元比不提示更危险（改错了服务起不来，而用户不知道
+	// 是谁改的）。修复由人执行 —— 命令里已内联 sed 替换。
+	if cdir := ks.Cfg.Daemon.DataDir; cdir != "" && cdir != opt.dataDir {
+		st := systemd.State{RuntimeDataDir: opt.dataDir, ConfigDataDir: cdir}
+		log.Printf("[homed] ⚠️ 数据目录不一致（数据会分裂）：")
+		log.Printf("[homed]    -data        = %s（图记忆、插件 Settings.DataDir）", opt.dataDir)
+		log.Printf("[homed]    DB data_dir  = %s（文本/知识/文档）", cdir)
+		log.Printf("[homed]    修复命令（勿手改单元，生产用 drop-in 覆盖 ExecStart）：")
+		log.Printf("[homed]    %s", st.SyncCommand(cdir))
+	}
 
 	// 装配全部内核模块（缺依赖/环/重名 ⇒ 这里就报错，不必等运行期）。
 	//

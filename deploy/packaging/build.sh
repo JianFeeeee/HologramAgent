@@ -210,9 +210,34 @@ build_homed() {
   "$_graphgen" -out "$BUILD_DIR/depgraph.bin"
   echo "  [graph] digest=$_graph_hash"
 
+  # ★ 内嵌主密钥（用户 2026-10-16 方案 C：字面内嵌，防丢失）。
+  #
+  # 密钥从**环境变量**读，不落仓库：本仓有两个公开远端
+  # （gitcode / github），把 64 位 hex 写进任何被跟踪的文件都会
+  # 永久留在 git 历史里。
+  #
+  #     HA_EMBEDDED_KEY_HEX=<64 位 hex> deploy/packaging/build.sh
+  #
+  # 未设时**不注入**（行为与以前完全一致）：不报错、不警告 ——
+  # 因为开发机构建与 CI 本来就不应该带生产密钥。但产物会因此
+  # 没有内嵌钥，生产打包时**必须**显式给。
+  local _embedkey="${HA_EMBEDDED_KEY_HEX:-}"
+  local _keyflag=""
+  if [ -n "$_embedkey" ]; then
+    case "$_embedkey" in
+      ????????????????????????????????????????????????????????????????)
+        # 64 字符：形状像 32 字节 hex
+        _keyflag=" -X github.com/JianFeeeee/HomeAgent/internal/security.embeddedKeyHex=$_embedkey"
+        echo "  [security] 内嵌主密钥已注入（64 位 hex）" ;;
+      *)
+        echo "  error: HA_EMBEDDED_KEY_HEX 必须是 64 位 hex（当前 ${#_embedkey} 字符）" >&2
+        return 1 ;;
+    esac
+  fi
+
   CGO_ENABLED=1 CC="$_cc" "$GO" build -buildvcs=false -trimpath -installsuffix dynlink \
     ${_tagargs[@]+"${_tagargs[@]}"} \
-    -ldflags "$LDFLAGS -X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=$_graph_hash" -o "$out" ./cmd/homed/
+    -ldflags "$LDFLAGS -X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=$_graph_hash$_keyflag" -o "$out" ./cmd/homed/
   echo "  OK ($(file "$out" | sed 's/.*: //') | $(du -h "$out" | cut -f1))"
 }
 
