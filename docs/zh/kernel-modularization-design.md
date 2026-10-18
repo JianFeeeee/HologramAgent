@@ -921,6 +921,78 @@ func (d *Distiller) distillLoop() {
 - `TestDeclarationsTraceToRealCallSites`：声明与**签名**不漂移
 - §2.8.2(A) 的 onnx→textmem 顺序：声明与**运行期读取**不漂移
 
+## 2.7 注入 payload 的透传与保留键（2026-10-18）
+
+### 背景
+
+通道插件在**注入**时要能让"这一轮的身份"跟着走到后续阶段。但：
+
+```
+on_input 的 stageCtx  是局部变量（stageCtxFromInput），runStage 完就丢
+before_output 的 stageCtx 是内核新建的（emitResponse / output.go）
+⇒ 两者不共享 Extra
+```
+
+插件于是只能读全局状态猜"这轮是谁引起的"——并发多个会话时会**串号**
+（A 的指示打到 B 身上）。
+
+### 机制
+
+`InjectOptions.Payload` 是插件自带的不透明字段，内核不解释：
+
+```text
+注入点 opts.Payload
+  → 与真 payload 合并（保留键跳过）
+  → emitResponse / output_send 把**非保留键**原样写进 stageCtx.Extra
+```
+
+`InputEvent.Payload` 本就是通道送入内核的请求体，业务字段本该在那里；
+缺的只是一个**扩展口**（`IOInjector` 的方法签名是
+`(source, channel, text, opts)`，插件无法直接给 payload 加字段）。
+
+> 设计过程中曾误加 `InjectOptions.Meta` —— 那等于把同一件事做两遍，
+> 且只服务注入路径。改名为 `Payload` 后 HTTP/CLI/ACP 共用同一套机制。
+
+### 保留键（硬约束）
+
+`reservedPayloadKeys` 必须覆盖两类键：
+
+1. **注入路径自己写入的**：`no_memory` / `context_policy` /
+   `recall_policy` / `scene_policy` / `cleaner_name` / `priority` /
+   `type` / `content`
+2. **内核读取的语义键**：`interrupt` / `interrupt_source` /
+   `interrupt_channel` / `stop` / `command` / `scene` / `source` /
+   `channel` / `media_blocks` / `media_type`
+
+插件写了保留键会被**跳过并记日志**，不是拒绝整次注入。
+
+**为什么必须拦**：允许覆盖等于允许插件伪造「这条不记记忆」或
+「这条要立即打断」——那是权限提升，不是便利。
+
+**为什么是跳过而不是报错**：插件可能只想带一个业务字段，因顺手多写一个
+保留键就让整条注入失败，代价太大。
+
+⚠️ **新增内核语义键时必须同步这个集合**，否则新键就是新的提权面
+（判据 `TestReservedKeysCoverInjectionOwnKeys` 覆盖这一点）。
+
+### `output_send__*` 的 stage 语义
+
+`before_output` / `after_output` 都有**两条触发路径**：
+
+| 来源 | Extra | 含义 |
+|---|---|---|
+| `emitResponse` | `input_source` + payload 透传字段 | 一轮的回复（turn 边界） |
+| `output.go` | `output_channel` / `output_meta` / `output_type` | 单次发送 |
+
+`output.go` 的路径**才是"消息真的发出去"的时刻**，但历史上它构造 stageCtx 时
+连 `Extra` 都没初始化（nil），插件在那个时点读不到任何上下文
+（实测 `extra_keys=0`）。
+
+现在补齐三个键，并补上缺失的 `after_output`（`Execute` 成功后触发；
+失败时不触发 —— 消息没送达，"发出后收尾"的语义不成立）。
+
+插件用 `_, has := ctx.Extra["output_meta"]` 区分两条路径。
+
 ## 3. 兼容性约束（★ 硬约束）
 
 1. **存量插件的 `plugin.json` 不变必须照常工作**
