@@ -107,7 +107,14 @@ func TestLuaParseInjectOptions(t *testing.T) {
 	}
 
 	// 缺省/非表 = 零值（记入记忆 + 不裁剪），与旧三参数注入等价。
-	if z := parseInjectOptions(L, 99); z != (sdk.InjectOptions{}) {
+	//
+	// ★ 不能用 `z != sdk.InjectOptions{}` 比较：InjectOptions 现在含
+	// `Payload map[string]interface{}`（插件业务字段扩展口），结构体含 map
+	// 就**不可比较**，编译直接报 invalid operation。
+	// 逐字段验证，顺便把「哪些字段应为空」写清楚。
+	if z := parseInjectOptions(L, 99); z.NoMemory || z.ContextPolicy != "" ||
+		z.RecallPolicy != "" || z.ScenePolicy != "" || z.CleanerName != "" ||
+		z.Priority != "" || len(z.Payload) != 0 {
 		t.Errorf("missing opts should be zero value, got %#v", z)
 	}
 }
