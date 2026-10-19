@@ -830,6 +830,16 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 | CLI | `internal/plugins/cli/` | Unix socket 监听 + 同步请求响应 |
 | WebUI | `internal/plugins/webui/` | HTTP 服务 + 依赖注入 |
 
+> **timer 已移出内置插件**，改为外部 hmap 插件提供（`timer_set` / `timer_list` /
+> `timer_cancel` 三个工具与 `timer` 输入通道均由外部插件注册）。
+>
+> ★ **升级顺序**：先安装 timer 插件，再升级内核。反过来会有一段窗口期三个 timer
+> 工具全部不存在——而且**不会报错**，只是工具悄无声息地消失（LLM 看不到它们，
+> 于是表现为「定时提醒这个功能不见了」，日志里没有任何线索）。
+>
+> 顺带说明外部版比原内置版更强：内置版只有 `timer_set`，进程重启即在途倒计时全丢；
+> 外部版额外提供 `timer_list` / `timer_cancel`，且待触发列表跨重启保留。
+
 ---
 
 *了解项目整体目标？查看 [OVERVIEW.md](OVERVIEW.md)。*
