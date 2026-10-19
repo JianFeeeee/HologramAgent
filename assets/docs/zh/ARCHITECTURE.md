@@ -307,7 +307,7 @@ VM 内置 `json.encode` / `json.decode` / `log` / `http_get` / `http_post`。
 
 | 方式 | 注册机制 | 编译 | 用途 |
 |------|----------|------|------|
-| 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/agentcli 等 11 个（判定标准见下） |
+| 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/agentcli 等 13 个（判定标准见下） |
 | 外部子进程插件 | 握手 + stdio JSON-RPC 反向注册 | `hmapdev build` → `plugin.bin`（普通 Go 二进制） | qq/browser/files 等 |
 | Lua 脚本插件 | 执行 `main.lua` 注册工具 | 无需编译，重启/重载生效 | luademo 等 |
 | SKILL 插件 | 解析 `SKILL.md` | Markdown 定义 | clawhubadapter 兼容加载 |
@@ -356,7 +356,16 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 | 插件 | 实际依赖 |
 |---|---|
 | timer | RegisterTool + Settings + InjectText（公开） |
-| ai_image / files / cmd / kbtree / localuse / mcp / multimodal | RegisterTool + Settings（+ s.Knowledge() 等公开 API） |
+| ai_image / files / cmd / localuse / mcp | RegisterTool + Settings（+ 公开 RegisterStage） |
+
+> ★ 终审翻案（2026-10-19，逐方法对照公开 SDK 后加回两个）：
+> **kbtree** 依赖 `KnowledgeAPI.Subtree/CategoryCounts/SearchIn/Categories`
+> ——公开 `KnowledgeAPI` 只有 `Search/Add/List`，且公开 SDK 没有
+> `KnowledgeTreeView`/`KnowledgeCategoryCount` 类型；
+> **multimodal** 依赖 `LLMAPI.Chat` + `LLMMessage`/`LLMContentBlock`
+> ——公开 `LLMAPI` 只有 `ListSources/SetSource/CurrentSource`。
+> 两者最初被误判为"只用公开能力"，因为 `s.Knowledge()`/`s.LLM()` 两边
+> **同名不同面**。教训：判外置与否必须逐方法对照公开接口，不能只看方法名。
 
 > ⚠️ 两份并存是禁止的：`loadOne` 先查内置工厂表，命中就不再看外部 `plugin.bin`
 > ⇒ 内置版永远赢，外部版**装了也不生效**。外置一个插件时，必须同时把它从
@@ -613,7 +622,7 @@ internal/
 │   ├── registry.go        — 注册表 + 生命周期
 │   ├── dynamic.go         — 加载通道分派（proc / lua / skill）；.so 仅剩给明确报错
 │   └── manifest.go        — plugin.json 元数据
-├── plugins/               — 内置插件实现（11 个，判定标准见「内置插件的判定标准」）
+├── plugins/               — 内置插件实现（13 个，判定标准见「内置插件的判定标准」）
 │   ├── all.go             — 空白导入（**唯一权威清单**，增删内置插件只改这里）
 │   ├── webui/             — HTTP 服务器 + 嵌入式 SPA
 │   ├── cli/               — Unix socket CLI
@@ -627,7 +636,7 @@ internal/
 │   ├── seemedia/          — 直看媒体
 │   ├── seq/               — 序列编排
 │   ├── data/ plugin_data/ — 插件静态资源（非 Go，随内核打包）
-│   ├── kbtree/ cmd/ localuse/ mcp/ multimodal/ ai_image/ files/
+│   ├── cmd/ localuse/ mcp/ ai_image/ files/
 │   │                      — 源码仍在但**未列入 all.go**：2026-10-19 起外置，
 │   │                        以 .hmap 形式安装（SDK 仓 example/ 提供工程）；
 │   │                        目录待外置工程稳定后删除

@@ -43,10 +43,20 @@ package plugins
 //
 // 反例（已外置，因为它们只要公开能力）：
 //   cmd        仅 internal/plugin 的 RegisterFactory → 换成 NewPluginFactory 即可
-//   kbtree     仅 s.Knowledge() + s.Settings()
 //   localuse   仅 RegisterTool + Settings
-//   mcp        仅 RegisterTool + Settings
-//   multimodal 仅 RegisterTool + Settings
+//   mcp        仅 RegisterTool + Settings + RegisterStage
+//
+// ★ 终审翻案（2026-10-19，逐方法对照公开 SDK 后加回两个）：
+//   kbtree     KnowledgeAPI.Subtree/CategoryCounts/SearchIn/Categories ——
+//              公开 KnowledgeAPI 只有 Search/Add/List，且公开 SDK 没有
+//              KnowledgeTreeView/KnowledgeCategoryCount 类型 ⇒ 必须内置
+//   multimodal LLMAPI.Chat + LLMMessage/LLMContentBlock（多模态消息）——
+//              公开 LLMAPI 只有 ListSources/SetSource/CurrentSource，
+//              没有 Chat，也没有消息类型 ⇒ 必须内置
+//   （agentcli 的 EventPublish 同理，见上）
+//
+// 教训：判「只用公开 SDK」不能只 grep 方法名前缀，要**逐方法对照公开接口**。
+// s.Knowledge() / s.LLM() 两边同名，但接口面不同；粗看就会误判成可外置。
 //
 // ## ★ agentcli 为什么不能外置（2026-10-19 核实）
 //
@@ -87,6 +97,8 @@ import (
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/clawhubadapter"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/cli"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/healthcheck"
+	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/kbtree"
+	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/multimodal"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/pluginmgr"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/remotedevice"
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/seemedia"

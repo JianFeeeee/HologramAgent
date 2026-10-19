@@ -318,7 +318,7 @@ VM built-ins: `json.encode` / `json.decode` / `log` / `http_get` / `http_post`.
 
 | Method | Registration Mechanism | Compilation | Usage |
 |--------|----------------------|-------------|-------|
-| Built-in | `init()` → `RegisterFactory` | `internal/plugins/` compiled into kernel | webui/cli/agentcli etc. (11 total; see the criteria section below) |
+| Built-in | `init()` → `RegisterFactory` | `internal/plugins/` compiled into kernel | webui/cli/agentcli etc. (13 total; see the criteria section below) |
 | External subprocess plugin | Handshake + stdio JSON-RPC reverse registration | `hmapdev build` → `plugin.bin` (ordinary Go binary) | qq/browser/files etc. |
 | Lua script plugin | Execute `main.lua` to register tools | No compilation, takes effect after restart/reload | luademo etc. |
 | SKILL plugin | Parse `SKILL.md` | Markdown definition | Loaded via clawhubadapter |
@@ -372,7 +372,19 @@ Counter-examples (externalized, because public capabilities suffice):
 | Plugin | Actual dependencies |
 |---|---|
 | timer | RegisterTool + Settings + InjectText (public) |
-| ai_image / files / cmd / kbtree / localuse / mcp / multimodal | RegisterTool + Settings (+ public APIs such as s.Knowledge()) |
+| ai_image / files / cmd / localuse / mcp | RegisterTool + Settings (+ public RegisterStage) |
+
+> ★ Reversal on final review (2026-10-19, method-by-method comparison against
+> the public SDK brought two back): **kbtree** needs
+> `KnowledgeAPI.Subtree/CategoryCounts/SearchIn/Categories` — the public
+> `KnowledgeAPI` only has `Search/Add/List`, and the public SDK lacks the
+> `KnowledgeTreeView`/`KnowledgeCategoryCount` types. **multimodal** needs
+> `LLMAPI.Chat` + `LLMMessage`/`LLMContentBlock` — the public `LLMAPI` only
+> has `ListSources/SetSource/CurrentSource`. Both were initially misjudged as
+> "public-only" because `s.Knowledge()`/`s.LLM()` exist on both sides **with
+> the same names but different surfaces**. Lesson: externalization decisions
+> require method-by-method comparison against the public interface, not name
+> matching.
 
 > ⚠️ Both copies existing at once is forbidden: `loadOne` checks the built-in
 > factory table first and never looks at the external `plugin.bin` if it hits
@@ -641,7 +653,7 @@ internal/
 │   ├── registry.go        — Registry + lifecycle
 │   ├── dynamic.go         — Load-channel dispatch (proc / lua / skill); .so only remains to error loudly
 │   └── manifest.go        — plugin.json metadata
-├── plugins/               — Built-in plugin implementations (11; see "Which Plugins Stay Built-in")
+├── plugins/               — Built-in plugin implementations (13; see "Which Plugins Stay Built-in")
 │   ├── all.go             — Blank imports (**the single authoritative list**; edit only this)
 │   ├── webui/             — HTTP server + embedded SPA
 │   ├── cli/               — Unix socket CLI
@@ -655,7 +667,7 @@ internal/
 │   ├── seemedia/          — Direct media view
 │   ├── seq/               — Sequence orchestration
 │   ├── data/ plugin_data/ — Plugin static assets (non-Go, shipped with the kernel)
-│   ├── kbtree/ cmd/ localuse/ mcp/ multimodal/ ai_image/ files/
+│   ├── cmd/ localuse/ mcp/ ai_image/ files/
 │   │                      — Source remains but **not listed in all.go**: externalized
 │   │                        on 2026-10-19 as .hmap packages (projects in the SDK repo's
 │   │                        example/); directories to be removed once external projects stabilize
