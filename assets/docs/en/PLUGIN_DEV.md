@@ -848,6 +848,14 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 > **fails silently**: no error, the tools simply vanish (the LLM cannot see them, which
 > surfaces as "reminders are gone" with nothing in the logs to explain it).
 >
+> ⚠ **Installed is not the same as in effect**: on the **old kernel**, installing the timer
+> plugin still goes through the built-in factory (`loadOne` checks `factories[name]` first and
+> never reaches `plugin.bin`), so the external build is not loaded at all —
+> `plugin_status("timer")` keeps reporting `builtin=true`, `tools=["timer_set"]`. The
+> hand-over only happens **after the kernel upgrade restarts** (the factory is gone, so the
+> external bin finally loads). Correct sequence: install to disk first, then swap the binary
+> and restart — the `plgreload` in between is a no-op.
+>
 > The external version is also a strict superset: the built-in one only had `timer_set`, and
 > in-flight countdowns were lost on restart; the external one adds `timer_list` / `timer_cancel`
 > and persists pending timers across restarts.
