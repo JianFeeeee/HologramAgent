@@ -839,6 +839,19 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 | CLI | `internal/plugins/cli/` | Unix socket listener + synchronous request-response |
 | WebUI | `internal/plugins/webui/` | HTTP service + dependency injection |
 
+> **timer has been moved out of the built-in plugins** and is now provided as an external
+> hmap plugin (all three tools `timer_set` / `timer_list` / `timer_cancel` and the `timer`
+> input channel are registered by the external plugin).
+>
+> ★ **Upgrade order**: install the timer plugin *before* upgrading the kernel. Doing it the
+> other way round leaves a window where none of the three timer tools exist — and it
+> **fails silently**: no error, the tools simply vanish (the LLM cannot see them, which
+> surfaces as "reminders are gone" with nothing in the logs to explain it).
+>
+> The external version is also a strict superset: the built-in one only had `timer_set`, and
+> in-flight countdowns were lost on restart; the external one adds `timer_list` / `timer_cancel`
+> and persists pending timers across restarts.
+
 ---
 
 *Want to understand the project goals? See [OVERVIEW.md](OVERVIEW.md).*
