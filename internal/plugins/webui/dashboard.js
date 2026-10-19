@@ -4987,50 +4987,106 @@ function renderTerminals() {
 }
 
 function renderCmdHistory() {
+	// 面板标题是「命令历史」，数据源必须是 cmd_run 的执行记录
+	// （/api/v1/cmd/history → 内核 TerminalRegistry.CmdHistory）。
+	//
+	// ★ 旧实现渲染的是**终端列表**（state.terminals 里 running 的那些），
+	// 而 loadCmdHistory() 拉回来的 state.cmdHistory **从未被读过** ——
+	// 于是面板名叫「命令历史」，实际只显示运行中的终端：
+	//   · 已完成的命令（绝大多数）永远不出现，用户以为命令没执行；
+	//   · 终端的 uptime 被当成命令时长，语义也对不上。
+	// 现在分两段：先列 cmd_run 历史（带退出码/输出），再列运行中的终端。
 	var r = document.getElementById("cmd-list");
 	var cnt = document.getElementById("cmd-count-badge");
 	if (!r) return;
+
+	var history = state.cmdHistory || [];
 	var running = (state.terminals || []).filter((t) => t.running);
-	if (cnt) cnt.textContent = running.length;
-	if (running.length === 0) {
+	if (cnt) cnt.textContent = String(history.length + running.length);
+
+	if (history.length === 0 && running.length === 0) {
 		r.innerHTML =
 			'<p style="color:var(--text-muted);padding:8px;text-align:center;font-size:11px">' +
-			__("暂无运行中的命令", "No running commands") +
+			__("暂无命令记录", "No command history") +
 			"</p>";
 		return;
 	}
-	var html =
-		'<table style="font-size:10px"><tr><th>' +
-		__("命令", "Command") +
-		"</th><th>" +
-		__("状态", "Status") +
-		"</th><th>" +
-		__("运行时长", "Uptime") +
-		"</th></tr>";
-	running.forEach((t) => {
-		var scr = (state.termScreens && state.termScreens[t.id]) || null;
-		var out = scr ? scr.output : t.output || "";
+
+	var html = "";
+
+	if (history.length > 0) {
 		html +=
-			"<tr>" +
-			'<td style="font-family:monospace;max-width:200px;overflow:hidden;text-overflow:ellipsis">' +
-			escHtml(t.command || t.id || "") +
-			"</td>" +
-			'<td><span class="badge badge-green">' +
-			__("运行中", "Running") +
-			"</span></td>" +
-			'<td style="color:var(--text-muted);white-space:nowrap">' +
-			escHtml(t.uptime || "-") +
-			"</td>" +
-			"</tr>";
-		if (out) {
+			'<table style="font-size:10px"><tr><th>' +
+			__("命令", "Command") +
+			"</th><th>" +
+			__("状态", "Status") +
+			"</th><th>" +
+			__("时间", "Time") +
+			"</th></tr>";
+		// 新的在上：内核按时间正序追加，用户最关心最近一条。
+		history
+			.slice()
+			.reverse()
+			.forEach((c) => {
+				var ok = (c.status || "").toLowerCase() === "ok" || c.exit_code === 0;
+				var badge = ok ? "badge-green" : "badge-red";
+				var label = ok
+					? __("成功", "OK")
+					: __("失败", "Failed") + (c.exit_code ? " (" + c.exit_code + ")" : "");
+				html +=
+					"<tr>" +
+					'<td style="font-family:monospace;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+					escHtml(c.command || "-") +
+					"</td>" +
+					'<td><span class="badge ' +
+					badge +
+					'">' +
+					escHtml(label) +
+					"</span></td>" +
+					'<td style="color:var(--text-muted);white-space:nowrap">' +
+					escHtml(c.time || "-") +
+					"</td>" +
+					"</tr>";
+				// 输出按需展开：默认收起，避免长输出把面板撑爆。
+				var out = (c.stdout || "") + (c.stderr ? "\n" + c.stderr : "");
+				out = out.trim();
+				if (out) {
+					html +=
+						'<tr><td colspan="3" style="padding:0 0 4px 0">' +
+						'<pre style="margin:0;padding:4px 8px;max-height:120px;overflow:auto;background:var(--bg-input);border-radius:4px;font-size:10px;color:var(--text-secondary);white-space:pre-wrap">' +
+						escHtml(out.substring(0, 2000)) +
+						(out.length > 2000 ? "\n… (truncated)" : "") +
+						"</pre></td></tr>";
+				}
+			});
+		html += "</table>";
+	}
+
+	if (running.length > 0) {
+		html +=
+			'<div style="margin-top:8px;font-size:10px;color:var(--text-muted)">' +
+			__("运行中的终端", "Running terminals") +
+			"</div>";
+		html +=
+			'<table style="font-size:10px"><tr><th>' +
+			__("命令", "Command") +
+			"</th><th>" +
+			__("运行时长", "Uptime") +
+			"</th></tr>";
+		running.forEach((t) => {
 			html +=
 				"<tr>" +
-				'<td colspan="3" style="padding:0"><pre style="margin:0;padding:4px 8px;max-height:120px;overflow:auto;background:var(--bg-input);border-radius:4px;font-size:10px;color:var(--text-secondary)">' +
-				escHtml(out.substring(0, 2000)) +
-				"</pre></td></tr>";
-		}
-	});
-	html += "</table>";
+				'<td style="font-family:monospace;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+				escHtml(t.command || t.id || "") +
+				"</td>" +
+				'<td style="color:var(--text-muted);white-space:nowrap">' +
+				escHtml(t.uptime || "-") +
+				"</td>" +
+				"</tr>";
+		});
+		html += "</table>";
+	}
+
 	r.innerHTML = html;
 }
 

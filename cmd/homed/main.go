@@ -9,11 +9,12 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HomeAgent/internal/kernelmod/pluginhost"
 	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	// ★ 内置插件统一走 internal/plugins 的清单（all.go），**不要**在这里
+	// 单独导入某个插件：
+	//   · 重复导入虽无害（同一包只 init 一次），但会让 all.go 不再是唯一清单
+	//     —— 按它盘点的工具/文档会漏项（kbtree 曾因此长期游离在清单之外）；
+	//   · 想增删内置插件请改 all.go。
 	_ "github.com/JianFeeeee/HomeAgent/internal/plugins"
-	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/clawhubadapter"
-	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/healthcheck"
-	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/kbtree"
-	_ "github.com/JianFeeeee/HomeAgent/internal/plugins/pluginmgr"
 	"github.com/JianFeeeee/HomeAgent/internal/security"
 	"github.com/JianFeeeee/HomeAgent/internal/systemd"
 

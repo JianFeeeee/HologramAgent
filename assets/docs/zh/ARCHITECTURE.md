@@ -307,7 +307,7 @@ VM 内置 `json.encode` / `json.decode` / `log` / `http_get` / `http_post`。
 
 | 方式 | 注册机制 | 编译 | 用途 |
 |------|----------|------|------|
-| 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/cmd/mcp 等 17 个 |
+| 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/agentcli 等 11 个（判定标准见下） |
 | 外部子进程插件 | 握手 + stdio JSON-RPC 反向注册 | `hmapdev build` → `plugin.bin`（普通 Go 二进制） | qq/browser/files 等 |
 | Lua 脚本插件 | 执行 `main.lua` 注册工具 | 无需编译，重启/重载生效 | luademo 等 |
 | SKILL 插件 | 解析 `SKILL.md` | Markdown 定义 | clawhubadapter 兼容加载 |
@@ -321,6 +321,46 @@ VM 内置 `json.encode` / `json.decode` / `log` / `http_get` / `http_post`。
 旧的 `plugin.Open` 路径缓存绕行、SHA256 临时路径复制等手法随之退场。
 
 Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main.lua`（加载期 `sdk.register_*` 仅暂存 handler），`Start()` 时替换为真实 SDK 实现并批量注册。脚本只在加载时读取一次，运行期通过回调执行。
+
+### 内置插件的判定标准（2026-10-19 定型）
+
+**只有必须使用内部 SDK 能力（公开 SDK 没有的接口面）的插件，才留在编译期内置清单。**
+
+内部 SDK（`internal/sdk`）比公开 SDK（third_party/homeagent-sdk）多出一批
+**不对外授予**的能力面：`TerminalAPI` / `TrackerAPI` / `StatusAPI` /
+`SupervisorAPI` / `AdapterAPI` / `SelftestAPI` / `ToolAPI`，以及 **`Publish`
+（事件发布）**。外部插件走 proc 桥的收窄能力集，这些接口在类型层就不存在
+（权威清单见 `internal/plugin/proc/capability.go` 的 `withheldCapabilities`）。
+
+由此得出的二分法：
+
+- **插件需要 withheld 能力 ⇒ 必须内置**。外置后功能**静默消失**——不报错、
+  不崩进程，只是数据链路断在插件与内核之间。这类故障最难排查。
+- **插件只用公开 SDK 能力 ⇒ 应当外置**（.hmap 安装）。独立编译、独立发版，
+  改一行不用重编 87MB 的内核。
+
+正例（留内置，各有非它不可的理由）：
+
+| 插件 | 依赖的内部能力 |
+|---|---|
+| cli / webui | TerminalAPI（/terminal 与终端面板）、TrackerAPI、StatusAPI、SupervisorAPI、AdapterAPI |
+| agentcli | **EventPublish**：靠 `Publish(EventTerminalOutput)` 上报终端输出与生命周期，公开 SDK 无 Publish |
+| healthcheck | SelftestAPI（能构造虚拟内核实例做自检） |
+| pluginmgr | failback 恢复链必需（`core.agent.failback_plugins` 默认 webui/pluginmgr/recoverydiag） |
+| seq | ToolAPI（工具表直接操作，组内并行需按名调工具） |
+| remotedevice | RegisterChannel（内核 IO 通道注册面） |
+| clawhubadapter | InjectInputSync（OC 插件主动注入） |
+
+反例（已外置，因为它们只要公开能力）：
+
+| 插件 | 实际依赖 |
+|---|---|
+| timer | RegisterTool + Settings + InjectText（公开） |
+| ai_image / files / cmd / kbtree / localuse / mcp / multimodal | RegisterTool + Settings（+ s.Knowledge() 等公开 API） |
+
+> ⚠️ 两份并存是禁止的：`loadOne` 先查内置工厂表，命中就不再看外部 `plugin.bin`
+> ⇒ 内置版永远赢，外部版**装了也不生效**。外置一个插件时，必须同时把它从
+> `internal/plugins/all.go` 移除（该文件是唯一权威清单）。
 
 ### 内置插件 vs 外部插件
 
@@ -573,19 +613,24 @@ internal/
 │   ├── registry.go        — 注册表 + 生命周期
 │   ├── dynamic.go         — 加载通道分派（proc / lua / skill）；.so 仅剩给明确报错
 │   └── manifest.go        — plugin.json 元数据
-├── plugins/               — 内置插件实现
-│   ├── all.go             — 空白导入
+├── plugins/               — 内置插件实现（11 个，判定标准见「内置插件的判定标准」）
+│   ├── all.go             — 空白导入（**唯一权威清单**，增删内置插件只改这里）
 │   ├── webui/             — HTTP 服务器 + 嵌入式 SPA
 │   ├── cli/               — Unix socket CLI
-│   ├── cmd/               — 命令执行
-│   ├── mcp/               — MCP 协议
-│   ├── files/             — 文件操作
 │   ├── clawhubadapter/   — ClawHub 适配器（OC 插件/SKILL/JS/Python sidecar）
 │   ├── agentcli/          — PTY 终端
 │   ├── healthcheck/       — 健康检查
 │   ├── pluginmgr/         — 插件管理器
 │   ├── skillmgr/          — Skill 插件管理
-│   └── cfgmgr/            — 配置管理
+│   ├── cfgmgr/            — 配置管理
+│   ├── remotedevice/      — 远程设备桥
+│   ├── seemedia/          — 直看媒体
+│   ├── seq/               — 序列编排
+│   ├── data/ plugin_data/ — 插件静态资源（非 Go，随内核打包）
+│   ├── kbtree/ cmd/ localuse/ mcp/ multimodal/ ai_image/ files/
+│   │                      — 源码仍在但**未列入 all.go**：2026-10-19 起外置，
+│   │                        以 .hmap 形式安装（SDK 仓 example/ 提供工程）；
+│   │                        目录待外置工程稳定后删除
 ├── sdk/                   — PluginSDK 定义
 │   ├── plugin.go          — Plugin 接口 + PluginSDK
 │   ├── memory.go          — MemoryAPI

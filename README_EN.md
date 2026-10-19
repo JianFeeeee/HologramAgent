@@ -216,7 +216,7 @@ internal/
 ├── memory/         Three-layer memory: Graph(SQLite) / Document(JSON+TF-IDF) / Text(JSONL) + StaticEmbedder(pretrained word embedding/TF-IDF fallback) + CleanTemplateText(de-template)
 ├── knowledge/      Knowledge base (filesystem + TF-IDF)
 ├── plugin/         Plugin registry + subprocess loader (stdio RPC + shared memory segment + event ring)
-├── plugins/        17 built-in plugins (webui/cli/cmd/mcp/files/cfgmgr/agentcli/healthcheck/pluginmgr/clawhubadapter/multimodal/remotedevice/ai_image/localuse/skillmgr/seemedia/seq)
+├── plugins/        11 built-in plugins (webui/cli/agentcli/cfgmgr/healthcheck/pluginmgr/clawhubadapter/remotedevice/skillmgr/seemedia/seq) — see ARCHITECTURE "which plugins stay built-in"
 ├── sdk/            PluginSDK (Tool/Stage/Event three channels)
 ├── config/         SQLite config center
 ├── events/         Event bus
@@ -416,7 +416,7 @@ private included), with no same-license obligation and no §13 network clause. T
 vitality of the third-party plugin ecosystem rest on this.
 
 The boundary is clean: **AGPL covers the kernel and the bundled plugins** (`homed`, `internal/`,
-the 17 built-in plugins under `internal/plugins/`); **MIT covers the public SDK** (`sdk/`, whose
+the 11 built-in plugins under `internal/plugins/`); **MIT covers the public SDK** (`sdk/`, whose
 `go.mod` has zero external dependencies and imports only the Go standard library — it never
 references any kernel code). Process isolation is beside the point here — what decides the
 license is the linked SDK code itself, and that code is MIT.

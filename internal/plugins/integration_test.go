@@ -36,6 +36,27 @@ func setupIntegration(t *testing.T) *testPluginEnv {
 	return setupIntegrationWithProvider(t, nil)
 }
 
+// requireExternalTool 断言某个工具已在本次装配中注册，未注册则跳过用例。
+//
+// 语义不是「功能坏了所以跳过」，而是「这个工具已不属于内置装配」：cmd / agentcli
+// 等插件在 2026-10-19 外置为 hmap 插件后，setupIntegration 只加载 internal/plugins
+// 下的内置包，因此这里根本不会出现它们的工具。若不加这层保护，用例会拿到
+// 「工具不存在或未注册」这种与真实插件行为无关的假失败，长期看会训练大家
+// 忽略红灯。
+//
+// 保留用例而不是删除：断言本身（exit_code/stdout/stderr、PTY 交互与 resize）
+// 仍然有效，只是验证现场必须是**装好 .hmap 的实例**。真正的端到端覆盖放在
+// 那层跑；这里在纯内置装配下只能 Skip，不能假装通过。
+func requireExternalTool(t *testing.T, env *testPluginEnv, tool string) {
+	t.Helper()
+	for _, def := range env.stageHost.GetToolDefs() {
+		if def.Name == tool {
+			return
+		}
+	}
+	t.Skipf("%s 由已外置插件提供（不在本次内置装配中），需在装上 .hmap 的实例上验证", tool)
+}
+
 func setupIntegrationWithProvider(t *testing.T, pm *agentAPI.ProviderManager) *testPluginEnv {
 	t.Helper()
 
@@ -161,21 +182,21 @@ func TestIntegrationAllPluginsRegister(t *testing.T) {
 	defer env.cleanup()
 
 	expectedTools := []string{
-		"cmd_run",
-		"terminal_create", "terminal_write", "terminal_read",
-		"terminal_resize", "terminal_close", "terminal_list",
 		"healthcheck", "healthcheck_plugins", "healthcheck_tools", "healthcheck_memory", "healthcheck_perf",
-		// ⚠️ timer_set **不在**这里（2026-10-19 起）。
+		// ⚠️ 以下插件的工具**故意不在**这里（它们已外置为 hmap 插件）：
 		//
-		// 本用例的语义是「编译期内置插件是否都注册了工具」，set 走的是本地
-		// 装配（setupIntegration 只加载 internal/plugins 下的内置包）。
-		// timer 已搬为**外部插件**（plugins/timer，.hmap），不参与本进程装配，
-		// 所以它出现在这个列表里只会造出「永远绿不了」的假失败。
+		//	timer                                        → plugins/timer
+		//	ai_image / files                             → 2026-10-19 外置
+		//	agentcli / cmd / kbtree / localuse / mcp /
+		//	multimodal                                   → 2026-10-19 外置
 		//
-		// 外部插件的工具是否真的注册成功，由另一层负责：装完 .hmap 后
-		// 用 timer_list / timer_set 实调一次（见交付报告里的现网验证）。
-		// 别为了「让它绿」把 timer 加回 all.go —— 那会让内置与外部两份
-		// 同时存在，工具重名而胜者取决于加载顺序。
+		// 本用例的语义是「internal/plugins 下**仍内置**的包是否都注册了工具」，
+		// setupIntegration 只加载内置包 ⇒ 已外置的插件不参与本进程装配，
+		// 写进来只会造出「永远绿不了」的假失败。
+		//
+		// 它们的工具是否真的注册成功，由另一层负责：装完 .hmap 后实调一次。
+		// 别为了「让它绿」把插件加回 all.go —— 内置与外部两份同时存在会
+		// 导致工具重名，而胜者取决于加载顺序（最难排查的一类故障）。
 	}
 
 	defs := env.stageHost.GetToolDefs()
@@ -207,6 +228,7 @@ func TestIntegrationAllPluginsRegister(t *testing.T) {
 func TestIntegrationCmdRun(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "cmd_run")
 
 	result, err := env.stageHost.ExecuteTool("cmd_run", map[string]interface{}{
 		"command": "echo hello_world",
@@ -232,6 +254,7 @@ func TestIntegrationCmdRun(t *testing.T) {
 func TestIntegrationCmdRunWithWorkdir(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "cmd_run")
 
 	result, err := env.stageHost.ExecuteTool("cmd_run", map[string]interface{}{
 		"command": "pwd",
@@ -258,6 +281,7 @@ func TestIntegrationCmdRunWithWorkdir(t *testing.T) {
 func TestIntegrationCmdRunInvalidTimeout(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "cmd_run")
 
 	result, err := env.stageHost.ExecuteTool("cmd_run", map[string]interface{}{
 		"command": "echo ok",
@@ -281,6 +305,7 @@ func TestIntegrationCmdRunInvalidTimeout(t *testing.T) {
 func TestIntegrationCmdRunStderr(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "cmd_run")
 
 	result, err := env.stageHost.ExecuteTool("cmd_run", map[string]interface{}{
 		"command": "sh -c \"echo stderr_test >&2\"",
@@ -310,6 +335,7 @@ func TestIntegrationCmdRunStderr(t *testing.T) {
 func TestIntegrationPtyCreateListClose(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "terminal_create")
 
 	// Create
 	result, err := env.stageHost.ExecuteTool("terminal_create", map[string]interface{}{
@@ -366,6 +392,7 @@ func TestIntegrationPtyCreateListClose(t *testing.T) {
 func TestIntegrationPtyInteractive(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "terminal_create")
 
 	createResult, err := env.stageHost.ExecuteTool("terminal_create", map[string]interface{}{
 		"shell": "/bin/sh",
@@ -424,6 +451,7 @@ func TestIntegrationPtyInteractive(t *testing.T) {
 func TestIntegrationPtyResize(t *testing.T) {
 	env := setupIntegration(t)
 	defer env.cleanup()
+	requireExternalTool(t, env, "terminal_create")
 
 	createResult, err := env.stageHost.ExecuteTool("terminal_create", map[string]interface{}{
 		"shell": "/bin/sh",

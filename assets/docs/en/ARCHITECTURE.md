@@ -318,7 +318,7 @@ VM built-ins: `json.encode` / `json.decode` / `log` / `http_get` / `http_post`.
 
 | Method | Registration Mechanism | Compilation | Usage |
 |--------|----------------------|-------------|-------|
-| Built-in | `init()` → `RegisterFactory` | `internal/plugins/` compiled into kernel | webui/cli/cmd/mcp etc. (17 total) |
+| Built-in | `init()` → `RegisterFactory` | `internal/plugins/` compiled into kernel | webui/cli/agentcli etc. (11 total; see the criteria section below) |
 | External subprocess plugin | Handshake + stdio JSON-RPC reverse registration | `hmapdev build` → `plugin.bin` (ordinary Go binary) | qq/browser/files etc. |
 | Lua script plugin | Execute `main.lua` to register tools | No compilation, takes effect after restart/reload | luademo etc. |
 | SKILL plugin | Parse `SKILL.md` | Markdown definition | Loaded via clawhubadapter |
@@ -332,6 +332,53 @@ External plugin loading (since v1.0.0): `internal/plugin/dynamic_proc.go` → `e
 the old `plugin.Open` path-cache workarounds (SHA256 temp-path copies) retired with it.
 
 Lua script plugin loading: `internal/plugin/` → the gopher-lua interpreter executes `main.lua` (at load time `sdk.register_*` only buffers handlers), then `Start()` swaps in the real SDK implementation and registers them in batch. The script is read only once at load time; runtime execution happens via callbacks.
+
+### Which Plugins Stay Built-in (criteria, finalized 2026-10-19)
+
+**A plugin stays in the compiled-in list only if it requires internal-SDK-only
+capabilities — API surfaces the public SDK does not have.**
+
+The internal SDK (`internal/sdk`) exposes several capability surfaces that are
+**never granted to external plugins**: `TerminalAPI` / `TrackerAPI` /
+`StatusAPI` / `SupervisorAPI` / `AdapterAPI` / `SelftestAPI` / `ToolAPI`, and
+**`Publish` (event publishing)**. External plugins run over the proc bridge's
+narrowed capability set where those interfaces simply do not exist at the type
+level (authoritative list: `withheldCapabilities` in
+`internal/plugin/proc/capability.go`).
+
+This yields a clean binary rule:
+
+- **Plugin needs a withheld capability ⇒ it must stay built-in.** Externalizing
+  it makes the feature **fail silently** — no error, no crash, just a data link
+  broken between plugin and kernel. The hardest class of bug to trace.
+- **Plugin only uses public SDK ⇒ it should be externalized** (.hmap package).
+  Independent build and release; a one-line fix no longer means recompiling the
+  87 MB kernel.
+
+Positive examples (kept built-in, each for a reason it cannot do without):
+
+| Plugin | Internal capability it needs |
+|---|---|
+| cli / webui | TerminalAPI (the /terminal command and terminal panel), TrackerAPI, StatusAPI, SupervisorAPI, AdapterAPI |
+| agentcli | **EventPublish**: reports terminal output and lifecycle via `Publish(EventTerminalOutput)`; the public SDK has no Publish |
+| healthcheck | SelftestAPI (can build a virtual kernel instance for self-checks) |
+| pluginmgr | required by the failback recovery chain (`core.agent.failback_plugins` defaults to webui/pluginmgr/recoverydiag) |
+| seq | ToolAPI (direct tool-table access; in-group parallel steps invoke tools by name) |
+| remotedevice | RegisterChannel (kernel IO channel registration) |
+| clawhubadapter | InjectInputSync (OC-plugin proactive injection) |
+
+Counter-examples (externalized, because public capabilities suffice):
+
+| Plugin | Actual dependencies |
+|---|---|
+| timer | RegisterTool + Settings + InjectText (public) |
+| ai_image / files / cmd / kbtree / localuse / mcp / multimodal | RegisterTool + Settings (+ public APIs such as s.Knowledge()) |
+
+> ⚠️ Both copies existing at once is forbidden: `loadOne` checks the built-in
+> factory table first and never looks at the external `plugin.bin` if it hits
+> ⇒ the built-in version always wins and the external one **installs but never
+> takes effect**. When externalizing a plugin, remove it from
+> `internal/plugins/all.go` (the single authoritative list) in the same change.
 
 ### Built-in vs External Plugins
 
@@ -594,19 +641,24 @@ internal/
 │   ├── registry.go        — Registry + lifecycle
 │   ├── dynamic.go         — Load-channel dispatch (proc / lua / skill); .so only remains to error loudly
 │   └── manifest.go        — plugin.json metadata
-├── plugins/               — Built-in plugin implementations
-│   ├── all.go             — Blank imports
+├── plugins/               — Built-in plugin implementations (11; see "Which Plugins Stay Built-in")
+│   ├── all.go             — Blank imports (**the single authoritative list**; edit only this)
 │   ├── webui/             — HTTP server + embedded SPA
 │   ├── cli/               — Unix socket CLI
-│   ├── cmd/               — Command execution
-│   ├── mcp/               — MCP protocol
-│   ├── files/             — File operations
 │   ├── clawhubadapter/   — ClawHub adapter (OC plugin/SKILL/JS/Python sidecar)
 │   ├── agentcli/          — PTY terminal
 │   ├── healthcheck/       — Health check
 │   ├── pluginmgr/         — Plugin manager
 │   ├── skillmgr/          — Skill plugin management
-│   └── cfgmgr/            — Config manager
+│   ├── cfgmgr/            — Config manager
+│   ├── remotedevice/      — Remote device bridge
+│   ├── seemedia/          — Direct media view
+│   ├── seq/               — Sequence orchestration
+│   ├── data/ plugin_data/ — Plugin static assets (non-Go, shipped with the kernel)
+│   ├── kbtree/ cmd/ localuse/ mcp/ multimodal/ ai_image/ files/
+│   │                      — Source remains but **not listed in all.go**: externalized
+│   │                        on 2026-10-19 as .hmap packages (projects in the SDK repo's
+│   │                        example/); directories to be removed once external projects stabilize
 ├── sdk/                   — PluginSDK definitions
 │   ├── plugin.go          — Plugin interface + PluginSDK
 │   ├── memory.go          — MemoryAPI
