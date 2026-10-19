@@ -165,7 +165,17 @@ func TestIntegrationAllPluginsRegister(t *testing.T) {
 		"terminal_create", "terminal_write", "terminal_read",
 		"terminal_resize", "terminal_close", "terminal_list",
 		"healthcheck", "healthcheck_plugins", "healthcheck_tools", "healthcheck_memory", "healthcheck_perf",
-		"timer_set",
+		// ⚠️ timer_set **不在**这里（2026-10-19 起）。
+		//
+		// 本用例的语义是「编译期内置插件是否都注册了工具」，set 走的是本地
+		// 装配（setupIntegration 只加载 internal/plugins 下的内置包）。
+		// timer 已搬为**外部插件**（plugins/timer，.hmap），不参与本进程装配，
+		// 所以它出现在这个列表里只会造出「永远绿不了」的假失败。
+		//
+		// 外部插件的工具是否真的注册成功，由另一层负责：装完 .hmap 后
+		// 用 timer_list / timer_set 实调一次（见交付报告里的现网验证）。
+		// 别为了「让它绿」把 timer 加回 all.go —— 那会让内置与外部两份
+		// 同时存在，工具重名而胜者取决于加载顺序。
 	}
 
 	defs := env.stageHost.GetToolDefs()
