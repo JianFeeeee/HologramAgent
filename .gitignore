@@ -123,3 +123,6 @@ dist/
 
 # agent 会话附件（本地产物，不进版本库）
 .pi-web/
+
+# ── 内置 pi 的会话日志（agent 工作产物，不进仓库）──
+/.pi-sessions/
