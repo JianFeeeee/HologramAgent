@@ -811,7 +811,7 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 |---------|------|----------|
 | [weather](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/weather) | Go | Weather queries (wttr.in); demonstrates NoMemory/Cleaner/stage hooks/channels/text memory |
 | [luademo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/luademo) | Lua | Full-featured Lua example covering the whole v0.8.0 Lua SDK surface |
-| [qq](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/qq) | Go | NapCat OneBot integration, 20 tools, full input/output channel wiring |
+| [qq](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/qq) | Go | NapCat OneBot integration, 24 tools, full input/output channel wiring |
 | [memo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/memo) | Go | Memo management, PreAction injection + timed interrupt dual reminder |
 | [files](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/files) | Go | File system operations, 4 write modes, sandbox isolation |
 | [browser](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/browser) | Go | Web search + HTTP fetch (SSRF) + Chromium render (merged from web/webfetch) |
@@ -835,7 +835,7 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 
 | Plugin | Location | Features |
 |--------|----------|----------|
-| Timer | `internal/plugins/timer/` | Simplest complete example, registers one tool + interrupt feedback |
+| Healthcheck | `internal/plugins/healthcheck/` | Periodic self-check (30min) + tool-surface status, the simplest tool-type built-in |
 | CLI | `internal/plugins/cli/` | Unix socket listener + synchronous request-response |
 | WebUI | `internal/plugins/webui/` | HTTP service + dependency injection |
 

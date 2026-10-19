@@ -235,7 +235,7 @@ internal/
 ├── memory/         三层记忆：Graph(SQLite) / Document(JSON+TF-IDF) / Text(JSONL) + StaticEmbedder(预训练词嵌入/TF-IDF回退) + CleanTemplateText(去模版)
 ├── knowledge/      知识库（文件系统 + TF-IDF）
 ├── plugin/         插件注册表 + 子进程加载器（stdio RPC + 共享内存段 + 事件环）
-├── plugins/        内置 20 个插件（webui/cli/timer/cmd/mcp/files/cfgmgr/agentcli/healthcheck/pluginmgr/clawhubadapter/multimodal/remotedevice/ai_image/localuse/skillmgr/data/seq/kbtree 等）
+├── plugins/        内置 17 个插件（webui/cli/cmd/mcp/files/cfgmgr/agentcli/healthcheck/pluginmgr/clawhubadapter/multimodal/remotedevice/ai_image/localuse/skillmgr/seemedia/seq）
 ├── sdk/            PluginSDK（Tool/Stage/Event 三通道）
 ├── config/         SQLite 配置中心
 ├── events/         事件总线
@@ -390,7 +390,7 @@ make install            # 安装到系统
 本项目的 AGPL。因此**外部插件不是本项目的衍生作品**，作者可自行选择许可（含闭源、商业、私有），
 既不必同许可、也不受 §13 网络条款约束。第三方插件生态的安全与活跃正建立在这条之上。
 
-边界很清楚：**AGPL 覆盖内核与随包内置插件**（`homed`、`internal/`、`internal/plugins/` 下 20 个内置插件）；
+边界很清楚：**AGPL 覆盖内核与随包内置插件**（`homed`、`internal/`、`internal/plugins/` 下 17 个内置插件）；
 **MIT 覆盖公开 SDK**（`sdk/`，`go.mod` 零外部依赖、只依赖 Go 标准库，不引用内核任何代码）。
 子进程隔离在这里不重要了——决定许可的是被链接的 SDK 代码本身，而它是 MIT。
 

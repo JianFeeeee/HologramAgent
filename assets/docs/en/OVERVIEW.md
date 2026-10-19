@@ -75,7 +75,7 @@ Code is in the project root, implemented in Go.
 - 7 stage hooks: on_input → pre_action → post_action → before_toolcall → after_toolcall → before_output → after_output
 
 **LLM Provider** (`internal/agent/api/provider.go`):
-- Provider interface: Name / Chat / ChatStream
+- Provider interface: Name / Chat / ChatStream / MaxContextTokens
 - Single implementation, `LuaAdaptedProvider`: every source goes through a Lua adapter script that
   transforms requests/responses; adapter scripts live in `internal/lua/adapters/`, one `.lua` per protocol
 - 10 built-in adapters: deepseek / openai / anthropic / gemini / mistral / groq / github / kimicode / ollama / server

@@ -69,7 +69,7 @@ HomeAgent 是一个持续运行的个人智能 Agent 框架。
 - 阶段钩子 7 个：on_input → pre_action → post_action → before_toolcall → after_toolcall → before_output → after_output
 
 **LLM Provider** (`internal/agent/api/provider.go`)：
-- Provider 接口：Name / Chat / ChatStream
+- Provider 接口：Name / Chat / ChatStream / MaxContextTokens
 - 唯一实现 `LuaAdaptedProvider`：所有源都经 Lua 适配脚本做请求/响应变换；
   适配器脚本位于 `internal/lua/adapters/`，每类协议一个 `.lua` 脚本
 - 内置 10 个适配器：deepseek / openai / anthropic / gemini / mistral / groq / github / kimicode / ollama / server
@@ -93,6 +93,6 @@ HomeAgent 是一个持续运行的个人智能 Agent 框架。
 
 核心功能已可运行。插件系统和 SDK 已就绪，可独立开发外部插件。
 
-- 内置插件：webui / cli / timer / cmd / mcp / agentcli / healthcheck / pluginmgr / clawhubadapter / files / cfgmgr
+- 内置插件（17 个）：webui / cli / cmd / mcp / agentcli / healthcheck / pluginmgr / clawhubadapter / files / cfgmgr / multimodal / remotedevice / ai_image / localuse / skillmgr / seemedia / seq
 - 外部插件示例（[homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 仓库 `example/`，含 Go 和 Lua 两种类型）：qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
 - 打包分发：`.hmap` 插件包格式，通过 WebUI 安装

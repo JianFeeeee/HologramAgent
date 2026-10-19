@@ -158,10 +158,17 @@ dimension** participate in fusion (mixing coordinate systems yields a direction 
 
 | Location | File | Purpose | Algorithm |
 |----------|------|---------|-----------|
-| Context Prune | `context.go:155` | Trim low-relevance context events | VectorizeClean → CosineSimilarity(queryVec, evt.Vector) |
-| DocStore Query | `document.go:206` | Recall from document memory | StaticEmbedder.Vectorize (primary) / TF-IDF (fallback) → vec.Search |
-| Indexer Entity Search | `indexer.go:96+111` | Recall from Graph | vector entity search + jieba keywords → SQLite LIKE + BFS |
-| Entity Similarity Detection | `distill.go` | Detect similar entities in Graph | Bigram Jaccard (>0.75 → consolidation) |
+> The table below pins **function names**, not line numbers: lines drift on every edit,
+> function names are the stable anchor. (The old version cited `context.go:155` /
+> `document.go:206` / `indexer.go:96+111`; after the memory reorg `context.go` moved to
+> `agent/core/`, so those line numbers had long been stale.)
+
+| Location | File (function) | Purpose | Algorithm |
+|----------|------|---------|-----------|
+| Context Prune | `internal/agent/core/context.go` — `RelevanceContext.Prune` / `PruneWithProtected` | Trim low-relevance context events | VectorizeClean → CosineSimilarity(queryVec, evt.Vector) |
+| DocStore Query | `internal/memory/document/document.go` — `Store.Query` / `QueryScored` | Recall from document memory | StaticEmbedder.Vectorize (primary) / TF-IDF (fallback) → vec.Search |
+| Indexer Entity Search | `internal/memory/indexer.go` — `Indexer.vectorSearchEntities` | Recall from Graph | vector entity search + jieba keywords → SQLite LIKE + BFS |
+| Entity Similarity Detection | `internal/agent/core/distill.go` | Detect similar entities in Graph | Weighted Jaccard (`sim > 0.75` → consolidation) |
 
 ### Context Layer
 
@@ -311,7 +318,7 @@ VM built-ins: `json.encode` / `json.decode` / `log` / `http_get` / `http_post`.
 
 | Method | Registration Mechanism | Compilation | Usage |
 |--------|----------------------|-------------|-------|
-| Built-in | `init()` → `RegisterFactory` | `internal/plugins/` compiled into kernel | webui/cli/timer/mcp etc. |
+| Built-in | `init()` → `RegisterFactory` | `internal/plugins/` compiled into kernel | webui/cli/cmd/mcp etc. (17 total) |
 | External subprocess plugin | Handshake + stdio JSON-RPC reverse registration | `hmapdev build` → `plugin.bin` (ordinary Go binary) | qq/browser/files etc. |
 | Lua script plugin | Execute `main.lua` to register tools | No compilation, takes effect after restart/reload | luademo etc. |
 | SKILL plugin | Parse `SKILL.md` | Markdown definition | Loaded via clawhubadapter |
@@ -349,7 +356,7 @@ Common ground:
 
 | Plane | Mechanism | Why this choice |
 |---|---|---|
-| Control | stdio JSON-RPC (NDJSON frames), 55 `core.*` methods | The process boundary *is* the ABI boundary—no need to maintain three platform-specific dynamic-library loaders |
+| Control | stdio JSON-RPC (NDJSON frames), currently 82 methods (authoritative list: `internal/plugin/proc/protocol.go`) | The process boundary *is* the ABI boundary—no need to maintain three platform-specific dynamic-library loaders |
 | Data | Shared memory segment, **one segment shared by all subprocesses** | One segment per plugin would degrade "kernel ctx → segment → plugin mutates → read back" into the copy model under concurrency, reproducing lost updates exactly |
 | Notification | Event ring + platform notify (Linux eventfd / macOS pipe / Windows Event) | The kernel must never block on a consumer: streaming output publishes per token, so any wait shows up as stutter |
 
@@ -591,7 +598,6 @@ internal/
 │   ├── all.go             — Blank imports
 │   ├── webui/             — HTTP server + embedded SPA
 │   ├── cli/               — Unix socket CLI
-│   ├── timer/             — Timer
 │   ├── cmd/               — Command execution
 │   ├── mcp/               — MCP protocol
 │   ├── files/             — File operations

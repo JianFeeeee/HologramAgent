@@ -156,10 +156,16 @@ eventLoop() → processTextInput()
 
 | 位置 | 文件 | 用途 | 算法 |
 |------|------|------|------|
-| Context Prune | `context.go:155` | 裁剪低相关性上下文事件 | VectorizeClean → CosineSimilarity(queryVec, evt.Vector) |
-| DocStore Query | `document.go:206` | 文档记忆召回 | StaticEmbedder.Vectorize（首选）/ TF-IDF（兜底）→ vec.Search |
-| Indexer 实体搜索 | `indexer.go:96+111` | Graph实体召回 | 向量实体搜索 + jieba关键词 → SQLite LIKE + BFS |
-| 实体相似度检测 | `distill.go` | Graph中相似实体 | Bigram Jaccard (>0.75 → consolidation) |
+> 下表按**函数名**定位，不绑定行号：行号随每次改动漂移，函数名才是稳定锚点。
+> （旧版这里写的是 `context.go:155` / `document.go:206` / `indexer.go:96+111`，
+> 但 memory 重组后 `context.go` 已迁到 `agent/core/`，那些行号早已失效。）
+
+| 位置 | 文件（函数） | 用途 | 算法 |
+|------|------|------|------|
+| Context Prune | `internal/agent/core/context.go` — `RelevanceContext.Prune` / `PruneWithProtected` | 裁剪低相关性上下文事件 | VectorizeClean → CosineSimilarity(queryVec, evt.Vector) |
+| DocStore Query | `internal/memory/document/document.go` — `Store.Query` / `QueryScored` | 文档记忆召回 | StaticEmbedder.Vectorize（首选）/ TF-IDF（兜底）→ vec.Search |
+| Indexer 实体搜索 | `internal/memory/indexer.go` — `Indexer.vectorSearchEntities` | Graph实体召回 | 向量实体搜索 + jieba关键词 → SQLite LIKE + BFS |
+| 实体相似度检测 | `internal/agent/core/distill.go` | Graph中相似实体 | 加权 Jaccard（阈值 `sim > 0.75` → consolidation） |
 
 ### Context 层
 
@@ -301,7 +307,7 @@ VM 内置 `json.encode` / `json.decode` / `log` / `http_get` / `http_post`。
 
 | 方式 | 注册机制 | 编译 | 用途 |
 |------|----------|------|------|
-| 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/timer/mcp 等 |
+| 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/cmd/mcp 等 17 个 |
 | 外部子进程插件 | 握手 + stdio JSON-RPC 反向注册 | `hmapdev build` → `plugin.bin`（普通 Go 二进制） | qq/browser/files 等 |
 | Lua 脚本插件 | 执行 `main.lua` 注册工具 | 无需编译，重启/重载生效 | luademo 等 |
 | SKILL 插件 | 解析 `SKILL.md` | Markdown 定义 | clawhubadapter 兼容加载 |
@@ -339,13 +345,16 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 
 | 面 | 机制 | 为何这么选 |
 |---|---|---|
-| 控制面 | stdio JSON-RPC（NDJSON 帧），55 个 `core.*` method | 进程边界即 ABI 边界，无需维护三套平台特定的动态库加载代码 |
+| 控制面 | stdio JSON-RPC（NDJSON 帧），当前 82 个 method（权威清单见 `internal/plugin/proc/protocol.go`） | 进程边界即 ABI 边界，无需维护三套平台特定的动态库加载代码 |
 | 数据面 | 共享内存段，**全部子进程共用一块** | 每插件一段会让「内核 ctx → 段 → 插件改 → 回读 ctx」在多插件下退化成副本模型，lost update 原样复现 |
 | 通知面 | 事件环 + 平台通知（Linux eventfd / macOS pipe / Windows Event） | 内核发事件绕不等消费者，流式输出逐 token 发布时任何等待都会造成卡顿 |
 
 v1.1.1 新增 4 个 method（51 → 55）：`doc.insertWithMedia`、`io.injectMedia`、
 `io.injectMediaSync`、`io.injectInterruptMedia`。**媒体块走 JSON 而非共享段二进制通道**——
 data URL 本身已是 base64 文本，包进二进制传输省不了空间，还要跟其余 51 个 method 分道。
+
+> 上表的「82 个」是**当前**值；51/55 是 v1.1.1 当时的数字，此后各条发布线继续追加
+> （settings / secrets / social / knowledge 等面），故不再回填到历史叙述里。
 
 **子进程生命周期管理**：
 - 每子进程一根专职 `waitLoop`（`cmd.Wait()` 唯一调用点）——不依赖 stdout EOF，
@@ -568,7 +577,6 @@ internal/
 │   ├── all.go             — 空白导入
 │   ├── webui/             — HTTP 服务器 + 嵌入式 SPA
 │   ├── cli/               — Unix socket CLI
-│   ├── timer/             — 定时器
 │   ├── cmd/               — 命令执行
 │   ├── mcp/               — MCP 协议
 │   ├── files/             — 文件操作

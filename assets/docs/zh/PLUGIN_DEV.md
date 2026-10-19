@@ -802,7 +802,7 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 |------|------|------|
 | [weather](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/weather) | Go | 天气查询（wttr.in），演示 NoMemory/Cleaner/阶段钩子/通道/文本记忆 |
 | [luademo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/luademo) | Lua | Lua 全功能示例，覆盖 v0.8.0 Lua SDK 全部 API 面 |
-| [qq](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/qq) | Go | NapCat OneBot 对接，20 个工具，输入/输出通道完整对接 |
+| [qq](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/qq) | Go | NapCat OneBot 对接，24 个工具，输入/输出通道完整对接 |
 | [memo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/memo) | Go | 备忘管理，PreAction 注入 + 定时打断双提醒 |
 | [files](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/files) | Go | 文件系统操作，4 种写入模式，沙箱隔离 |
 | [browser](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/browser) | Go | 网络搜索、网页抓取（SSRF）、浏览器渲染（合并自 web/webfetch） |
@@ -826,7 +826,7 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 
 | 插件 | 位置 | 特点 |
 |------|------|------|
-| Timer | `internal/plugins/timer/` | 最简单的完整示例，注册一个工具 + 中断反馈 |
+| Healthcheck | `internal/plugins/healthcheck/` | 定时自检（30min）＋ 工具面自报状态，最简的工具型内置插件 |
 | CLI | `internal/plugins/cli/` | Unix socket 监听 + 同步请求响应 |
 | WebUI | `internal/plugins/webui/` | HTTP 服务 + 依赖注入 |
 
