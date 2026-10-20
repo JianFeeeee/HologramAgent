@@ -40,7 +40,13 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		return nil
 	}
 	nlp.SetDefaultParser(onnxParser)
-	log.Printf("[homed] dep parser initialized (model: %s)", modelPath)
+	// 空路径 = 走内置规则引擎（不发 ONNX 推理）。旧日志打成
+	// "initialized (model: )" —— 空括号看着像配置泄漏了，实为正常回退。
+	if modelPath == "" {
+		log.Printf("[homed] dep parser ready (内置规则引擎；未配置 core.agent.onnx_model_path)")
+	} else {
+		log.Printf("[homed] dep parser ready (ONNX model: %s)", modelPath)
+	}
 	return nil
 }
 
