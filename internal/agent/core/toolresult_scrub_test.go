@@ -17,8 +17,10 @@ package core
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
@@ -28,7 +30,17 @@ import (
 
 func newScrubStore(t *testing.T) *security.Store {
 	t.Helper()
-	dir := t.TempDir()
+	// 不用 t.TempDir()：它的清理是**严格**的 RemoveAll，只要清理瞬间还有
+	// 落盘写入（变量库 saveLocked 的 tmp→rename）就会报 "directory not empty"，
+	// 把断言已通过的用例判成失败。CI 2026-10-20 连续两次在 -race 下踩到
+	// （persist_leak_test.go: TestE2E_ResponseSecretNeverReachesContext，
+	// 日志先打印 ✅ 再报 TempDir cleanup 失败）。
+	//
+	// 这里自己建目录 + 重试清理：等异步收尾，最后尽力删除，清理失败不污染判据。
+	dir, err := os.MkdirTemp("", "homeagent-scrub-")
+	if err != nil {
+		t.Fatalf("建临时目录失败: %v", err)
+	}
 	s, err := security.InitGlobal(security.Options{
 		Path:    dir + "/v.json",
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
@@ -37,7 +49,18 @@ func newScrubStore(t *testing.T) *security.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
+	t.Cleanup(func() {
+		security.SetGlobal(nil)
+		// 50 × 20ms：足够让在途 saveLocked 收尾；仍不行就尽力删，不让清理失败
+		// 把一个已经通过的安全判据变成假红。
+		for i := 0; i < 50; i++ {
+			if err := os.RemoveAll(dir); err == nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		_ = os.RemoveAll(dir)
+	})
 	return s
 }
 
