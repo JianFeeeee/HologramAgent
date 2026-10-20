@@ -20,10 +20,23 @@ var onnxModelFS embed.FS
 const maxSeqLen = 128
 
 type ONNXParser struct {
-	rt       *ort.DynamicAdvancedSession
-	vocab    map[string]int64
-	posVocab map[string]int64
-	close    sync.Once
+	rt        *ort.DynamicAdvancedSession
+	vocab     map[string]int64
+	posVocab  map[string]int64
+	close     sync.Once
+	modelPath string // 实际加载的模型路径（空 ModelPath 时为解出的内嵌模型）
+}
+
+// ModelPath 返回**实际**加载的 ONNX 模型路径。
+//
+// 为什么需要它：配置里的 core.agent.onnx_model_path 允许留空，此时用二进制内嵌
+// 的 dep_parser.onnx（解到 DataDir/nlp 后加载）。只看配置就会把「内嵌模型已启用」
+// 误报成「未配置 → 走规则引擎」—— 启动日志一度这样误导。
+func (p *ONNXParser) ModelPath() string {
+	if p == nil {
+		return ""
+	}
+	return p.modelPath
 }
 
 type ONNXConfig struct {
@@ -75,9 +88,10 @@ func NewONNXParser(cfg ONNXConfig) (*ONNXParser, error) {
 	}
 
 	return &ONNXParser{
-		rt:       session,
-		vocab:    vocab,
-		posVocab: posVocab,
+		rt:        session,
+		vocab:     vocab,
+		posVocab:  posVocab,
+		modelPath: modelPath,
 	}, nil
 }
 

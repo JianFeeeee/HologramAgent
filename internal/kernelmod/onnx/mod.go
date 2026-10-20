@@ -40,13 +40,11 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		return nil
 	}
 	nlp.SetDefaultParser(onnxParser)
-	// 空路径 = 走内置规则引擎（不发 ONNX 推理）。旧日志打成
-	// "initialized (model: )" —— 空括号看着像配置泄漏了，实为正常回退。
-	if modelPath == "" {
-		log.Printf("[homed] dep parser ready (内置规则引擎；未配置 core.agent.onnx_model_path)")
-	} else {
-		log.Printf("[homed] dep parser ready (ONNX model: %s)", modelPath)
-	}
+	// 日志必须报**实际解析出的**模型路径，不能回显配置值：
+	// core.agent.onnx_model_path 留空时内核会用**二进制内嵌**的 dep_parser.onnx
+	// （解到 <data>/nlp 后加载）。此前只打配置值，于是出现
+	// "initialized (model: )" —— 看着像 ONNX 没启用，实际内嵌模型一直在跑。
+	log.Printf("[homed] dep parser ready (ONNX，模型: %s)", onnxParser.ModelPath())
 	return nil
 }
 
