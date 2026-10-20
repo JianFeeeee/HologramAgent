@@ -1297,6 +1297,9 @@ func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers [
 				}
 			}
 
+			// opt-in 提示词抓包（HOMED_PROMPT_DUMP）：见 promptdump.go。
+			dumpPrompt(channel, req)
+
 			fCtx, fCancel := context.WithCancel(a.ctx)
 			a.llmMu.Lock()
 			a.cancelLLM = fCancel

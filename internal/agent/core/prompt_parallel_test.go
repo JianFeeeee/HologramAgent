@@ -103,7 +103,9 @@ func TestPromptKeepsExistingContract(t *testing.T) {
 		"【输出规则】",
 		"output_list_channels",
 		"【可用工具能力】",
-		"【记忆清理指令】",
+		// 记忆维护块：标题从【记忆清理指令】改为【记忆维护】——具体工具选择
+		// 下沉到 memory_* 的工具描述，提示词只保留「必须真做、不许只描述计划」。
+		"【记忆维护】",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("提示词丢失既有要点 %q", want)

@@ -843,10 +843,13 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 
 	// 人格设定（人格卡的配置项化）：默认模板见 DefaultPersonaPrompt。
 	// 高级用户仍可用 <dataDir>/personal/personal.md 覆盖它。
-	reg(ConfigDef{Key: "core.agent.personal_prompt", Default: DefaultPersonaPrompt, Type: "text", DisplayName: "人格设定",
-		Description: "人格设定块（作为【人格设定】拼在系统提示词之前）。留空则该块不注入。" +
-			"默认模板不含版本号：被问到版本/构建信息时，应读运行时快照而非凭记忆断言。" +
-			"<dataDir>/personal/personal.md 存在且非空时优先于本项。", Category: "agent"})
+	reg(ConfigDef{Key: "core.agent.personal_prompt", Default: DefaultPersonaPrompt, Type: "text", DisplayName: "人格设定（称呼/语气/说话方式/形象）",
+		Description: "人格块正文，作为【人格设定】拼进系统提示词。**只写人设**：怎么称呼用户、语气与说话方式、" +
+			"语言习惯、形象设定。工具用法写工具自己的描述，多步流程写技能（skill），不要写在这里 —— " +
+			"写在人格里会随插件增删而失真（工具被卸载/未启动时提示词还在教模型用它）。" +
+			"支持版本占位符 {{kernel_version}} / {{kernel_commit}} / {{sdk_version}}（随构建实时展开，避免写死版本号）。" +
+			"<dataDir>/personal/personal.md 存在且非空时**优先于本项**（该文件不支持占位符展开，建议逐步迁到本项）。" +
+			"留空则该块不注入。修改后需重启生效。", Category: "agent"})
 
 	reg(ConfigDef{Key: "webui.listen_addr", Default: ":8080", Type: "string", DisplayName: "监听地址", Description: "WebUI HTTP 监听地址", Category: "webui"})
 	reg(ConfigDef{Key: "core.daemon.data_dir", Default: dataDir, Type: "string", DisplayName: "数据目录", Description: "数据存储根目录", Category: "daemon"})
@@ -926,7 +929,14 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	reg(ConfigDef{Key: "core.agent.workdir", Default: "", Type: "string", DisplayName: "工作目录", Description: "Agent 命令执行的默认工作目录（如 cmd_run 工具的 fallback），留空使用内核所在目录", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.embedding_model_path", Default: "", Type: "string", DisplayName: "预训练词嵌入模型路径", Description: "预训练词嵌入模型路径（word2vec 文本格式），支持逗号分隔多个模型。路径后可加 #topN 规格只加载前 N 个词向量（如 /data/cc.zh.300.vec#top50000）以控制常驻内存，词频降序命中覆盖绝大部分文本。空则使用 TF-IDF 回退。修改后需重启生效。", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.onnx_model_path", Default: "", Type: "string", DisplayName: "ONNX 模型路径", Description: "依存句法分析 ONNX 模型文件路径。留空使用二进制内嵌模型/规则引擎。修改后需重启生效。", Category: "agent"})
-	regMeta(ConfigDef{Key: "core.agent.system_prompt", Default: "", Type: "text", DisplayName: "系统身份提示词", Description: "Agent 的系统提示词，定义身份和行为规则。留空则使用编译时内置默认值。支持版本占位符（随构建实时展开，避免写死版本号随发版说谎）：{{kernel_version}}、{{kernel_commit}}、{{sdk_version}}。修改后需重启生效。", Category: "agent"})
+	regMeta(ConfigDef{Key: "core.agent.system_prompt", Default: "", Type: "text", DisplayName: "系统提示词（身份与行为规则）",
+		Description: "系统提示词正文，定义身份与行为规则（不是工具说明书）。**只写跨工具/跨通道都成立的内容**：" +
+			"身份定位、正确性约束（不编造、只依据工具返回值）、回复的基本要求。" +
+			"单工具「何时用/参数/坑」写该工具自己的 description；多步流程写技能（skill_info 按需取）；" +
+			"称呼/语气/说话方式写「人格设定」。写在系统提示词里的工具用法会随插件外置/按需加载而失真。" +
+			"运行时的通道投递规则、同轮并行语义、对话时序语义由内核每轮自动注入，无需在此重复。" +
+			"留空则使用编译时内置默认值。支持版本占位符（随构建实时展开，避免写死版本号）：" +
+			"{{kernel_version}}、{{kernel_commit}}、{{sdk_version}}。修改后需重启生效。", Category: "agent"})
 
 	reg(ConfigDef{Key: "core.input_processing.image.fallback_provider", Default: "", Type: "string", DisplayName: "图片回退提供商", Description: "当主 LLM 不支持图片处理时使用的提供商（留空则自动降级为文字描述）", Category: "input"})
 	reg(ConfigDef{Key: "core.input_processing.image.fallback_model", Default: "", Type: "string", DisplayName: "图片回退模型", Description: "图片回退提供商使用的模型名", Category: "input"})

@@ -68,7 +68,8 @@ const defaultSystemPrompt = `你是 HomeAgent，一个持续运行的个人管�
 
 只根据工具真实返回的内容作答：没取到就如实说没取到，不要补全、猜测或编造。
 
-回复用自然语言与用户交流。`
+回复用自然语言，像跟人聊天：不要罗列调用了哪个工具、参数是什么、耗时多少，
+除非用户明确要求。称呼、语气与说话方式见【人格设定】。`
 
 func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 	cfg := k.Cfg

@@ -131,6 +131,29 @@ func expandPromptVars(s string) string {
 	).Replace(s)
 }
 
+// appendPromptBlock 把一个「整块」提示词接到已拼好的提示词后面。
+//
+// 为什么不能直接 `prompt += "\n\n" + block`：块自己常常以换行结尾
+// （人格块是 "【人格设定】\n%s\n"、自定义 system_prompt 一般也有尾部换行），
+// 直接拼就会得到 3~4 个连续换行 —— 实测一轮请求里出现 3 处：
+//
+//	…别包装成"稍等我看一下"。\n\n\n【人格设定】     ← 多一个空行
+//	…/mascot.webp 直接能看。\n\n\n\n【场景记忆】   ← 多两个空行
+//	…能否同轮发出。\n\n\n【输出规则】              ← 多一个空行
+//
+// 空行本身不致命，但会推高 token、也让「提示词到底长什么样」难以肉眼核对。
+// 这里统一 trim 掉块两端空白再拼两个换行。
+func appendPromptBlock(prompt, block string) string {
+	block = strings.TrimSpace(block)
+	if block == "" {
+		return prompt
+	}
+	if prompt == "" {
+		return block
+	}
+	return strings.TrimRight(prompt, "\n") + "\n\n" + block
+}
+
 func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	prompt := expandPromptVars(a.systemPrompt)
 	if prompt == "" {
@@ -139,20 +162,25 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 
 	// 驻留子：在**固定提示词之上**注入任务提示词（设计 §7「创建」）。
 	if a.taskPrompt != "" {
-		prompt += "\n\n【任务】" + a.taskPrompt
+		prompt = appendPromptBlock(prompt, "【任务】"+a.taskPrompt)
 	}
 
 	if a.personality != nil {
 		if pp := a.personality.InjectPrompt(); pp != "" {
-			prompt += "\n\n" + pp
+			// 人格卡同样展开版本占位符：人格里写死版本号会随发版说谎
+			// （实测线上人格卡写 v1.0.3，内核早已 1.3.x）。
+			prompt = appendPromptBlock(prompt, expandPromptVars(pp))
 		}
 	}
 
 	if memContext != "" {
-		prompt += "\n\n" + memContext
+		prompt = appendPromptBlock(prompt, memContext)
 	}
 
-	prompt += "\n\n【记忆清理指令】当用户要求整理或清理记忆时，你必须实际调用 memory_ 工具执行操作，不能只回复文本。先用 memory_introspect 查看概况，再用 memory_recall 获取详情。有同义实体则用 memory_merge 合并（source 会被彻底删除），有无用噪音实体则用 memory_delete_entity 直接删除，也可用 memory_purge 批量清理，用 memory_edit 修正错误，用 memory_block_merge 标记不合并。如果工具执行成功，把结果告知用户；不要只描述计划而不执行。"
+	// 记忆维护：具体选哪个工具、各有什么副作用，都写在 memory_* 的工具描述里
+	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
+	prompt = appendPromptBlock(prompt, "【记忆维护】用户要求整理或清理记忆时，必须真的调用 memory_* 工具去做，"+
+		"不能只描述计划；选哪个工具、各有什么副作用见对应工具描述。做完用一句人话说结果。")
 
 	// 跨模态召回：文本路（fastText/TF-IDF 文档层，媒体描述文本已随记忆进入）
 	// + 视觉路（多模态文本编码 → 媒体库坐标）两路归一化融合。
@@ -160,11 +188,11 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	if a.docStore != nil {
 		hits := a.retrieveCrossModal(userInput, 3, a.fusionCfg)
 		if md := a.crossModalMarkdown(hits); md != "" {
-			prompt += "\n\n" + md
+			prompt = appendPromptBlock(prompt, md)
 		}
 	}
 
-	prompt += "\n\n【中断消息】长任务执行期间，工具/插件/定时器等会通过中断机制向你发送提醒（如 QQ 新消息、终端输出到达、定时器到点等）。中断消息以 system 角色注入，内容带 [中断消息] 前缀，**不是用户发言，但也必须认真处理**：优先停下当前长任务，针对中断内容作出响应或决定继续执行。不要忽略带 [中断消息] 前缀的 system 消息。"
+	prompt = appendPromptBlock(prompt, "【中断消息】长任务执行期间，工具/插件/定时器等会通过中断机制向你发送提醒（如 QQ 新消息、终端输出到达、定时器到点等）。中断消息以 system 角色注入，内容带 [中断消息] 前缀，**不是用户发言，但也必须认真处理**：优先停下当前长任务，针对中断内容作出响应或决定继续执行。不要忽略带 [中断消息] 前缀的 system 消息。")
 
 	// 工具执行顺序（阶段 2.5）。必须在**并行执行落地之后**才加：
 	// 反序会让本段对模型说谎——说"并发"而内核仍串行，模型据此推断
@@ -172,13 +200,13 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	//
 	// ⚠️ 措辞必须与 batchRunnable 的**真实**判据一致（全批 ParallelSafe
 	// 才并发 + 同通道保序），否则只是把"没说"换成"说错"。
-	prompt += "\n\n【工具执行顺序】同一条回复里给出多个工具调用时，内核**默认并行执行**（同时跑），不是依次执行。这带来三条你必须知道的规则：\n"
+	prompt = appendPromptBlock(prompt, "【工具执行顺序】同一条回复里给出多个工具调用时，内核**默认并行执行**（同时跑），不是依次执行。这带来三条你必须知道的规则：\n")
 	prompt += "- **不要依赖执行顺序**：若某个调用的参数需要另一个调用的结果，就**分两轮**——先发前一个，看到结果后再发下一个。写在同一轮里就等于假设了不存在的先后。\n"
 	prompt += "- **例外一：同一通道的输出发送会保序**。对**同一个**通道连续调用多次 `output_send__`，内核会**按你发出的顺序依次执行**（用户可见消息顺序敏感），不会并发打乱。所以「先发回执、再发结论」这类有序发送可以放在同一轮；但若后续内容依赖前一条的用户反应，仍应分轮。\n"
 	prompt += "- **例外二：不并发安全的工具不会并发**。写类工具（记忆/知识/文档写入等）与未声明并发安全的工具，**整批会退回依次执行**——同一批里只要有一个这样的工具，这一批就全部串行。这对你是透明的：你不需要判断，只需知道「同轮并发」不是无条件保证的。\n"
 	prompt += "- 工具是否并发安全由**工具自己声明**（`ParallelSafe`），不由你决定；你只需按上面第 1 条判断能否同轮发出。\n"
 
-	prompt += "\n\n【输出规则】消息不会自动发送到对话来源通道，你必须自己决定如何回复：\n"
+	prompt = appendPromptBlock(prompt, "【输出规则】消息不会自动发送到对话来源通道，你必须自己决定如何回复：\n")
 	prompt += "- **不要假设当前通道是某个固定值**：同一会话里可能同时有多个来源（多设备、多通道、子任务）。\n"
 	prompt += "  先看这条消息本身与上下文里的来源信息，再决定往哪里回；不确定有哪些通道时先调 output_list_channels。\n"
 	prompt += "- 同步通道（webui / cli / 终端）：直接返回纯文本，内核会把文本交给等待方显示，无需调用工具。\n"
@@ -203,7 +231,7 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 主动 skill_info 拉取全文按文档执行
 	if a.skillIndex != nil {
 		if idx := a.skillIndex.SkillIndex(); idx != "" {
-			prompt += "\n\n【可用技能】以下是已安装的原生技能。当用户请求与某技能描述匹配时，\n先用 skill_info(\"技能名\") 拉取全文，再严格按文档步骤执行：\n" + idx
+			prompt = appendPromptBlock(prompt, "【可用技能】以下是已安装的原生技能。当用户请求与某技能描述匹配时，\n先用 skill_info(\"技能名\") 拉取全文，再严格按文档步骤执行：\n"+idx)
 		}
 	}
 
@@ -211,10 +239,10 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 系统提示词每轮重建，因此 WebUI / QQ / CLI / ACP / 邮件等所有通道都会带上它；
 	// 模型调用 persona_set（或用户在 WebUI 向导里选）落地后，标记置位，本段消失。
 	if a.personaStore != nil && !a.personaStore.PersonaInitialized() {
-		prompt += "\n\n【首启人格设定】你的**人格设定尚未确认**。请在本轮回复里先问用户一句：" +
-			"要用默认人格，还是自定义一个？拿到明确答复后**必须调用 persona_set 工具**落库：" +
-			"用户选默认 → mode=default；自定义 → mode=custom 且把内容写进 content；" +
-			"用户说以后再说 → mode=later。用户答复前不要假设已设置，也不要反复追问同一件事。"
+		prompt = appendPromptBlock(prompt, "【首启人格设定】你的**人格设定尚未确认**。请在本轮回复里先问用户一句："+
+			"要用默认人格，还是自定义一个？拿到明确答复后**必须调用 persona_set 工具**落库："+
+			"用户选默认 → mode=default；自定义 → mode=custom 且把内容写进 content；"+
+			"用户说以后再说 → mode=later。用户答复前不要假设已设置，也不要反复追问同一件事。")
 	}
 
 	prompt += a.buildToolCatalog()
