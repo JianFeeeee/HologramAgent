@@ -256,7 +256,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		p.selfToolNames["healthcheck_kernel"] = true
 		s.RegisterTool("healthcheck_kernel", sdk.ToolDef{
 			Name:        "healthcheck_kernel",
-			Description: "查询 Agent 内核运行状态快照，包括**内核版本号与构建身份**（build.version / commit / build_time）、**统一多模态向量空间（ONNX 模型）是否启用**（onnx.enabled，未启用时给出原因）、插件/工具/记忆/知识库/LLM Provider/运行时等各子系统信息。Agent 可通过此工具自主监测内核健康。",
+			Description: "查询 Agent 内核运行状态快照，包括**内核版本号与构建身份**（build.version / commit / build_time）、**统一多模态向量空间（ONNX 模型）是否启用**（onnx.enabled，未启用时给出原因）、**依存句法分析器状态**（onnx.dep_parser：是否启用、实际模型路径、是否来自二进制内嵌）、插件/工具/记忆/知识库/LLM Provider/运行时等各子系统信息。Agent 可通过此工具自主监测内核健康。",
 			Parameters: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},

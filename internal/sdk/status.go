@@ -196,6 +196,25 @@ type ONNXStatus struct {
 	Modalities  []string `json:"modalities,omitempty"`
 	// Reason 是未启用时的原因（未配置 / 打开失败的具体错误 / 其它）。
 	Reason string `json:"reason,omitempty"`
+	// DepParser 是**依存句法分析器**的状态。
+	//
+	// 为什么单独报：ONNX 在内核里有**两个互不相关的消费者** —— 统一多模态
+	// 向量空间（Enabled 字段）与依存句法分析器。前者能启用不代表后者也在跑：
+	// 解析器可以用二进制内嵌的模型（配置留空时），也可能因缺运行时降级到
+	// 规则引擎。只看 Enabled 会把「解析器没启用」这件事完全藏起来，
+	// 2026-10-20 就因为启动日志没报实际路径，把内嵌模型误判成规则引擎。
+	DepParser DepParserStatus `json:"dep_parser"`
+}
+
+// DepParserStatus 是依存句法分析器的运行状态。
+type DepParserStatus struct {
+	// Enabled 表示解析器已加载并挂在包级默认位（真正可 Parse）。
+	Enabled bool `json:"enabled"`
+	// ModelPath 是**实际**加载的模型路径；Enabled=false 时为空。
+	ModelPath string `json:"model_path,omitempty"`
+	// Embedded 表示模型来自二进制内嵌（core.agent.onnx_model_path 留空）。
+	// 二者是独立来源：外置路径与内嵌路径，排查「模型到底是哪来的」时必需。
+	Embedded bool `json:"embedded,omitempty"`
 }
 
 type PluginInfo struct {

@@ -2,7 +2,9 @@ package core
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
@@ -11,6 +13,7 @@ import (
 	"github.com/JianFeeeee/HomeAgent/internal/memory/social"
 	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
 	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	"github.com/JianFeeeee/HomeAgent/internal/nlp"
 	"github.com/JianFeeeee/HomeAgent/internal/plugin"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 	"github.com/JianFeeeee/HomeAgent/internal/tracker"
@@ -315,7 +318,7 @@ func (a *Agent) usageStatus() sdk.UsageStatus {
 // 判据是 Loaded()（provider 真正打开且元数据合法），**不是**「配置里写了 provider」——
 // 后者在模型缺失 / 运行时缺失时也为真，拿它当判据就是假绿。
 func (a *Agent) onnxStatus() sdk.ONNXStatus {
-	st := sdk.ONNXStatus{Provider: a.embeddingProvider}
+	st := sdk.ONNXStatus{Provider: a.embeddingProvider, DepParser: depParserStatus()}
 	if a.multimodalSpace != nil && a.multimodalSpace.Loaded() {
 		st.Enabled = true
 		st.Dim = a.multimodalSpace.Dim()
@@ -333,6 +336,27 @@ func (a *Agent) onnxStatus() sdk.ONNXStatus {
 		st.Reason = "未配置统一向量空间 provider（走词嵌入/TF-IDF 回退路径）"
 	default:
 		st.Reason = "provider 未加载"
+	}
+	return st
+}
+
+// depParserStatus 汇总依存句法分析器的**实际**状态。
+//
+// 判据是「包级默认位上有解析器且能报出模型路径」，不是「配了 onnx_model_path」：
+// 配置留空时用的是二进制内嵌模型（解到 <data>/nlp 后加载），只看配置会漏报。
+func depParserStatus() sdk.DepParserStatus {
+	p := nlp.GetDefaultParser()
+	if p == nil {
+		return sdk.DepParserStatus{}
+	}
+	st := sdk.DepParserStatus{Enabled: true}
+	if mp, ok := p.(interface{ ModelPath() string }); ok {
+		st.ModelPath = mp.ModelPath()
+		if strings.Contains(filepath.ToSlash(st.ModelPath), "/nlp/dep_parser.onnx") {
+			// 内嵌模型的解出位置固定为 <dataDir>/nlp/dep_parser.onnx；
+			// 无法从路径反推来源时保留 false（未知不冒充内嵌）。
+			st.Embedded = true
+		}
 	}
 	return st
 }
