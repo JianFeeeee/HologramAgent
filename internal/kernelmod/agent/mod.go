@@ -256,7 +256,6 @@ func wirePluginSDK(k *kernelboot.KernelState) {
 	k.PluginRegistry.SetStageHost(k.StageHost)
 	k.PluginRegistry.SetIndexer(k.Memory.Indexer)
 	k.PluginRegistry.SetStatusProvider(k.Agent)
-	k.PluginRegistry.SetTerminalAPI(k.Agent)
 }
 
 // loadPersonality 载入人格（原 cmd/homed 的整块平移）。

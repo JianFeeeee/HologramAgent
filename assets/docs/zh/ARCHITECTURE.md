@@ -327,7 +327,7 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 **只有必须使用内部 SDK 能力（公开 SDK 没有的接口面）的插件，才留在编译期内置清单。**
 
 内部 SDK（`internal/sdk`）比公开 SDK（third_party/homeagent-sdk）多出一批
-**不对外授予**的能力面：`TerminalAPI` / `TrackerAPI` / `StatusAPI` /
+**不对外授予**的能力面：`TrackerAPI` / `StatusAPI` /
 `SupervisorAPI` / `AdapterAPI` / `SelftestAPI` / `ToolAPI`，以及 **`Publish`
 （事件发布）**。外部插件走 proc 桥的收窄能力集，这些接口在类型层就不存在
 （权威清单见 `internal/plugin/proc/capability.go` 的 `withheldCapabilities`）。
@@ -343,7 +343,7 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 
 | 插件 | 依赖的内部能力 |
 |---|---|
-| cli / webui | TerminalAPI（/terminal 与终端面板）、TrackerAPI、StatusAPI、SupervisorAPI、AdapterAPI |
+| cli / webui | TrackerAPI、StatusAPI、SupervisorAPI、AdapterAPI |
 | agentcli | **EventPublish**：靠 `Publish(EventTerminalOutput)` 上报终端输出与生命周期，公开 SDK 无 Publish |
 | healthcheck | SelftestAPI（能构造虚拟内核实例做自检） |
 | pluginmgr | failback 恢复链必需（`core.agent.failback_plugins` 默认 webui/pluginmgr/recoverydiag） |
@@ -370,6 +370,26 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 > ⚠️ 两份并存是禁止的：`loadOne` 先查内置工厂表，命中就不再看外部 `plugin.bin`
 > ⇒ 内置版永远赢，外部版**装了也不生效**。外置一个插件时，必须同时把它从
 > `internal/plugins/all.go` 移除（该文件是唯一权威清单）。
+
+### 终端归属：agentcli 全权，内核不碰（2026-10-20 调整）
+
+终端逻辑只归 `agentcli`（PTY、会话生命周期、输出缓冲、历史）。内核**不再**维护
+终端语义：曾经的 `internal/agent/core/terminal_registry.go` 已删除 —— 那是在内核里
+编码「什么是终端、怎么从工具调用里归并会话」，属于职责错位。
+
+插件侧（WebUI / CLI）需要终端面板时，**订阅事件总线自己攒视图**：
+
+| 事件 | 发布者 | 用途 |
+|---|---|---|
+| `EventTerminalOutput` | agentcli | 会话输出、创建/关闭/超时（`running` 翻转） |
+| `EventToolCall` | 内核 | `cmd_run` 历史、`terminal_create/close` 归并 |
+
+WebUI 与 CLI 共用 `internal/pluginview` 的实现（同一解析口径，避免历史上两份
+推导各踩一次「工具 result 是 Go map 文本」的坑）。视图不是权威：状态真值在
+agentcli，插件晚于会话启动时会缺早期会话。
+
+agentcli 因此需要 `Publish`（外部插件无此能力），按判定标准保持内置；
+将来若要外置，需要先给外部插件开一条**受控的上行事件**通道（当前刻意不开）。
 
 ### 内置插件 vs 外部插件
 

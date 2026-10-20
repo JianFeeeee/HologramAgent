@@ -1,4 +1,4 @@
-package core
+package pluginview
 
 import "testing"
 
@@ -27,7 +27,7 @@ func TestMapFieldFromMapText(t *testing.T) {
 }
 
 func TestTerminalRegistryLifecycle(t *testing.T) {
-	r := NewTerminalRegistry()
+	r := NewTerminalView()
 
 	// agent 路径：terminal_create 的 result 是 Go map 文本，要能回填 id。
 	r.OnToolCall(map[string]interface{}{
@@ -94,7 +94,7 @@ func TestTerminalRegistryLifecycle(t *testing.T) {
 
 // 终端数超上限时要淘汰，不能无界增长。
 func TestTerminalRegistryCap(t *testing.T) {
-	r := NewTerminalRegistry()
+	r := NewTerminalView()
 	for i := 0; i < maxTerminals+20; i++ {
 		r.OnTerminalOutput(map[string]interface{}{
 			"terminal_id": string(rune('a'+i%26)) + "-x", "running": true,

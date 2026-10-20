@@ -216,22 +216,6 @@ func collectKernelStatus(
 	return status
 }
 
-// ListTerminals / CmdHistory 实现 sdk.TerminalAPI，把内核对插件开放的终端
-// 接口委派给权威注册表（webui / cli 两个插件都读这里，不再各自订阅推导）。
-func (a *Agent) ListTerminals() []sdk.TerminalStatus {
-	if a.terminalReg == nil {
-		return nil
-	}
-	return a.terminalReg.ListTerminals()
-}
-
-func (a *Agent) CmdHistory() []sdk.CmdExecStatus {
-	if a.terminalReg == nil {
-		return nil
-	}
-	return a.terminalReg.CmdHistory()
-}
-
 // GetKernelStatus 返回 Agent 驱动的内核状态快照。
 func (a *Agent) GetKernelStatus() *KernelStatus {
 	providerName := ""

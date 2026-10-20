@@ -881,7 +881,7 @@ func flushTermStream(s *sdk.PluginSDK, t *TerminalSession) bool {
 // emitTermState 把终端存活状态作为 EventTerminalOutput 事件上报。
 //
 // 生命周期事件（创建/关闭/退出/超时）必须显式发：终端无输出时 ticker
-// 不会发事件，内核的终端权威视图与所有插件（WebUI/CLI）都依赖这些事件
+// 不会发事件，而所有插件（WebUI/CLI）的终端视图都依赖这些事件
 // 才能知道终端的存在与终止。payload 带 command 供无 ToolCall 事件的
 // 直调路径（CLI /terminal create 经 ToolAPI.ExecuteTool）回填命令名。
 // 幂等：重复发同一 running 值不会产生状态跳变。

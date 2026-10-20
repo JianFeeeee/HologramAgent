@@ -113,7 +113,6 @@ type Registry struct {
 	cfg       *types.Config
 	stageHost sdk.ToolSource
 	idx       *memory.Indexer
-	termAPI   sdk.TerminalAPI
 
 	// deviceAuth 回答"设备 deviceID 是否已授权给当前 agent"（D4）。
 	//
@@ -282,8 +281,7 @@ func (r *Registry) SetDeviceAuthQuery(fn func(deviceID string) bool) {
 	r.deviceAuth = fn
 	sdk.SetDeviceAuthQuery(fn)
 }
-func (r *Registry) SetIndexer(idx *memory.Indexer)   { r.idx = idx }
-func (r *Registry) SetTerminalAPI(t sdk.TerminalAPI) { r.termAPI = t }
+func (r *Registry) SetIndexer(idx *memory.Indexer) { r.idx = idx }
 
 // SetLoadAllowlist 限制 Load 仅装载指定插件名（failback 受限启动用）。
 // 空/未设置 = 装载全部。违反白名单的插件（含已注册工厂）一律跳过。
@@ -455,7 +453,6 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		Config:     sdk.NewConfig(r.cfg),
 		Tool:       sdk.NewTool(r.stageHost, r.iom),
 		Indexer:    sdk.NewIndexer(r.idx),
-		Terminal:   r.termAPI,
 	})
 }
 

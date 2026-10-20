@@ -390,6 +390,15 @@ func (h *Handler) flushChat() {
 // 由插件 Stop 调用；不这样做会丢掉最后一轮对话。
 func (h *Handler) Close() {
 	h.chatCloseOnce.Do(func() {
+		// 先退订事件总线：插件被 disable/reload 时必须解绑，
+		// 否则闭包继续持有 Handler（泄漏）并往已关闭的视图里写。
+		for _, unsub := range h.termUnsubs {
+			if unsub != nil {
+				unsub()
+			}
+		}
+		h.termUnsubs = nil
+
 		safeclose.Safe(&h.chatStopOnce2, h.chatStop)
 		<-h.chatLoopDone
 	})

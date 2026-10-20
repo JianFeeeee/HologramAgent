@@ -32,7 +32,7 @@ package plugins
 //   插件只用公开 SDK 能力      ⇒ **应当外置**（.hmap 安装，独立演进）
 //
 // 正例（留内置，各有非它不可的理由）：
-//   cli / webui     TerminalAPI/TrackerAPI/StatusAPI/SupervisorAPI/AdapterAPI
+//   cli / webui     TrackerAPI/StatusAPI/SupervisorAPI/AdapterAPI
 //   healthcheck     SelftestAPI（能构造虚拟内核实例）
 //   pluginmgr       failback 恢复链必需（webui/pluginmgr/recoverydiag）
 //   seq             ToolAPI（工具表直接操作）

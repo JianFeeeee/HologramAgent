@@ -30,7 +30,7 @@ func (Module) Name() string { return "plugin-host" }
 // 而 agent 层实测 **35 秒**（context dense backfill 750 events + 重建索引）。
 //
 // 而插件真正需要的只是 stage-host（Registry + StageHost）与几个底层设施。
-// agent 相关的两项（StatusProvider / TerminalAPI）改为**后补注入**（见
+// agent 相关的 StatusProvider 改为**后补注入**（见
 // agent 模块），插件在 Start 阶段不用它们（唯一的 healthcheck 是 nil-guarded）。
 func (Module) Requires() []string {
 	return []string{
@@ -281,7 +281,7 @@ func buildSkipSet(c *PluginCatalog, g formGroups) map[string]bool {
 
 // injectBaseDeps 注入插件 SDK 的底层依赖（原 wirePluginSDK 的 7 项）。
 //
-// ★ 这里**刻意不做** SetStatusProvider / SetTerminalAPI —— 它们依赖 agent，
+// ★ 这里**刻意不做** SetStatusProvider —— 它依赖 agent，
 // 由 agent 模块**后补注入**（见其注释）。这不是遗漏，是有意的分层：
 // 让插件加载不必等 agent 那 35 秒。
 func injectBaseDeps(ks *kernelboot.KernelState) {

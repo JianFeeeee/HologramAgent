@@ -17,6 +17,7 @@ import (
 
 	"github.com/JianFeeeee/HomeAgent/internal/config"
 	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	"github.com/JianFeeeee/HomeAgent/internal/pluginview"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
@@ -44,11 +45,13 @@ func init() {
 }
 
 type Plugin struct {
-	name   string
-	socket string
-	ln     net.Listener
-	mu     sync.Mutex
-	wg     sync.WaitGroup
+	name       string
+	socket     string
+	ln         net.Listener
+	mu         sync.Mutex
+	wg         sync.WaitGroup
+	termView   *pluginview.TerminalView
+	termUnsubs []func()
 }
 
 func New(name, socketPath string) *Plugin {
@@ -62,9 +65,14 @@ func (p *Plugin) Name() string { return p.name }
 
 func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	s.SetAutoRestart(true)
-	// 终端与命令历史的权威视图在内核（「内核开，两个插件接」），
-	// /terminals 与 /cmd/history 直接从 s.Status().GetKernelStatus() 读，
-	// 无需在此订阅事件自攒。
+	// 终端状态归 agentcli，内核不再维护终端语义（2026-10-20 调整）。
+	// CLI 与 WebUI 用同一份 internal/pluginview 实现订阅事件总线，
+	// /terminals 与 /cmd/history 读自己攒的视图。
+	p.termView = pluginview.NewTerminalView()
+	p.termUnsubs = append(p.termUnsubs,
+		s.Subscribe(sdk.EventTerminalOutput, func(evt *sdk.Event) { p.termView.OnTerminalOutput(evt.Payload) }),
+		s.Subscribe(sdk.EventToolCall, func(evt *sdk.Event) { p.termView.OnToolCall(evt.Payload) }),
+	)
 
 	// inputch 先登记：本插件既用 "cli" 作输出目标，也用它注入输入（终端行）。
 	// 输入侧必须显式登记，否则"把 inputch 划给驻留子"会找不到它。
@@ -1077,37 +1085,29 @@ func (p *Plugin) cmdAgents(conn net.Conn, s *sdk.PluginSDK) {
 
 // ======== /terminals /cmd/history /terminal ========
 
-// 终端与命令历史的权威视图在内核（「内核开，两个插件接」）。
-//
-// 内核订自己的事件总线归并 EventToolCall（terminal_create/close、cmd_run）
-// 与 EventTerminalOutput（agentcli 生命周期 + 输出），产出唯一真相挂在
-// TerminalAPI（见 internal/agent/core/terminal_registry.go）。
-// WebUI 与 CLI 都从 s.Status().GetKernelStatus() 读同一份，不再各自订阅推导——
-// 之前两份推导还各自踩过同一个坑：工具 result 是 Go map 文本，断言成
-// map[string]interface{} 永远失败 → /terminals 空空如也。
+// 终端视图：订阅事件总线攒的（与 WebUI 共用 internal/pluginview 实现）。
+// 状态真值在 agentcli；内核不参与终端语义。
 
-// cmdTerminals 读内核权威快照，与 WebUI 的 GET /api/v1/terminals 同源。
+// cmdTerminals 返回终端会话快照，与 WebUI 的 GET /api/v1/terminals 同口径。
 func (p *Plugin) cmdTerminals(conn net.Conn, s *sdk.PluginSDK) {
-	t := s.Terminal()
-	if t == nil {
+	if p.termView == nil {
 		writeJSONContent(conn, map[string]interface{}{"terminals": []interface{}{}})
 		return
 	}
-	terms := t.ListTerminals()
+	terms, _ := p.termView.Snapshot()
 	if terms == nil {
 		terms = []sdk.TerminalStatus{}
 	}
 	writeJSONContent(conn, map[string]interface{}{"terminals": terms})
 }
 
-// cmdCmdHistory 读内核权威快照，与 WebUI 的 GET /api/v1/cmd/history 同源。
+// cmdCmdHistory 返回命令历史快照，与 WebUI 的 GET /api/v1/cmd/history 同口径。
 func (p *Plugin) cmdCmdHistory(conn net.Conn, s *sdk.PluginSDK) {
-	t := s.Terminal()
-	if t == nil {
+	if p.termView == nil {
 		writeJSONContent(conn, map[string]interface{}{"history": []interface{}{}})
 		return
 	}
-	cmds := t.CmdHistory()
+	_, cmds := p.termView.Snapshot()
 	if cmds == nil {
 		cmds = []sdk.CmdExecStatus{}
 	}
@@ -1191,6 +1191,13 @@ func writeLine(conn net.Conn, v interface{}) {
 }
 
 func (p *Plugin) Stop() error {
+	for _, unsub := range p.termUnsubs {
+		if unsub != nil {
+			unsub()
+		}
+	}
+	p.termUnsubs = nil
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.ln != nil {

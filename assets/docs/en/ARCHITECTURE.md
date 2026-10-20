@@ -339,7 +339,7 @@ Lua script plugin loading: `internal/plugin/` → the gopher-lua interpreter exe
 capabilities — API surfaces the public SDK does not have.**
 
 The internal SDK (`internal/sdk`) exposes several capability surfaces that are
-**never granted to external plugins**: `TerminalAPI` / `TrackerAPI` /
+**never granted to external plugins**: `TrackerAPI` /
 `StatusAPI` / `SupervisorAPI` / `AdapterAPI` / `SelftestAPI` / `ToolAPI`, and
 **`Publish` (event publishing)**. External plugins run over the proc bridge's
 narrowed capability set where those interfaces simply do not exist at the type
@@ -359,7 +359,7 @@ Positive examples (kept built-in, each for a reason it cannot do without):
 
 | Plugin | Internal capability it needs |
 |---|---|
-| cli / webui | TerminalAPI (the /terminal command and terminal panel), TrackerAPI, StatusAPI, SupervisorAPI, AdapterAPI |
+| cli / webui | TrackerAPI, StatusAPI, SupervisorAPI, AdapterAPI |
 | agentcli | **EventPublish**: reports terminal output and lifecycle via `Publish(EventTerminalOutput)`; the public SDK has no Publish |
 | healthcheck | SelftestAPI (can build a virtual kernel instance for self-checks) |
 | pluginmgr | required by the failback recovery chain (`core.agent.failback_plugins` defaults to webui/pluginmgr/recoverydiag) |
@@ -391,6 +391,31 @@ Counter-examples (externalized, because public capabilities suffice):
 > ⇒ the built-in version always wins and the external one **installs but never
 > takes effect**. When externalizing a plugin, remove it from
 > `internal/plugins/all.go` (the single authoritative list) in the same change.
+
+### Terminal ownership: agentcli owns it, the kernel does not (2026-10-20)
+
+Terminal logic belongs solely to `agentcli` (PTY, session lifecycle, output
+buffering, history). The kernel **no longer** models terminal semantics — the
+former `internal/agent/core/terminal_registry.go` is gone, because encoding
+"what a terminal is and how to merge sessions out of tool calls" inside the
+kernel was a layering mistake.
+
+Plugins that need a terminal panel (WebUI / CLI) **subscribe to the event bus and
+build their own view**:
+
+| Event | Publisher | Purpose |
+|---|---|---|
+| `EventTerminalOutput` | agentcli | session output, create/close/timeout (`running` flips) |
+| `EventToolCall` | kernel | `cmd_run` history, `terminal_create/close` merge |
+
+WebUI and CLI share the `internal/pluginview` implementation so both parse
+identically (historically two independent derivations each hit the same
+"tool result is Go map text" bug). The view is not authoritative: the truth is in
+agentcli, so a plugin starting after a session will miss its early events.
+
+agentcli therefore needs `Publish` (not available to external plugins) and stays
+built-in under the rule above; externalizing it would first require a controlled
+plugin-to-kernel event channel, which is deliberately not opened today.
 
 ### Built-in vs External Plugins
 

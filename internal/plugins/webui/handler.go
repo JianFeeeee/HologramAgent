@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/JianFeeeee/HomeAgent/internal/pluginview"
 	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 	"net/http"
 	"path"
@@ -122,8 +123,12 @@ type Handler struct {
 	kernelCtl sdk.KernelControlAPI
 	pluginMgr sdk.PluginManager
 	status    sdk.StatusAPI
-	term      sdk.TerminalAPI
 	llm       sdk.LLMAPI
+
+	// termView 是插件侧终端视图：订阅事件总线自己攒（内核不再维护终端语义）。
+	// 见 internal/pluginview/terminal.go 的职责边界说明。
+	termView   *pluginview.TerminalView
+	termUnsubs []func()
 
 	// hostPort 是 webui 实际监听的 ":port"（用于推导服务入口链接）。
 	hostPort string
@@ -182,9 +187,8 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		tr   sdk.TrackerAPI
 		se   sdk.SettingsAPI
 		pm   sdk.PluginManager
-		st   sdk.StatusAPI
-		term sdk.TerminalAPI
-		llm  sdk.LLMAPI
+		st  sdk.StatusAPI
+		llm sdk.LLMAPI
 		// kc 是内核重启/关机通道；nil 表示该部署没接（端点会明确报不可用）。
 		kc sdk.KernelControlAPI
 	)
@@ -194,7 +198,6 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		tm, ks, tr = s.TextMemory(), s.Knowledge(), s.Tracker()
 		se, pm = s.Settings(), s.PluginMgr()
 		st, llm = s.Status(), s.LLM()
-		term = s.Terminal()
 		kc = s.KernelControl()
 	}
 	h := &Handler{
@@ -212,8 +215,8 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		kernelCtl:    kc,
 		pluginMgr:    pm,
 		status:       st,
-		term:         term,
 		llm:          llm,
+		termView:     pluginview.NewTerminalView(),
 		sessions:     make(map[string]time.Time),
 		loginLimiter: newLoginLimiter(loginMaxFails, loginWindow),
 		pendingIdx:   -1,
@@ -226,6 +229,19 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		chatSaveWake: make(chan struct{}, 1),
 		chatStop:     make(chan struct{}),
 		chatLoopDone: make(chan struct{}),
+	}
+	// 订阅事件总线攒终端视图（内核不再维护终端语义）：
+	//   EventTerminalOutput —— agentcli 的输出与生命周期
+	//   EventToolCall       —— cmd_run 历史、terminal_create/close 归并
+	if s != nil {
+		h.termUnsubs = append(h.termUnsubs,
+			s.Subscribe(sdk.EventTerminalOutput, func(ev *sdk.Event) {
+				h.termView.OnTerminalOutput(ev.Payload)
+			}),
+			s.Subscribe(sdk.EventToolCall, func(ev *sdk.Event) {
+				h.termView.OnToolCall(ev.Payload)
+			}),
+		)
 	}
 	go h.chatPersistLoop()
 	h.loadChatHistory()

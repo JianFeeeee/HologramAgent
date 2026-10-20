@@ -1,23 +1,30 @@
-package core
+package pluginview
 
 import (
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
 )
 
-// TerminalRegistry 是**内核侧**的终端会话与命令历史权威视图（「内核开，两个插件接」）。
+// TerminalView 是**插件侧**的终端会话与命令历史视图。
 //
-// 此前 WebUI 与 CLI 插件各自订阅 EventToolCall / EventTerminalOutput 攒一份
-// 状态：同一件事两份推导，还各自踩过同一个坑（工具 result 是 Go map 文本，
-// 断言成 map[string]interface{} 永远失败 → /terminals 空空如也）。
+// 职责边界（2026-10-20 调整）：终端逻辑只归 agentcli ——PTY、会话、历史都在它
+// 那里；内核**不**再维护终端语义（旧的 internal/agent/core/terminal_registry.go
+// 已删除）。插件要展示终端，就订阅事件总线自己攒视图：
 //
-// 现在权威状态收归内核一份：内核订阅自己的事件总线，把 terminal_* / cmd_run
-// 的工具调用与 agentcli 的 terminal_output 事件归并成唯一真相；
-// WebUI 和 CLI 都从 s.Status().GetKernelStatus() 读取，不再各自推导。
-type TerminalRegistry struct {
+//	EventTerminalOutput（agentcli 发）→ 会话输出 + 生命周期
+//	EventToolCall      （内核发）     → cmd_run 历史、terminal_create/close 归并
+//
+// 为什么放在一个共享包里而不是各写一份：WebUI 与 CLI 都需要同一份口径，
+// 且历史上两份推导踩过同一个坑（工具 result 是 Go map 文本，断言成
+// map[string]interface{} 永远失败 → /terminals 空空如也）。共享实现保证
+// 两边解析口径一致。
+//
+// ❗这是**视图**不是权威：状态真值在 agentcli。插件晚于会话启动时会缺早期
+// 会话（下次生命周期事件会补回），不要把这里当持久记录。
+type TerminalView struct {
 	mu    sync.Mutex
 	terms map[string]*TermState
 	cmds  []CmdExec
@@ -50,15 +57,15 @@ const (
 	maxTermOutput = 64 * 1024
 )
 
-func NewTerminalRegistry() *TerminalRegistry {
-	return &TerminalRegistry{
+func NewTerminalView() *TerminalView {
+	return &TerminalView{
 		terms: make(map[string]*TermState),
 	}
 }
 
 // OnToolCall 归并内核自己发布的 EventToolCall（agent 路径；result 是 Go map
 // 文本，id/command 从 args 或 map 文本里回填）。
-func (r *TerminalRegistry) OnToolCall(payload map[string]interface{}) {
+func (r *TerminalView) OnToolCall(payload map[string]interface{}) {
 	tool, _ := payload["tool"].(string)
 	args, _ := payload["args"].(map[string]interface{})
 	status, _ := payload["status"].(string)
@@ -121,7 +128,7 @@ func (r *TerminalRegistry) OnToolCall(payload map[string]interface{}) {
 
 // OnTerminalOutput 归并 agentcli 的 terminal_output 事件（含生命周期事件：
 // 创建时带 command，关闭/退出/超时带 running=false）。
-func (r *TerminalRegistry) OnTerminalOutput(payload map[string]interface{}) {
+func (r *TerminalView) OnTerminalOutput(payload map[string]interface{}) {
 	id, _ := payload["terminal_id"].(string)
 	if id == "" {
 		return
@@ -164,19 +171,8 @@ func (r *TerminalRegistry) OnTerminalOutput(payload map[string]interface{}) {
 	r.mu.Unlock()
 }
 
-// ListTerminals / CmdHistory 实现 sdk.TerminalAPI（内核对插件开放的终端接口）。
-func (r *TerminalRegistry) ListTerminals() []sdk.TerminalStatus {
-	terms, _ := r.Snapshot()
-	return terms
-}
-
-func (r *TerminalRegistry) CmdHistory() []sdk.CmdExecStatus {
-	_, cmds := r.Snapshot()
-	return cmds
-}
-
 // Snapshot 返回加过 Uptime 的终端列表与命令历史快照（拷贝，调用方可随意改）。
-func (r *TerminalRegistry) Snapshot() ([]sdk.TerminalStatus, []sdk.CmdExecStatus) {
+func (r *TerminalView) Snapshot() ([]sdk.TerminalStatus, []sdk.CmdExecStatus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	terms := make([]sdk.TerminalStatus, 0, len(r.terms))

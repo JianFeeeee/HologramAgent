@@ -199,10 +199,6 @@ type Agent struct {
 	noMergeMarkers map[string]int
 	noMergeMu      sync.Mutex
 
-	// TerminalRegistry 是终端会话与命令历史的权威视图（“内核开，两个插件接”）。
-	// 内核订阅自己的事件总线归并而来；WebUI/CLI 经 KernelStatus 读取。
-	terminalReg *TerminalRegistry
-
 	// 输入去重：防 webui/GUI 断线重连导致的消息重放
 	// key=source+"|"+content, value=上次接收时间；短窗口内同内容丢弃
 	lastInput   map[string]time.Time
@@ -447,13 +443,6 @@ func New(cfg AgentConfig) *Agent {
 		lastInput:         make(map[string]time.Time),
 	}
 
-	// 终端权威注册表只归**根 agent**（无 ParentID）。驻留子共用同一事件总线，
-	// 若每个子都建一份并订阅，一次工具调用会被 N+1 份重复记账；而终端本就是
-	// 内核级设备，不属于任何单个驻留子。
-	if cfg.ParentID == "" {
-		a.terminalReg = NewTerminalRegistry()
-	}
-
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
 	// （设计 §4.1「路由发生在进内核之前」）。io 层不认识 agent，所以在这里把路由器
 	// 注入进去：插件注入输入时先问它，被别的 agent 接管就不再进本内核队列。
@@ -474,26 +463,9 @@ func (a *Agent) Start() {
 	go a.mergeLoop()
 	go a.reviewLoop()
 	go a.offloadLoop()
-	a.subscribeTerminalRegistry()
 	a.reembedStaleMedia()
 	a.migrateLegacyGraphMedia()
 	log.Printf("[agent] %s started, waiting for IO interrupts", a.id)
-}
-
-// subscribeTerminalRegistry 让内核的终端/命令历史权威视图归并事件流。
-//
-// 内核自己发 EventToolCall（agent 路径），agentcli 发 EventTerminalOutput
-// （含生命周期事件）。两者都进这份唯一真相，WebUI/CLI 不再各自推导。
-func (a *Agent) subscribeTerminalRegistry() {
-	if a.eventBus == nil || a.terminalReg == nil {
-		return
-	}
-	a.eventBus.Subscribe(events.EventToolCall, func(ev *events.Event) {
-		a.terminalReg.OnToolCall(ev.Payload)
-	})
-	a.eventBus.Subscribe(events.EventTerminalOutput, func(ev *events.Event) {
-		a.terminalReg.OnTerminalOutput(ev.Payload)
-	})
 }
 
 func (a *Agent) Stop() {
