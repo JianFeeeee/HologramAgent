@@ -111,7 +111,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 
 	s.RegisterTool(tp+"write", sdk.ToolDef{
 		Name:        tp + "write",
-		Description: fmt.Sprintf("写入文件。自动创建父目录。沙箱路径: %s", p.filesDir),
+		Description: fmt.Sprintf("写入文件（原子替换：先写临时副本再 rename，不会留下半截文件；覆盖受保护系统路径前自动留档原文）。自动创建父目录。生成多行内容直接传全文，不要用 echo 拼接。沙箱路径: %s", p.filesDir),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

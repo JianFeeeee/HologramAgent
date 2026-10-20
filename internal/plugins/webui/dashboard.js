@@ -5700,12 +5700,22 @@ function renderPlugins() {
 		disabledNames[d.name] = d;
 	});
 	var installedNames = (state.installedPlugins || []).map((p) => p.name);
+	// 安装清单（plugin.json + 运行期）按名字索引：它带着 auto_start /
+	// runtime_stopped / alive，是区分「按需待命」「运行态已停」「该起没起」
+	// 的唯一数据源。内核 status 只给 loaded，光看它三者会被混成「未加载」。
+	var installedByName = {};
+	(state.installedPlugins || []).forEach((p) => {
+		installedByName[p.name] = p;
+	});
 	var allPluginNames = {};
 	plugins.forEach((p) => {
 		allPluginNames[p.name] = true;
 	});
 	state.disabledPlugins.forEach((d) => {
 		allPluginNames[d.name] = true;
+	});
+	installedNames.forEach((n) => {
+		allPluginNames[n] = true;
 	});
 	html +=
 		'<div class="card"><h2>' +
@@ -5731,37 +5741,89 @@ function renderPlugins() {
 		names.forEach((name) => {
 			var isExternal = installedNames.indexOf(name) >= 0;
 			var isDisabled = disabledNames[name];
+			var meta = installedByName[name] || {};
 			var loaded = plugins.some((p) => p.name === name);
-			var statusHtml =
-				loaded && !isDisabled
-					? '<span class="badge badge-green">' +
-						__("已加载", "Loaded") +
-						"</span>"
-					: loaded && isDisabled
-						? '<span class="badge badge-yellow">' +
-							__("运行中(禁用待生效)", "Running (disable pending)") +
-							"</span>"
-						: isDisabled
-							? '<span class="badge badge-red">' +
-								__("已禁用", "Disabled") +
-								"</span>"
-							: '<span class="badge badge-gray">' +
-								__("未加载", "Not Loaded") +
-								"</span>";
+			// auto_start 缺省 true（内置插件与老清单都按自启算）。
+			var autoStart = meta.auto_start !== false;
+			var runtimeStopped = meta.runtime_stopped === true;
+			var crashed = loaded && meta.alive === false;
+			// 状态判定必须覆盖五种真实形态，缺一种就会把正常状态显示成故障：
+			//   已禁用 / 进程丢失 / 已运行 / 按需待命 / 该起没起
+			var statusHtml;
+			if (isDisabled && loaded) {
+				statusHtml =
+					'<span class="badge badge-yellow">' +
+					__("运行中(禁用待生效)", "Running (disable pending)") +
+					"</span>";
+			} else if (isDisabled) {
+				statusHtml =
+					'<span class="badge badge-red">' +
+					__("已禁用", "Disabled") +
+					"</span>";
+			} else if (crashed) {
+				statusHtml =
+					'<span class="badge badge-red">' +
+					__("进程丢失", "Process lost") +
+					"</span>";
+			} else if (loaded) {
+				statusHtml =
+					'<span class="badge badge-green">' +
+					(runtimeStopped
+						? __("已运行(停止待生效)", "Running (stop pending)")
+						: __("已运行", "Running")) +
+					"</span>";
+			} else if (!autoStart) {
+				// 按需插件不运行是**正常待命**，不是故障。旧版一律显示
+				// 「未加载」，用户以为插件坏了，实际它在等 plugin_start。
+				statusHtml =
+					'<span class="badge badge-blue">' +
+					__("按需待命", "On-demand") +
+					"</span>";
+			} else if (runtimeStopped) {
+				statusHtml =
+					'<span class="badge badge-yellow">' +
+					__("已停止(运行态)", "Stopped (runtime)") +
+					"</span>";
+			} else {
+				statusHtml =
+					'<span class="badge badge-gray">' +
+					__("未运行", "Not running") +
+					"</span>";
+			}
+			statusHtml +=
+				' <span class="badge badge-' +
+				(autoStart ? "green" : "gray") +
+				'">' +
+				(autoStart ? __("自启", "auto") : __("按需", "on-demand")) +
+				"</span>";
 			var actionsHtml = "";
 			if (loaded) {
 				actionsHtml +=
-					'<button class="btn btn-sm btn-warning" onclick="disablePlugin(\'' +
+					'<button class="btn btn-sm btn-warning" onclick="stopPlugin(\'' +
+					escHtml(name) +
+					'\')" style="margin-right:4px">' +
+					__("停止", "Stop") +
+					"</button>";
+				actionsHtml +=
+					'<button class="btn btn-sm btn-ghost" onclick="disablePlugin(\'' +
 					escHtml(name) +
 					'\')" style="margin-right:4px">' +
 					__("禁用", "Disable") +
 					"</button>";
-			} else {
+			} else if (isDisabled) {
 				actionsHtml +=
 					'<button class="btn btn-sm btn-success" onclick="enablePlugin(\'' +
 					escHtml(name) +
 					'\')" style="margin-right:4px">' +
 					__("启用", "Enable") +
+					"</button>";
+			} else {
+				// 未运行但未禁用：一律走**运行态启动**，不碰持久禁用清单。
+				actionsHtml +=
+					'<button class="btn btn-sm btn-success" onclick="startPlugin(\'' +
+					escHtml(name) +
+					'\')" style="margin-right:4px">' +
+					__("启动", "Start") +
 					"</button>";
 			}
 			if (isExternal) {
@@ -6040,6 +6102,46 @@ async function disablePlugin(name) {
 		renderPlugins();
 	} catch (e) {
 		toast(__("禁用失败: ", "Disable failed: ") + e.message, true);
+	}
+}
+
+// startPlugin / stopPlugin 是**运行态**启停（对应 plugin_start / plugin_stop）：
+// 只改现在跑不跑，不写持久禁用清单。与 enable/disable（持久态）分开，
+// 避免「点了一下启动，重启后行为却变了」。
+async function startPlugin(name) {
+	try {
+		await api("/plugins/" + encodeURIComponent(name) + "/start", {
+			method: "POST",
+		});
+		toast(__("已启动: ", "Started: ") + name);
+		state.kernel = await api("/kernel");
+		await loadInstalledPlugins();
+		renderPlugins();
+	} catch (e) {
+		toast(__("启动失败: ", "Start failed: ") + e.message, true);
+	}
+}
+
+async function stopPlugin(name) {
+	if (name === "webui") {
+		var r = confirm(
+			__(
+				"停止 WebUI 插件后此管理面板会立即断开，只能通过 CLI 命令 /plugin start webui 恢复。\n\n确定要停止吗？",
+				"Stopping the WebUI plugin disconnects this panel immediately. Recover with CLI /plugin start webui.\n\nStop it?",
+			),
+		);
+		if (!r) return;
+	}
+	try {
+		await api("/plugins/" + encodeURIComponent(name) + "/stop", {
+			method: "POST",
+		});
+		toast(__("已停止: ", "Stopped: ") + name);
+		state.kernel = await api("/kernel");
+		await loadInstalledPlugins();
+		renderPlugins();
+	} catch (e) {
+		toast(__("停止失败: ", "Stop failed: ") + e.message, true);
 	}
 }
 

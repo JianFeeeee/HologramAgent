@@ -627,6 +627,37 @@ is relevant) and the timeline is taken newest-first within budget. Measured: wit
 budget, actual injection was still a few hundred characters.
 
 
+## Prompt layering (established 2026-10-20)
+
+The system prompt is **not** the place for tool usage instructions. Decide where a
+piece of text belongs by its lifetime and visibility:
+
+| Content | Belongs in | Why |
+|---|---|---|
+| Identity, how to address the user, tone, appearance | Persona (`personal/personal.md` or `core.agent.personal_prompt`) | Lives and dies with the persona; stable across plugins and channels |
+| One tool: when to use, parameter meaning, side effects, pitfalls | The tool `description` | **Travels with the tool**: if the plugin is absent or not started, the description is not in the list, so the model cannot misuse it |
+| Multi-step procedures, strategies, domain knowledge | Skills (`skill/<name>/SKILL.md`) | Progressive disclosure: the index is always present, the body is fetched on demand via `skill_info` |
+| Output-delivery rules, same-round parallelism, timeline semantics | Kernel runtime blocks (`buildSystemPrompt` / timeline header) | Generated from **actual** execution semantics; static copies drift from the implementation |
+
+**Anti-pattern (measured 2026-10-20)**: the default system prompt carried
+"cmd_run runs through a full bash…", "prefer files_write for writing files…",
+"spawn_child in parallel…". After those plugins were externalized and made
+on-demand, `cmd_run` was no longer in the tool list while the prompt still told
+the model to use it — the first turn called a nonexistent tool and only then
+learned "tool cmd_run not registered".
+
+**Rule of thumb**: a concrete tool name plus usage instructions in the prompt is
+almost always misplaced. The only exceptions are (1) tool names **injected at
+runtime** (e.g. `output_send__{channel}`, whose channel set changes per turn) and
+(2) statements about **kernel behaviour** rather than tool behaviour (e.g.
+"multiple calls in one round run in parallel by default").
+
+Likewise, a plugin's skill must ship **in the same package**: an
+`auto_start=false` plugin without a skill has its tools absent from the initial
+list, so the model never knows it exists and never starts it — equivalent to not
+being installed. hmapdev enforces this at packaging time
+(`autostart_skill_guard_test.go`).
+
 ## Configuration System
 
 `internal/config/registry.go` — ConfigRegistry

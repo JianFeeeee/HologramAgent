@@ -889,16 +889,24 @@ func (p *Plugin) listPlugins() (interface{}, error) {
 			"entry":       m.Entry,
 			"deprecated":  m.Deprecated,
 		}
+		// auto_start 来自清单本身（即使插件从未被内核记录过也要能读到）：
+		// 前端要区分「按需待命」与「该起没起」，不能只看 loaded。
+		item["auto_start"] = m.ShouldAutoStart()
 		if rt, ok := runtimes[m.Name]; ok {
 			item["loaded"] = rt.Loaded
 			item["alive"] = rt.Alive
 			item["disabled"] = rt.Disabled
 			item["channel"] = rt.Channel
+			item["runtime_stopped"] = rt.RuntimeStopped
+			item["builtin"] = rt.Builtin
 			if rt.PID > 0 {
 				item["pid"] = rt.PID
 			}
 			if rt.CrashCount > 0 {
 				item["crash_count"] = rt.CrashCount
+			}
+			if len(rt.Tools) > 0 {
+				item["tool_count"] = len(rt.Tools)
 			}
 		}
 		plugins = append(plugins, item)

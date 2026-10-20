@@ -1522,12 +1522,21 @@ func (r *Registry) PluginRuntime(name string) (sdk.PluginRuntimeInfo, bool) {
 	}
 
 	info := sdk.PluginRuntimeInfo{
-		Name:        name,
-		Loaded:      loaded,
-		Disabled:    r.isDisabled(name),
-		Builtin:     hasFactory,
-		AutoRestart: r.AutoRestartEnabled(name),
-		CrashCount:  r.crashCount(name),
+		Name:           name,
+		Loaded:         loaded,
+		Disabled:       r.isDisabled(name),
+		Builtin:        hasFactory,
+		AutoRestart:    r.AutoRestartEnabled(name),
+		AutoStart:      true, // 缺省 true；下面按清单覆盖
+		RuntimeStopped: r.IsPluginRuntimeStopped(name),
+		CrashCount:     r.crashCount(name),
+	}
+	// auto_start 以清单为准（plugin.json 显式 false 才是按需）。
+	// 目录不存在（纯内置）时保持缺省 true —— 内置插件本就随内核加载。
+	if dirExists {
+		if m, err := ReadManifest(filepath.Join(r.plgDir, name)); err == nil {
+			info.AutoStart = m.ShouldAutoStart()
+		}
 	}
 
 	switch {

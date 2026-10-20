@@ -326,6 +326,40 @@ func (h *Handler) handlePluginByID(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 				return
 
+			case "start":
+				// 运行态启动：只拉起，不写持久禁用清单 —— 与「启用」区分。
+				// 前端「按需待命」的插件点「启动」走这里，不该顺手改持久配置。
+				if h.pluginMgr == nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "plugin manager not available"})
+					return
+				}
+				if !validPluginName(name) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid plugin name"})
+					return
+				}
+				if err := h.pluginMgr.StartPlugin(name); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+				return
+
+			case "stop":
+				if h.pluginMgr == nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "plugin manager not available"})
+					return
+				}
+				if !validPluginName(name) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid plugin name"})
+					return
+				}
+				if err := h.pluginMgr.StopPlugin(name); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+				return
+
 			case "enable":
 				if h.pluginMgr == nil {
 					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "plugin manager not available"})

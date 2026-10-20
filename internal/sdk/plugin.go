@@ -115,6 +115,17 @@ type PluginRuntimeInfo struct {
 	CrashCount int `json:"crash_count"`
 	// AutoRestart 表示崩溃后内核是否会自动拉起。
 	AutoRestart bool `json:"auto_restart"`
+	// AutoStart 声明该插件是否随内核启动（plugin.json 的 auto_start，缺省 true）。
+	//
+	// 为什么必须暴露：`Loaded=false` 有三种完全不同的含义，只看 loaded 无法区分：
+	//   · auto_start=false 且未运行 → **按需插件正常待命**（不是故障）
+	//   · auto_start=true  且未运行 → 启动失败/被运行态 stop（需要关注）
+	//   · disabled=true              → 用户显式禁用（有意如此）
+	// 前端把三者都显示成「未加载」，用户会误以为按需插件坏了。
+	AutoStart bool `json:"auto_start"`
+	// RuntimeStopped 表示插件被 plugin_stop **运行态**停掉（不写持久禁用清单），
+	// 与 Disabled 的持久禁用区分：重启后它会照常按 auto_start 决定是否拉起。
+	RuntimeStopped bool `json:"runtime_stopped"`
 	// Tools 是该插件当前注册在内核里的工具名。
 	Tools []string `json:"tools,omitempty"`
 }
