@@ -453,6 +453,40 @@ unsub := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
 defer unsub()
 ```
 
+#### 与其它插件联动 — 走事件总线，不要依赖内核内部组件
+
+内核不承载业务域语义（终端、设备状态、媒体库都是插件的职责），因此插件之间的
+联动应当**订阅事件总线**，而不是读内核里的某个状态组件——后者会让同一件事出现
+第二份真相，也会把业务逻辑重新塞回内核。
+
+```go
+// 面板类插件（如 WebUI/CLI）：订阅终端事件，自己攒视图
+// 注意：terminal_output 目前没有公开常量（属内核内部事件类型），
+// 外部插件用字符串形式订阅；内置插件可用 internal sdk 的 EventTerminalOutput。
+unsubTerm := s.Events().Subscribe(sdk.EventType("terminal_output"), func(evt *sdk.Event) {
+    // evt.Payload: terminal_id / command / output / running
+})
+unsubTool := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
+    // evt.Payload: tool / args / status（cmd_run、terminal_create/close 等）
+})
+defer unsubTerm()
+defer unsubTool()
+```
+
+稳定的两条事件：
+
+| 事件 | 发布者 | 用途 |
+|---|---|---|
+| `EventTerminalOutput` | agentcli | 终端输出与生命周期（创建/关闭/超时） |
+| `EventToolCall` | 内核 | 工具调用（含 `cmd_run`、`terminal_create/close`） |
+
+★ **外部插件只能订阅，不能发布**：`Publish` 属于不对外授予的能力
+（`withheldCapabilities`），所以「某项能力的所有者需要向总线广播状态」这类插件
+（如 agentcli 发终端事件）必须内置。如果你的插件只是消费者，订阅即可。
+
+参考实现：`internal/pluginview`（WebUI 与 CLI 共用的终端视图）。它演示了视图
+应当怎么从事件攒出来，以及「视图不是权威、晚启动会缺早期事件」的边界。
+
 #### 能力访问
 
 ```go

@@ -460,6 +460,45 @@ unsub := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
 defer unsub()
 ```
 
+#### Inter-plugin Integration — Use the Event Bus, Not Kernel Components
+
+The kernel carries no business-domain semantics (terminals, device state, media
+libraries all belong to plugins). Plugins that need to coordinate should therefore
+**subscribe to the event bus**, not read some state component inside the kernel —
+the latter creates a second copy of the truth and pushes business logic back into
+the kernel.
+
+```go
+// Panel-style plugins (WebUI/CLI): subscribe to terminal events, build a view
+// Note: terminal_output has no public constant yet (it is a kernel-internal event
+// type), so external plugins subscribe by string; built-in plugins can use the
+// internal SDK's EventTerminalOutput constant.
+unsubTerm := s.Events().Subscribe(sdk.EventType("terminal_output"), func(evt *sdk.Event) {
+    // evt.Payload: terminal_id / command / output / running
+})
+unsubTool := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
+    // evt.Payload: tool / args / status (cmd_run, terminal_create/close, ...)
+})
+defer unsubTerm()
+defer unsubTool()
+```
+
+The two stable events:
+
+| Event | Publisher | Purpose |
+|---|---|---|
+| `EventTerminalOutput` | agentcli | terminal output and lifecycle (create/close/timeout) |
+| `EventToolCall` | kernel | tool invocations (incl. `cmd_run`, `terminal_create/close`) |
+
+★ **External plugins can subscribe but cannot publish**: `Publish` is a withheld
+capability (`withheldCapabilities`), so a plugin that *owns* a capability and must
+broadcast its state (like agentcli publishing terminal events) has to be built-in.
+If your plugin is only a consumer, subscribing is enough.
+
+Reference implementation: `internal/pluginview` (the terminal view shared by WebUI
+and CLI). It shows how a view is assembled from events, and the boundary that the
+view is not authoritative — a late starter misses early events.
+
 #### Capability Access
 
 ```go

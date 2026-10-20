@@ -18,6 +18,15 @@ Core architecture: a long-running kernel process (`homed`) that connects to vari
 
 The significance lies in clear responsibility boundaries: the kernel focuses on orchestration and memory management, while plugins handle IO implementation — the two are not coupled.
 
+**Business semantics stay in plugins** — the kernel does not define business
+objects: terminals, command history, device state and media libraries all belong to
+the plugin domain. Take terminals: the PTY, session lifecycle and output buffering
+all live in `agentcli`; when WebUI or CLI needs a terminal panel it **subscribes to
+the event bus** (`EventTerminalOutput` + `EventToolCall`) and builds its own view
+instead of reading a state component inside the kernel. The kernel offers only the
+event bus and the plugin registration surface — adding a new capability does not
+require touching the kernel, and no second version of business truth accumulates there.
+
 **Three-Layer Memory Architecture** — Manages information retention across long agent runtimes through a tiered storage strategy:
 - **Context Layer**: In-memory pretrained word embedding scored event window (StaticEmbedder word vectors → CosineSimilarity, TF-IDF fallback), maintains recent context in real-time, low-relevance events automatically sink to the next layer
 - **Document Layer**: JSON files + TF-IDF vector-indexed temporary memory, supports explicit submission and implicit archival, cold data distills to Graph
