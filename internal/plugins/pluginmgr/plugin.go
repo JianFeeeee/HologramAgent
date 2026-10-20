@@ -733,6 +733,19 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 	}
 
 	if existing && overwrite {
+		// ★ 先记住升级前是否在运行：StopAndUnload 会把它停掉，而升级不该
+		// 顺手改变运行状态。生产实测（2026-10-20）：重装 qq 后它静默停着，
+		// agent 发现工具全没了，只能 get_plugin_tools×N → plugin_start 摸回来。
+		wasLoaded := false
+		if p.sdk != nil && p.sdk.PluginMgr() != nil {
+			for _, rt := range p.sdk.PluginMgr().ListPluginRuntimes() {
+				if rt.Name == pkg.Name && rt.Loaded {
+					wasLoaded = true
+					break
+				}
+			}
+		}
+
 		// 原地更新：停旧实例（保留配置表），备份旧目录，解压新包，失败回滚。
 		if p.sdk != nil && p.sdk.PluginMgr() != nil {
 			if err := p.sdk.PluginMgr().StopAndUnload(pkg.Name); err != nil {
@@ -771,6 +784,17 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 		// 失败不阻断 —— skill 登记是附带收益，插件本身已装好。
 		skillN, skillFailed := p.handOutPluginSkills(target, pkg.Name)
 
+		// 升级前在跑的插件，升级后自动拉回来（运行状态不该被"换个包"改变）。
+		// 失败不阻断安装：返回里如实写 running_restored=false，调用方可见。
+		runningRestored := false
+		if wasLoaded && p.sdk != nil && p.sdk.PluginMgr() != nil {
+			if err := p.sdk.PluginMgr().StartPlugin(pkg.Name); err != nil {
+				log.Printf("[pluginmgr] 升级后恢复运行 %s 失败: %v（插件已安装，可手动 plugin_start）", pkg.Name, err)
+			} else {
+				runningRestored = true
+			}
+		}
+
 		checksum := fmt.Sprintf("%x", sha256.Sum256(data))
 		action := "upgraded"
 		if cmpVersion(pkg.Version, oldVersion) < 0 {
@@ -788,6 +812,8 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 			"action":            action,
 			"reload_required":   true,
 			"config_kept":       true,
+			"was_running":       wasLoaded,
+			"running_restored":  runningRestored,
 			"skills_registered": skillN,
 			"skills_failed":     skillFailed,
 		}, nil

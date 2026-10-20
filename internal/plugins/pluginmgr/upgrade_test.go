@@ -68,6 +68,8 @@ func (m *pmSettings) IsSecret(string) bool { return false }
 type fakePluginMgr struct {
 	mu             sync.Mutex
 	stopAndUnloads []string
+	loaded         map[string]bool // 升级前"在跑"的插件，供 ListPluginRuntimes 返回
+	starts         []string
 }
 
 func (f *fakePluginMgr) ListLoadedPlugins() []string                   { return nil }
@@ -77,7 +79,12 @@ func (f *fakePluginMgr) IsBuiltinPlugin(string) bool                   { return 
 func (f *fakePluginMgr) DisablePlugin(string, string) error            { return nil }
 func (f *fakePluginMgr) EnablePlugin(string) error                     { return nil }
 func (f *fakePluginMgr) StopPlugin(string) error                       { return nil }
-func (f *fakePluginMgr) StartPlugin(string) error                      { return nil }
+func (f *fakePluginMgr) StartPlugin(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts = append(f.starts, name)
+	return nil
+}
 func (f *fakePluginMgr) IsPluginRuntimeStopped(string) bool            { return false }
 func (f *fakePluginMgr) RemovePlugin(string) error                     { return nil }
 func (f *fakePluginMgr) StopAndUnload(name string) error {
@@ -95,7 +102,15 @@ func (f *fakePluginMgr) PluginDir() string { return "" }
 func (f *fakePluginMgr) PluginRuntime(string) (sdk.PluginRuntimeInfo, bool) {
 	return sdk.PluginRuntimeInfo{}, false
 }
-func (f *fakePluginMgr) ListPluginRuntimes() []sdk.PluginRuntimeInfo { return nil }
+func (f *fakePluginMgr) ListPluginRuntimes() []sdk.PluginRuntimeInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]sdk.PluginRuntimeInfo, 0, len(f.loaded))
+	for name, loaded := range f.loaded {
+		out = append(out, sdk.PluginRuntimeInfo{Name: name, Loaded: loaded})
+	}
+	return out
+}
 
 // buildHmap 构造一个最小 .hmap 包。
 func buildHmap(t *testing.T, name, version string) []byte {
@@ -232,5 +247,67 @@ func TestExtractFailureRollsBack(t *testing.T) {
 	mfest, err := plugin.ReadManifest(filepath.Join(dir, "rollback"))
 	if err != nil || mfest.Version != "1.0.0" {
 		t.Fatalf("old version not restored: %v / %v", mfest, err)
+	}
+}
+
+// ★ 升级不该顺手改变运行状态（2026-10-20 生产实证）。
+//
+// 现场：重装 qq 插件后它静默停着（StopAndUnload 只停不启），agent 发现工具
+// 全没了，只能 get_plugin_tools ×N → plugin_start 摸回来。安装流程的语义应当是
+// "换个包"，不是"把正在用的插件关掉"。
+func TestUpgradeRestoresRunningState(t *testing.T) {
+	dir := t.TempDir()
+	fm := &fakePluginMgr{loaded: map[string]bool{}}
+	bus := events.NewBus()
+	sdkInst := sdk.New("pluginmgr", sdk.SDKConfig{
+		Settings:  &pmSettings{},
+		EventBus:  bus,
+		PluginMgr: fm,
+	})
+	p := &Plugin{pluginDir: dir, sdk: sdkInst}
+
+	if r, _ := p.installFromData(buildHmap(t, "demo", "1.0.0"), false); r.(map[string]interface{})["status"] != "installed" {
+		t.Fatal("install failed")
+	}
+
+	// 升级前它是在跑的
+	fm.mu.Lock()
+	fm.loaded["demo"] = true
+	fm.mu.Unlock()
+
+	r, _ := p.installFromData(buildHmap(t, "demo", "2.0.0"), true)
+	m := r.(map[string]interface{})
+	if m["was_running"] != true {
+		t.Fatalf("was_running 应为 true: %v", m)
+	}
+	if m["running_restored"] != true {
+		t.Fatalf("升级后应自动拉回运行状态: %v", m)
+	}
+	fm.mu.Lock()
+	starts := append([]string{}, fm.starts...)
+	fm.mu.Unlock()
+	if len(starts) != 1 || starts[0] != "demo" {
+		t.Fatalf("StartPlugin 应被调用一次: %v", starts)
+	}
+}
+
+// 升级前没在跑的插件，安装后也不该被强行拉起。
+func TestUpgradeDoesNotStartStoppedPlugin(t *testing.T) {
+	dir := t.TempDir()
+	fm := &fakePluginMgr{loaded: map[string]bool{}}
+	bus := events.NewBus()
+	sdkInst := sdk.New("pluginmgr", sdk.SDKConfig{Settings: &pmSettings{}, EventBus: bus, PluginMgr: fm})
+	p := &Plugin{pluginDir: dir, sdk: sdkInst}
+
+	if r, _ := p.installFromData(buildHmap(t, "demo", "1.0.0"), false); r.(map[string]interface{})["status"] != "installed" {
+		t.Fatal("install failed")
+	}
+	r, _ := p.installFromData(buildHmap(t, "demo", "2.0.0"), true)
+	m := r.(map[string]interface{})
+	if m["was_running"] != false || m["running_restored"] != false {
+		t.Fatalf("未运行的插件不应被拉起: %v", m)
+	}
+	if len(fm.starts) != 0 {
+		t.Fatalf("StartPlugin 不应被调用: %v", fm.starts)
 	}
 }
