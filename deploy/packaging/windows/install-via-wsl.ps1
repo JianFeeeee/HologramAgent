@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  在 WSL2 中安装 HomeAgent（homed + 插件 + WebUI）。
+  在 WSL2 中安装 HologramAgent（homed + 插件 + WebUI）。
 
 .DESCRIPTION
   Windows 不再提供 homed 的原生安装。原因见 cmd/homed/platform_windows.go：
@@ -23,7 +23,7 @@
   目标发行版名。省略则用默认发行版；没有发行版时引导安装 Ubuntu。
 
 .PARAMETER DataDir
-  WSL 内的数据目录。默认 /var/lib/homeagent（与 Linux 原生安装一致）。
+  WSL 内的数据目录。默认 /var/lib/hologram（与 Linux 原生安装一致）。
   不建议放 /mnt/c/...：跨文件系统 IO 慢，且 inotify 语义受限。
 
 .NOTES
@@ -35,7 +35,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$PayloadDir,
     [string]$Distro = "",
-    [string]$DataDir = "/var/lib/homeagent",
+    [string]$DataDir = "/var/lib/hologram",
     [string]$ApiKey = "",
     [string]$WebUIUser = "",
     [string]$WebUIPass = "",
@@ -160,19 +160,19 @@ $winPath = (Resolve-Path $pkg).Path
 $mntPath = "/mnt/" + $winPath.Substring(0, 1).ToLower() + ($winPath.Substring(2) -replace '\\', '/')
 Write-Host "  源：$mntPath"
 
-& wsl.exe -d $script:DistroName -u root -- bash -lc "mkdir -p /tmp/homeagent-install"
+& wsl.exe -d $script:DistroName -u root -- bash -lc "mkdir -p /tmp/hologramagent-install"
 if ($LASTEXITCODE -ne 0) { Fail "无法在 WSL 内创建临时目录" "确认发行版可正常启动：wsl -d $($script:DistroName)" }
-& wsl.exe -d $script:DistroName -u root -- bash -lc "cp '$mntPath' /tmp/homeagent-install/"
+& wsl.exe -d $script:DistroName -u root -- bash -lc "cp '$mntPath' /tmp/hologramagent-install/"
 if ($LASTEXITCODE -ne 0) { Fail "复制安装包失败" }
-Write-Ok "已送到 /tmp/homeagent-install/"
+Write-Ok "已送到 /tmp/hologramagent-install/"
 
 # ── 5. 在 WSL 内安装 ───────────────────────────────────────────────────────
 Write-Stage "在 WSL 内安装 homed"
 
-# 凭据经环境变量传给 setup.sh（它已支持 HOMEAGENT_API_KEY / WEBUI_USER / WEBUI_PASS）。
+# 凭据经环境变量传给 setup.sh（它已支持 HOLOGRAM_API_KEY / WEBUI_USER / WEBUI_PASS）。
 # 不传的话就会「界面显示一份、config.db 里另一份」，用户直接登录不上。
 $credEnv = ""
-if ($ApiKey)    { $credEnv += "export HOMEAGENT_API_KEY='$ApiKey'; " }
+if ($ApiKey)    { $credEnv += "export HOLOGRAM_API_KEY='$ApiKey'; " }
 if ($WebUIUser) { $credEnv += "export WEBUI_USER='$WebUIUser'; " }
 if ($WebUIPass) { $credEnv += "export WEBUI_PASS='$WebUIPass'; " }
 
@@ -180,34 +180,34 @@ if ($WebUIPass) { $credEnv += "export WEBUI_PASS='$WebUIPass'; " }
 # tar 则解包到你同一套布局再执行同一份 setup.sh。刻意不在这里重写安装步骤——
 # 「WSL 里就是普通 linux/amd64」必须保持成立，否则等于又开了第三个平台。
 if ($pkgKind -eq "deb") {
-    $inWslPkg = "/tmp/homeagent-install/" + (Split-Path $pkg -Leaf)
+    $inWslPkg = "/tmp/hologramagent-install/" + (Split-Path $pkg -Leaf)
     & wsl.exe -d $script:DistroName -u root -- bash -lc @"
 set -e
 $credEnv
-export HOMEAGENT_DATA='$DataDir'
+export HOLOGRAM_DATA='$DataDir'
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq '$inWslPkg'
 "@
 } else {
-    $inWslPkg = "/tmp/homeagent-install/" + (Split-Path $pkg -Leaf)
+    $inWslPkg = "/tmp/hologramagent-install/" + (Split-Path $pkg -Leaf)
     & wsl.exe -d $script:DistroName -u root -- bash -lc @"
 set -e
 $credEnv
-mkdir -p /opt/homeagent /tmp/homeagent-extract
-tar -xzf '$inWslPkg' -C /tmp/homeagent-extract
-cd /tmp/homeagent-extract
-# 与 deb 完全相同的布局：/usr/bin/homed + /usr/lib/homeagent/setup.sh。
+mkdir -p /opt/hologramagent /tmp/hologramagent-extract
+tar -xzf '$inWslPkg' -C /tmp/hologramagent-extract
+cd /tmp/hologramagent-extract
+# 与 deb 完全相同的布局：/usr/bin/homed + /usr/lib/hologram/setup.sh。
 # 两套安装若落到不同路径，之后的升级/排障就会出现「按文档找不到文件」。
 install -m 0755 homed      /usr/bin/homed
 install -m 0755 waiter     /usr/bin/waiter
 [ -f initconfig ] && install -m 0755 initconfig /usr/bin/initconfig
-if [ -f homeagent.service ]; then
-  install -m 0644 homeagent.service /etc/systemd/system/homeagent.service
+if [ -f hologramagent.service ]; then
+  install -m 0644 hologramagent.service /etc/systemd/system/hologramagent.service
 fi
-mkdir -p /usr/lib/homeagent
-if [ -f setup.sh ]; then install -m 0755 setup.sh /usr/lib/homeagent/setup.sh; fi
-export HOMEAGENT_DATA='$DataDir'
-if [ -x /usr/lib/homeagent/setup.sh ]; then bash /usr/lib/homeagent/setup.sh; fi
+mkdir -p /usr/lib/hologram
+if [ -f setup.sh ]; then install -m 0755 setup.sh /usr/lib/hologram/setup.sh; fi
+export HOLOGRAM_DATA='$DataDir'
+if [ -x /usr/lib/hologram/setup.sh ]; then bash /usr/lib/hologram/setup.sh; fi
 "@
 }
 if ($LASTEXITCODE -ne 0) {
@@ -219,14 +219,14 @@ Write-Ok "安装完成"
 Write-Stage "启动 homed 与自启配置"
 
 & wsl.exe -d $script:DistroName -u root -- bash -lc @"
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q homeagent; then
-    systemctl enable homeagent 2>/dev/null || true
-    systemctl restart homeagent
-    echo '  ✓ systemd 服务 homeagent 已启动并设为自启'
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q hologramagent; then
+    systemctl enable hologramagent 2>/dev/null || true
+    systemctl restart hologramagent
+    echo '  ✓ systemd 服务 hologramagent 已启动并设为自启'
 else
     # 没有 systemd（WSL2 默认可能没开）：用 nohup 起，并把自启交给 Windows 侧的计划任务。
     pkill -f '/usr/bin/homed' 2>/dev/null || true
-    nohup /usr/bin/homed -data '$DataDir' > /var/log/homeagent-boot.log 2>&1 &
+    nohup /usr/bin/homed -data '$DataDir' > /var/log/hologram-boot.log 2>&1 &
     echo '  ✓ 已用 nohup 启动（未检测到 systemd）'
 fi
 "@
@@ -235,7 +235,7 @@ $creds = & wsl.exe -d $script:DistroName -u root -- bash -lc "cat '$DataDir/cred
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
-Write-Host " HomeAgent 已在 WSL2（$($script:DistroName)）内安装完成" -ForegroundColor Green
+Write-Host " HologramAgent 已在 WSL2（$($script:DistroName)）内安装完成" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  WebUI：http://localhost:8080" -ForegroundColor White
@@ -250,10 +250,10 @@ if ($creds) {
 Write-Host ""
 Write-Host "  常用操作（在 PowerShell 中）："
 Write-Host "      进入 WSL        : wsl -d $($script:DistroName)"
-Write-Host "      查看日志        : wsl -d $($script:DistroName) -u root -- journalctl -u homeagent -f"
-Write-Host "      重启服务        : wsl -d $($script:DistroName) -u root -- systemctl restart homeagent"
+Write-Host "      查看日志        : wsl -d $($script:DistroName) -u root -- journalctl -u hologramagent -f"
+Write-Host "      重启服务        : wsl -d $($script:DistroName) -u root -- systemctl restart hologramagent"
 Write-Host ""
 Write-Host "  注意：WSL 实例不会随 Windows 启动而自动拉起。若需要开机自启，"
 Write-Host "        可创建一个登录时触发的计划任务执行："
-Write-Host "            wsl -d $($script:DistroName) -u root -- systemctl start homeagent"
+Write-Host "            wsl -d $($script:DistroName) -u root -- systemctl start hologramagent"
 exit 0

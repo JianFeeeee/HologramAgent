@@ -8,8 +8,8 @@
   !define VARIANT "full"
 !endif
 
-!define PRODUCT_NAME "HomeAgent"
-!define PRODUCT_PUBLISHER "HomeAgent Team"
+!define PRODUCT_NAME "HologramAgent"
+!define PRODUCT_PUBLISHER "HologramAgent Team"
 # 版本号由 makensis -DPRODUCT_VERSION=X.Y.Z 注入；缺省值仅供本地手工构建。
 # 此前硬编码 0.8.0 而 release 已到 1.0.0，装出来的包在「添加/删除程序」里
 # 会显示错误版本（DisplayVersion 也取自这个宏）。
@@ -18,22 +18,22 @@
 !endif
 
 !if "${VARIANT}" == "full"
-  !define PRODUCT_DISPLAY_NAME "HomeAgent 完整版"
-  !define OUTPUT_FILE "HomeAgent_v${PRODUCT_VERSION}_Full_win64.exe"
+  !define PRODUCT_DISPLAY_NAME "HologramAgent 完整版"
+  !define OUTPUT_FILE "HologramAgent_v${PRODUCT_VERSION}_Full_win64.exe"
   !define HAS_CORE 1
   !define HAS_WAITER 1
   !define HAS_GUI 1
   !define HAS_CREDENTIALS 1
 !else if "${VARIANT}" == "server"
-  !define PRODUCT_DISPLAY_NAME "HomeAgent 服务端"
-  !define OUTPUT_FILE "HomeAgent_v${PRODUCT_VERSION}_Server_win64.exe"
+  !define PRODUCT_DISPLAY_NAME "HologramAgent 服务端"
+  !define OUTPUT_FILE "HologramAgent_v${PRODUCT_VERSION}_Server_win64.exe"
   !define HAS_CORE 1
   !define HAS_WAITER 0
   !define HAS_GUI 0
   !define HAS_CREDENTIALS 1
 !else if "${VARIANT}" == "client"
-  !define PRODUCT_DISPLAY_NAME "HomeAgent 客户端"
-  !define OUTPUT_FILE "HomeAgent_v${PRODUCT_VERSION}_Client_win64.exe"
+  !define PRODUCT_DISPLAY_NAME "HologramAgent 客户端"
+  !define OUTPUT_FILE "HologramAgent_v${PRODUCT_VERSION}_Client_win64.exe"
   !define HAS_CORE 0
   !define HAS_WAITER 1
   !define HAS_GUI 1
@@ -47,7 +47,7 @@ OutFile "..\..\build\${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "Software\${PRODUCT_NAME}" ""
 RequestExecutionLevel admin
-BrandingText "HomeAgent Installer"
+BrandingText "HologramAgent Installer"
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
@@ -68,7 +68,7 @@ Function GenKey
   Pop $0
   Pop $1
   ${If} $1 == ""
-    StrCpy $1 "homeagent"
+    StrCpy $1 "hologram"
   ${Else}
     StrCpy $1 $1 32
   ${EndIf}
@@ -111,13 +111,13 @@ FunctionEnd
 !if "${HAS_CORE}" == "1"
 
 Function pageStartupOptions
-  !insertmacro MUI_HEADER_TEXT "启动选项" "设置 HomeAgent 后端的启动方式"
+  !insertmacro MUI_HEADER_TEXT "启动选项" "设置 HologramAgent 后端的启动方式"
   nsDialogs::Create 1018
   Pop $0
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 5u 100% 20u "HomeAgent 后端 (homed) 是持续运行的服务进程。$\r$\n请选择启动方式:"
+  ${NSD_CreateLabel} 0 5u 100% 20u "HologramAgent 后端 (homed) 是持续运行的服务进程。$\r$\n请选择启动方式:"
   Pop $0
   ${NSD_CreateCheckBox} 10u 35u 100% 12u "开机自动启动后端 (添加到注册表启动项)"
   Pop $hwndAutoStart
@@ -190,7 +190,7 @@ Function pageCredentialsLeave
   ${NSD_GetText} $hwndUsername $webuiUsername
   ${NSD_GetText} $hwndPassword $webuiPassword
   ${If} $webuiPassword == ""
-    StrCpy $webuiPassword "homeagent"
+    StrCpy $webuiPassword "hologram"
   ${EndIf}
 FunctionEnd
 
@@ -244,15 +244,15 @@ Section "Install" SEC_INSTALL
 !endif
 
 !if "${HAS_GUI}" == "1"
-  SetOutPath "$INSTDIR\homeagent-gui-win32-x64"
-  File /r "..\..\build\homeagent-gui-win32-x64\*.*"
+  SetOutPath "$INSTDIR\hologram-gui-win32-x64"
+  File /r "..\..\build\hologram-gui-win32-x64\*.*"
   SetOutPath "$INSTDIR"
 !endif
 
 !if "${HAS_CORE}" == "1"
   ; 在 WSL2 里安装 homed。凭据（页面上收的那三个）透传进去，避免
   ; 「界面显示一份、config.db 里另一份」导致登录不上。
-  DetailPrint "检测 WSL 并在其中安装 HomeAgent..."
+  DetailPrint "检测 WSL 并在其中安装 HologramAgent..."
   nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install-via-wsl.ps1" -PayloadDir "$PLUGINSDIR\linux-payload" -ApiKey "$apiKey" -WebUIUser "$webuiUsername" -WebUIPass "$webuiPassword"'
   Pop $0
   Pop $1
@@ -267,19 +267,19 @@ Section "Install" SEC_INSTALL
       MessageBox MB_ICONEXCLAMATION|MB_OK "WSL 内安装失败（退出码 $0）。$\r$\n$\r$\n可进入 WSL 手动排查：wsl -d Ubuntu$\r$\n安装脚本输出见上方日志。"
     ${EndIf}
   ${Else}
-    DetailPrint "HomeAgent 已在 WSL2 内安装完成"
+    DetailPrint "HologramAgent 已在 WSL2 内安装完成"
   ${EndIf}
 !endif
 
 !if "${HAS_GUI}" == "1"
   DetailPrint "配置 GUI 连接..."
-  CreateDirectory "$APPDATA\homeagent-gui"
-  FileOpen $0 "$APPDATA\homeagent-gui\connections.json" w
+  CreateDirectory "$APPDATA\hologram-gui"
+  FileOpen $0 "$APPDATA\hologram-gui\connections.json" w
   FileWrite $0 '{$\r$\n  "connections": [$\r$\n    {$\r$\n      "id": "local",$\r$\n      "name": "本地",$\r$\n      "url": "http://localhost:8080",$\r$\n      "apiKey": "$apiKey"$\r$\n    }$\r$\n  ],$\r$\n  "currentId": "local"$\r$\n}'
   FileClose $0
   ; 同时写入 GUI 包目录作为备用（适配 UAC 提升后 $APPDATA 异常的情况）
-  CreateDirectory "$INSTDIR\homeagent-gui-win32-x64\resources\app"
-  FileOpen $0 "$INSTDIR\homeagent-gui-win32-x64\resources\app\connections.json" w
+  CreateDirectory "$INSTDIR\hologram-gui-win32-x64\resources\app"
+  FileOpen $0 "$INSTDIR\hologram-gui-win32-x64\resources\app\connections.json" w
   FileWrite $0 '{$\r$\n  "connections": [$\r$\n    {$\r$\n      "id": "local",$\r$\n      "name": "本地",$\r$\n      "url": "http://localhost:8080",$\r$\n      "apiKey": "$apiKey"$\r$\n    }$\r$\n  ],$\r$\n  "currentId": "local"$\r$\n}'
   FileClose $0
 !endif
@@ -294,23 +294,23 @@ Section "Install" SEC_INSTALL
   DetailPrint "创建快捷方式..."
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
 !if "${HAS_CORE}" == "1"
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\HomeAgent Server.lnk" "$INSTDIR\homed.exe" '-data "$INSTDIR\data"' "$INSTDIR\homed.exe" 0
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\HologramAgent Server.lnk" "$INSTDIR\homed.exe" '-data "$INSTDIR\data"' "$INSTDIR\homed.exe" 0
 !endif
 !if "${HAS_WAITER}" == "1"
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\HomeAgent CLI.lnk" "$INSTDIR\waiter.exe" "" "$INSTDIR\waiter.exe" 0
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\HologramAgent CLI.lnk" "$INSTDIR\waiter.exe" "" "$INSTDIR\waiter.exe" 0
 !endif
 !if "${HAS_GUI}" == "1"
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\HomeAgent GUI.lnk" "$INSTDIR\homeagent-gui-win32-x64\homeagent-gui.exe" "" "$INSTDIR\homeagent-gui-win32-x64\homeagent-gui.exe" 0
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\HologramAgent GUI.lnk" "$INSTDIR\hologram-gui-win32-x64\hologram-gui.exe" "" "$INSTDIR\hologram-gui-win32-x64\hologram-gui.exe" 0
 !endif
 
   DetailPrint "设置环境变量..."
-  WriteRegStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOMEAGENT_DATA" "$INSTDIR\data"
-  WriteRegStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOMEAGENT_SOCKET" "$INSTDIR\data\cli.sock"
+  WriteRegStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOLOGRAM_DATA" "$INSTDIR\data"
+  WriteRegStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOLOGRAM_SOCKET" "$INSTDIR\data\cli.sock"
 
 !if "${HAS_CORE}" == "1"
   ${If} $autoStart == "1"
     DetailPrint "设置开机自启动..."
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "HomeAgent" '"$INSTDIR\homed.exe" -data "$INSTDIR\data"'
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "HologramAgent" '"$INSTDIR\homed.exe" -data "$INSTDIR\data"'
   ${EndIf}
 !endif
 
@@ -328,7 +328,7 @@ Section "Install" SEC_INSTALL
 
 !if "${HAS_CORE}" == "1"
   ${If} $startNow == "1"
-    DetailPrint "启动 HomeAgent 后端..."
+    DetailPrint "启动 HologramAgent 后端..."
     Exec '"$INSTDIR\homed.exe" -data "$INSTDIR\data"'
   ${EndIf}
 !endif
@@ -336,7 +336,7 @@ SectionEnd
 
 Section "Uninstall"
 !if "${HAS_CORE}" == "1"
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "HomeAgent"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "HologramAgent"
 !endif
   Delete "$INSTDIR\Uninstall.exe"
   Delete "$INSTDIR\initconfig.exe"
@@ -344,14 +344,14 @@ Section "Uninstall"
   Delete "$INSTDIR\waiter.exe"
   Delete "$INSTDIR\waiter.yaml"
   RMDir /r "$INSTDIR\data"
-  RMDir /r "$INSTDIR\homeagent-gui-win32-x64"
+  RMDir /r "$INSTDIR\hologram-gui-win32-x64"
   RMDir "$INSTDIR"
-  Delete "$SMPROGRAMS\${PRODUCT_NAME}\HomeAgent Server.lnk"
-  Delete "$SMPROGRAMS\${PRODUCT_NAME}\HomeAgent CLI.lnk"
-  Delete "$SMPROGRAMS\${PRODUCT_NAME}\HomeAgent GUI.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\HologramAgent Server.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\HologramAgent CLI.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\HologramAgent GUI.lnk"
   RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
-  DeleteRegValue HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOMEAGENT_DATA"
-  DeleteRegValue HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOMEAGENT_SOCKET"
+  DeleteRegValue HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOLOGRAM_DATA"
+  DeleteRegValue HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "HOLOGRAM_SOCKET"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
   DeleteRegKey HKLM "Software\${PRODUCT_NAME}"
 SectionEnd

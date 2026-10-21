@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# HomeAgent 部署脚本
+# HologramAgent 部署脚本
 # 用法: cd <project-root> && sudo bash deploy/scripts/deploy.sh
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN_DIR="/usr/local/bin"
 DATA_DIR="/home/newqqagent"
-SERVICE_FILE="/etc/systemd/system/homeagent.service"
+SERVICE_FILE="/etc/systemd/system/hologramagent.service"
 
 echo "=== 构建 homed / waiter ==="
 cd "$PROJECT_ROOT"
@@ -30,16 +30,16 @@ if [ -d "$PROJECT_ROOT/plugins/qq" ]; then
 fi
 
 echo "=== 安装 systemd 服务 ==="
-cp "$(dirname "$0")/homeagent.service" "$SERVICE_FILE"
+cp "$(dirname "$0")/hologramagent.service" "$SERVICE_FILE"
 systemctl daemon-reload
 
 echo ""
 echo "=== 部署完成 ==="
 echo ""
-echo "启动:   systemctl start homeagent"
-echo "状态:   systemctl status homeagent"
-echo "日志:   journalctl -u homeagent -f"
-echo "停止:   systemctl stop homeagent"
+echo "启动:   systemctl start hologramagent"
+echo "状态:   systemctl status hologramagent"
+echo "日志:   journalctl -u hologramagent -f"
+echo "停止:   systemctl stop hologramagent"
 echo "WebUI:  http://localhost:8080"
 echo "CLI:    /home/newqqagent/cli.sock"
 echo ""
