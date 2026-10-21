@@ -5,7 +5,7 @@
 不传 file 时上传 dist/release/ 下全部发布产物。
 
 环境变量：
-  GITCODE_REPO  目标仓库，默认 JianFeeeee/HologramAgent（SDK 仓传 JianFeeeee/homeagent-sdk）
+  GITCODE_REPO  目标仓库，默认 JianFeeeee/HologramAgent（SDK 仓传 JianFeeeee/hologramagentsdk）
                 这是 gitcode 镜像仓名的**唯一定义处**（workflow 里通过 job 级
                 env.GC_REPO 传入同一个值）。改 gitcode 仓名时改这里 + 两个
                 workflow 的 GC_REPO，共三处（每个文件各一个定义点）。

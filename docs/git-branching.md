@@ -417,7 +417,7 @@ VERSION=<版本> bash deploy/packaging/package-windows.sh client amd64   # 需�
 # 核心仓
 python3 deploy/scripts/upload_assets.py <tag> <token>                # 默认上传 dist/release 下可识别的产物
 # SDK 仓（hmapdev_* 没有扩展名，不会被自动识别 ⇒ 必须显式列文件名）
-GITCODE_REPO=JianFeeeee/homeagent-sdk ASSET_DIR=<sdk>/dist/release \
+GITCODE_REPO=JianFeeeee/hologramagentsdk ASSET_DIR=<sdk>/dist/release \
   python3 deploy/scripts/upload_assets.py <tag> <token> hmapdev_linux_amd64 ...
 ```
 
