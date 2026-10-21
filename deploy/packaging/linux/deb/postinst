@@ -1,10 +1,10 @@
 #!/bin/sh
 set -e
 
-SERVICE_NAME="homeagent"
+SERVICE_NAME="hologramagent"
 HOMED_BIN="/usr/bin/homed"
-DATA_DIR="/var/lib/homeagent"
-SETUP_SH="/usr/lib/homeagent/setup.sh"
+DATA_DIR="/var/lib/hologram"
+SETUP_SH="/usr/lib/hologram/setup.sh"
 
 # unit 由本包装到 /etc/systemd/system/，而旧 postinst 只查
 # /lib/systemd/system/（merged-usr 下等于 /usr/lib/systemd/system，那里没有
@@ -34,9 +34,9 @@ case "$1" in
       # credentials.txt、没进数据库），用户拿它登录必然失败，安装却一声不响。
       # 失败必须看得见，并给出可直接执行的补救命令。
       if [ -x "$SETUP_SH" ]; then
-        if ! HOMEAGENT_DATA="$DATA_DIR" "$SETUP_SH"; then
-          echo "E: homeagent 初始化失败——凭据可能未写入 config.db。" >&2
-          echo "E: 请手动重试：HOMEAGENT_DATA=$DATA_DIR $SETUP_SH" >&2
+        if ! HOLOGRAM_DATA="$DATA_DIR" "$SETUP_SH"; then
+          echo "E: hologramagent 初始化失败——凭据可能未写入 config.db。" >&2
+          echo "E: 请手动重试：HOLOGRAM_DATA=$DATA_DIR $SETUP_SH" >&2
         fi
       else
         echo "W: 未找到 $SETUP_SH，跳过凭据初始化。" >&2
@@ -51,10 +51,10 @@ case "$1" in
           # （仅 enable 不会让已在运行的进程换用新文件）。
           if [ -z "${2:-}" ]; then
             systemctl start "$SERVICE_NAME" 2>/dev/null || \
-              echo "W: homeagent 服务未能启动，请检查：systemctl status $SERVICE_NAME" >&2
+              echo "W: hologramagent 服务未能启动，请检查：systemctl status $SERVICE_NAME" >&2
           else
             systemctl restart "$SERVICE_NAME" 2>/dev/null || \
-              echo "W: homeagent 服务未能重启，请检查：systemctl status $SERVICE_NAME" >&2
+              echo "W: hologramagent 服务未能重启，请检查：systemctl status $SERVICE_NAME" >&2
           fi
         else
           echo "W: 未找到 ${SERVICE_NAME}.service，未启用服务。" >&2

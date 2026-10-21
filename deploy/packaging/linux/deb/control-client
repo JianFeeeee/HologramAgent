@@ -1,18 +1,18 @@
-Package: homeagent-client
+Package: hologramagent-client
 Version: VERSION_PLACEHOLDER
 Architecture: ARCH_PLACEHOLDER
-Maintainer: HomeAgent Team <team@homeagent.ai>
+Maintainer: HologramAgent Team <team@hologramagent.ai>
 Installed-Size: INSTALLED_SIZE_PLACEHOLDER
 Depends: libc6 (>= 2.28)
 Section: utils
 Priority: optional
-Homepage: https://github.com/trueagent/HomeAgent
-Description: HomeAgent Client (CLI + GUI, no daemon)
- HomeAgent is a personal AI home assistant that integrates
+Homepage: https://github.com/trueagent/HologramAgent
+Description: HologramAgent Client (CLI + GUI, no daemon)
+ HologramAgent is a personal AI home assistant that integrates
  large language models with system automation.
  .
  This package includes the client components:
   - waiter: command-line client
-  - homeagent-gui: desktop graphical interface
+  - hologram-gui: desktop graphical interface
  .
- This variant connects to a remote HomeAgent server.
+ This variant connects to a remote HologramAgent server.

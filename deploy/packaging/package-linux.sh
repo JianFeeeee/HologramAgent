@@ -86,7 +86,7 @@ case "$ARCH" in
   *) echo "Unknown arch: $ARCH (use amd64 or arm64)"; exit 1 ;;
 esac
 
-echo "=== HomeAgent Linux Packager ==="
+echo "=== HologramAgent Linux Packager ==="
 echo "Version: $VERSION"
 [ "$PKG_VERSION" = "$VERSION" ] || echo "Package: $PKG_VERSION (normalized for deb/rpm)"
 echo "Arch:    $ARCH"
@@ -198,7 +198,7 @@ build_go() {
 # 一道强制校验：架构不符就删掉目录并跳过 GUI，宁可不发也不发坏包。
 build_gui() {
   local gui_dir="$PROJECT_ROOT/cmd/gui"
-  local gui_out="$BUILD_DIR/homeagent-gui-linux-${TAR_ARCH}"
+  local gui_out="$BUILD_DIR/hologram-gui-linux-${TAR_ARCH}"
 
   if [ -d "$gui_out" ]; then
     echo ">>> GUI already built at $gui_out (delete to rebuild)"
@@ -343,11 +343,11 @@ print(m.group(1) if m else '')
   fi
 
   # create desktop entry and symlink
-  cat > "$gui_out/resources/app/homeagent-gui.desktop" << DESKTOP
+  cat > "$gui_out/resources/app/hologram-gui.desktop" << DESKTOP
 [Desktop Entry]
-Name=HomeAgent
-Comment=HomeAgent Desktop GUI
-Exec=$gui_out/homeagent-gui
+Name=HologramAgent
+Comment=HologramAgent Desktop GUI
+Exec=$gui_out/hologram-gui
 Terminal=false
 Type=Application
 Categories=Utility;
@@ -355,12 +355,12 @@ Icon=$gui_out/resources/app/icon.svg
 DESKTOP
 
   # create launcher script
-  cat > "$gui_out/homeagent-gui" << 'LAUNCHER'
+  cat > "$gui_out/hologram-gui" << 'LAUNCHER'
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")" && pwd)"
 exec "$DIR/electron" "$DIR/resources/app" "$@"
 LAUNCHER
-  chmod +x "$gui_out/homeagent-gui"
+  chmod +x "$gui_out/hologram-gui"
   chmod +x "$gui_out/electron"
 
   # 最后一道强制校验：electron 二进制的实际架构必须匹配目标架构。
@@ -398,7 +398,7 @@ stage_variant() {
 
   mkdir -p "$staging/usr/bin"
   mkdir -p "$staging/etc/systemd/system"
-  mkdir -p "$staging/var/lib/homeagent"
+  mkdir -p "$staging/var/lib/hologram"
 
   local initconfig_bin="$BUILD_DIR/initconfig_$suffix"
 
@@ -457,7 +457,7 @@ stage_variant() {
   stage_sdk() {
     local staging="$1"
     local sdk_src="$PROJECT_ROOT/third_party/homeagent-sdk"
-    local sdk_dst="$staging/usr/lib/homeagent/sdk"
+    local sdk_dst="$staging/usr/lib/hologram/sdk"
     [ -d "$sdk_src" ] || { echo "ERROR: 找不到 SDK 源码 $sdk_src" >&2; return 1; }
     mkdir -p "$sdk_dst"
     for item in go.mod go.sum LICENSE README.md sdk meta tools skills; do
@@ -475,7 +475,7 @@ stage_variant() {
       cp "$BUILD_DIR/homed_$suffix" "$staging/usr/bin/homed"
       cp "$BUILD_DIR/waiter_$suffix" "$staging/usr/bin/waiter"
       stage_depgraph "$staging"
-      cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
+      cp "$PROJECT_ROOT/deploy/hologramagent.service" "$staging/etc/systemd/system/hologramagent.service"
       [ -f "$initconfig_bin" ] && cp "$initconfig_bin" "$staging/usr/bin/initconfig"
       stage_setup "$staging"
       stage_license "$staging"
@@ -486,7 +486,7 @@ stage_variant() {
       cp "$BUILD_DIR/homed_$suffix" "$staging/usr/bin/homed"
       cp "$BUILD_DIR/waiter_$suffix" "$staging/usr/bin/waiter"
       stage_depgraph "$staging"
-      cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
+      cp "$PROJECT_ROOT/deploy/hologramagent.service" "$staging/etc/systemd/system/hologramagent.service"
       [ -f "$initconfig_bin" ] && cp "$initconfig_bin" "$staging/usr/bin/initconfig"
       stage_setup "$staging"
       stage_license "$staging"
@@ -499,7 +499,7 @@ stage_variant() {
       stage_depgraph "$staging"
       stage_hmapdev "$staging"
       stage_sdk "$staging"
-      cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
+      cp "$PROJECT_ROOT/deploy/hologramagent.service" "$staging/etc/systemd/system/hologramagent.service"
       [ -f "$initconfig_bin" ] && cp "$initconfig_bin" "$staging/usr/bin/initconfig"
       stage_setup "$staging"
       stage_license "$staging"
@@ -520,15 +520,15 @@ stage_variant() {
 
 stage_gui() {
   local staging="$1"
-  local gui_src="$BUILD_DIR/homeagent-gui-linux-${TAR_ARCH}"
+  local gui_src="$BUILD_DIR/hologram-gui-linux-${TAR_ARCH}"
   if [ -d "$gui_src" ]; then
-    mkdir -p "$staging/usr/lib/homeagent-gui"
-    cp -r "$gui_src"/* "$staging/usr/lib/homeagent-gui/"
-    cat > "$staging/usr/bin/homeagent-gui" << 'SCRIPT'
+    mkdir -p "$staging/usr/lib/hologram-gui"
+    cp -r "$gui_src"/* "$staging/usr/lib/hologram-gui/"
+    cat > "$staging/usr/bin/hologram-gui" << 'SCRIPT'
 #!/bin/sh
-exec /usr/lib/homeagent-gui/homeagent-gui "$@"
+exec /usr/lib/hologram-gui/hologram-gui "$@"
 SCRIPT
-    chmod 755 "$staging/usr/bin/homeagent-gui"
+    chmod 755 "$staging/usr/bin/hologram-gui"
   else
     echo "  WARNING: GUI not built, skipping GUI staging"
   fi
@@ -538,30 +538,30 @@ stage_setup() {
   local staging="$1"
   local setup_src="$PROJECT_ROOT/deploy/packaging/linux/setup.sh"
   if [ -f "$setup_src" ]; then
-    mkdir -p "$staging/usr/lib/homeagent"
-    cp "$setup_src" "$staging/usr/lib/homeagent/setup.sh"
-    chmod 755 "$staging/usr/lib/homeagent/setup.sh"
+    mkdir -p "$staging/usr/lib/hologram"
+    cp "$setup_src" "$staging/usr/lib/hologram/setup.sh"
+    chmod 755 "$staging/usr/lib/hologram/setup.sh"
   fi
 }
 
 # 项目自身的许可：**所有变体**都要带（client 也分发 waiter 与 GUI）。
 #
-# deb 按 Debian 惯例给 /usr/share/doc/homeagent/copyright（DEP-5 机器可读格式），
+# deb 按 Debian 惯例给 /usr/share/doc/hologramagent/copyright（DEP-5 机器可读格式），
 # 同时把 LICENSE 全文放进去；rpm 的许可走 fpm 的 --license 元数据。
 # 与 stage_multimodal_assets 的 licenses/ 分工：那里放**第三方**（模型/运行库）的
 # 许可全文，这里放本项目自己的。
 stage_license() {
   local staging="$1"
-  local docdir="$staging/usr/share/doc/homeagent"
+  local docdir="$staging/usr/share/doc/hologramagent"
   mkdir -p "$docdir"
   cp "$PROJECT_ROOT/LICENSE" "$docdir/LICENSE"
   cat > "$docdir/copyright" <<'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: HomeAgent
-Source: https://github.com/JianFeeeee/HomeAgent
+Upstream-Name: HologramAgent
+Source: https://github.com/JianFeeeee/HologramAgent
 
 Files: *
-Copyright: HomeAgent contributors
+Copyright: HologramAgent contributors
 License: AGPL-3.0-only
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU Affero General Public License as published by the Free
@@ -579,18 +579,18 @@ License: AGPL-3.0-only
  clause (§13 Remote Network Interaction) — offering modified versions of this
  software to users over a network also requires offering them the source.
  .
- Full text: /usr/share/doc/homeagent/LICENSE
+ Full text: /usr/share/doc/hologramagent/LICENSE
 
-Files: usr/lib/homeagent/models/chinese-clip-vit-b16-onnx/*
+Files: usr/lib/hologram/models/chinese-clip-vit-b16-onnx/*
 Copyright: OFA-Sys / Chinese-CLIP authors
 License: Apache-2.0
- Full text: /usr/share/doc/homeagent/licenses/Chinese-CLIP-Apache-2.0.txt
+ Full text: /usr/share/doc/hologramagent/licenses/Chinese-CLIP-Apache-2.0.txt
  Comment: pre-trained model artifacts; NOT covered by this package's AGPL grant
 
-Files: usr/lib/homeagent/onnxruntime/*
+Files: usr/lib/hologram/onnxruntime/*
 Copyright: Microsoft Corporation
 License: MIT
- Full text: /usr/share/doc/homeagent/licenses/ONNX-Runtime-MIT.txt
+ Full text: /usr/share/doc/hologramagent/licenses/ONNX-Runtime-MIT.txt
  Comment: license texts and third-party notices under licenses/ONNX-Runtime-*
 EOF
   chmod 644 "$docdir/LICENSE" "$docdir/copyright"
@@ -600,9 +600,9 @@ EOF
 # 只要打 server/full 包，两者缺一就失败。client 包不运行 homed，故不携带。
 stage_multimodal_assets() {
   local staging="$1"
-  local model_dst="$staging/usr/lib/homeagent/models/chinese-clip-vit-b16-onnx"
-  local ort_dst="$staging/usr/lib/homeagent/onnxruntime"
-  local licenses="$staging/usr/share/doc/homeagent/licenses"
+  local model_dst="$staging/usr/lib/hologram/models/chinese-clip-vit-b16-onnx"
+  local ort_dst="$staging/usr/lib/hologram/onnxruntime"
+  local licenses="$staging/usr/share/doc/hologramagent/licenses"
 
   if [ ! -d "$CHINESECLIP_BUNDLE_DIR" ]; then
     echo "ERROR: Chinese-CLIP 产物目录不存在：$CHINESECLIP_BUNDLE_DIR" >&2
@@ -672,7 +672,7 @@ build_deb() {
   local deb_dir="${DIST_DIR}/deb"
   mkdir -p "$deb_dir"
 
-  local pkg_name="homeagent-${variant}_${PKG_VERSION}_${DEB_ARCH}.deb"
+  local pkg_name="hologramagent-${variant}_${PKG_VERSION}_${DEB_ARCH}.deb"
   local deb_root
   deb_root="$(mktemp -d "$STAGE_TMP/deb.XXXXXX")"
 
@@ -711,13 +711,13 @@ build_tar() {
   local tar_dir="${DIST_DIR}/tar"
   mkdir -p "$tar_dir"
 
-  local archive_name="homeagent_${PKG_VERSION}_linux_${TAR_ARCH}.tar.gz"
-  local archive_dir="homeagent-${PKG_VERSION}-linux-${TAR_ARCH}"
+  local archive_name="hologramagent_${PKG_VERSION}_linux_${TAR_ARCH}.tar.gz"
+  local archive_dir="hologramagent-${PKG_VERSION}-linux-${TAR_ARCH}"
 
   # build combined staging
   local staging
   staging="$(mktemp -d "$STAGE_TMP/tar.XXXXXX")"
-  mkdir -p "$staging/usr/bin" "$staging/usr/lib/homeagent" "$staging/etc/systemd/system"
+  mkdir -p "$staging/usr/bin" "$staging/usr/lib/hologram" "$staging/etc/systemd/system"
 
   # copy all available binaries
   for bin in homed waiter initconfig; do
@@ -727,21 +727,21 @@ build_tar() {
 
   # setup script
   local setup_src="$PROJECT_ROOT/deploy/packaging/linux/setup.sh"
-  [ -f "$setup_src" ] && cp "$setup_src" "$staging/usr/lib/homeagent/setup.sh"
-  cp "$PROJECT_ROOT/deploy/homeagent.service" "$staging/etc/systemd/system/homeagent.service"
+  [ -f "$setup_src" ] && cp "$setup_src" "$staging/usr/lib/hologram/setup.sh"
+  cp "$PROJECT_ROOT/deploy/hologramagent.service" "$staging/etc/systemd/system/hologramagent.service"
   stage_license "$staging"
   stage_multimodal_assets "$staging"
 
   # GUI if available
-  local gui_src="$BUILD_DIR/homeagent-gui-linux-${TAR_ARCH}"
+  local gui_src="$BUILD_DIR/hologram-gui-linux-${TAR_ARCH}"
   if [ -d "$gui_src" ]; then
-    mkdir -p "$staging/usr/lib/homeagent-gui"
-    cp -r "$gui_src"/* "$staging/usr/lib/homeagent-gui/"
-    cat > "$staging/usr/bin/homeagent-gui" << 'SCRIPT'
+    mkdir -p "$staging/usr/lib/hologram-gui"
+    cp -r "$gui_src"/* "$staging/usr/lib/hologram-gui/"
+    cat > "$staging/usr/bin/hologram-gui" << 'SCRIPT'
 #!/bin/sh
-exec /usr/lib/homeagent-gui/homeagent-gui "$@"
+exec /usr/lib/hologram-gui/hologram-gui "$@"
 SCRIPT
-    chmod 755 "$staging/usr/bin/homeagent-gui"
+    chmod 755 "$staging/usr/bin/hologram-gui"
   fi
 
   chmod 755 "$staging/usr/bin/"* 2>/dev/null || true
@@ -759,7 +759,7 @@ build_rpm() {
   local rpm_dir="${DIST_DIR}/rpm"
   mkdir -p "$rpm_dir"
 
-  local pkg_name="homeagent-${variant}-${PKG_VERSION}-1.${RPM_ARCH}.rpm"
+  local pkg_name="hologramagent-${variant}-${PKG_VERSION}-1.${RPM_ARCH}.rpm"
 
   # find fpm
   local fpm_bin="$(command -v fpm 2>/dev/null || true)"
@@ -770,7 +770,7 @@ build_rpm() {
   if [ -z "$fpm_bin" ]; then
     echo "  SKIP .rpm: fpm not installed. Install it with: gem install fpm"
     echo "  Alternatively, build RPM on Fedora/RHEL using:"
-    echo "    rpmbuild -ba deploy/packaging/linux/homeagent.spec"
+    echo "    rpmbuild -ba deploy/packaging/linux/hologramagent.spec"
     return
   fi
 
@@ -804,12 +804,12 @@ build_rpm() {
 
   echo ">>> Building .rpm via fpm: $pkg_name"
   "$fpm_bin" -s dir -t rpm \
-    -n "homeagent-${variant}" \
+    -n "hologramagent-${variant}" \
     -v "$VERSION" \
     --iteration 1 \
     -a "$RPM_ARCH" \
-    --description "HomeAgent ${variant^} package" \
-    --url "https://github.com/trueagent/HomeAgent" \
+    --description "HologramAgent ${variant^} package" \
+    --url "https://github.com/trueagent/HologramAgent" \
     --license "AGPL-3.0-only" \
     -C "$staging" \
     -p "$rpm_dir/$pkg_name" \
@@ -874,7 +874,7 @@ main() {
   # 只列**本批**产物：dist/ 会跨多次构建累积，用 find 全目录会让清单／SHA256SUMS
   # 带上历史版本的文件名——用户下载那种清单后 `sha256sum -c` 必然报缺失。
   # （v1.2.2 构建时就出现过：清单里混进了 1.2.0/1.2.1 的包名。）按本批版本号过滤。
-  mapfile -t release_files < <(find "$DIST_DIR" -type f \( -name "*${PKG_VERSION}*.deb" -o -name "homeagent_${PKG_VERSION}_*.tar.gz" -o -name "*${PKG_VERSION}*.rpm" \) 2>/dev/null | sort)
+  mapfile -t release_files < <(find "$DIST_DIR" -type f \( -name "*${PKG_VERSION}*.deb" -o -name "hologramagent_${PKG_VERSION}_*.tar.gz" -o -name "*${PKG_VERSION}*.rpm" \) 2>/dev/null | sort)
   for f in "${release_files[@]}"; do
     echo "  $(du -h "$f" | cut -f1)  $f"
   done

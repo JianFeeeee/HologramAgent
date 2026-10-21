@@ -1,14 +1,14 @@
-Package: homeagent-toolchain
+Package: hologramagent-toolchain
 Version: VERSION_PLACEHOLDER
 Architecture: ARCH_PLACEHOLDER
-Maintainer: HomeAgent Team <team@homeagent.ai>
+Maintainer: HologramAgent Team <team@hologramagent.ai>
 Installed-Size: INSTALLED_SIZE_PLACEHOLDER
 Depends: libc6 (>= 2.28), libstdc++6, libgcc-s1
 Section: utils
 Priority: optional
-Homepage: https://github.com/trueagent/HomeAgent
-Description: HomeAgent Toolchain (Daemon + CLI + Plugin Toolchain + SDK)
- HomeAgent is a personal AI home assistant that integrates
+Homepage: https://github.com/trueagent/HologramAgent
+Description: HologramAgent Toolchain (Daemon + CLI + Plugin Toolchain + SDK)
+ HologramAgent is a personal AI home assistant that integrates
  large language models with system automation.
  .
  This package includes the full development toolchain:
@@ -16,7 +16,7 @@ Description: HomeAgent Toolchain (Daemon + CLI + Plugin Toolchain + SDK)
   - depgraph.bin: kernel startup dependency graph (MUST sit next to homed)
   - waiter: command-line client
   - hmapdev: plugin build toolchain (init/build/package .hmap)
-  - the matching HomeAgent SDK (sdk/, tools/, skills/, meta/, docs/)
+  - the matching HologramAgent SDK (sdk/, tools/, skills/, meta/, docs/)
  .
- Installs the SDK under /usr/lib/homeagent/sdk so that hmapdev can resolve
+ Installs the SDK under /usr/lib/hologram/sdk so that hmapdev can resolve
  plugins against a known-good SDK without network access.
