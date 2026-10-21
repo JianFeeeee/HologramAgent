@@ -168,9 +168,150 @@ func TestToolchainVariantHasControlFile(t *testing.T) {
 		t.Fatal("★ 缺 control-toolchain —— toolchain 变体打不出来")
 	}
 	c := string(b)
-	for _, kw := range []string{"homeagent-toolchain", "hmapdev", "SDK", "depgraph"} {
+	for _, kw := range []string{"hologramagent-toolchain", "hmapdev", "SDK", "depgraph"} {
 		if !strings.Contains(c, kw) {
 			t.Errorf("control-toolchain 的描述里应提到 %s（让 apt show 能说清装了什么）", kw)
 		}
+	}
+}
+
+// ★★★ 判据：打包产物里的**安装路径与单元名**必须已随品牌改名（批 2）。
+//
+// 这条守的是"改一半就静默失效"那一类：包能打出来、退出码 0，但内容里
+// 还写着旧路径 —— 装上去之后 systemd 找不到单元、数据目录对不上、
+// ONNX 运行库指向空目录，而且没有任何一步报错。
+//
+// 只扫**产物布局相关**的旧串，不扫 module 路径（那是批 1 的地盘，
+// 见 TestPackagingLdflagsUseCurrentModulePath）。
+func TestPackagingUsesRenamedInstallPaths(t *testing.T) {
+	src := readOrSkip(t, pkgLinux)
+
+	// 安装路径 / 单元文件：一个都不许留旧值。
+	for _, stale := range []string{
+		"/var/lib/homeagent",
+		"/usr/lib/homeagent",
+		"/usr/share/doc/homeagent",
+		"deploy/homeagent.service",
+		"/etc/systemd/system/homeagent.service",
+		"/usr/bin/homeagent-gui",
+		"/usr/lib/homeagent-gui",
+		`pkg_name="homeagent-`,
+	} {
+		if strings.Contains(src, stale) {
+			t.Errorf("★ package-linux.sh 仍含旧安装路径/包名 %q —— "+
+				"打出的包会装到旧位置（日志全绿，装完路径对不上）", stale)
+		}
+	}
+
+	// 新值必须真的出现（否则上面的"无旧值"可能只是整段被删了）。
+	for _, want := range []string{
+		"/var/lib/hologram",
+		"/usr/lib/hologram",
+		"/usr/share/doc/hologramagent",
+		"deploy/hologramagent.service",
+		"/etc/systemd/system/hologramagent.service",
+		"/usr/bin/hologram-gui",
+		"/usr/lib/hologram-gui",
+		`pkg_name="hologramagent-`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("★ package-linux.sh 缺少 %q —— 改名没落到位", want)
+		}
+	}
+}
+
+// ★★★ 判据：deb 的 postinst / prerm 必须操作**新**单元名。
+//
+// postinst 的 SERVICE_NAME 若还是旧名，装完 systemctl enable 找不到单元：
+// 它带 `|| true`，所以一声不响地什么也没启用 —— 装完不会开机自启。
+func TestDebMaintainerScriptsUseRenamedService(t *testing.T) {
+	for _, p := range []string{
+		"../../deploy/packaging/linux/deb/postinst",
+		"../../deploy/packaging/linux/deb/prerm",
+	} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Skipf("读不到 %s: %v", p, err)
+		}
+		s := string(b)
+		if !strings.Contains(s, `SERVICE_NAME="hologramagent"`) {
+			t.Errorf("★ %s 的 SERVICE_NAME 不是 hologramagent —— "+
+				"systemctl enable/stop 会作用在不存在的单元上（|| true 吞掉失败）", p)
+		}
+		if strings.Contains(s, `SERVICE_NAME="homeagent"`) {
+			t.Errorf("★ %s 仍用旧 SERVICE_NAME=homeagent", p)
+		}
+		if strings.Contains(s, "/var/lib/homeagent") || strings.Contains(s, "/usr/lib/homeagent") {
+			t.Errorf("★ %s 仍含旧安装路径", p)
+		}
+	}
+}
+
+// ★★★ 判据：四个 deb control 的包名与 SDK 安装路径必须已改。
+//
+// `dpkg-deb -f <pkg> Package` 的输出就是这里的 Package 字段；
+// 旧名会让 apt 认为是另一个包（升级路径直接断成"装了第二个包"）。
+func TestDebControlFilesUseRenamedPackage(t *testing.T) {
+	for _, variant := range []string{"client", "server", "full", "toolchain"} {
+		p := "../../deploy/packaging/linux/deb/control-" + variant
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("读不到 %s: %v", p, err)
+		}
+		s := string(b)
+		want := "Package: hologramagent-" + variant + "\n"
+		if !strings.Contains(s, want) {
+			t.Errorf("★ %s 缺少 %q", p, strings.TrimSpace(want))
+		}
+		if strings.Contains(s, "Package: homeagent-") {
+			t.Errorf("★ %s 的 Package 仍是旧的 homeagent-*", p)
+		}
+		if strings.Contains(s, "/usr/lib/homeagent") {
+			t.Errorf("★ %s 的 SDK 安装路径仍是 /usr/lib/homeagent", p)
+		}
+	}
+	if b, err := os.ReadFile("../../deploy/packaging/linux/deb/control-toolchain"); err == nil {
+		if !strings.Contains(string(b), "/usr/lib/hologram/sdk") {
+			t.Error("★ control-toolchain 没把 SDK 装到 /usr/lib/hologram/sdk")
+		}
+	}
+}
+
+// ★★★ 判据：systemd 单元文件本身（deploy/hologramagent.service）。
+//
+// 文件名改了、内容没改是最典型的一半：ExecStart 仍写旧数据目录，
+// 于是 StateDirectory / ReadWritePaths 与实际 --data 不一致，
+// 内核起得来但写到只读路径上（或反之）—— 取决于 sandbox 设置，难查。
+func TestSystemdUnitUsesRenamedPaths(t *testing.T) {
+	b, err := os.ReadFile("../../deploy/hologramagent.service")
+	if err != nil {
+		t.Fatalf("★ 缺 deploy/hologramagent.service: %v", err)
+	}
+	s := string(b)
+	for _, want := range []string{
+		"--data /var/lib/hologram",
+		"WorkingDirectory=/var/lib/hologram",
+		"StateDirectory=hologram",
+		"ReadWritePaths=/var/lib/hologram",
+		"ReadOnlyPaths=/etc/hologram",
+		"ONNXRUNTIME_DIR=/usr/lib/hologram/onnxruntime",
+		"LoadCredential=homed_security_key:/etc/hologram/security.key",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("★ hologramagent.service 缺 %q", want)
+		}
+	}
+	// 注释里可以留旧路径（升级说明），但**指令行**不能有。
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, "/var/lib/homeagent") || strings.Contains(trimmed, "/usr/lib/homeagent") {
+			t.Errorf("★ hologramagent.service 指令行仍含旧路径: %s", trimmed)
+		}
+	}
+	if _, err := os.Stat("../../deploy/homeagent.service"); err == nil {
+		t.Error("★ deploy/homeagent.service 仍然存在 —— 旧单元文件没删，两个单元会打架")
 	}
 }
