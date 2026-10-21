@@ -108,8 +108,11 @@ prepare_gomod() {
       patched=1
     elif [ ! -d "$sdk_clone" ]; then
       echo ">>> Cloning SDK to $sdk_clone (in-repo SDK missing)..."
-      git clone git@github.com:JianFeeeee/homeagentsdk.git "$sdk_clone" 2>/dev/null || \
-      git clone https://github.com/JianFeeeee/homeagentsdk.git "$sdk_clone" 2>/dev/null || true
+      # 仓名用当前名 hologramagentsdk（旧名 homeagentsdk 仍 301 跳转，但别再用）。
+      # 注意：下面几处 replace 的 module 路径**仍是** homeagentsdk —— 已发布
+      # tag 的 go.mod 里 module 就是这个，改名后没变。
+      git clone git@github.com:JianFeeeee/hologramagentsdk.git "$sdk_clone" 2>/dev/null || \
+      git clone https://github.com/JianFeeeee/hologramagentsdk.git "$sdk_clone" 2>/dev/null || true
       if [ -d "$sdk_clone" ]; then
         sed -i.bak "s|^replace github.com/JianFeeeee/homeagentsdk => .*|replace github.com/JianFeeeee/homeagentsdk => ${sdk_clone}|" "$gomod"
         patched=1
