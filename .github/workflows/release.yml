@@ -368,6 +368,50 @@ jobs:
         with:
           name: linux-amd64
           path: dist
+      # ★ 前置检查：gitcode 镜像仓是否存在。
+      #   改名（HomeAgent → HologramAgent）后 gitcode 目标仓需要**人工新建**，
+      #   不探的话失败会埋在 push/curl 的原始输出里，看不出是「仓没建」。
+      #   语义：token 未配 = 可选项跳过（上一步）；token 有但仓不存在 = 硬失败。
+      - name: 前置检查 gitcode 目标仓是否存在
+        if: steps.tok.outputs.ok == 'true'
+        env:
+          GC_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          set -euo pipefail
+          GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
+          GC_REPO="JianFeeeee/HologramAgent"
+          if out=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads \
+                     "${GC_URL}/${GC_REPO}.git" 2>&1); then
+            echo "  目标仓可访问：gitcode.com/${GC_REPO}"
+          else
+            # 日志脱敏：git 报错可能把 URL 的 userinfo（token 就在里面）带出来。
+            # 先按 URL 结构遮 https://<userinfo>@ —— 与 token 内容无关，稳；
+            # 再尽力遮一次字面量（token 含特殊字符时可能不生效，故只做兜底）。
+            err=$(printf '%s\n' "$out" | sed -E 's#(https?://)[^@/[:space:]]*@#\1***@#g')
+            err=$(printf '%s\n' "$err" | sed "s|${GC_TOKEN}|***|g" 2>/dev/null || printf '%s\n' "$err")
+            case "$err" in
+              # gitcode 真实报错（2026-10 实测）：目标仓不存在时返回
+              #   remote: <CH.00905403> The project you were looking for could not be found.
+              #   fatal: ... The requested URL returned error: 403
+              # 注意是 "could not be found" 与 403，不是 github 那种 "Repository not found"/404。
+              *"could not be found"*|*"not found"*|*"Not Found"*|*"404"*|*"does not exist"*|*"does not appear to be a git repository"*)
+                echo "  ✗ gitcode 目标仓不存在：gitcode.com/${GC_REPO}"
+                echo "    请先在该账号下创建镜像仓（只读镜像），再重跑本 job："
+                echo "    https://gitcode.com/${GC_REPO}"
+                ;;
+              *"403"*|*"401"*|*"Forbidden"*|*"Unauthorized"*)
+                echo "  ✗ 无法访问 gitcode 目标仓 gitcode.com/${GC_REPO}：仓不存在，或 token 无权访问"
+                echo "    若仓已建，请确认 GITCODE_TOKEN 属于该仓的推送账号："
+                echo "    https://gitcode.com/${GC_REPO}"
+                ;;
+              *)
+                echo "  ✗ 无法访问 gitcode 目标仓 gitcode.com/${GC_REPO}（网络或凭据问题）："
+                printf '%s\n' "$err" | sed 's/^/    /'
+                ;;
+            esac
+            # 显式失败 —— 不静默跳过，也不 echo 一句就当成功。
+            exit 1
+          fi
       - name: 推 tag 与附件到 gitcode
         if: steps.tok.outputs.ok == 'true'
         env:
@@ -375,17 +419,18 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
+          GC_REPO="JianFeeeee/HologramAgent"
+          GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
           # 1) 推 tag（附件上传前 release 条目必须先存在）
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "$TAG" 2>/dev/null || true
-          GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
-          git push "${GC_URL}/JianFeeeee/HomeAgent.git" "$TAG"
+          git push "${GC_URL}/${GC_REPO}.git" "$TAG"
           # 2) 建 release 条目
           curl -sS --max-time 60 -X POST \
             -H "private-token: ${GC_TOKEN}" \
             -H "Content-Type: application/json" \
-            "https://gitcode.com/api/v5/repos/JianFeeeee/HomeAgent/releases" \
+            "https://gitcode.com/api/v5/repos/${GC_REPO}/releases" \
             -d "{\"tag_name\":\"$TAG\",\"body\":\"同步自 GitHub\"}" \
             -o /tmp/.gcrel -w "  建 release → %{http_code}\n"
           # 3) 上传附件（用仓库既有脚本，它处理 OBS 预签名两步流程）
@@ -394,5 +439,5 @@ jobs:
           # 不传文件名时它扫描 ASSET_DIR 并按后缀识别发布产物 —— 这里正合适
           # （.deb/.tar.gz/SHA256SUMS 都在白名单里）。
           # 不要传 "./x" 或 "dist/x"：那会拼成 dist/dist/x。
-          ASSET_DIR=. GITCODE_REPO=JianFeeeee/HomeAgent \
+          ASSET_DIR=. GITCODE_REPO=JianFeeeee/HologramAgent \
             python3 ../deploy/scripts/upload_assets.py "$TAG" "$GC_TOKEN"

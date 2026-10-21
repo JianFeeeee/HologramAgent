@@ -241,6 +241,53 @@ jobs:
         with:
           # 必须取完整历史：镜像可能在任意旧提交上，快进需要共同祖先。
           fetch-depth: 0
+      # ★ 改名（HomeAgent → HologramAgent）后的必然过渡态：gitcode 上的镜像仓
+      #   是**另一个账号下的独立仓库**，改 GitHub 仓名不会自动建出它。
+      #   若不在这里显式探测，缺少目标仓时只会得到 git 的原始报错
+      #   （"repository not found" 混在 push 输出里），看不出是「仓没建」。
+      #   语义：token 未配置 = 可选项跳过（上面那步）；token 有但仓不存在 = 硬失败。
+      - name: 前置检查 gitcode 目标仓是否存在
+        if: steps.tok.outputs.ok == 'true'
+        env:
+          GC_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          set -euo pipefail
+          GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
+          GC_REPO="JianFeeeee/HologramAgent"
+          # 用 ls-remote 探测：与后面那次 push 走同一个 URL、同一套凭据，
+          # 比另调一次 API 更贴近真实失败面。
+          if out=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads \
+                     "${GC_URL}/${GC_REPO}.git" 2>&1); then
+            echo "  目标仓可访问：gitcode.com/${GC_REPO}"
+          else
+            # 日志脱敏：git 报错可能把 URL 的 userinfo（token 就在里面）带出来。
+            # 先按 URL 结构遮 https://<userinfo>@ —— 与 token 内容无关，稳；
+            # 再尽力遮一次字面量（token 含特殊字符时可能不生效，故只做兜底）。
+            err=$(printf '%s\n' "$out" | sed -E 's#(https?://)[^@/[:space:]]*@#\1***@#g')
+            err=$(printf '%s\n' "$err" | sed "s|${GC_TOKEN}|***|g" 2>/dev/null || printf '%s\n' "$err")
+            case "$err" in
+              # gitcode 真实报错（2026-10 实测）：目标仓不存在时返回
+              #   remote: <CH.00905403> The project you were looking for could not be found.
+              #   fatal: ... The requested URL returned error: 403
+              # 注意是 "could not be found" 与 403，不是 github 那种 "Repository not found"/404。
+              *"could not be found"*|*"not found"*|*"Not Found"*|*"404"*|*"does not exist"*|*"does not appear to be a git repository"*)
+                echo "  ✗ gitcode 目标仓不存在：gitcode.com/${GC_REPO}"
+                echo "    请先在该账号下创建镜像仓（只读镜像），再重跑本 job："
+                echo "    https://gitcode.com/${GC_REPO}"
+                ;;
+              *"403"*|*"401"*|*"Forbidden"*|*"Unauthorized"*)
+                echo "  ✗ 无法访问 gitcode 目标仓 gitcode.com/${GC_REPO}：仓不存在，或 token 无权访问"
+                echo "    若仓已建，请确认 GITCODE_TOKEN 属于该仓的推送账号："
+                echo "    https://gitcode.com/${GC_REPO}"
+                ;;
+              *)
+                echo "  ✗ 无法访问 gitcode 目标仓 gitcode.com/${GC_REPO}（网络或凭据问题）："
+                printf '%s\n' "$err" | sed 's/^/    /'
+                ;;
+            esac
+            # 显式失败 —— 不静默跳过，也不 echo 一句就当成功。
+            exit 1
+          fi
       - name: 推 main 到 gitcode（快进）
         if: steps.tok.outputs.ok == 'true'
         env:
@@ -248,6 +295,6 @@ jobs:
         run: |
           set -euo pipefail
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
-          git push "${GC_URL}/JianFeeeee/HomeAgent.git" \
+          git push "${GC_URL}/JianFeeeee/HologramAgent.git" \
             "refs/heads/main:refs/heads/main"
           echo "  gitcode/main 已快进到 ${GITHUB_SHA}"
