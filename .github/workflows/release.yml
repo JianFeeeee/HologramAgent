@@ -357,22 +357,25 @@ jobs:
       # ★★ gitcode 镜像目标仓名 —— **本 job 的唯一定义处**。
       #    改 gitcode 仓名时只改这一行；下面所有消费点都走 ${GC_REPO}。
       #
-      # 取值依据（实测 2026-10-21，curl 直连，非推测）：
-      #   https://gitcode.com/JianFeeeee/HomeAgent         → 200  ← 当前用这个
-      #   https://gitcode.com/JianFeeeee/HologramAgent     → 404
-      #   https://gitcode.com/JianFeeeee/homeagent-sdk     → 200
-      #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200
+      # 取值依据（实测 2026-10-21 20:1x，直连不带代理，非推测）：
+      #   $ curl -s -o /dev/null -w '%{http_code}' \
+      #       https://gitcode.com/JianFeeeee/<repo>
+      #
+      #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
+      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/homeagent-sdk     → 200（SDK 仓，另一对象）
+      #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
       #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
+      #   https://gitcode.com/JianFeeeee/HologramAgent-sdk → 404
       #
-      # 背景：GitHub 主仓已由 HomeAgent 改名为 HologramAgent，但 **gitcode 侧
-      # 的镜像仓没有跟着改名**，gitcode 上 HologramAgent 仍是 404。因此这里
-      # 必须指向仍然存在的 HomeAgent，否则每次发版都会红在镜像同步这一格。
+      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 主仓同名）。旧地址 HomeAgent 仍 301 跳转，跟随后也能到达，但走重定向
+      # ⇒ 别再用它。下面几处消费点（ls-remote 探测、push tag、POST /releases、
+      # upload_assets 的 GITCODE_REPO）全部走 ${GC_REPO}，因此只改本行即可。
       #
-      # 何时改回 HologramAgent：在 gitcode 上把镜像仓真正改名/新建成功、
-      # 且 https://gitcode.com/JianFeeeee/HologramAgent 返回 200 之后，
-      # **只改这一行**即可，无需再动其他文件。
+      # 以后再改名：只改这一行（+ ci.yml 与 upload_assets.py 各一行，共三个定义点）。
       # ══════════════════════════════════════════════════════════════════
-      GC_REPO: JianFeeeee/HomeAgent
+      GC_REPO: JianFeeeee/HologramAgent
     steps:
       - uses: actions/checkout@v7
       - id: tok

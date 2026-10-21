@@ -234,11 +234,21 @@ jobs:
       #    因为它们是不同的 workflow —— 改的时候两个文件都要改，但每个
       #    文件内部只有一个定义处）。
       #
-      # 取值依据（实测 2026-10-21，curl 直连，非推测）：
-      #   https://gitcode.com/JianFeeeee/HomeAgent         → 200  ← 当前用这个
-      #   https://gitcode.com/JianFeeeee/HologramAgent     → 404
+      # 取值依据（实测 2026-10-21 20:1x，直连不带代理，非推测）：
+      #   $ curl -s -o /dev/null -w '%{http_code}' \
+      #       https://gitcode.com/JianFeeeee/<repo>
       #
-      # 背景：GitHub 主仓已改名 HologramAgent，gitcode 侧镜像仓未改名。
+      #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
+      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/homeagent-sdk     → 200（SDK 仓，另一对象）
+      #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
+      #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
+      #   https://gitcode.com/JianFeeeee/HologramAgent-sdk → 404
+      #
+      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 主仓同名）。旧地址 HomeAgent 仍 301 跳转，跟随后也能到达，但走重定向
+      # ⇒ 别再用它（git 侧会多一跳，且改名前的旧名随时可能被彻底释放）。
+      # 判定两仓同一对象：两地址 git ls-remote 的 refs 列表 md5 相同。
       #
       # ⚠ 失败面（与 release.yml 不同，别搞混）：
       #   本 job 的 needs 是 [go, race, cross, gui, csrc, docs]。前置检查
@@ -246,9 +256,10 @@ jobs:
       #   而 release.yml 的 sync-gitcode 只红在镜像同步这一格，GitHub 侧
       #   release 产物已经发出去了。
       #
-      # 何时改回 HologramAgent：gitcode 上仓真正存在且返回 200 后，只改这一行。
+      # 以后再改名：gitcode 侧仓名一变，只改这一行（+ release.yml 与
+      # upload_assets.py 各一行，共三个定义点）。
       # ══════════════════════════════════════════════════════════════════
-      GC_REPO: JianFeeeee/HomeAgent
+      GC_REPO: JianFeeeee/HologramAgent
     steps:
       - id: tok
         name: 检查 gitcode 凭据
