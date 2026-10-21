@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/devicebridge/client"
-	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	"github.com/JianFeeeee/HologramAgent/internal/devicebridge/client"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
 )
 
 // ===== 设备桥管理 =====

@@ -3,8 +3,8 @@ package supervisor
 import (
 	"errors"
 
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // sdkAdapter 实现 sdk.SupervisorAPI，将字符串签名的中立接口桥接到

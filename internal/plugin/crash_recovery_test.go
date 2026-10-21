@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // fakeCleaner 记录内核侧摘除动作，用于断言「插件死后注册面被摘干净」。

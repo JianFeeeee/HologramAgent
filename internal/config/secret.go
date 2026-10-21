@@ -36,7 +36,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // secretSegmentPattern 是无 def 时的兜底判定。

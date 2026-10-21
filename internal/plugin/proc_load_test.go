@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/plugin/proc"
-	isdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
+	isdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 子进程插件经 Registry 加载的接线测试（Part 3 收尾）。

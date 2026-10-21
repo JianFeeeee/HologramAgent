@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 )
 
 // 门禁：**全局 config 表里不得出现 plugin.<name>.* 形态的键**。

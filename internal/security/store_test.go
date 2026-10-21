@@ -142,7 +142,7 @@ func TestNoFalsePositives(t *testing.T) {
 	benign := []string{
 		"请修复这个 bug，提交到 feat/login 分支",
 		"git commit -m 'add feature'",
-		"https://github.com/JianFeeeee/HomeAgent/pull/42",
+		"https://github.com/JianFeeeee/HologramAgent/pull/42",
 		"这个函数返回 404 或者 500",
 		"hex 颜色 #4f46e5 很好看",
 		// ★ 关键：40 位 git SHA-1 不得被误伤（否则 agent 拿不到 commit id）

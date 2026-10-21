@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // countingProvider 记录它被调用了几次、收到什么消息。

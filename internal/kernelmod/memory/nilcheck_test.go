@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 )
 
 // ★★★ 判据：**CfgReg 为 nil 时给可操作错误，而不是 panic**。

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 星图数据源必须来自块体系（memory_blocks），而不是停写的旧表 entities。

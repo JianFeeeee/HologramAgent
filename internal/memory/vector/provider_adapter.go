@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 
 // ProviderAdapter translates the public model-neutral embedding.Provider SPI

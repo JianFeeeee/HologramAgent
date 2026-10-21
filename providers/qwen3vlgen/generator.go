@@ -39,8 +39,8 @@ import (
 
 	ort "github.com/yalue/onnxruntime_go"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
-	"github.com/JianFeeeee/HomeAgent/providers/qwen3vl"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/providers/qwen3vl"
 )
 
 func init() {

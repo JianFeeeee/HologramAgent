@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

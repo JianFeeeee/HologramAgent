@@ -15,7 +15,7 @@ import (
 
 	ort "github.com/yalue/onnxruntime_go"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 
 func init() {

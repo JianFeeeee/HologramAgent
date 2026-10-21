@@ -24,8 +24,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 )
 
 // ★★★ 判据：**依赖图可建 + 模块全登记 + 无重复**。

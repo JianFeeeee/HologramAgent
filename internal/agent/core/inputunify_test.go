@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	agentCore "github.com/JianFeeeee/HomeAgent/internal/agent/core"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 type toolCapture struct {

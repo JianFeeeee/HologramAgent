@@ -9,10 +9,10 @@ package core
 import (
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // ★★★ 判据：来源标识**必须在帧的起点就写入**（不能只在工具帧上）。

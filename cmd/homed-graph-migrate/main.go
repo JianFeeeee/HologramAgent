@@ -30,11 +30,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
-	_ "github.com/JianFeeeee/HomeAgent/providers/chineseclip"
-	_ "github.com/JianFeeeee/HomeAgent/providers/qwen3vl"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
+	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"
+	_ "github.com/JianFeeeee/HologramAgent/providers/qwen3vl"
 )
 
 func main() {

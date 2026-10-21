@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // ★★ 判据：**晚注册的 provider 也自动被装饰**（因为装饰挂在 Register 上）。

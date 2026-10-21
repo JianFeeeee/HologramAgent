@@ -17,14 +17,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/distill"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/pipeline"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/social"
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/distill"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 )
 
 // Module 提供图记忆子系统。

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 知识库检索质量判据（**退化路径**：稀疏两路，无多模态空间）。

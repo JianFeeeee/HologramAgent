@@ -13,12 +13,12 @@ import (
 	"path/filepath"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
-	"github.com/JianFeeeee/HomeAgent/internal/recovery"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/internal/system"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
+	"github.com/JianFeeeee/HologramAgent/internal/recovery"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/system"
 )
 
 // runFailbackRecovery 在 failback worker 内执行 L1 恢复梯子：

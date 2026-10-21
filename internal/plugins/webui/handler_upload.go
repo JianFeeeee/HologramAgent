@@ -12,8 +12,8 @@ import (
 
 	"encoding/base64"
 	"encoding/json"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"net/http"
 	"path/filepath"
 )

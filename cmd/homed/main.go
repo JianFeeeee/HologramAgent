@@ -5,26 +5,26 @@ import (
 	"log"
 	"path/filepath"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod/pluginhost"
-	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/pluginhost"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	// ★ 内置插件统一走 internal/plugins 的清单（all.go），**不要**在这里
 	// 单独导入某个插件：
 	//   · 重复导入虽无害（同一包只 init 一次），但会让 all.go 不再是唯一清单
 	//     —— 按它盘点的工具/文档会漏项（kbtree 曾因此长期游离在清单之外）；
 	//   · 想增删内置插件请改 all.go。
-	_ "github.com/JianFeeeee/HomeAgent/internal/plugins"
-	"github.com/JianFeeeee/HomeAgent/internal/security"
-	"github.com/JianFeeeee/HomeAgent/internal/systemd"
+	_ "github.com/JianFeeeee/HologramAgent/internal/plugins"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/systemd"
 
 	// 空白导入内置 provider：它们各自在 init 里注册到 pkg/embedding。
 	// 想把核心换成自己的模型，只需替换这一行（或另建一个发行版 main）。
-	_ "github.com/JianFeeeee/HomeAgent/providers/chineseclip"
-	_ "github.com/JianFeeeee/HomeAgent/providers/qwen3vl"
+	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"
+	_ "github.com/JianFeeeee/HologramAgent/providers/qwen3vl"
 	// 生成侧 provider（蒸馏拆三元组）。与上面两个向量 provider 各自独立注册：
 	// 核心只依赖 pkg/generation 的接口，按配置 Open("ollama")。
-	_ "github.com/JianFeeeee/HomeAgent/providers/ollama"
+	_ "github.com/JianFeeeee/HologramAgent/providers/ollama"
 )
 
 // main 是 worker 进程的启动序列。

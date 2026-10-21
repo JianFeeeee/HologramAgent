@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
 
 // 运行时新增的知识必须**当场**可检索，不依赖重启。

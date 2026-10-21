@@ -3,8 +3,8 @@ package core
 import (
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
 )
 
 func needJieba() bool {

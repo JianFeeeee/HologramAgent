@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 非内核级来源声明 L4 必须被夹到 L3；内核级来源（内置插件）可用到 L4。

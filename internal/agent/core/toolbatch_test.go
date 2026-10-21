@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 本文件钉死「同一批多个 tool_call」这条路径的现状行为。

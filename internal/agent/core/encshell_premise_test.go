@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func TestPremise_EncShellCommandPrefilledByKernel(t *testing.T) {

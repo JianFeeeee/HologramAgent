@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // newRootWith 造一个带完整图记忆的父 agent，并指定它（以及它的驻留子）用的 provider。

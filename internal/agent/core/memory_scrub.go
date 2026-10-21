@@ -28,7 +28,7 @@ package core
 import (
 	"log"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // scrubEventSecrets 就地清洗一条待持久化事件里的明文。

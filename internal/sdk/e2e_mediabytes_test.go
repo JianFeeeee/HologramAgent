@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 真实数据 e2e：CAS 淘汰后插件经 MediaBytes 取回的字节必须与回填库中

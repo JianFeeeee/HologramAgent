@@ -3,7 +3,7 @@ package sdk
 import (
 	"errors"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // indexerImpl 桥接 memory.Indexer 到中立的 IndexerAPI。

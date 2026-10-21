@@ -16,8 +16,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/JianFeeeee/HomeAgent/internal/pluginview"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/pluginview"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"net/http"
 	"path"
 )

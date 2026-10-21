@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HomeAgent/internal/nlp"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 )
 
 type ConsolidationTask struct {

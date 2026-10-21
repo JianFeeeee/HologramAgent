@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // registerFakeDevice 注册一台假设备，带一个"需要 device_id 的指令类工具"和一个无参枚举工具。

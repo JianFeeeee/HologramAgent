@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 真跑 ffmpeg 的集成/压力/变异测试；无 ffmpeg 时自动跳过。

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 )
 
 // 阶段 B：内置工具注册进 ToolAPI 面。

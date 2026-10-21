@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 拆解产物的落库形态：句子 + 文本块 + 结构边。

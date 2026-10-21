@@ -5,7 +5,7 @@ package meta
 
 var (
 	// Version 是 HomeAgent 内核版本号。
-	// 通过 `-ldflags="-X github.com/JianFeeeee/HomeAgent/internal/meta.Version=vX.Y.Z"` 注入。
+	// 通过 `-ldflags="-X github.com/JianFeeeee/HologramAgent/internal/meta.Version=vX.Y.Z"` 注入。
 	//
 	// 1.0.0：外部插件从 C ABI 动态库迁到子进程 + 共享内存。
 	// 这是首个不再加载 `.so`/`.dll` 的版本，与 0.9.x 不兼容（存量插件必须
@@ -63,8 +63,8 @@ var (
 	// 不是你实际运行的那份代码，§13 的提供义务并未履行。
 	//
 	// 构建时可用 -ldflags 覆盖，无需改源码：
-	//   -X github.com/JianFeeeee/HomeAgent/internal/meta.SourceURL=<你的仓库>
-	SourceURL = "https://github.com/JianFeeeee/HomeAgent"
+	//   -X github.com/JianFeeeee/HologramAgent/internal/meta.SourceURL=<你的仓库>
+	SourceURL = "https://github.com/JianFeeeee/HologramAgent"
 
 	// License 是本项目的开源许可标识（SPDX 表达式）。
 	//
@@ -79,7 +79,7 @@ var (
 	// 默认指向 GNU 官方的 AGPL-3.0 全文页：与仓库托管方、分支名、文件路径都
 	// 无关，换仓库/换分支都不会失效。若你的发行版把 LICENSE 放在别处，
 	// 用 -ldflags 覆盖即可：
-	//   -X github.com/JianFeeeee/HomeAgent/internal/meta.LicenseURL=<你的链接>
+	//   -X github.com/JianFeeeee/HologramAgent/internal/meta.LicenseURL=<你的链接>
 	LicenseURL = "https://www.gnu.org/licenses/agpl-3.0.html"
 )
 

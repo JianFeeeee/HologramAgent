@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 
 // 未启用 onnxruntime 构建标签时，chineseclip 仍注册到名字表，但打开即报错：

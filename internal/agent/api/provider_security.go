@@ -12,7 +12,7 @@ import (
 	"context"
 	"log"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // secureProviderDecorator 在**发往 LLM 之前**把消息里的明文换成别名。

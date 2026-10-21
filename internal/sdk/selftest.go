@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
 // VirtualInstance 是完全隔离的虚拟存储集合，供内置插件（如 healthcheck）

@@ -288,7 +288,7 @@ func min(a, b int) int {
 
 // EmbeddedGraphHash 由**构建期**用 -ldflags 注入（设计 §2.5.2）。
 //
-//	-X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=<digest>
+//	-X github.com/JianFeeeee/HologramAgent/internal/kernelboot.EmbeddedGraphHash=<digest>
 //
 // 空值（默认）= 开发/单测环境：不做"图与二进制配套"校验，
 // 允许 homed 回退到运行期从声明重建图。

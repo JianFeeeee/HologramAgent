@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // windowProvider 是只声明窗口的 Provider 桩（预算是纯函数，不需要真推理）。

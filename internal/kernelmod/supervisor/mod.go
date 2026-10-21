@@ -8,9 +8,9 @@ package supervisor
 import (
 	"log"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
-	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 )
 
 // Module 提供代理生命周期守护。

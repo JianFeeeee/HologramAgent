@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // mockPluginMgr 是 sdk.PluginManager 的最小实现，用于 handler 路由层测试。

@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 type toolInfo struct {

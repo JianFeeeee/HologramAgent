@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 
 	// ★ 把全部内核模块**引入编译**（Go 要求 import 才会编译进来）。
 	// 加一个新模块 = 新建 internal/kernelmod/<name>/mod.go + 在 all.go 加一行。
-	_ "github.com/JianFeeeee/HomeAgent/internal/kernelmod/all"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/all"
 )
 
 // RunKernelModules 装配全部内核模块（必须在 Group 0 串行段之后调用）。

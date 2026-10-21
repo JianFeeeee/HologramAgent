@@ -27,8 +27,8 @@ import (
 	"strings"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	isdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	isdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // fakeLifecyclePlugin 记录生命周期调用（真工厂产出的插件）。

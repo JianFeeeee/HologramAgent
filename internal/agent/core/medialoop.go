@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
 
 // 媒体与记忆块的生命周期辅助。

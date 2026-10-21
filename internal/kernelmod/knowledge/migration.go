@@ -16,8 +16,8 @@ package knowledge
 import (
 	"path/filepath"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 )
 
 // MigrationModule 做知识库目录改名迁移。

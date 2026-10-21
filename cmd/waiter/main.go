@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/meta"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
 
 const (

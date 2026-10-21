@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // 这组判据走**真实调度循环**（a.Start + 经 channel 注入 + 等 ResponseCh），

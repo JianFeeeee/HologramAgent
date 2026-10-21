@@ -3,7 +3,7 @@ package core
 import (
 	"sync"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // UsageTotals 是**跨调用累计**的用量账目。

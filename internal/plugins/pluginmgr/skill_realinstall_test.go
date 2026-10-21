@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 )
 
 func TestRealBundleHandsOutSkill(t *testing.T) {

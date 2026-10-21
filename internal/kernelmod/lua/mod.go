@@ -7,9 +7,9 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
-	luapkg "github.com/JianFeeeee/HomeAgent/internal/lua"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
 )
 
 // Module 提供 Lua 协议适配 VM。

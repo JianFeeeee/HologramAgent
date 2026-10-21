@@ -3,7 +3,7 @@ package plugins
 import (
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 )
 
 // TestTimerRemovedFromKernel 是一条**负向断言**：timer 已从内核内置插件移出，

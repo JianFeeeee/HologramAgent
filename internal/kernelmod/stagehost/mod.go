@@ -13,15 +13,15 @@ import (
 	"log"
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/config"
 
-	agentCore "github.com/JianFeeeee/HomeAgent/internal/agent/core"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	cli "github.com/JianFeeeee/HomeAgent/internal/plugins/cli"
-	webui "github.com/JianFeeeee/HomeAgent/internal/plugins/webui"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	cli "github.com/JianFeeeee/HologramAgent/internal/plugins/cli"
+	webui "github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // Module 提供阶段管道与插件注册表。

@@ -26,7 +26,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 )
 
 var (

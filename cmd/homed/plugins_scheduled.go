@@ -20,9 +20,9 @@ import (
 	"log"
 	"strings"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	"github.com/JianFeeeee/HomeAgent/internal/recovery"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/recovery"
 )
 
 // resolveFailbackAllowlist 解析 failback 受限启动的插件白名单（装配**前**调用）。

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // DTO 已迁入内置 SDK，此处保留别名以兼容现有调用方。

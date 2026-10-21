@@ -1,6 +1,6 @@
 package sdk
 
-import "github.com/JianFeeeee/HomeAgent/internal/events"
+import "github.com/JianFeeeee/HologramAgent/internal/events"
 
 // 事件类型/事件类型别名：插件经 SDK 订阅/发布内核事件，
 // 无需直接 import internal/events（内核事件总线仅通过 SDK 暴露）。

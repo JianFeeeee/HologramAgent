@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 )
 
 // statusSpace 是带模态元数据的假统一空间（ProviderAdapter 的 Modalities() 形状）。

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 type rig struct {

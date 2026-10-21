@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 
 // onnxModelDir 返回三段式 Qwen 多模态 ONNX 产物目录。

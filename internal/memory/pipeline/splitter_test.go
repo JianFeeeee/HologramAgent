@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/distill"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/distill"
 )
 
 // newTestDistiller 建一个带真实图库的 Distiller（nil db 的那种测不了入库）。

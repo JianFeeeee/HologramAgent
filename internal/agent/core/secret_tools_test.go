@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 const c8Token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"

@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/distill"
-	"github.com/JianFeeeee/HomeAgent/internal/nlp"
-	"github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/distill"
+	"github.com/JianFeeeee/HologramAgent/internal/nlp"
+	"github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
 
 type RawRecord struct {

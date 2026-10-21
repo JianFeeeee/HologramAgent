@@ -23,11 +23,11 @@ import (
 	"testing"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // fixedDelayProvider 返回固定内容，并在被取消时立刻返回 ctx.Err()。

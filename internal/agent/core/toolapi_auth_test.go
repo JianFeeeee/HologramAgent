@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // toolAPIOf 造出与插件侧**完全同一个** ToolAPI 实现（PluginSDK.Tool()

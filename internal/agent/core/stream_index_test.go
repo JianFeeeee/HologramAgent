@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 回归：并行多工具调用的流式分片必须按上游 index 字段分桶累积，

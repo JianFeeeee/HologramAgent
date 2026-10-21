@@ -17,7 +17,7 @@ package core
 import (
 	"testing"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // TestSceneKeysMerged_NoDuplicates 声明路与涌现路的并集不得有重复。

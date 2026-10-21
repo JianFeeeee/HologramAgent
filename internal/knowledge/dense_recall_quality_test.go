@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
-	_ "github.com/JianFeeeee/HomeAgent/providers/chineseclip"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
+	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"
 )
 
 // 知识库检索质量判据（带标注的查询集）。
