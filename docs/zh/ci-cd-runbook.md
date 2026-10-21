@@ -9,7 +9,7 @@
 | 仓 | 位置 | 流水线 | 触发 |
 | --- | --- | --- | --- |
 | 主仓 HologramAgent | `github.com/JianFeeeee/HologramAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
-| SDK 仓 homeagentsdk | `github.com/JianFeeeee/homeagentsdk`（公开） | `release.yml` | `release/**` push |
+| SDK 仓 hologramagentsdk | `github.com/JianFeeeee/hologramagentsdk`（公开） | `release.yml` | `release/**` push |
 | gitcode 镜像 | `gitcode.com/JianFeeeee/HologramAgent`（与主仓同名） | 无（由主仓 Release 的 sync job 同步） | — |
 
 **分支保护**（main，公开仓免费）：10 项必须检查（Go build/vet/test、Race、
@@ -207,13 +207,15 @@ tar 写 stdout 收到 EPIPE ⇒ pipefail 判失败。**包越大越易触发**
 CI 的 sync job 需要仓库 secret `GITCODE_TOKEN`；**未配置时该 job 显式跳过**
 （不阻断 GitHub 侧发布）。
 
-**2026-09-29 已配置**：两仓（`JianFeeeee/HologramAgent`、`JianFeeeee/homeagentsdk`）
-均已设同名 secret，取值自 `~/.git-credentials` 里那条 `https://JianFeeeee:<token>@gitcode.com`。
+**2026-09-29 已配置**：两仓均已设同名 secret，取值自 `~/.git-credentials`
+里那条 `https://JianFeeeee:<token>@gitcode.com`。配置时 SDK 仓还叫
+`homeagentsdk`，2026-10-21 改名 `hologramagentsdk` 后 secret 随仓迁移，
+无需重设；下面命令写的是**当前**仓名。
 配置方式（经 stdin 传入，避免 token 出现在进程列表）：
 
 ```bash
 printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/HologramAgent
-printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/homeagentsdk
+printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/hologramagentsdk
 ```
 
 验收：sync job 只在**新版本**发版时运行（`prepare.outputs.exists == 'false'`），

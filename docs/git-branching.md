@@ -195,7 +195,7 @@ git switch main && git cherry-pick <sha>   # 遵守 §三：只 pick，不 merge
 > - `feature/*` 分支（`input-semantics`、`multimodal-embedding`、`memory-media`、`plugin-proc-migration`）
 >   均已合入并删除。
 
-### SDK 仓（homeagentsdk）
+### SDK 仓（hologramagentsdk）
 
 | 分支 | 状态 | 处理 |
 |---|---|---|
