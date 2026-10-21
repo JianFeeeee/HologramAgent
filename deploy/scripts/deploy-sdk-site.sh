@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# SDK 文档站一键构建 + 部署（sdk.hologramagent.jianfgit.xyz）
+# SDK 文档站一键构建 + 部署（sdk.homeagent.jianfgit.xyz）
 #
 # 链路（全部实测确认，写在这里免得下次再摸一遍）：
 #   本机 192.168.2.60
 #     └─ nginx stream 按 ssl_preread SNI 把 443 透传 → 192.168.2.106:3080
 #          └─ navi 容器内的 nginx（不是 portal-nginx，那个已 Exited 两周）
-#               └─ server_name sdk.hologramagent.jianfgit.xyz → root /app/data/sites/sdk
+#               └─ server_name sdk.homeagent.jianfgit.xyz → root /app/data/sites/sdk
 #                    └─ 宿主对应 /vol1/docker/navi-data/sites/sdk
 #
 # 两个容易踩的坑：
@@ -121,7 +121,7 @@ do_deploy_introduce() {
   info "回滚点: $SITES/.intro-bak-$TS"
 
   local code
-  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -k https://introduce.hologramagent.jianfgit.xyz/)
+  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -k https://introduce.homeagent.jianfgit.xyz/)
   info "首页 http=$code（introduce 配了 try_files 回落，404 才是异常）"
   if "$DIFF" -q <(intro_local_md5) <(intro_remote_md5) >/dev/null 2>&1; then
     info "✓ introduce 线上与本机源逐字节一致"
@@ -203,11 +203,11 @@ do_deploy() {
   say "4/4 验证"
   # 静态文件换完 nginx 直接吃新文件，不需要 reload。
   local code
-  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -k https://sdk.hologramagent.jianfgit.xyz/)
+  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -k https://sdk.homeagent.jianfgit.xyz/)
   info "首页 http=$code"
   for p in guide/scene-memory/ guide/parallel-tool-declaration/ llms.txt llms-full.txt; do
     printf '  %-34s ' "$p"
-    curl -s -o /dev/null -m 10 -w 'http=%{http_code}\n' -k "https://sdk.hologramagent.jianfgit.xyz/$p"
+    curl -s -o /dev/null -m 10 -w 'http=%{http_code}\n' -k "https://sdk.homeagent.jianfgit.xyz/$p"
   done
   if "$DIFF" -q <(local_md5) <(remote_md5) >/dev/null 2>&1; then
     info "✓ 线上与本地产物逐字节一致"

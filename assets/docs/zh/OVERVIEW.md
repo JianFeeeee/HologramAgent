@@ -101,5 +101,5 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 
 - 内置插件（13 个）：webui / cli / agentcli / cfgmgr / healthcheck / kbtree / multimodal / pluginmgr / clawhubadapter / remotedevice / skillmgr / seemedia / seq
 - 判定标准：**只有必须使用内部 SDK 能力（公开 SDK 没有的接口面）的插件才内置**，其余一律外置为 .hmap 插件（详见 ARCHITECTURE「内置插件的判定标准」）
-- 外部插件示例（[HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk) 仓库 `example/`，含 Go 和 Lua 两种类型）：qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
+- 外部插件示例（[homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库 `example/`，含 Go 和 Lua 两种类型）：qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
 - 打包分发：`.hmap` 插件包格式，通过 WebUI 安装

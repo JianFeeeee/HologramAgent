@@ -9,11 +9,11 @@
 HologramAgent 的所有外部交互能力都来自插件。插件通过 `PluginSDK`（Go API）与内核交互。
 
 **SDK 仓库**：插件开发工具、模板代码和示例插件统一托管在
-[HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk) 仓库。
+[homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。
 
 ```bash
-git clone https://github.com/JianFeeeee/HologramAgent-sdk.git
-cd HologramAgent-sdk
+git clone https://github.com/JianFeeeee/homeagentsdk.git
+cd homeagentsdk
 ```
 
 每个插件实现一个三方法接口：
@@ -49,7 +49,7 @@ type Plugin interface {
 ### 安装
 
 ```bash
-cd HologramAgent-sdk/tools/hmapdev
+cd homeagentsdk/tools/hmapdev
 go build -o hmapdev
 # 将 hmapdev 加入 PATH 或直接使用
 # 也可从 SDK 的 release 附件下载预编译二进制（hmapdev_linux_amd64 等）
@@ -830,31 +830,31 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 
 ## 七、示例插件参考
 
-### SDK 仓库示例（`HologramAgent-sdk/example/`）
+### SDK 仓库示例（`homeagentsdk/example/`）
 
 | 示例 | 类型 | 特点 |
 |------|------|------|
-| [weather](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/weather) | Go | 天气查询（wttr.in），演示 NoMemory/Cleaner/阶段钩子/通道/文本记忆 |
-| [luademo](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/luademo) | Lua | Lua 全功能示例，覆盖 v0.8.0 Lua SDK 全部 API 面 |
-| [qq](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/qq) | Go | NapCat OneBot 对接，24 个工具，输入/输出通道完整对接 |
-| [memo](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/memo) | Go | 备忘管理，PreAction 注入 + 定时打断双提醒 |
-| [files](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/files) | Go | 文件系统操作，4 种写入模式，沙箱隔离 |
-| [browser](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/browser) | Go | 网络搜索、网页抓取（SSRF）、浏览器渲染（合并自 web/webfetch） |
-| [bili](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/bili) | Go | B 站视频下载（yt-dlp） |
-| [editdoc](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/editdoc) | Go | Office 文档编辑与格式转换 |
-| [a2a](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/a2a) | Go | Agent-to-Agent 协议 |
-| [ocr](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/ocr) | Go | 离线文字识别（Tesseract） |
-| [sanitizer](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/sanitizer) | Go | 输出清洗过滤器 |
-| [calendar](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/calendar) | Go | 日历管理 |
-| [rss](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/rss) | Go | RSS 订阅 |
-| [ai_image](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/ai_image) | Go | AI 图片生成 |
-| [music](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/music) | Go | 音乐播放 |
-| [vikunja](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/vikunja) | Go | Vikunja 任务管理对接（项目/任务/标签 CRUD） |
-| [vanblog](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/vanblog) | Go | VanBlog 博客发布与管理 |
-| [deepsearch](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/deepsearch) | Go | 多轮深度检索（逐层聚焦 + 引用汇总） |
-| [acp](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/acp) | Go | Agent Client Protocol 对接（外部编辑器/IDE 驱动本 agent） |
-| [recoverydiag](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/recoverydiag) | Go | 故障诊断五件套（分诊/sqlite 校验/日志签名/diff/结论排序），failback 模式的核心插件 |
-| [plugindev](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/plugindev) | Go | 插件脚手架：生成工程、构建、安装，供 agent 自助开发插件 |
+| [weather](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/weather) | Go | 天气查询（wttr.in），演示 NoMemory/Cleaner/阶段钩子/通道/文本记忆 |
+| [luademo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/luademo) | Lua | Lua 全功能示例，覆盖 v0.8.0 Lua SDK 全部 API 面 |
+| [qq](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/qq) | Go | NapCat OneBot 对接，24 个工具，输入/输出通道完整对接 |
+| [memo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/memo) | Go | 备忘管理，PreAction 注入 + 定时打断双提醒 |
+| [files](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/files) | Go | 文件系统操作，4 种写入模式，沙箱隔离 |
+| [browser](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/browser) | Go | 网络搜索、网页抓取（SSRF）、浏览器渲染（合并自 web/webfetch） |
+| [bili](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/bili) | Go | B 站视频下载（yt-dlp） |
+| [editdoc](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/editdoc) | Go | Office 文档编辑与格式转换 |
+| [a2a](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/a2a) | Go | Agent-to-Agent 协议 |
+| [ocr](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/ocr) | Go | 离线文字识别（Tesseract） |
+| [sanitizer](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/sanitizer) | Go | 输出清洗过滤器 |
+| [calendar](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/calendar) | Go | 日历管理 |
+| [rss](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/rss) | Go | RSS 订阅 |
+| [ai_image](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/ai_image) | Go | AI 图片生成 |
+| [music](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/music) | Go | 音乐播放 |
+| [vikunja](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/vikunja) | Go | Vikunja 任务管理对接（项目/任务/标签 CRUD） |
+| [vanblog](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/vanblog) | Go | VanBlog 博客发布与管理 |
+| [deepsearch](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/deepsearch) | Go | 多轮深度检索（逐层聚焦 + 引用汇总） |
+| [acp](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/acp) | Go | Agent Client Protocol 对接（外部编辑器/IDE 驱动本 agent） |
+| [recoverydiag](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/recoverydiag) | Go | 故障诊断五件套（分诊/sqlite 校验/日志签名/diff/结论排序），failback 模式的核心插件 |
+| [plugindev](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/plugindev) | Go | 插件脚手架：生成工程、构建、安装，供 agent 自助开发插件 |
 
 ### 内置插件
 
@@ -884,4 +884,4 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 
 *了解项目整体目标？查看 [OVERVIEW.md](OVERVIEW.md)。*
 *了解技术架构？查看 [ARCHITECTURE.md](ARCHITECTURE.md)。*
-*SDK 仓库与开发工具？查看 [HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk)。*
+*SDK 仓库与开发工具？查看 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk)。*
