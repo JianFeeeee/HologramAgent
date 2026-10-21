@@ -1,5 +1,5 @@
 [Unit]
-Description=Jina v5-omni-nano Embedding Sidecar for HomeAgent
+Description=Jina v5-omni-nano Embedding Sidecar for HologramAgent
 After=network.target
 
 [Service]
