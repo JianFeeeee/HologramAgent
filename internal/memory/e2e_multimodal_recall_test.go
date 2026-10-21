@@ -22,9 +22,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
-	_ "github.com/JianFeeeee/HomeAgent/providers/chineseclip"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
+	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"
 )
 
 // 判据（不变量，不是"函数被调过"）：

@@ -25,7 +25,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // newTestStore 造一个**真正会触发包装**的 store。

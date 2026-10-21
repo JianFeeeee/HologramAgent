@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 type ToolResultItem struct {

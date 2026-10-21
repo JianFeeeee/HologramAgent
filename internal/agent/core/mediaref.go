@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 媒体记忆接线：把对话里出现的图片/音频变成一等记忆块。

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // ===== 登录入口的滥用防护 =====

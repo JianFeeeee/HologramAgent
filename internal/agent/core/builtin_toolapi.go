@@ -3,8 +3,8 @@ package core
 import (
 	"strings"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 本文件实现内核侧对"内置工具注册面"（方案 B）的注入。

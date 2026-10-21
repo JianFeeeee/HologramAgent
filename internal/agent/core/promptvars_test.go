@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/meta"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	sdkmeta "github.com/JianFeeeee/homeagentsdk/meta"
 )
 

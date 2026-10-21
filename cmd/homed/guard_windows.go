@@ -9,9 +9,9 @@ import (
 	"log"
 	"os"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 )
 
 // runGuard 桩：guard 父守护模式仅支持 Linux，其余平台打印提示并退出。

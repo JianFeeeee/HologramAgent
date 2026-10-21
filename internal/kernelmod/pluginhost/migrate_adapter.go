@@ -25,7 +25,7 @@ package pluginhost
 // （停了 UI 就失联，迁移进度看不见）。这里**主动跳过**而不是去撞错误：
 // 迁移期间我们需要 UI 报告进度，撞错只会让日志充满噪声。
 
-import "github.com/JianFeeeee/HomeAgent/internal/plugin"
+import "github.com/JianFeeeee/HologramAgent/internal/plugin"
 
 // RegistryQuiescer 适配 *plugin.Registry → kernelboot.PluginQuiescer。
 type RegistryQuiescer struct{ Reg *plugin.Registry }

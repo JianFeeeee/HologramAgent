@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // child_result 必须幂等——这是 "任务已结束但核心循环不结束" 的根因修复。

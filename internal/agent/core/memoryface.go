@@ -18,7 +18,7 @@ package core
 // 而 `a.memory`（整理面）保持 nil —— 既有的 22 处 `if a.memory != nil` 关卡
 // 会自动把整理面全部禁掉，不需要写"每个方法都返回错误"的受限包装。
 
-import "github.com/JianFeeeee/HomeAgent/internal/memory"
+import "github.com/JianFeeeee/HologramAgent/internal/memory"
 
 // isLightKernel 报告本 agent 是不是**轻量内核**（驻留子）。
 //

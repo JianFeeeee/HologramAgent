@@ -3,7 +3,7 @@ package proc
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"strings"
 	"sync"
 	"testing"

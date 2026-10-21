@@ -33,12 +33,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 
 	// ★ 把全部内核模块**引入编译** —— 这就是"编译期收集各模块声明"的落点。
 	// 各模块在自己的 init() 里 kernelmod.Register(...)。
-	_ "github.com/JianFeeeee/HomeAgent/internal/kernelmod/all"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/all"
 )
 
 func main() {

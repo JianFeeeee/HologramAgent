@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 )
 
 // makePluginDir 造一个带 plugin.json 的插件目录。

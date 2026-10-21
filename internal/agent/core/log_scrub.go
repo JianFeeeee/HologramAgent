@@ -31,7 +31,7 @@ package core
 import (
 	"log"
 
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // scrubForLog 清洗要写进日志的文本。

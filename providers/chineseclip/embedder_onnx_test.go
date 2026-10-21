@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 
 // cosine 计算两个向量的**真余弦**：两边都先归一化。

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 )
 
 // 拆解产物的块落库。判据核心：三元组应是【句子】【contains 边】【块】，

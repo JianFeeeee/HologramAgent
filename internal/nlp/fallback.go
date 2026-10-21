@@ -3,7 +3,7 @@ package nlp
 import (
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // fallbackParser 使用 gojieba 分词 + POS 做降级句法分析

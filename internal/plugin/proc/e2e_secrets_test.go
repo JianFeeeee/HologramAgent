@@ -26,9 +26,9 @@ import (
 	"strings"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	internalSDK "github.com/JianFeeeee/HomeAgent/internal/sdk"
-	internalSecurity "github.com/JianFeeeee/HomeAgent/internal/security"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	internalSDK "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	internalSecurity "github.com/JianFeeeee/HologramAgent/internal/security"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

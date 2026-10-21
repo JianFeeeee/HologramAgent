@@ -15,10 +15,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	"github.com/JianFeeeee/HomeAgent/internal/pluginview"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/pluginview"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // DefaultSocket 由 main.go 在 Load() 前设置，覆盖默认 socket 路径。

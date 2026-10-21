@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 )
 
 const (

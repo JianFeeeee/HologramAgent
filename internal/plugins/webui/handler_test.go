@@ -13,17 +13,17 @@ import (
 	"testing"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentCore "github.com/JianFeeeee/HomeAgent/internal/agent/core"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
-	"github.com/JianFeeeee/HomeAgent/internal/tracker"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/internal/tracker"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 func testSDK(cfg sdk.SDKConfig) *sdk.PluginSDK {

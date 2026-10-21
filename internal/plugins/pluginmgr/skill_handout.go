@@ -40,7 +40,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 )
 
 // SkillDirName 是插件包里约定存放 skill 的目录名。

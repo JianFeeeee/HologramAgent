@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // TestSceneKeysFor 钉住当前场景的推导优先级：

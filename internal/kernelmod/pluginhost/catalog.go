@@ -43,7 +43,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 )
 
 // PluginMeta 是单个插件的**元数据**（缓存项）。

@@ -21,7 +21,7 @@ package sdk
 import (
 	"fmt"
 
-	internalSecurity "github.com/JianFeeeee/HomeAgent/internal/security"
+	internalSecurity "github.com/JianFeeeee/HologramAgent/internal/security"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

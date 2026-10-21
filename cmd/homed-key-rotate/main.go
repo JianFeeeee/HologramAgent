@@ -32,8 +32,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 func main() {

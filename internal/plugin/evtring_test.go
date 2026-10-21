@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin/proc"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // 新模型的选择顺序：immediate → 中断队列 L4→L1 → 栈顶(与队头比级别) → 排队 FIFO。

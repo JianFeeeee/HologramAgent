@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin/proc"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 本文件平台中立。

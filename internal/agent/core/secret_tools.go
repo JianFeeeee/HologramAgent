@@ -38,8 +38,8 @@ import (
 	"sort"
 	"strings"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 func (a *Agent) executeSecretTool(tc agentAPI.ToolCall) string {

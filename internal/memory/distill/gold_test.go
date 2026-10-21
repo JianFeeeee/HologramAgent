@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
-	_ "github.com/JianFeeeee/HomeAgent/providers/ollama"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
+	_ "github.com/JianFeeeee/HologramAgent/providers/ollama"
 )
 
 // goldResult 是单条金标准的判定结果。

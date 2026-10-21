@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 )
 
 type llmImpl struct {

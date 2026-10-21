@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // TestDisablePluginNotInstalled 验证 DisablePlugin 对未安装插件的拒绝：

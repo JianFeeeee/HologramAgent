@@ -24,7 +24,7 @@ package webui
 import (
 	"net/http"
 
-	"github.com/JianFeeeee/HomeAgent/internal/systemd"
+	"github.com/JianFeeeee/HologramAgent/internal/systemd"
 )
 
 // dataDirs 取两个数据目录来源。

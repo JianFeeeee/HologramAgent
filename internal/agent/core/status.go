@@ -7,16 +7,16 @@ import (
 	"strings"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/social"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
-	"github.com/JianFeeeee/HomeAgent/internal/meta"
-	"github.com/JianFeeeee/HomeAgent/internal/nlp"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/internal/tracker"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
+	"github.com/JianFeeeee/HologramAgent/internal/nlp"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 )
 
 // StatusProvider 内核状态查询接口。插件通过此接口查看内核运行动态。

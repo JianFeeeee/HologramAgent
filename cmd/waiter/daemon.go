@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/devicebridge/client"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/devicebridge/client"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
 
 // ---------------------------------------------------------------------------

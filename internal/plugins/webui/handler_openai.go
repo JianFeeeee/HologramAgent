@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"sync"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // OpenAI 兼容面：/v1/chat/completions（含流式）。

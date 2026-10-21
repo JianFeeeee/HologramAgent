@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	agentEvents "github.com/JianFeeeee/HomeAgent/internal/events"
-	luaSDK "github.com/JianFeeeee/HomeAgent/internal/lua/sdk"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentEvents "github.com/JianFeeeee/HologramAgent/internal/events"
+	luaSDK "github.com/JianFeeeee/HologramAgent/internal/lua/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	lua "github.com/yuin/gopher-lua"
 )
 

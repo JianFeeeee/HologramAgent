@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 )
 
 // fakeGen 返回固定文本的假 provider，用于把「模型行为」与「本包逻辑」分开测。

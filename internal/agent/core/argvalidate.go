@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 阶段 1c：按 ToolDef.Parameters 预校验。

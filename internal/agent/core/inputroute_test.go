@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // 输入路由是**独占**的：inputch 划给子之后，该通道的输入只流向子，父不再收到。

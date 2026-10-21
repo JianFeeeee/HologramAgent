@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func TestCmpVersion(t *testing.T) {

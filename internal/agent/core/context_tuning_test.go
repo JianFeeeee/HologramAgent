@@ -3,8 +3,8 @@ package core
 import (
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 这组判据把「上下文管理的阈值」从硬编码变成可配置，并守住两条纪律：

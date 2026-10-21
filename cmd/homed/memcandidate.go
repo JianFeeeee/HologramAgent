@@ -16,10 +16,10 @@ import (
 	"log"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/pipeline"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
 // startMemoryCandidateConsumer 起一个常驻 goroutine：把 eventbus 上的

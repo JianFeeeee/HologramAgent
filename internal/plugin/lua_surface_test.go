@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	luaSDK "github.com/JianFeeeee/HomeAgent/internal/lua/sdk"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	luaSDK "github.com/JianFeeeee/HologramAgent/internal/lua/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	lua "github.com/yuin/gopher-lua"
 )
 

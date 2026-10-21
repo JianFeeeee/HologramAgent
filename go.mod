@@ -1,4 +1,4 @@
-module github.com/JianFeeeee/HomeAgent
+module github.com/JianFeeeee/HologramAgent
 
 go 1.25.0
 

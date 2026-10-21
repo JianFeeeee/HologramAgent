@@ -6,9 +6,9 @@ import (
 	"runtime/debug"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func (a *Agent) runStage(stage sdk.Stage, ctx *sdk.StageContext) bool {

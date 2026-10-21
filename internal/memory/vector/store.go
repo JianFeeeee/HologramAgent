@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 
 // Vectorizer 接口：将文本转为向量

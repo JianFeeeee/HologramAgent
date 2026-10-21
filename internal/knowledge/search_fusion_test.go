@@ -3,7 +3,7 @@ package knowledge
 import (
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
 
 // fakeDense 是可控的稠密向量器：按文本查表，缺省给同一个向量。
