@@ -5,7 +5,7 @@
 不传 file 时上传 dist/release/ 下全部发布产物。
 
 环境变量：
-  GITCODE_REPO  目标仓库，默认 JianFeeeee/HomeAgent（SDK 仓传 JianFeeeee/homeagent-sdk）
+  GITCODE_REPO  目标仓库，默认 JianFeeeee/HologramAgent（SDK 仓传 JianFeeeee/homeagent-sdk）
   ASSET_DIR     资产目录，默认 <repo>/dist/release
 
 为何两步：gitcode 的 release 附件不走 API 直传，而是先向
@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-REPO = os.environ.get("GITCODE_REPO", "JianFeeeee/HomeAgent")
+REPO = os.environ.get("GITCODE_REPO", "JianFeeeee/HologramAgent")
 API = "https://gitcode.com/api/v5/repos"
 
 # 发布产物后缀。注意 Windows 安装器是 HomeAgent_v*_win64.exe，

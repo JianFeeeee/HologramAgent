@@ -250,7 +250,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/plugins \
 ```go
 package main
 
-import "github.com/JianFeeeee/HologramAgent-sdk/sdk"
+import "github.com/JianFeeeee/homeagentsdk/sdk"
 
 type Plugin struct {
     name string
@@ -445,7 +445,7 @@ s.RegisterOutputChannel("email", 1, "邮件发送", sdk.ChannelDef{
 #### 事件订阅
 
 ```go
-import "github.com/JianFeeeee/HologramAgent-sdk/sdk"
+import "github.com/JianFeeeee/homeagentsdk/sdk"
 
 unsub := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
     log.Printf("工具被调用: %v", evt.Payload)

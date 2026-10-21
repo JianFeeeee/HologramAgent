@@ -252,7 +252,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/plugins \
 ```go
 package main
 
-import "github.com/JianFeeeee/HologramAgent-sdk/sdk"
+import "github.com/JianFeeeee/homeagentsdk/sdk"
 
 type Plugin struct {
     name string
@@ -452,7 +452,7 @@ Parameters: `name` (route key), `caps` (1=text/2=rich/4=file/8=image), `desc`, `
 #### Event Subscription
 
 ```go
-import "github.com/JianFeeeee/HologramAgent-sdk/sdk"
+import "github.com/JianFeeeee/homeagentsdk/sdk"
 
 unsub := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
     log.Printf("Tool was called: %v", evt.Payload)

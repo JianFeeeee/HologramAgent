@@ -2,7 +2,7 @@
   "name": "homeagent-gui",
   "version": "1.4.0",
   "author": "JianFeeeee <jianfeeeee@homeagent.local>",
-  "homepage": "https://github.com/JianFeeeee/HomeAgent",
+  "homepage": "https://github.com/JianFeeeee/HologramAgent",
   "description": "HomeAgent Desktop GUI - Multi-connection management dashboard",
   "main": "main.js",
   "scripts": {
