@@ -250,13 +250,13 @@ jobs:
           #   在 pipefail 下整条 pipeline 变成失败 —— 检测项本身是好的，
           #   却被检测手段误杀（首次试发布就死在这里）。改用 >/dev/null，
           #   grep 会读完整个输入再退出，不产生 SIGPIPE。
-          dpkg-deb -c homeagent-full_*_amd64.deb \
+          dpkg-deb -c hologramagent-full_*_amd64.deb \
             | grep "chinese-clip-vit-b16-onnx/TextEncoder.onnx" >/dev/null
           echo "  ✓ full 包含模型"
-          dpkg-deb -c homeagent-full_*_amd64.deb \
+          dpkg-deb -c hologramagent-full_*_amd64.deb \
             | grep "libonnxruntime.so" >/dev/null
           echo "  ✓ full 包含 ONNX Runtime"
-          dpkg-deb -c homeagent-server_*_amd64.deb \
+          dpkg-deb -c hologramagent-server_*_amd64.deb \
             | grep "chinese-clip-vit-b16-onnx/TextEncoder.onnx" >/dev/null
           echo "  ✓ server 包含模型"
           sha256sum -c SHA256SUMS
@@ -311,10 +311,10 @@ jobs:
             --notes "HomeAgent $VERSION
 
           产物清单与校验见 SHA256SUMS。
-          - \`homeagent_${VERSION}_linux_amd64.tar.gz\` — 内核 + CLI + GUI 打包
-          - \`homeagent-client_${VERSION}_amd64.deb\` — 客户端
-          - \`homeagent-server_${VERSION}_amd64.deb\` — 服务端（含向量模型）
-          - \`homeagent-full_${VERSION}_amd64.deb\` — 全量" \
+          - \`hologramagent_${VERSION}_linux_amd64.tar.gz\` — 内核 + CLI + GUI 打包
+          - \`hologramagent-client_${VERSION}_amd64.deb\` — 客户端
+          - \`hologramagent-server_${VERSION}_amd64.deb\` — 服务端（含向量模型）
+          - \`hologramagent-full_${VERSION}_amd64.deb\` — 全量" \
             "${FLAGS[@]}" \
             ./*.deb ./*.tar.gz ./SHA256SUMS
           echo "=== release 内容 ==="
