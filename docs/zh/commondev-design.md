@@ -55,7 +55,7 @@
 | 角色 | 是谁 | 职责 |
 |---|---|---|
 | **人（用户）** | 老板 | 只与「开发主管」对接，不直接指挥执行 agent |
-| **开发主管** | 长期驻留的 HomeAgent 主 agent | 拆任务、**定义判据**、复审、决定合入 |
+| **开发主管** | 长期驻留的 HologramAgent 主 agent | 拆任务、**定义判据**、复审、决定合入 |
 | **执行 agent** | 按任务拉起的编码 agent（pi / dsh） | 在某棵工作树里干活 |
 | **commondev 插件** | 新增 Go 插件 | 仓库/凭据/分支/PR/测试执行，全部机械化操作 |
 
@@ -255,7 +255,7 @@ commondev_agent_down          收尾（幂等全清，不留孤儿）
 commondev_pi_plugin_install   ★ 为内置 pi 装插件（scope=project 临时 / plugin 全局）
 commondev_pi_plugin_remove    卸载（同 scope 语义）
 commondev_pi_plugin_list      列出已装（分 scope）
-commondev_pi_source_import    ★ 把 HomeAgent 内部配置的 LLM 源导入内置 pi
+commondev_pi_source_import    ★ 把 HologramAgent 内部配置的 LLM 源导入内置 pi
 commondev_pi_source_add       添加一个源（直接写 pi 的 models.json/auth.json）
 commondev_pi_source_list      列出可用源（默认**不返回** api_key）
 commondev_pi_source_default   ★ 指定内置 pi 默认用哪个源（写 settings.json）
@@ -1078,7 +1078,7 @@ HA_E2E_LLM=1 HA_E2E_API_KEY="$K" HA_E2E_REAL_DB=/home/newqqagent/config.db \
 - `commondev_test_run` / `commondev_test_mutate`：早期清单的两个单阶段入口已保留；`commondev_review_submit` 是两阶段一键入口。
 - `commondev_pi_plugin_*` 与细化稿的 `commondev_pi_package_*`：两套命名均注册为兼容别名；底层调用同一套 `pi install/remove/list/update`。
 - `commondev_project_open`：续篇早期别名已补，底层复用 `project_add`。
-- skill 双投不是运行时插件行为：主管侧 skill 由 HomeAgent 发布，执行侧 skill 由工作目录/发布包注入；插件不擅自把代码写进用户全局目录。
+- skill 双投不是运行时插件行为：主管侧 skill 由 HologramAgent 发布，执行侧 skill 由工作目录/发布包注入；插件不擅自把代码写进用户全局目录。
 
 ### 14.3 仍明确未实现的设计项
 

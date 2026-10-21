@@ -1,12 +1,12 @@
 **中文** | [English](../en/PLUGIN_DEV.md)
 
-# HomeAgent Plugin Development Guide
+# HologramAgent Plugin Development Guide
 
 <img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## Overview
 
-All external interaction capabilities of HomeAgent comes from plugins. Plugins interact with the kernel through `PluginSDK` (Go API).
+All external interaction capabilities of HologramAgent comes from plugins. Plugins interact with the kernel through `PluginSDK` (Go API).
 
 **SDK Repository**: Plugin development tools, template code, and example plugins are hosted in the [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) repository.
 
@@ -30,7 +30,7 @@ type Plugin interface {
 | Method | Use Case | Complexity |
 |--------|----------|------------|
 | **Subprocess plugin (recommended)** | Independently distributed third-party plugins | Medium, generated using `hmapdev` toolchain |
-| **Built-in plugin** | Released with HomeAgent | Simple, requires merging into main repo |
+| **Built-in plugin** | Released with HologramAgent | Simple, requires merging into main repo |
 | **Lua script plugin** | Lightweight rapid prototyping | Simple, generated using `hmapdev init --lua` |
 
 ---

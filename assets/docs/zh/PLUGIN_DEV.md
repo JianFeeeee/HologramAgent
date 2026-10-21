@@ -1,12 +1,12 @@
 [English](../en/PLUGIN_DEV.md) | **中文**
 
-# HomeAgent 插件开发指南
+# HologramAgent 插件开发指南
 
 <img src="../../branding/mascot-xiaozhai-avatar.webp" width="20" style="border-radius:50%;vertical-align:middle"> :
 
 ## 概述
 
-HomeAgent 的所有外部交互能力都来自插件。插件通过 `PluginSDK`（Go API）与内核交互。
+HologramAgent 的所有外部交互能力都来自插件。插件通过 `PluginSDK`（Go API）与内核交互。
 
 **SDK 仓库**：插件开发工具、模板代码和示例插件统一托管在
 [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。
@@ -31,7 +31,7 @@ type Plugin interface {
 | 方式 | 适用场景 | 复杂度 |
 |------|---------|--------|
 | **子进程插件（推荐）** | 独立分发的第三方插件 | 中等，使用 `hmapdev` 工具链生成 |
-| **内置插件** | 随 HomeAgent 一起发布 | 简单，需合入主仓库 |
+| **内置插件** | 随 HologramAgent 一起发布 | 简单，需合入主仓库 |
 | **Lua 脚本插件** | 轻量快速原型 | 简单，使用 `hmapdev init --lua` 生成 |
 
 ---

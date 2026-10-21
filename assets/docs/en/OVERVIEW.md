@@ -1,10 +1,10 @@
 **中文** | [English](../en/OVERVIEW.md)
 
-# HomeAgent — Project Overview
+# HologramAgent — Project Overview
 
 ## What Is This
 
-HomeAgent is a continuously-running personal intelligent Agent framework.
+HologramAgent is a continuously-running personal intelligent Agent framework.
 
 Core architecture: a long-running kernel process (`homed`) that connects to various IO channels (QQ, Web, CLI, etc.) through a plugin system. The kernel handles LLM orchestration, memory management, and knowledge retrieval; plugins handle all external IO — sending/receiving messages, file operations, web search, etc.
 

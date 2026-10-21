@@ -2,7 +2,7 @@
 
 **日期**：2026-10-04
 **分支**：`feat/context-overflow-l4`（未 push）
-**状态**：HomeAgent 已停机（inactive + disabled）
+**状态**：HologramAgent 已停机（inactive + disabled）
 
 ---
 

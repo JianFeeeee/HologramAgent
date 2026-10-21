@@ -678,9 +678,9 @@ commondev_pi_plugin_update    source?, scope       # ✅ 已实现（PI_CODING_A
 
 ---
 
-### 3.6 ★ LLM 源：默认用 HomeAgent 内部配置，支持添加与选默认
+### 3.6 ★ LLM 源：默认用 HologramAgent 内部配置，支持添加与选默认
 
-［已定 2026-10-13 用户拍板］插件内置 pi **默认使用 HomeAgent 内部配置的 llms 源**，
+［已定 2026-10-13 用户拍板］插件内置 pi **默认使用 HologramAgent 内部配置的 llms 源**，
 **支持添加其他源**，且**支持在插件中配置默认用哪个源**。
 
 #### 3.6.1 源的真实位置 ［已核］
@@ -746,7 +746,7 @@ commondev_pi_source_add      name, base_url, api_key, model, [adapter, context_w
 commondev_pi_source_list     [--with-key]     # 列出来源（默认**不返回** key）
 commondev_pi_source_remove   name
 commondev_pi_source_default  name, [model]    # 写 settings.json 的 defaultProvider/defaultModel
-commondev_pi_source_import   from_kernel       # 把 HomeAgent 内部配置的源批量导入
+commondev_pi_source_import   from_kernel       # 把 HologramAgent 内部配置的源批量导入
 
 # —— 其他 pi 配置面（同一套纪律）——
 commondev_pi_config_get      key, scope=plugin|project, workdir?
@@ -828,7 +828,7 @@ commondev_pi_mcp_add/remove/list                 # → mcp.json
 | **U2** | 远端环境缺失时的**安装形态** | 默认只**输出可复制命令**供人去跑；由插件代装需显式授权（§3.4）。环境缺失时**先询问用户，不擅自安装** |
 | **U3** | pi 进程**常驻保活** 还是**用完即弃**（靠 session-id 保连续） | ✅ **已定：常驻**（刀 1 已如此：sidecar 持续存活并复用同一会话，`branch_close` 才收） |
 | **U4** | steer 的**语义降级**取舍 | (i) 接受降级，但把"断点"写进台账供主管复查 |
-| **U5** | skill 的**分发目标** | 双投：主管侧（HomeAgent `<data_dir>/skills/`）+ 执行侧（工作区 `.pi/skills/`） |
+| **U5** | skill 的**分发目标** | 双投：主管侧（HologramAgent `<data_dir>/skills/`）+ 执行侧（工作区 `.pi/skills/`） |
 | **U6** | 「工程对话」的**用户可寻址名** | ✅ 已实现：sidecar 接收 `--session-name`，agent_up 返回并记账 `session_name` |
 | **U7** | **独立 node/pi 的获取方式** | ✅ **已定：随包分发**（不首次下载、不依赖用户装） |
 | **U8** | 内层 pi 的**版本锁定** | 部分实现：`pi_version` 已从 sidecar 回显并记账；随包独立 pi 二进制的发布锁定仍待发布流程完成，解析不到时显式警告 |

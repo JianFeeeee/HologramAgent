@@ -8,7 +8,7 @@
 
 | 仓 | 位置 | 流水线 | 触发 |
 | --- | --- | --- | --- |
-| 主仓 HomeAgent | `github.com/JianFeeeee/HomeAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
+| 主仓 HologramAgent | `github.com/JianFeeeee/HomeAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
 | SDK 仓 homeagentsdk | `github.com/JianFeeeee/homeagentsdk`（公开） | `release.yml` | `release/**` push |
 | gitcode 镜像 | 同名仓库 | 无（由主仓 Release 的 sync job 同步） | — |
 

@@ -168,16 +168,16 @@ core.memory.multimodal_space.options.model_dir = ${HA_DATA}/models/chinese-clip-
 
 | 内容 | 包内路径 |
 |---|---|
-| Chinese-CLIP 产物（754MB） | `/usr/lib/homeagent/models/chinese-clip-vit-b16-onnx/` |
-| ONNX Runtime（24MB） | `/usr/lib/homeagent/onnxruntime/libonnxruntime.so` |
-| 许可证 | `/usr/share/doc/homeagent/licenses/`（Apache-2.0、MIT、ThirdPartyNotices、模型来源） |
+| Chinese-CLIP 产物（754MB） | `/usr/lib/hologram/models/chinese-clip-vit-b16-onnx/` |
+| ONNX Runtime（24MB） | `/usr/lib/hologram/onnxruntime/libonnxruntime.so` |
+| 许可证 | `/usr/share/doc/hologramagent/licenses/`（Apache-2.0、MIT、ThirdPartyNotices、模型来源） |
 
 - `deploy/packaging/package-linux.sh` 的 `stage_multimodal_assets()` 在打 server/full 前
   会校验产物 `SHA256SUMS`、逐文件非空、运行库架构与目标一致；**缺一即失败**，
   不生成「默认启用但装完不能用」的假包。`client` 包不含（它不跑 homed）。
 - 安装时 `setup.sh` 把包内模型目录软链到 `<dataDir>/models/chinese-clip-vit-b16-onnx`
   （既不复制 754MB，也保持 dataDir 可迁移；已存在的自定义目录绝不覆盖）。
-- 服务单元设 `Environment=ONNXRUNTIME_DIR=/usr/lib/homeagent/onnxruntime`；
+- 服务单元设 `Environment=ONNXRUNTIME_DIR=/usr/lib/hologram/onnxruntime`；
   provider 的查找顺序是 `ONNXRUNTIME_DIR` → `ONNX_ML_DIR` → 包内路径 →
   `/opt/onnxruntime` → `/usr/local/lib` → `/usr/lib`。
 - 构建机需自备产物：`build/model-assets/chinese-clip-vit-b16-onnx/` 与

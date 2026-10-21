@@ -1,6 +1,6 @@
 > ⚠️ **AI 辅助编程声明**：本项目代码、文档及提交历史中，部分内容由 AI 辅助生成或修改。人工已审阅关键改动，但使用时请自行评估与验证。
 
-# HomeAgent
+# HologramAgent
 
 > **English**: [README_EN.md](./README_EN.md)
 
@@ -353,10 +353,10 @@ internal/
 | --- | --- | --- |
 | **full** | homed + waiter + 桌面 GUI + systemd unit | 单机全功能 |
 | **server** | homed + waiter + systemd unit | 服务器（无桌面环境） |
-| **client** | waiter + 桌面 GUI | 连接远程 HomeAgent |
+| **client** | waiter + 桌面 GUI | 连接远程 HologramAgent |
 
 - Linux：`.deb`（amd64/arm64）、`.rpm`（x86_64）、`.tar.gz`
-- Windows：`HomeAgent_v1.2.0_{Full,Server,Client}_win64.exe`（NSIS 安装向导，含 AGPL 许可页）。自 v1.2.0 起因 `homed` 不再支持 Windows 原生（依赖 fd 继承与共享内存段内偏移解引用），安装器改为引导到 **WSL2**，并把 Linux 包送进发行版里按 Linux 方式安装。
+- Windows：`HologramAgent_v1.2.0_{Full,Server,Client}_win64.exe`（NSIS 安装向导，含 AGPL 许可页）。自 v1.2.0 起因 `homed` 不再支持 Windows 原生（依赖 fd 继承与共享内存段内偏移解引用），安装器改为引导到 **WSL2**，并把 Linux 包送进发行版里按 Linux 方式安装。
 - 免安装：`homeagent-bin-<os>_<arch>.tar.gz`（含 homed/waiter/initconfig）
 - 校验：`SHA256SUMS`
 
@@ -383,7 +383,7 @@ make install            # 安装到系统
 
 它是 GPL 家族里**传染性最强**的一档：不仅分发时须提供完整对应源码，
 **通过网络提供服务时也要向使用者提供源码**（§13 Remote Network Interaction）。
-即：任何人把改过的 HomeAgent 对外提供网络服务，都必须让该服务的使用者拿到改动后的源码。
+即：任何人把改过的 HologramAgent 对外提供网络服务，都必须让该服务的使用者拿到改动后的源码。
 
 插件与本项目通过公开 [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 静态链接
 （SDK 源码会进入插件二进制），但那个仓**以 MIT 发布**——MIT 是宽松许可，拿到授权的代码不继承
@@ -398,10 +398,10 @@ make install            # 安装到系统
 
 | 组件 | 许可 | 位置 |
 | --- | --- | --- |
-| Chinese-CLIP ViT-B/16（ONNX 产物） | Apache-2.0 | `/usr/lib/homeagent/models/chinese-clip-vit-b16-onnx/` |
-| ONNX Runtime（`libonnxruntime.so`） | MIT | `/usr/lib/homeagent/onnxruntime/` |
+| Chinese-CLIP ViT-B/16（ONNX 产物） | Apache-2.0 | `/usr/lib/hologram/models/chinese-clip-vit-b16-onnx/` |
+| ONNX Runtime（`libonnxruntime.so`） | MIT | `/usr/lib/hologram/onnxruntime/` |
 | jieba 词库（内嵌进二进制） | MIT | 源码 `internal/memory/jiebadict/` |
 | Go 依赖（go-sqlite3、gojieba、bubbletea 等） | MIT / BSD-3 / Apache-2.0 | 均为宽松许可，与 AGPL-3.0 兼容 |
 
 这些组件**保持各自原有许可**，不在本项目的 AGPL 授权范围内；发行包把它们的许可全文放在
-`/usr/share/doc/homeagent/licenses/`，并在 dep/rpm 元数据里声明本包许可为 `AGPL-3.0-only`。
+`/usr/share/doc/hologramagent/licenses/`，并在 dep/rpm 元数据里声明本包许可为 `AGPL-3.0-only`。

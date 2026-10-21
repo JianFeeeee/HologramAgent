@@ -396,7 +396,7 @@ git branch -d release/v1.0.x                          # tag 已保存历史，�
 
 **Windows 安装器（WSL 安装型）**：`homed` **不再装到 Windows**（插件体系依赖 fd 继承与
 共享内存区段内偏移解引用，Windows 句柄模型表达不了），安装器的职责是**引导 WSL2 并把
-Linux 包送进发行版里安装**。产物 `HomeAgent_v<版本>_{Server,Client,Full}_win64.exe`：
+Linux 包送进发行版里安装**。产物 `HologramAgent_v<版本>_{Server,Client,Full}_win64.exe`：
 
 ```bash
 # 先有 Linux 包（安装器送进 WSL 的就是它），再打安装器
