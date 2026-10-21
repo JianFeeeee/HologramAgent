@@ -59,7 +59,7 @@ VERSION := $(META_VERSION)dev$(if $(filter --dirty,$(shell git status --porcelai
 endif
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS = -X github.com/JianFeeeee/HomeAgent/internal/meta.Version=$(VERSION) -X github.com/JianFeeeee/HomeAgent/internal/meta.Commit=$(COMMIT) -X github.com/JianFeeeee/HomeAgent/internal/meta.BuildTime=$(BUILD_TIME)
+LDFLAGS = -X github.com/JianFeeeee/HologramAgent/internal/meta.Version=$(VERSION) -X github.com/JianFeeeee/HologramAgent/internal/meta.Commit=$(COMMIT) -X github.com/JianFeeeee/HologramAgent/internal/meta.BuildTime=$(BUILD_TIME)
 
 all: build build-cli
 
@@ -315,7 +315,7 @@ build:
 	$(BUILD_DIR)/homed-depgraph -print && \
 	$(BUILD_DIR)/homed-depgraph -out $(BUILD_DIR)/$(GRAPH_FILE) && \
 	echo "已注入启动依赖图 hash: $$GRAPH_HASH" ; \
-	CGO_ENABLED=1 $(GO) build $(TAG_ARGS) -trimpath -installsuffix dynlink -ldflags "$(LDFLAGS) -X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=$$GRAPH_HASH" -o $(BUILD_DIR)/$(BINARY) ./cmd/homed/
+	CGO_ENABLED=1 $(GO) build $(TAG_ARGS) -trimpath -installsuffix dynlink -ldflags "$(LDFLAGS) -X github.com/JianFeeeee/HologramAgent/internal/kernelboot.EmbeddedGraphHash=$$GRAPH_HASH" -o $(BUILD_DIR)/$(BINARY) ./cmd/homed/
 	@echo "Built: $(BUILD_DIR)/$(BINARY) ($(VERSION), tags='$(HOMED_TAGS)')"
 	@go version -m $(BUILD_DIR)/$(BINARY) | grep -q 'onnxruntime' \
 		|| echo "WARN: 本次构建不含 onnxruntime，本地向量空间不可用（HOMED_TAGS= 显式关掉时才符合预期）"
