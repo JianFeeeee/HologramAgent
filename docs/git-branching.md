@@ -1,7 +1,7 @@
 # Git 分支管理规范
 
 > 生效：2026-08-31，2026-09-04 修订（三级发布通道 + 单条发布分支），2026-09-06 修订（SDK 仓版本语义与发版联动，见 §七），2026-09-13 修订（发布线路牌随 patch 推进 + 版本号不得固化落库）。
-> 适用：**本仓（TrueAgent/HomeAgent）与 third_party/homeagent-sdk（SDK 仓）**——两仓协作时分支策略必须一致，本规范两仓同用。
+> 适用：**本仓（HologramAgent）与 third_party/homeagent-sdk（SDK 仓）**——两仓协作时分支策略必须一致，本规范两仓同用。
 > 核心原则一句话：**main 唯一长命、永远可部署；一切新工作在特性分支；一个中版本一条发布分支，alpha/beta/正式由 tag 区分；hotfix 只进发布分支并 cherry-pick 回 main。**
 
 ---
@@ -180,7 +180,7 @@ git switch main && git cherry-pick <sha>   # 遵守 §三：只 pick，不 merge
 
 ## 三、当前分支对齐（2026-09-13 更新）
 
-### 主仓（TrueAgent）
+### 主仓（HologramAgent）
 
 | 分支 | 状态 | 处理 |
 |---|---|---|
