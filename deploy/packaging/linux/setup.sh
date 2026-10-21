@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# HomeAgent 首次初始化脚本
+# HologramAgent 首次初始化脚本
 # 在安装后执行，生成凭据并初始化数据库
 set -e
 
-DATA_DIR="${HOMEAGENT_DATA:-/var/lib/homeagent}"
+DATA_DIR="${HOLOGRAM_DATA:-/var/lib/hologram}"
 CRED_FILE="${DATA_DIR}/credentials.txt"
 CONFIG_DB="${DATA_DIR}/config.db"
 WAITER_CONF="${DATA_DIR}/waiter.yaml"
 INITCONFIG_BIN="/usr/bin/initconfig"
-BUNDLED_MODEL_DIR="/usr/lib/homeagent/models/chinese-clip-vit-b16-onnx"
+BUNDLED_MODEL_DIR="/usr/lib/hologram/models/chinese-clip-vit-b16-onnx"
 MODEL_LINK="${DATA_DIR}/models/chinese-clip-vit-b16-onnx"
 
 # 模型随 server/full 包安装到只读的 /usr/lib；配置默认仍指向 dataDir/models。
@@ -33,9 +33,9 @@ mkdir -p "$DATA_DIR"
 # 允许环境变量覆盖：安装器（包括 Windows 上的 WSL 引导安装）已经在界面上
 # 向用户收过这些值，若不接受传入就只能两个地方各生成一份，用户看到的那份
 # 与实际写入 config.db 的那份不一致——那种错会直接表现为「登录不上」。
-API_KEY="${HOMEAGENT_API_KEY:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' || echo "homeagent$(date +%s)")}"
+API_KEY="${HOLOGRAM_API_KEY:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' || echo "hologram$(date +%s)")}"
 WEBUI_USER="${WEBUI_USER:-admin}"
-WEBUI_PASS="${WEBUI_PASS:-$(openssl rand -hex 12 2>/dev/null || echo "homeagent")}"
+WEBUI_PASS="${WEBUI_PASS:-$(openssl rand -hex 12 2>/dev/null || echo "hologram")}"
 
 # 初始化数据库
 if [ -x "$INITCONFIG_BIN" ]; then
@@ -49,7 +49,7 @@ fi
 # 保存凭据
 cat > "$CRED_FILE" << CRED
 ===================================
-  HomeAgent 初始配置信息
+  HologramAgent 初始配置信息
   请妥善保管，安装后仅此一份
 ===================================
 WebUI 地址:    http://localhost:8080
@@ -74,6 +74,6 @@ WAITER
 
 echo ""
 echo "============================================"
-echo "  HomeAgent 初始化完成"
+echo "  HologramAgent 初始化完成"
 echo "============================================"
 cat "$CRED_FILE"

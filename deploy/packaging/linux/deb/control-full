@@ -1,17 +1,17 @@
-Package: homeagent-full
+Package: hologramagent-full
 Version: VERSION_PLACEHOLDER
 Architecture: ARCH_PLACEHOLDER
-Maintainer: HomeAgent Team <team@homeagent.ai>
+Maintainer: HologramAgent Team <team@hologramagent.ai>
 Installed-Size: INSTALLED_SIZE_PLACEHOLDER
 Depends: libc6 (>= 2.28), libstdc++6, libgcc-s1
 Section: utils
 Priority: optional
-Homepage: https://github.com/trueagent/HomeAgent
-Description: HomeAgent Full Installation (Daemon + CLI + GUI)
- HomeAgent is a personal AI home assistant that integrates
+Homepage: https://github.com/trueagent/HologramAgent
+Description: HologramAgent Full Installation (Daemon + CLI + GUI)
+ HologramAgent is a personal AI home assistant that integrates
  large language models with system automation.
  .
  This package includes the full suite:
   - homed: the core daemon (background service)
   - waiter: command-line client
-  - homeagent-gui: desktop graphical interface
+  - hologram-gui: desktop graphical interface
