@@ -66,7 +66,7 @@ GO="${GO:-$(command -v go 2>/dev/null || echo "go")}"
 # 实测（2026-10-17）：用旧路径构建 waiter，`--version` 输出
 #   `waiter 1.4.0 (commit unknown, built unknown)`
 # 而正确路径得到注入的值。
-LDFLAGS="-X github.com/JianFeeeee/HomeAgent/internal/meta.Version=${VERSION} -X github.com/JianFeeeee/HomeAgent/internal/meta.Commit=${COMMIT} -X github.com/JianFeeeee/HomeAgent/internal/meta.BuildTime=${BUILD_TIME}"
+LDFLAGS="-X github.com/JianFeeeee/HologramAgent/internal/meta.Version=${VERSION} -X github.com/JianFeeeee/HologramAgent/internal/meta.Commit=${COMMIT} -X github.com/JianFeeeee/HologramAgent/internal/meta.BuildTime=${BUILD_TIME}"
 
 # 版本与提交的**权威来源**是上面注入的 meta.Version / meta.Commit，不是 Go 自带的
 # VCS 戳。后者不进 build cache key（Go 文档明确说明 VCS 变化不会触发重建），
@@ -227,7 +227,7 @@ build_homed() {
     case "$_embedkey" in
       ????????????????????????????????????????????????????????????????)
         # 64 字符：形状像 32 字节 hex
-        _keyflag=" -X github.com/JianFeeeee/HomeAgent/internal/security.embeddedKeyHex=$_embedkey"
+        _keyflag=" -X github.com/JianFeeeee/HologramAgent/internal/security.embeddedKeyHex=$_embedkey"
         echo "  [security] 内嵌主密钥已注入（64 位 hex）" ;;
       *)
         echo "  error: HA_EMBEDDED_KEY_HEX 必须是 64 位 hex（当前 ${#_embedkey} 字符）" >&2
@@ -237,7 +237,7 @@ build_homed() {
 
   CGO_ENABLED=1 CC="$_cc" "$GO" build -buildvcs=false -trimpath -installsuffix dynlink \
     ${_tagargs[@]+"${_tagargs[@]}"} \
-    -ldflags "$LDFLAGS -X github.com/JianFeeeee/HomeAgent/internal/kernelboot.EmbeddedGraphHash=$_graph_hash$_keyflag" -o "$out" ./cmd/homed/
+    -ldflags "$LDFLAGS -X github.com/JianFeeeee/HologramAgent/internal/kernelboot.EmbeddedGraphHash=$_graph_hash$_keyflag" -o "$out" ./cmd/homed/
   echo "  OK ($(file "$out" | sed 's/.*: //') | $(du -h "$out" | cut -f1))"
 }
 

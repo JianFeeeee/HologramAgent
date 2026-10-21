@@ -1,7 +1,7 @@
 package sdk
 
 import (
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

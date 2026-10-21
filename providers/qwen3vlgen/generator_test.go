@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 )
 
 // 端到端：Go + onnxruntime 用同一份 Qwen3-VL 权重跑生成。

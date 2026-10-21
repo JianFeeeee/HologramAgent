@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
 )
 
 // memoryPass 是「裁剪」与「召回」的唯一入口：两根正交轴，但共用同一份 query。

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // nestingProvider 第 1、2 次调用阻塞到 ctx 取消；第 3 次起按脚本返回。

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/yanyiwu/gojieba"
 )
 

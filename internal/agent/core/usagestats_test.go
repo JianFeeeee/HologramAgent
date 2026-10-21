@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 会话级用量累计：跨调用求和，且命中率口径必须正确。

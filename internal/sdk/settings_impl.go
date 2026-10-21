@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 )
 
 type settingsImpl struct {

@@ -77,10 +77,10 @@ var (
 	// CoreModule 是核心仓的 Go module path，供 hmapdev 生成 go.mod 时使用。
 	//
 	// ★ 2026-10-08 随主仓托管地迁移而更新：仓库在 GitHub
-	//   （github.com/JianFeeeee/HomeAgent），module 路径同步。
+	//   （github.com/JianFeeeee/HologramAgent），module 路径同步。
 	//   注意它与 SDKModule 不是同一个仓：插件只依赖 SDK，**不依赖主仓**，
 	//   所以改本常量不影响任何已有插件。
-	CoreModule = "github.com/JianFeeeee/HomeAgent"
+	CoreModule = "github.com/JianFeeeee/HologramAgent"
 
 	// CoreVersion 是此 SDK 所兼容的最低核心版本。
 	//

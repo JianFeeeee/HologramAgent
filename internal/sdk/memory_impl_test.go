@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
 // 插件边界的媒体透传测试（块 union 化之后）。

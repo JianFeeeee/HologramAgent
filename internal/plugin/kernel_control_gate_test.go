@@ -17,7 +17,7 @@ import (
 	"context"
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // fakeKernelCtl 记录收到的请求（判据只关心"能不能拿到/调用"）。

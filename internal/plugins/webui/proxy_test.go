@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // proxyTestSettings 造一份带 api_key 的 webui 插件设置，供受保护路由用

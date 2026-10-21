@@ -3,7 +3,7 @@ package knowledge
 import (
 	"log"
 
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 )
 
 // runKnowledgeMigration 是本迁移的真实实现（原 cmd/homed 的整块平移：

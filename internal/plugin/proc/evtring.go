@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

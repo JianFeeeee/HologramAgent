@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	pluginpkg "github.com/JianFeeeee/HomeAgent/internal/plugin"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	pluginpkg "github.com/JianFeeeee/HologramAgent/internal/plugin"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 通用反向代理：插件声明自带 HTTP 服务（plugin.json 的 proxies），

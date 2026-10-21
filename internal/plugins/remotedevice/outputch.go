@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // deviceOutputCaps 把设备声明的 caps 映射成输出通道能力位。

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

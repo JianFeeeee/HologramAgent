@@ -99,11 +99,11 @@ func TestPackagingLdflagsUseCurrentModulePath(t *testing.T) {
 	if strings.Contains(src, "gitcode.com/JianFeeeee/HomeAgent") {
 		t.Fatal("★ build.sh 的 LDFLAGS 用的是**历史**模块路径 " +
 			"`gitcode.com/JianFeeeee/HomeAgent`；当前模块是 " +
-			"`github.com/JianFeeeee/HomeAgent`。\n" +
+			"`github.com/JianFeeeee/HologramAgent`。\n" +
 			"   `-X` 对未知路径**静默无效** ⇒ 发行包的 Version/Commit/BuildTime " +
 			"全是默认值（实测 --version 输出 unknown）")
 	}
-	if !strings.Contains(src, "github.com/JianFeeeee/HomeAgent/internal/meta.Version") {
+	if !strings.Contains(src, "github.com/JianFeeeee/HologramAgent/internal/meta.Version") {
 		t.Fatal("★ build.sh 必须用 github.com/... 注入 meta.Version")
 	}
 }

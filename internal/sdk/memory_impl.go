@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	doc "github.com/JianFeeeee/HomeAgent/internal/memory/document"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
 // 插件侧记忆接口的实现（SDK 桥接层）。

@@ -4,8 +4,8 @@ import (
 	"log"
 	"sync"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	"github.com/JianFeeeee/HomeAgent/internal/events"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

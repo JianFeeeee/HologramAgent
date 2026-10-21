@@ -118,7 +118,7 @@ func TestKernelHasNoMediaFileReading(t *testing.T) {
 func TestMediaToolsRegisteredByPlugin(t *testing.T) {
 	// 插件侧的注册清单在 internal/plugins/multimodal/plugin.go。
 	// 这里只做**跨包引用检查**（core 包不该 import multimodal，那是反向依赖）。
-	if strings.Contains(kernelSourceDump(t), `"github.com/JianFeeeee/HomeAgent/internal/plugins/multimodal"`) {
+	if strings.Contains(kernelSourceDump(t), `"github.com/JianFeeeee/HologramAgent/internal/plugins/multimodal"`) {
 		t.Error("core 反向 import 了 multimodal 插件 —— " +
 			"工具由插件注册进 StageHost，核心不应知道插件实现")
 	}

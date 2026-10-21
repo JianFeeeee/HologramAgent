@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 type Monitor struct {

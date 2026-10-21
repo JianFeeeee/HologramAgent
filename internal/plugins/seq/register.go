@@ -1,8 +1,8 @@
 package seq
 
 import (
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 插件注册：与其它内置插件同一范式（见 skillmgr/plugin.go 的 init）。

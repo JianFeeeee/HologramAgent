@@ -3,7 +3,7 @@ package kbtree
 import (
 	"strings"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // scope 是知识库对外暴露范围。

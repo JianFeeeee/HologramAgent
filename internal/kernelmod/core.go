@@ -72,7 +72,7 @@ package kernelmod
 import (
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 )
 
 var (

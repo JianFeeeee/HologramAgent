@@ -33,7 +33,7 @@ package safeclose_test
 // 并**自动跳过注释**。
 
 import (
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 
 	"regexp"
 

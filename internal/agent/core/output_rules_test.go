@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 设计口径：输出是 agent 的**主动调用** —— 收到一次输入后，可以往任意（已授权的）

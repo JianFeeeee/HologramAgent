@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // ★ E-3：设置列表默认不得返回任何敏感明文（包括其他插件的）。

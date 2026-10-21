@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	luaVM "github.com/JianFeeeee/HomeAgent/internal/lua"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
-	"github.com/JianFeeeee/HomeAgent/internal/security"
+	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // ContentBlock 定义多模态内容块，用于图片/音频等非文本输入。

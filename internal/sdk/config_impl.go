@@ -1,6 +1,6 @@
 package sdk
 
-import "github.com/JianFeeeee/HomeAgent/pkg/types"
+import "github.com/JianFeeeee/HologramAgent/pkg/types"
 
 // configImpl 持有运行期配置对象的引用（与配置数据库无关）。
 type configImpl struct {

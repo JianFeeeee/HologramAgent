@@ -3,7 +3,7 @@ package memory
 import (
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
 
 func CleanText(text string) string {

@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 	"log"
 	"os"
 	"path/filepath"

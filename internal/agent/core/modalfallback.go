@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 多模态回退链：主模型看不到图/听不到音频时，改用一个声明了 vision/audio

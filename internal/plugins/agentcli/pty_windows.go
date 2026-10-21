@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JianFeeeee/HomeAgent/internal/ptywin"
+	"github.com/JianFeeeee/HologramAgent/internal/ptywin"
 )
 
 func defaultShell() string { return "cmd.exe" }

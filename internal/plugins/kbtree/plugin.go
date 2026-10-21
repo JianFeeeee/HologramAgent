@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/plugin"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // defaultAddr 默认只监听本机。外部 agent 若在别的机器，改配置显式对外，

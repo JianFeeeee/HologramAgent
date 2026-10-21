@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // ===== 从目录导入知识 =====

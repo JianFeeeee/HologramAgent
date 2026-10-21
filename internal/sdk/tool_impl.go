@@ -1,7 +1,7 @@
 package sdk
 
 import (
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // toolImpl 桥接 StageHost（插件工具）与 IOManager（设备/通道工具）。

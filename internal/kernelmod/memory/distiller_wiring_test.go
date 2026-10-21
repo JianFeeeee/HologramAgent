@@ -24,8 +24,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 )
 
 // ★★★ 判据：模块 Init 返回后蒸馏器**仍在运行**（无 defer Stop 残留）。

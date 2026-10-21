@@ -18,16 +18,16 @@ import (
 	"strings"
 	"time"
 
-	agentCore "github.com/JianFeeeee/HomeAgent/internal/agent/core"
-	"github.com/JianFeeeee/HomeAgent/internal/config"
-	"github.com/JianFeeeee/HomeAgent/internal/events"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	"github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 
-	agentPkg "github.com/JianFeeeee/HomeAgent/internal/agent"
+	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
 )
 
 // Module 提供主 Agent。

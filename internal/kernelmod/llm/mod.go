@@ -7,11 +7,11 @@ import (
 	"log"
 	"os"
 
-	"github.com/JianFeeeee/HomeAgent/internal/agent/api"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelboot"
-	"github.com/JianFeeeee/HomeAgent/internal/kernelmod"
-	luapkg "github.com/JianFeeeee/HomeAgent/internal/lua"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // Module 提供多源 provider 管理。

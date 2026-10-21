@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // ★★ 判据：`cmd_run`（内置终端工具，非插件）的参数同样被内核回填。

@@ -16,10 +16,10 @@ import (
 
 	"path/filepath"
 
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
-	"github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/internal/supervisor"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // newKnowledgeHandler 构造一个带知识库的 Handler。

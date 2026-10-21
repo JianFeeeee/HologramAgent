@@ -1,8 +1,8 @@
 package plugin
 
 import (
-	"github.com/JianFeeeee/HomeAgent/internal/plugin/proc"
-	isdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
+	isdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
 )
 

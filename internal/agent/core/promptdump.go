@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 提示词抓包（opt-in 诊断）。

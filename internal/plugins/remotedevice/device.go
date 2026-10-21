@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // devicectlDevice 把设备网关暴露为 IOManager 的一个 Device：

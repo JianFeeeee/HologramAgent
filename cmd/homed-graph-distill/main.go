@@ -43,13 +43,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/distill"
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HomeAgent/pkg/embedding"
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
-	_ "github.com/JianFeeeee/HomeAgent/providers/chineseclip"
-	_ "github.com/JianFeeeee/HomeAgent/providers/ollama"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/distill"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
+	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"
+	_ "github.com/JianFeeeee/HologramAgent/providers/ollama"
 )
 
 func main() {

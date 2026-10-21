@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"encoding/json"
-	agentIO "github.com/JianFeeeee/HomeAgent/internal/agent/io"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"net/http"
 )
 

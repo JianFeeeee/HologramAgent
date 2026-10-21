@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 回归：并行多工具调用的 flush 顺序必须按上游 index 升序，与到达顺序无关。

@@ -1,7 +1,7 @@
 package core
 
 import (
-	"github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // TokenBudget 上下文 token 预算分配结果

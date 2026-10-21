@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // stage handler 必须能按插件成组摘除。

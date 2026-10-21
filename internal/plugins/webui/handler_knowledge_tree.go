@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 知识库的**树形只读 API**。供外部 agent、skill、脚本按分类导航知识库。

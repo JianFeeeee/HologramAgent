@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"encoding/json"
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
-	"github.com/JianFeeeee/HomeAgent/pkg/types"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 	"net/http"
 )
 

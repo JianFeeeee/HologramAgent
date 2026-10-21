@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // tryLoadLua 从插件目录加载 main.lua（Lua 插件）。

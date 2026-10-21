@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	sdk "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // 无拷贝查询必须与 ToolDef(...).字段 **完全等价**。

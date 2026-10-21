@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
 
 // fakeMM 是可控的多模态嵌入器：文本与图片各自查表，缺省给同一个兜底向量。

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HomeAgent/pkg/generation"
+	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 )
 
 // 测试不依赖真模型：起一个本地 httptest server 模拟 Ollama，

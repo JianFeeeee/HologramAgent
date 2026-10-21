@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JianFeeeee/HomeAgent/internal/meta"
-	safeclose "github.com/JianFeeeee/HomeAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
+	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
 
 // Process 管理一个外部插件子进程：spawn / 双向 JSON-RPC / 优雅停止 / 崩溃检测。

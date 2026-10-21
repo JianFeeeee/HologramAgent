@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
-	internalSDK "github.com/JianFeeeee/HomeAgent/internal/sdk"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	internalSDK "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func TestSecretFlagReachesSettingsMeta(t *testing.T) {

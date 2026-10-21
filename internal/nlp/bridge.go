@@ -1,6 +1,6 @@
 package nlp
 
-import "github.com/JianFeeeee/HomeAgent/internal/memory"
+import "github.com/JianFeeeee/HologramAgent/internal/memory"
 
 // ToMemoryTriple 将 nlp.Triple 转为 memory.Triple
 func ToMemoryTriple(t Triple) memory.Triple {

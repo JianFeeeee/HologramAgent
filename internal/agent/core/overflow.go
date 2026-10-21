@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	agentAPI "github.com/JianFeeeee/HomeAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // 上下文超页（context overflow）处理。

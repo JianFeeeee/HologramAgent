@@ -3,7 +3,7 @@ package sdk
 import (
 	"fmt"
 
-	"github.com/JianFeeeee/HomeAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 )
 
 type knowledgeImpl struct{ ks *knowledge.Store }

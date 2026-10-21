@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	internalConfig "github.com/JianFeeeee/HomeAgent/internal/config"
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 )
 
 // forbidStoppingSharedBackend 给测试实例关上「退出时停后端」这道闸。
