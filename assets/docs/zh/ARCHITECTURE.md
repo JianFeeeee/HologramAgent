@@ -1,10 +1,10 @@
 [English](../en/ARCHITECTURE.md) | **中文**
 
-# HomeAgent 架构
+# HologramAgent 架构
 
 ## 体系结构原则
 
-HomeAgent 的认知架构由三个核心子系统构成：事件循环（eventLoop）、上下文窗口（RelevanceContext）与阶段管道（StageHost）。三者共同组成编排框架。LLM 在其中作为可调度的推理执行单元运行；认知连续性由事件循环、上下文窗口与阶段管道维持。
+HologramAgent 的认知架构由三个核心子系统构成：事件循环（eventLoop）、上下文窗口（RelevanceContext）与阶段管道（StageHost）。三者共同组成编排框架。LLM 在其中作为可调度的推理执行单元运行；认知连续性由事件循环、上下文窗口与阶段管道维持。
 
 **事件循环（eventLoop）** 是一个三路 select 循环：`a.io.InputChan()` 接收外部用户输入并分发至 `processTextInput` / `processMediaInput`；`a.selfInputCh` 接收内部系统任务（如记忆合并、蒸馏回调），以 `_consolidation_` 输出通道标识区分，走 `processConsolidation` 路径；`a.ctx.Done()` 接受关闭信号。与之并行运行的 `interceptLoop` 协程独立监听 `a.io.InputInterruptChan()`，收到高优先级中断时先取消当前 LLM HTTP 请求（`a.cancelLLM()`），再将事件写入 `a.interceptCh`——该通道在 `process()` 每次 LLM 调用前由 `drainInterrupts()` 非阻塞排空，以 `[打断消息]` 格式注入消息历史。三条中断投递路径各具语义：`cancelLLM` 终结当前 HTTP 请求，`interceptCh` 在下一轮 LLM 调用前注入文本，`InjectInput` 在 eventLoop 空闲时触发新一轮处理。
 

@@ -20,7 +20,7 @@ TAG_ARGS = $(if $(HOMED_TAGS),-tags $(HOMED_TAGS),)
 
 BINARY=homed
 CLI_BINARY=waiter
-GUI_BINARY=homeagent-gui
+GUI_BINARY=hologram-gui
 GO=go
 GOCACHE=/tmp/gocache
 export GOPATH=/tmp/gopath
@@ -368,12 +368,12 @@ clean:
 	rm -rf $(BUILD_DIR) $(BINARY) $(CSRC_BUILD)
 
 install: build
-	-systemctl stop homeagent 2>/dev/null
+	-systemctl stop hologramagent 2>/dev/null
 	cp $(BUILD_DIR)/$(BINARY) /usr/local/bin/$(BINARY)
-	mkdir -p /etc/homeagent /var/lib/homeagent
-	cp deploy/homeagent.service /etc/systemd/system/
+	mkdir -p /etc/hologram /var/lib/hologram
+	cp deploy/hologramagent.service /etc/systemd/system/hologramagent.service
 	systemctl daemon-reload
-	@echo "Installed. Run: systemctl enable --now homeagent"
+	@echo "Installed. Run: systemctl enable --now hologramagent"
 
 # ⚠ internal/plugin/proc 的 grandchild 系列测试（fork 真进程 + syscall.Kill
 #   杀进程组）**本身不稳定**，与本次改动无关：
@@ -435,7 +435,7 @@ check-codec-cgo-only:
 	fi
 
 run: build
-	./$(BUILD_DIR)/$(BINARY) -data /tmp/homeagent
+	./$(BUILD_DIR)/$(BINARY) -data /tmp/hologram
 
 fmt:
 	$(GO) fmt ./...

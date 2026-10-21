@@ -1,10 +1,10 @@
 **中文** | [English](../en/ARCHITECTURE.md)
 
-# HomeAgent Architecture
+# HologramAgent Architecture
 
 ## Architectural Principles
 
-HomeAgent's cognitive architecture consists of three subsystems: the event loop (eventLoop), the context window (RelevanceContext), and the stage pipeline (StageHost). Together they form the orchestration framework. Within this framework, the LLM serves as a scheduled reasoning unit; cognitive continuity is maintained by the event loop, context window, and stage pipeline.
+HologramAgent's cognitive architecture consists of three subsystems: the event loop (eventLoop), the context window (RelevanceContext), and the stage pipeline (StageHost). Together they form the orchestration framework. Within this framework, the LLM serves as a scheduled reasoning unit; cognitive continuity is maintained by the event loop, context window, and stage pipeline.
 
 **The event loop (eventLoop)** is a three-way select: `a.io.InputChan()` receives external user input and dispatches to `processTextInput` / `processMediaInput`; `a.selfInputCh` receives internal system tasks (memory merges, distillation callbacks) routed through `processConsolidation` under the `_consolidation_` output channel; `a.ctx.Done()` accepts shutdown signals. A concurrently running `interceptLoop` goroutine independently reads `a.io.InputInterruptChan()` — on receiving a high-priority interrupt, it cancels the in-flight LLM HTTP request (`a.cancelLLM()`), then writes the event to `a.interceptCh`. This channel is drained non-blockingly by `drainInterrupts()` before each LLM call in `process()`, injecting interrupts as `[打断消息]` formatted entries into message history. The three interrupt delivery paths carry distinct semantics: `cancelLLM` terminates the current HTTP request, `interceptCh` injects text before the next LLM turn, and `InjectInput` triggers a new processing cycle when the event loop is idle.
 

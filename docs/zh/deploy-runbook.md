@@ -1,4 +1,4 @@
-# HomeAgent 生产部署手册（homed / waiter）
+# HologramAgent 生产部署手册（homed / waiter）
 
 > 适用范围：本机（`.60`）的 `homeagent.service`，以及两台设备桥宿主上的
 > `waiter-remote.service`。

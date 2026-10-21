@@ -1,10 +1,10 @@
 [English](../en/OVERVIEW.md) | **中文**
 
-# HomeAgent — 项目概览
+# HologramAgent — 项目概览
 
 ## 这是什么
 
-HomeAgent 是一个持续运行的个人智能 Agent 框架。
+HologramAgent 是一个持续运行的个人智能 Agent 框架。
 
 核心架构：一个长时间运行的内核进程（`homed`），通过插件系统接入各种 IO 通道（QQ、Web、命令行等）。内核负责 LLM 调用编排、记忆管理、知识检索；插件负责所有外部 IO——收发消息、执行文件操作、搜索网络等。
 

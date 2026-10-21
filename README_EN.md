@@ -1,6 +1,6 @@
 > ⚠️ **AI-Assisted Programming Notice**: Parts of this project's code, documentation, and commit history were generated or modified with AI assistance. Key changes have been human-reviewed, but please evaluate and verify before use.
 
-# HomeAgent
+# HologramAgent
 
 > **中文**: [README.md](./README.md)
 
@@ -373,10 +373,10 @@ semantic memory; the blob is only a cache that capacity GC may evict.
 | --- | --- | --- |
 | **full** | homed + waiter + desktop GUI + systemd unit | Single-machine, everything |
 | **server** | homed + waiter + systemd unit | Servers (no desktop environment) |
-| **client** | waiter + desktop GUI | Connecting to a remote HomeAgent |
+| **client** | waiter + desktop GUI | Connecting to a remote HologramAgent |
 
 - Linux: `.deb` (amd64/arm64), `.rpm` (x86_64), `.tar.gz`
-- Windows: `HomeAgent_v1.2.0_{Full,Server,Client}_win64.exe` (NSIS installer, includes the AGPL license page). Since v1.2.0 `homed` no longer supports native Windows (it relies on fd inheritance and in-segment offset dereferencing), so the installer bootstraps **WSL2** and installs the Linux packages inside the distribution the same way a Linux host would.
+- Windows: `HologramAgent_v1.2.0_{Full,Server,Client}_win64.exe` (NSIS installer, includes the AGPL license page). Since v1.2.0 `homed` no longer supports native Windows (it relies on fd inheritance and in-segment offset dereferencing), so the installer bootstraps **WSL2** and installs the Linux packages inside the distribution the same way a Linux host would.
 - Portable: `homeagent-bin-<os>_<arch>.tar.gz` (homed/waiter/initconfig)
 - Verification: `SHA256SUMS`
 
@@ -404,7 +404,7 @@ This project is released under the **GNU Affero General Public License, version 
 
 This is the strongest copyleft in the GPL family: besides shipping the complete corresponding
 source when you distribute the software, **you must also offer the source to users who interact
-with it over a network** (§13, Remote Network Interaction). Anyone running a modified HomeAgent
+with it over a network** (§13, Remote Network Interaction). Anyone running a modified HologramAgent
 as a network service therefore has to make the modified source available to that service's users.
 
 Plugins are **statically linked** against this project through the public
@@ -425,11 +425,11 @@ license is the linked SDK code itself, and that code is MIT.
 
 | Component | License | Location |
 | --- | --- | --- |
-| Chinese-CLIP ViT-B/16 (ONNX artifacts) | Apache-2.0 | `/usr/lib/homeagent/models/chinese-clip-vit-b16-onnx/` |
-| ONNX Runtime (`libonnxruntime.so`) | MIT | `/usr/lib/homeagent/onnxruntime/` |
+| Chinese-CLIP ViT-B/16 (ONNX artifacts) | Apache-2.0 | `/usr/lib/hologram/models/chinese-clip-vit-b16-onnx/` |
+| ONNX Runtime (`libonnxruntime.so`) | MIT | `/usr/lib/hologram/onnxruntime/` |
 | jieba dictionary (embedded in the binary) | MIT | `internal/memory/jiebadict/` |
 | Go dependencies (go-sqlite3, gojieba, bubbletea, …) | MIT / BSD-3 / Apache-2.0 | permissive, AGPL-3.0-compatible |
 
 These components keep their own licenses and are not relicensed by this project. Full texts are
-shipped in `/usr/share/doc/homeagent/licenses/`, and the package metadata declares this package
+shipped in `/usr/share/doc/hologramagent/licenses/`, and the package metadata declares this package
 as `AGPL-3.0-only`.
