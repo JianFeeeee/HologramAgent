@@ -8,11 +8,11 @@
 
 All external interaction capabilities of HologramAgent comes from plugins. Plugins interact with the kernel through `PluginSDK` (Go API).
 
-**SDK Repository**: Plugin development tools, template code, and example plugins are hosted in the [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) repository.
+**SDK Repository**: Plugin development tools, template code, and example plugins are hosted in the [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) repository.
 
 ```bash
 git clone https://github.com/JianFeeeee/homeagentsdk.git
-cd homeagent-sdk
+cd homeagentsdk
 ```
 
 Each plugin implements a three-method interface:
@@ -48,7 +48,7 @@ plugin types, and producing `.hmap` plugin bundles (the tool is named after that
 ### Installation
 
 ```bash
-cd homeagent-sdk/tools/hmapdev
+cd homeagentsdk/tools/hmapdev
 go build -o hmapdev
 # Add hmapdev to PATH or use directly
 # Prebuilt binaries also ship as release assets (hmapdev_linux_amd64, ...)
@@ -738,8 +738,8 @@ internal/plugins/yourplugin/
 package yourplugin
 
 import (
-    "gitcode.com/JianFeeeee/HomeAgent/internal/plugin"
-    sdk "gitcode.com/JianFeeeee/HomeAgent/internal/sdk"
+    "github.com/JianFeeeee/HologramAgent/internal/plugin"
+    sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func init() {
@@ -777,7 +777,7 @@ Add blank import in `internal/plugins/all.go`:
 package plugins
 
 import (
-    _ "gitcode.com/JianFeeeee/HomeAgent/internal/plugins/yourplugin"
+    _ "github.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
     // ... other plugins
 )
 ```
@@ -844,7 +844,7 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 
 ## 7. Example Plugin Reference
 
-### SDK Repository Examples (`homeagent-sdk/example/`)
+### SDK Repository Examples (`homeagentsdk/example/`)
 
 | Example | Type | Features |
 |---------|------|----------|
@@ -903,4 +903,4 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 
 *Want to understand the project goals? See [OVERVIEW.md](OVERVIEW.md).*
 *Want to understand the architecture? See [ARCHITECTURE.md](ARCHITECTURE.md).*
-*SDK repository and development tools? See [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk).*
+*SDK repository and development tools? See [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk).*

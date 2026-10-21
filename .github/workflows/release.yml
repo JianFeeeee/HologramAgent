@@ -352,6 +352,27 @@ jobs:
     if: needs.prepare.outputs.exists == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # ══════════════════════════════════════════════════════════════════
+      # ★★ gitcode 镜像目标仓名 —— **本 job 的唯一定义处**。
+      #    改 gitcode 仓名时只改这一行；下面所有消费点都走 ${GC_REPO}。
+      #    与 ci.yml 的 sync-gitcode-main 保持同值（两个 workflow 各自独立
+      #    定义：改的时候两个文件都要改，但每个文件内部只有一个定义处）。
+      #
+      # 取值依据（实测 2026-10-21，直连不带代理，非推测）：
+      #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
+      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
+      #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
+      #
+      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 主仓同名）。旧地址仍 301 跳转，跟随后也能到达，但走重定向 ⇒ 别再用它。
+      # 判定两仓同一对象：两地址 git ls-remote 的 refs 列表 md5 相同。
+      #
+      # ⚠ 失败面（与 ci.yml 不同，别搞混）：本 job 只红在镜像同步这一格，
+      #   GitHub 侧 release 产物此时已经发出去了；ci.yml 那个会红整条 main CI。
+      # ══════════════════════════════════════════════════════════════════
+      GC_REPO: JianFeeeee/HologramAgent
     steps:
       - uses: actions/checkout@v7
       - id: tok
@@ -381,9 +402,7 @@ jobs:
         if: steps.tok.outputs.ok == 'true'
         env:
           GC_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-          # 显式传环境变量（而不是 shell 局部变量）：脚本的默认值与这里
-          # 相同，但写在 env 里才是**真的传下去**，改仓名时不用改两处逻辑。
-          GC_REPO: JianFeeeee/HologramAgent
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
         run: |
           set -euo pipefail
           bash .github/scripts/check-gitcode-repo.sh
@@ -394,7 +413,7 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          GC_REPO="JianFeeeee/HologramAgent"
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
           # 1) 推 tag（附件上传前 release 条目必须先存在）
           git config user.name  "github-actions[bot]"
@@ -414,5 +433,5 @@ jobs:
           # 不传文件名时它扫描 ASSET_DIR 并按后缀识别发布产物 —— 这里正合适
           # （.deb/.tar.gz/SHA256SUMS 都在白名单里）。
           # 不要传 "./x" 或 "dist/x"：那会拼成 dist/dist/x。
-          ASSET_DIR=. GITCODE_REPO=JianFeeeee/HologramAgent \
+          ASSET_DIR=. GITCODE_REPO="${GC_REPO}" \
             python3 ../deploy/scripts/upload_assets.py "$TAG" "$GC_TOKEN"

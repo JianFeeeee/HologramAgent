@@ -240,7 +240,7 @@ internal/
 ├── config/         SQLite 配置中心
 ├── events/         事件总线
 └── internal/lua/adapters/   10 个 LLM 协议适配器脚本
-外部插件开发见 [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 仓库，使用 `hmapdev` 工具链开发，参考 `example/` 目录下的 Go 和 Lua 示例
+外部插件开发见 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库，使用 `hmapdev` 工具链开发，参考 `example/` 目录下的 Go 和 Lua 示例
 ```
 
 ## 项目状态
@@ -326,7 +326,7 @@ internal/
 
 **v0.9.0** — C ABI v2：外部插件 Stage 回调支持写回（`invoke_stage` 增加 result 输出，插件可在 OnInput/AfterToolcall/PostAction 修改 RawMessage/LLMText/ToolResults 等并同步回内核），ABI 版本随内核 minor 对齐（v0.9.x → ABIVersion=2，`version_min=1` 向后兼容旧插件）。同步修复工具循环 zen 兼容补位误伤首轮 system 上下文的问题。配套 SDK 提供增强版 sanitizer 示例（坏 UTF-8/U+FFFD/ANSI 转义全链路清洗）。**该 ABI 已随 v1.0.0 退场。**
 
-**v0.8.0** — 核心可用，插件系统增强。内置 20+ 插件，外部插件开发见 [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。新增输入通道 `NoMemory`/`Cleaner`、`ChannelDef`、插件禁用/启用系统（CLI + WebUI），`plugindev` 工具链完成 C ABI `ChannelDef` 传递。
+**v0.8.0** — 核心可用，插件系统增强。内置 20+ 插件，外部插件开发见 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。新增输入通道 `NoMemory`/`Cleaner`、`ChannelDef`、插件禁用/启用系统（CLI + WebUI），`plugindev` 工具链完成 C ABI `ChannelDef` 传递。
 
 ## 文档
 
@@ -347,7 +347,7 @@ internal/
 
 ## 下载
 
-[Releases](https://github.com/JianFeeeee/HomeAgent/releases) 提供三种变体：
+[Releases](https://github.com/JianFeeeee/HologramAgent/releases) 提供三种变体：
 
 | 变体 | 内容 | 适用 |
 | --- | --- | --- |
@@ -385,7 +385,7 @@ make install            # 安装到系统
 **通过网络提供服务时也要向使用者提供源码**（§13 Remote Network Interaction）。
 即：任何人把改过的 HologramAgent 对外提供网络服务，都必须让该服务的使用者拿到改动后的源码。
 
-插件与本项目通过公开 [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 静态链接
+插件与本项目通过公开 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 静态链接
 （SDK 源码会进入插件二进制），但那个仓**以 MIT 发布**——MIT 是宽松许可，拿到授权的代码不继承
 本项目的 AGPL。因此**外部插件不是本项目的衍生作品**，作者可自行选择许可（含闭源、商业、私有），
 既不必同许可、也不受 §13 网络条款约束。第三方插件生态的安全与活跃正建立在这条之上。

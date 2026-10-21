@@ -9,11 +9,11 @@
 HologramAgent 的所有外部交互能力都来自插件。插件通过 `PluginSDK`（Go API）与内核交互。
 
 **SDK 仓库**：插件开发工具、模板代码和示例插件统一托管在
-[homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。
+[homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。
 
 ```bash
 git clone https://github.com/JianFeeeee/homeagentsdk.git
-cd homeagent-sdk
+cd homeagentsdk
 ```
 
 每个插件实现一个三方法接口：
@@ -49,7 +49,7 @@ type Plugin interface {
 ### 安装
 
 ```bash
-cd homeagent-sdk/tools/hmapdev
+cd homeagentsdk/tools/hmapdev
 go build -o hmapdev
 # 将 hmapdev 加入 PATH 或直接使用
 # 也可从 SDK 的 release 附件下载预编译二进制（hmapdev_linux_amd64 等）
@@ -726,8 +726,8 @@ internal/plugins/yourplugin/
 package yourplugin
 
 import (
-    "gitcode.com/JianFeeeee/HomeAgent/internal/plugin"
-    sdk "gitcode.com/JianFeeeee/HomeAgent/internal/sdk"
+    "github.com/JianFeeeee/HologramAgent/internal/plugin"
+    sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func init() {
@@ -765,7 +765,7 @@ func (p *Plugin) Stop() error {
 package plugins
 
 import (
-    _ "gitcode.com/JianFeeeee/HomeAgent/internal/plugins/yourplugin"
+    _ "github.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
     // ... 其他插件
 )
 ```
@@ -830,7 +830,7 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 
 ## 七、示例插件参考
 
-### SDK 仓库示例（`homeagent-sdk/example/`）
+### SDK 仓库示例（`homeagentsdk/example/`）
 
 | 示例 | 类型 | 特点 |
 |------|------|------|
@@ -884,4 +884,4 @@ pmgr.ReloadPlugins()                     // 重载所有插件
 
 *了解项目整体目标？查看 [OVERVIEW.md](OVERVIEW.md)。*
 *了解技术架构？查看 [ARCHITECTURE.md](ARCHITECTURE.md)。*
-*SDK 仓库与开发工具？查看 [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk)。*
+*SDK 仓库与开发工具？查看 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk)。*

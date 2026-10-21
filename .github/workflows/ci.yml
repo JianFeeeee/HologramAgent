@@ -226,6 +226,28 @@ jobs:
     needs: [go, race, cross, gui, csrc, docs]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     timeout-minutes: 10
+    env:
+      # ══════════════════════════════════════════════════════════════════
+      # ★★ gitcode 镜像目标仓名 —— **本 job 的唯一定义处**。
+      #    改 gitcode 仓名时只改这一行；下面所有消费点都走 ${GC_REPO}。
+      #    与 release.yml 的 sync-gitcode 保持同值（两个 workflow 各自独立
+      #    定义：改的时候两个文件都要改，但每个文件内部只有一个定义处）。
+      #
+      # 取值依据（实测 2026-10-21，直连不带代理，非推测）：
+      #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
+      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
+      #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
+      #
+      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 主仓同名）。旧地址仍 301 跳转，跟随后也能到达，但走重定向 ⇒ 别再用它。
+      # 判定两仓同一对象：两地址 git ls-remote 的 refs 列表 md5 相同。
+      #
+      # ⚠ 失败面：本 job 的 needs 是 [go, race, cross, gui, csrc, docs]。
+      #   前置检查 exit 1 ⇒ 本 job 红 ⇒ **main 的整条 CI 红**（不是只红一格）。
+      #   release.yml 的 sync-gitcode 只红在镜像同步这一格（GitHub 侧产物已发）。
+      # ══════════════════════════════════════════════════════════════════
+      GC_REPO: JianFeeeee/HologramAgent
     steps:
       - id: tok
         name: 检查 gitcode 凭据
@@ -258,9 +280,7 @@ jobs:
         if: steps.tok.outputs.ok == 'true'
         env:
           GC_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-          # 显式传环境变量（而不是 shell 局部变量）：脚本的默认值与这里
-          # 相同，但写在 env 里才是**真的传下去**，改仓名时不用改两处逻辑。
-          GC_REPO: JianFeeeee/HologramAgent
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
         run: |
           set -euo pipefail
           bash .github/scripts/check-gitcode-repo.sh
@@ -271,6 +291,7 @@ jobs:
         run: |
           set -euo pipefail
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
-          git push "${GC_URL}/JianFeeeee/HologramAgent.git" \
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
+          git push "${GC_URL}/${GC_REPO}.git" \
             "refs/heads/main:refs/heads/main"
           echo "  gitcode/main 已快进到 ${GITHUB_SHA}"
