@@ -8,8 +8,8 @@
 
 | 仓 | 位置 | 流水线 | 触发 |
 | --- | --- | --- | --- |
-| 主仓 HologramAgent | `github.com/JianFeeeee/HomeAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
-| SDK 仓 homeagentsdk | `github.com/JianFeeeee/homeagentsdk`（公开） | `release.yml` | `release/**` push |
+| 主仓 HologramAgent | `github.com/JianFeeeee/HologramAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
+| SDK 仓 homeagentsdk | `github.com/JianFeeeee/HologramAgent-sdk`（公开） | `release.yml` | `release/**` push |
 | gitcode 镜像 | 同名仓库 | 无（由主仓 Release 的 sync job 同步） | — |
 
 **分支保护**（main，公开仓免费）：10 项必须检查（Go build/vet/test、Race、
@@ -163,13 +163,13 @@ tar 写 stdout 收到 EPIPE ⇒ pipefail 判失败。**包越大越易触发**
 CI 的 sync job 需要仓库 secret `GITCODE_TOKEN`；**未配置时该 job 显式跳过**
 （不阻断 GitHub 侧发布）。
 
-**2026-09-29 已配置**：两仓（`JianFeeeee/HomeAgent`、`JianFeeeee/homeagentsdk`）
+**2026-09-29 已配置**：两仓（`JianFeeeee/HologramAgent`、`JianFeeeee/HologramAgent-sdk`）
 均已设同名 secret，取值自 `~/.git-credentials` 里那条 `https://JianFeeeee:<token>@gitcode.com`。
 配置方式（经 stdin 传入，避免 token 出现在进程列表）：
 
 ```bash
-printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/HomeAgent
-printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/homeagentsdk
+printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/HologramAgent
+printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/HologramAgent-sdk
 ```
 
 验收：sync job 只在**新版本**发版时运行（`prepare.outputs.exists == 'false'`），
@@ -177,12 +177,12 @@ printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/homeagentsd
 
 ```bash
 # ① secret 存在
-gh secret list --repo JianFeeeee/HomeAgent | grep GITCODE_TOKEN
+gh secret list --repo JianFeeeee/HologramAgent | grep GITCODE_TOKEN
 # ② token 有效
 curl -s "https://gitcode.com/api/v5/user?access_token=$TOKEN"
 # ③ job 用的 private-token 头可读 release（两仓都测）
 curl -s -H "private-token: $TOKEN" \
-  "https://gitcode.com/api/v5/repos/JianFeeeee/HomeAgent/releases/tags/v1.3.13"
+  "https://gitcode.com/api/v5/repos/JianFeeeee/HologramAgent/releases/tags/v1.3.13"
 ```
 
 ★ **token 是宽范围的个人令牌**（可读 92 仓/48 私有、有写权限），而 CI 只需要这两个仓。
@@ -193,7 +193,7 @@ curl -s -H "private-token: $TOKEN" \
 
 ```bash
 # token 放 ~/.git-credentials（https://JianFeeeee:<token>@gitcode.com）
-ASSET_DIR=<产物目录> GITCODE_REPO=JianFeeeee/HomeAgent \
+ASSET_DIR=<产物目录> GITCODE_REPO=JianFeeeee/HologramAgent \
   python3 deploy/scripts/upload_assets.py <tag> <token>
 # release 条目必须先存在（脚本向 releases/<tag>/upload_url 取 OBS 签名 URL）
 ```

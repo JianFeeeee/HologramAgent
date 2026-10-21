@@ -552,7 +552,7 @@ hmapdev sdk current    # 当前活跃 SDK 版本（★ 动手前必看）
 hmapdev sdk list       # 本机已装的所有 SDK 版本
 ```
 
-- 核心仓 `/home/program/TrueAgent`（Go module `gitcode.com/JianFeeeee/HomeAgent`）
+- 核心仓 `/home/program/TrueAgent`（Go module `gitcode.com/JianFeeeee/HologramAgent`）
 - **SDK 仓** `third_party/homeagent-sdk`（独立 git 仓、独立版本号）
 
 ### 33. 开工流程

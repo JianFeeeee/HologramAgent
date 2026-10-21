@@ -398,7 +398,7 @@ bash deploy/scripts/deploy-sdk-site.sh --rollback .sdk-bak-<时间戳>  # 回滚
 本机 192.168.2.60
   └─ nginx stream 按 ssl_preread SNI 把 443 透传 → 192.168.2.106:3080
        └─ navi 容器内的 nginx（**不是** portal-nginx，那个已 Exited 两周）
-            └─ server_name sdk.homeagent.jianfgit.xyz → root /app/data/sites/sdk
+            └─ server_name sdk.hologramagent.jianfgit.xyz → root /app/data/sites/sdk
                  └─ 宿主对应 /vol1/docker/navi-data/sites/sdk
 ```
 
@@ -447,7 +447,7 @@ bash deploy/scripts/deploy-sdk-site.sh
 验证线上是否真的可访问（**别只看本地产物**）：
 
 ```bash
-curl -s -o /dev/null -m 10 -w '%{http_code}\n' -k https://sdk.homeagent.jianfgit.xyz/guide/<新文档>/
+curl -s -o /dev/null -m 10 -w '%{http_code}\n' -k https://sdk.hologramagent.jianfgit.xyz/guide/<新文档>/
 ```
 
 ### 5.5 回滚点

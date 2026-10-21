@@ -221,7 +221,7 @@ internal/
 ├── config/         SQLite config center
 ├── events/         Event bus
 └── internal/lua/adapters/   10 LLM protocol adapter scripts
-External plugin development: see [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) repo, use `hmapdev` toolchain, refer to Go and Lua examples in `example/`
+External plugin development: see [HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk) repo, use `hmapdev` toolchain, refer to Go and Lua examples in `example/`
 ```
 
 ## Project Status
@@ -323,7 +323,7 @@ External plugin development: see [homeagent-sdk](https://github.com/JianFeeeee/h
 **v1.1.1** — Multimodal reaches the **plugin boundary**. v1.1.0 gave the memory system binary
 multimedia nodes, but that path was open only to the kernel itself; this release opens it to
 plugins and the model. The public SDK gains media fields and three media injection methods
-(paired with [SDK v1.1.0](https://github.com/JianFeeeee/homeagentsdk/tree/v1.1.0),
+(paired with [SDK v1.1.0](https://github.com/JianFeeeee/HologramAgent-sdk/tree/v1.1.0),
 shared by the whole 1.1.x line), and the kernel implements the four matching RPCs. The bridge
 layer had been **silently dropping fields**: `Confidence`/types/`SentenceText` handed in by a
 plugin were discarded, `Doc` kept only three fields, and `Remove` never released references
@@ -346,16 +346,16 @@ semantic memory; the blob is only a cache that capacity GC may evict.
 
 **v0.9.0** — C ABI v2: external plugin Stage callbacks can now write back (`invoke_stage` gained a result out-param; plugins may mutate RawMessage/LLMText/ToolResults etc. in OnInput/AfterToolcall/PostAction and have them synced to the core). ABI version now tracks core minor releases (v0.9.x → ABIVersion=2, `version_min=1` keeps old plugins loadable). Also fixes the tool-loop zen-compat placeholder that wrongly fired on first-turn system context tail. The SDK ships an enhanced sanitizer example (bad-UTF-8 / U+FFFD / ANSI-escape scrub across the whole pipeline). **This ABI retired with v1.0.0.**
 
-**v0.8.0** — Core is functional, plugin system enhanced. 20+ built-in plugins. External plugin development via [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) repo. Added input channel `NoMemory`/`Cleaner`, `ChannelDef`, plugin disable/enable system (CLI + WebUI), `plugindev` toolchain C ABI `ChannelDef` support.
+**v0.8.0** — Core is functional, plugin system enhanced. 20+ built-in plugins. External plugin development via [HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk) repo. Added input channel `NoMemory`/`Cleaner`, `ChannelDef`, plugin disable/enable system (CLI + WebUI), `plugindev` toolchain C ABI `ChannelDef` support.
 
 ## Documentation
 
 **Online docs**:
 
-- Introduction site (project overview): <https://introduce.homeagent.jianfgit.xyz/>
-- Plugin SDK docs (getting started / API reference / guides / examples): <https://sdk.homeagent.jianfgit.xyz/>
-  — agent-friendly plain text: [`llms.txt`](https://sdk.homeagent.jianfgit.xyz/llms.txt) /
-  [`llms-full.txt`](https://sdk.homeagent.jianfgit.xyz/llms-full.txt)
+- Introduction site (project overview): <https://introduce.hologramagent.jianfgit.xyz/>
+- Plugin SDK docs (getting started / API reference / guides / examples): <https://sdk.hologramagent.jianfgit.xyz/>
+  — agent-friendly plain text: [`llms.txt`](https://sdk.hologramagent.jianfgit.xyz/llms.txt) /
+  [`llms-full.txt`](https://sdk.hologramagent.jianfgit.xyz/llms-full.txt)
 
 **In-repo docs** (versioned with the code):
 
@@ -367,7 +367,7 @@ semantic memory; the blob is only a cache that capacity GC may evict.
 
 ## Downloads
 
-[Releases](https://github.com/JianFeeeee/HomeAgent/releases) ship three variants:
+[Releases](https://github.com/JianFeeeee/HologramAgent/releases) ship three variants:
 
 | Variant | Contents | For |
 | --- | --- | --- |
@@ -408,7 +408,7 @@ with it over a network** (§13, Remote Network Interaction). Anyone running a mo
 as a network service therefore has to make the modified source available to that service's users.
 
 Plugins are **statically linked** against this project through the public
-[homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) (the SDK source ends up inside the
+[HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk) (the SDK source ends up inside the
 plugin binary), but that repository is released under **MIT** — a permissive license, so code
 received under it does **not** inherit this project's AGPL. External plugins are therefore **not
 derivative works of this project**: authors pick their own license (closed-source, commercial or

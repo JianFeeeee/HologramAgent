@@ -8,11 +8,11 @@
 
 All external interaction capabilities of HologramAgent comes from plugins. Plugins interact with the kernel through `PluginSDK` (Go API).
 
-**SDK Repository**: Plugin development tools, template code, and example plugins are hosted in the [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk) repository.
+**SDK Repository**: Plugin development tools, template code, and example plugins are hosted in the [HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk) repository.
 
 ```bash
-git clone https://github.com/JianFeeeee/homeagentsdk.git
-cd homeagent-sdk
+git clone https://github.com/JianFeeeee/HologramAgent-sdk.git
+cd HologramAgent-sdk
 ```
 
 Each plugin implements a three-method interface:
@@ -48,7 +48,7 @@ plugin types, and producing `.hmap` plugin bundles (the tool is named after that
 ### Installation
 
 ```bash
-cd homeagent-sdk/tools/hmapdev
+cd HologramAgent-sdk/tools/hmapdev
 go build -o hmapdev
 # Add hmapdev to PATH or use directly
 # Prebuilt binaries also ship as release assets (hmapdev_linux_amd64, ...)
@@ -252,7 +252,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/plugins \
 ```go
 package main
 
-import "github.com/JianFeeeee/homeagentsdk/sdk"
+import "github.com/JianFeeeee/HologramAgent-sdk/sdk"
 
 type Plugin struct {
     name string
@@ -452,7 +452,7 @@ Parameters: `name` (route key), `caps` (1=text/2=rich/4=file/8=image), `desc`, `
 #### Event Subscription
 
 ```go
-import "github.com/JianFeeeee/homeagentsdk/sdk"
+import "github.com/JianFeeeee/HologramAgent-sdk/sdk"
 
 unsub := s.Events().Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
     log.Printf("Tool was called: %v", evt.Payload)
@@ -738,8 +738,8 @@ internal/plugins/yourplugin/
 package yourplugin
 
 import (
-    "gitcode.com/JianFeeeee/HomeAgent/internal/plugin"
-    sdk "gitcode.com/JianFeeeee/HomeAgent/internal/sdk"
+    "gitcode.com/JianFeeeee/HologramAgent/internal/plugin"
+    sdk "gitcode.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func init() {
@@ -777,7 +777,7 @@ Add blank import in `internal/plugins/all.go`:
 package plugins
 
 import (
-    _ "gitcode.com/JianFeeeee/HomeAgent/internal/plugins/yourplugin"
+    _ "gitcode.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
     // ... other plugins
 )
 ```
@@ -844,31 +844,31 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 
 ## 7. Example Plugin Reference
 
-### SDK Repository Examples (`homeagent-sdk/example/`)
+### SDK Repository Examples (`HologramAgent-sdk/example/`)
 
 | Example | Type | Features |
 |---------|------|----------|
-| [weather](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/weather) | Go | Weather queries (wttr.in); demonstrates NoMemory/Cleaner/stage hooks/channels/text memory |
-| [luademo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/luademo) | Lua | Full-featured Lua example covering the whole v0.8.0 Lua SDK surface |
-| [qq](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/qq) | Go | NapCat OneBot integration, 24 tools, full input/output channel wiring |
-| [memo](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/memo) | Go | Memo management, PreAction injection + timed interrupt dual reminder |
-| [files](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/files) | Go | File system operations, 4 write modes, sandbox isolation |
-| [browser](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/browser) | Go | Web search + HTTP fetch (SSRF) + Chromium render (merged from web/webfetch) |
-| [bili](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/bili) | Go | Bilibili video download (yt-dlp) |
-| [editdoc](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/editdoc) | Go | Office document editing and format conversion |
-| [a2a](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/a2a) | Go | Agent-to-Agent protocol |
-| [ocr](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/ocr) | Go | Offline text recognition (Tesseract) |
-| [sanitizer](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/sanitizer) | Go | Output sanitizer filter |
-| [calendar](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/calendar) | Go | Calendar management |
-| [rss](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/rss) | Go | RSS subscriptions |
-| [ai_image](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/ai_image) | Go | AI image generation |
-| [music](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/music) | Go | Music playback |
-| [vikunja](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/vikunja) | Go | Vikunja task management (projects/tasks/labels CRUD) |
-| [vanblog](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/vanblog) | Go | VanBlog publishing and management |
-| [deepsearch](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/deepsearch) | Go | Multi-round deep search (progressive focus + cited summary) |
-| [acp](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/acp) | Go | Agent Client Protocol (external editors/IDEs drive this agent) |
-| [recoverydiag](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/recoverydiag) | Go | Five-part fault diagnosis (triage / sqlite check / log signatures / diff / ranked conclusions); core plugin of failback mode |
-| [plugindev](https://github.com/JianFeeeee/homeagentsdk/tree/main/example/plugindev) | Go | Plugin scaffolding: generate, build, install — lets the agent develop plugins itself |
+| [weather](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/weather) | Go | Weather queries (wttr.in); demonstrates NoMemory/Cleaner/stage hooks/channels/text memory |
+| [luademo](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/luademo) | Lua | Full-featured Lua example covering the whole v0.8.0 Lua SDK surface |
+| [qq](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/qq) | Go | NapCat OneBot integration, 24 tools, full input/output channel wiring |
+| [memo](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/memo) | Go | Memo management, PreAction injection + timed interrupt dual reminder |
+| [files](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/files) | Go | File system operations, 4 write modes, sandbox isolation |
+| [browser](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/browser) | Go | Web search + HTTP fetch (SSRF) + Chromium render (merged from web/webfetch) |
+| [bili](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/bili) | Go | Bilibili video download (yt-dlp) |
+| [editdoc](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/editdoc) | Go | Office document editing and format conversion |
+| [a2a](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/a2a) | Go | Agent-to-Agent protocol |
+| [ocr](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/ocr) | Go | Offline text recognition (Tesseract) |
+| [sanitizer](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/sanitizer) | Go | Output sanitizer filter |
+| [calendar](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/calendar) | Go | Calendar management |
+| [rss](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/rss) | Go | RSS subscriptions |
+| [ai_image](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/ai_image) | Go | AI image generation |
+| [music](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/music) | Go | Music playback |
+| [vikunja](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/vikunja) | Go | Vikunja task management (projects/tasks/labels CRUD) |
+| [vanblog](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/vanblog) | Go | VanBlog publishing and management |
+| [deepsearch](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/deepsearch) | Go | Multi-round deep search (progressive focus + cited summary) |
+| [acp](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/acp) | Go | Agent Client Protocol (external editors/IDEs drive this agent) |
+| [recoverydiag](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/recoverydiag) | Go | Five-part fault diagnosis (triage / sqlite check / log signatures / diff / ranked conclusions); core plugin of failback mode |
+| [plugindev](https://github.com/JianFeeeee/HologramAgent-sdk/tree/main/example/plugindev) | Go | Plugin scaffolding: generate, build, install — lets the agent develop plugins itself |
 
 ### Built-in Plugins
 
@@ -903,4 +903,4 @@ Internal: records are stored in SQLite `disabled_plugins` table (`name`, `disabl
 
 *Want to understand the project goals? See [OVERVIEW.md](OVERVIEW.md).*
 *Want to understand the architecture? See [ARCHITECTURE.md](ARCHITECTURE.md).*
-*SDK repository and development tools? See [homeagent-sdk](https://github.com/JianFeeeee/homeagentsdk).*
+*SDK repository and development tools? See [HologramAgent-sdk](https://github.com/JianFeeeee/HologramAgent-sdk).*
