@@ -738,8 +738,8 @@ internal/plugins/yourplugin/
 package yourplugin
 
 import (
-    "gitcode.com/JianFeeeee/HologramAgent/internal/plugin"
-    sdk "gitcode.com/JianFeeeee/HologramAgent/internal/sdk"
+    "github.com/JianFeeeee/HologramAgent/internal/plugin"
+    sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func init() {
@@ -777,7 +777,7 @@ Add blank import in `internal/plugins/all.go`:
 package plugins
 
 import (
-    _ "gitcode.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
+    _ "github.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
     // ... other plugins
 )
 ```

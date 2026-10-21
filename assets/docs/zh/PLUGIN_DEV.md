@@ -726,8 +726,8 @@ internal/plugins/yourplugin/
 package yourplugin
 
 import (
-    "gitcode.com/JianFeeeee/HologramAgent/internal/plugin"
-    sdk "gitcode.com/JianFeeeee/HologramAgent/internal/sdk"
+    "github.com/JianFeeeee/HologramAgent/internal/plugin"
+    sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func init() {
@@ -765,7 +765,7 @@ func (p *Plugin) Stop() error {
 package plugins
 
 import (
-    _ "gitcode.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
+    _ "github.com/JianFeeeee/HologramAgent/internal/plugins/yourplugin"
     // ... 其他插件
 )
 ```
