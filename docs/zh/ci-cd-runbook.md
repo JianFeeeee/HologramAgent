@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | 主仓 HologramAgent | `github.com/JianFeeeee/HologramAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
 | SDK 仓 homeagentsdk | `github.com/JianFeeeee/homeagentsdk`（公开） | `release.yml` | `release/**` push |
-| gitcode 镜像 | 同名仓库 | 无（由主仓 Release 的 sync job 同步） | — |
+| gitcode 镜像 | `gitcode.com/JianFeeeee/HomeAgent`（**不与主仓同名**） | 无（由主仓 Release 的 sync job 同步） | — |
 
 **分支保护**（main，公开仓免费）：10 项必须检查（Go build/vet/test、Race、
 cross×5、GUI、C gates、Docs）+ `strict`（必须与 main 同步）+ 禁 force push。
@@ -18,6 +18,34 @@ cross×5、GUI、C gates、Docs）+ `strict`（必须与 main 同步）+ 禁 for
 
 **gitcode 的角色**：只读镜像（git push 同步）。Release 附件由 sync job 自动
 补传，或手工跑 `deploy/scripts/upload_assets.py`（见 §3.4）。
+
+**gitcode 仓名的单点化**（2026-10-21 加）：gitcode 镜像目标仓名曾在多处写死，
+改名时要遍改且易漏（漏一处就是一个小死链）。现在收继到**每文件一个定义处**，
+消费点全部走变量：
+
+| 定义处 | 形式 | 消费点 |
+| --- | --- | --- |
+| `.github/workflows/release.yml` | `env.GC_REPO`（job 级） | `${GC_REPO}` ×4 |
+| `.github/workflows/ci.yml` | `env.GC_REPO`（job 级） | `${GC_REPO}` ×2 |
+| `deploy/scripts/upload_assets.py` | `GITCODE_REPO` 环境变量默认值 | 脚本自身 |
+
+两个 workflow 是独立 workflow，因此各自一个定义（不能跨文件共享 env）。
+**gitcode 侧真正把仓改名成 HologramAgent 之后，只改这三个定义点即可**。
+
+**当前取值 `JianFeeeee/HomeAgent`**，而不是 `HologramAgent`。实测（2026-10-21，
+curl 直连）：`gitcode.com/JianFeeeee/HomeAgent` → **200**，
+`gitcode.com/JianFeeeee/HologramAgent` → **404**。GitHub 主仓已改名，
+gitcode 侧镜像仓没跟着改。指向 HologramAgent 会让每次发版都红在镜像同步。
+
+**失败面（两个 job 不一样，别搞混）**：
+
+- `release.yml` 的 `sync-gitcode`：`needs: [prepare, publish]`。前置检查 `exit 1`
+  ⇒ **只红镜像同步这一格**；GitHub 侧 release 产物已经发出去了。
+- `ci.yml` 的 `sync-gitcode-main`：`needs` 全绿（go/race/cross/gui/csrc/docs）后才跑。
+  前置检查 `exit 1` ⇒ 该 job 红 ⇒ **main 的整条 CI 红**。
+
+所以仓名写错的实际后果是「每次 release/main CI 必红一格 + 国内镜像不更新」，
+**不是**「发不出包」。
 
 ## 1. CI（ci.yml）—— 每次推送到 main / release/** / PR 都跑
 
@@ -181,8 +209,11 @@ gh secret list --repo JianFeeeee/HologramAgent | grep GITCODE_TOKEN
 # ② token 有效
 curl -s "https://gitcode.com/api/v5/user?access_token=$TOKEN"
 # ③ job 用的 private-token 头可读 release（两仓都测）
+#    ⚠ gitcode 侧主仓镜像名是 HomeAgent（不是 HologramAgent）——
+#      实测 2026-10-21：/repos/JianFeeeee/HomeAgent→400（带 token 可读）、
+#      /repos/JianFeeeee/HologramAgent→404。写成 HologramAgent 是死链。
 curl -s -H "private-token: $TOKEN" \
-  "https://gitcode.com/api/v5/repos/JianFeeeee/HologramAgent/releases/tags/v1.3.13"
+  "https://gitcode.com/api/v5/repos/JianFeeeee/HomeAgent/releases/tags/v1.3.13"
 ```
 
 ★ **token 是宽范围的个人令牌**（可读 92 仓/48 私有、有写权限），而 CI 只需要这两个仓。
@@ -193,7 +224,8 @@ curl -s -H "private-token: $TOKEN" \
 
 ```bash
 # token 放 ~/.git-credentials（https://JianFeeeee:<token>@gitcode.com）
-ASSET_DIR=<产物目录> GITCODE_REPO=JianFeeeee/HologramAgent \
+# GITCODE_REPO 是 gitcode 镜像仓名（当前 HomeAgent），与 GitHub 侧仓名无关。
+ASSET_DIR=<产物目录> GITCODE_REPO=JianFeeeee/HomeAgent \
   python3 deploy/scripts/upload_assets.py <tag> <token>
 # release 条目必须先存在（脚本向 releases/<tag>/upload_url 取 OBS 签名 URL）
 ```

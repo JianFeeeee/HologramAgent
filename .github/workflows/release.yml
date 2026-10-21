@@ -352,6 +352,27 @@ jobs:
     if: needs.prepare.outputs.exists == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # ══════════════════════════════════════════════════════════════════
+      # ★★ gitcode 镜像目标仓名 —— **本 job 的唯一定义处**。
+      #    改 gitcode 仓名时只改这一行；下面所有消费点都走 ${GC_REPO}。
+      #
+      # 取值依据（实测 2026-10-21，curl 直连，非推测）：
+      #   https://gitcode.com/JianFeeeee/HomeAgent         → 200  ← 当前用这个
+      #   https://gitcode.com/JianFeeeee/HologramAgent     → 404
+      #   https://gitcode.com/JianFeeeee/homeagent-sdk     → 200
+      #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200
+      #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
+      #
+      # 背景：GitHub 主仓已由 HomeAgent 改名为 HologramAgent，但 **gitcode 侧
+      # 的镜像仓没有跟着改名**，gitcode 上 HologramAgent 仍是 404。因此这里
+      # 必须指向仍然存在的 HomeAgent，否则每次发版都会红在镜像同步这一格。
+      #
+      # 何时改回 HologramAgent：在 gitcode 上把镜像仓真正改名/新建成功、
+      # 且 https://gitcode.com/JianFeeeee/HologramAgent 返回 200 之后，
+      # **只改这一行**即可，无需再动其他文件。
+      # ══════════════════════════════════════════════════════════════════
+      GC_REPO: JianFeeeee/HomeAgent
     steps:
       - uses: actions/checkout@v7
       - id: tok
@@ -379,7 +400,7 @@ jobs:
         run: |
           set -euo pipefail
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
-          GC_REPO="JianFeeeee/HologramAgent"
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
           if out=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads \
                      "${GC_URL}/${GC_REPO}.git" 2>&1); then
             echo "  目标仓可访问：gitcode.com/${GC_REPO}"
@@ -419,7 +440,7 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          GC_REPO="JianFeeeee/HologramAgent"
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
           # 1) 推 tag（附件上传前 release 条目必须先存在）
           git config user.name  "github-actions[bot]"
@@ -439,5 +460,5 @@ jobs:
           # 不传文件名时它扫描 ASSET_DIR 并按后缀识别发布产物 —— 这里正合适
           # （.deb/.tar.gz/SHA256SUMS 都在白名单里）。
           # 不要传 "./x" 或 "dist/x"：那会拼成 dist/dist/x。
-          ASSET_DIR=. GITCODE_REPO=JianFeeeee/HologramAgent \
+          ASSET_DIR=. GITCODE_REPO="${GC_REPO}" \
             python3 ../deploy/scripts/upload_assets.py "$TAG" "$GC_TOKEN"

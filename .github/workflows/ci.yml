@@ -226,6 +226,29 @@ jobs:
     needs: [go, race, cross, gui, csrc, docs]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     timeout-minutes: 10
+    env:
+      # ══════════════════════════════════════════════════════════════════
+      # ★★ gitcode 镜像目标仓名 —— **本 job 的唯一定义处**。
+      #    改 gitcode 仓名时只改这一行；下面推 main 的消费点走 ${GC_REPO}。
+      #    与 release.yml 的 sync-gitcode 保持同值（两处各自独立定义，
+      #    因为它们是不同的 workflow —— 改的时候两个文件都要改，但每个
+      #    文件内部只有一个定义处）。
+      #
+      # 取值依据（实测 2026-10-21，curl 直连，非推测）：
+      #   https://gitcode.com/JianFeeeee/HomeAgent         → 200  ← 当前用这个
+      #   https://gitcode.com/JianFeeeee/HologramAgent     → 404
+      #
+      # 背景：GitHub 主仓已改名 HologramAgent，gitcode 侧镜像仓未改名。
+      #
+      # ⚠ 失败面（与 release.yml 不同，别搞混）：
+      #   本 job 的 needs 是 [go, race, cross, gui, csrc, docs]。前置检查
+      #   exit 1 ⇒ 本 job 红 ⇒ **main 的整条 CI 红**（不是只红一格）。
+      #   而 release.yml 的 sync-gitcode 只红在镜像同步这一格，GitHub 侧
+      #   release 产物已经发出去了。
+      #
+      # 何时改回 HologramAgent：gitcode 上仓真正存在且返回 200 后，只改这一行。
+      # ══════════════════════════════════════════════════════════════════
+      GC_REPO: JianFeeeee/HomeAgent
     steps:
       - id: tok
         name: 检查 gitcode 凭据
@@ -253,7 +276,7 @@ jobs:
         run: |
           set -euo pipefail
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
-          GC_REPO="JianFeeeee/HologramAgent"
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
           # 用 ls-remote 探测：与后面那次 push 走同一个 URL、同一套凭据，
           # 比另调一次 API 更贴近真实失败面。
           if out=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads \
@@ -295,6 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           GC_URL="https://JianFeeeee:${GC_TOKEN}@gitcode.com"
-          git push "${GC_URL}/JianFeeeee/HologramAgent.git" \
+          # GC_REPO 来自 job 级 env（唯一定义处），此处不重复字面量。
+          git push "${GC_URL}/${GC_REPO}.git" \
             "refs/heads/main:refs/heads/main"
           echo "  gitcode/main 已快进到 ${GITHUB_SHA}"
