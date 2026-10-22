@@ -224,19 +224,20 @@ func TestRetrieval_ScoreGapIsSignificant(t *testing.T) {
 
 // ④ 向量输入必须是正文，而不是摘要。
 //
-// 做法：把哨兵串只放进 Response（正文），不放 Summary。
-// 若 denseFor 仍用 Summary，哨兵不会进向量 ⇒ 该文档检索不到唯一哨兵查询。
+// 做法：哨兵串只放进 Response（正文），不放 Summary。用 bigramSpace
+// （对任意文本都给可区分的向量）验证：哨兵查询的 top1 必须是含哨兵的那篇。
 //
-// 变异：denseFor 读 Summary ⇒ 红。
+// 变异：denseFor 读 Summary ⇒ 哨兵不在向量里 ⇒ top1 是别的文档 ⇒ 红。
 func TestRetrieval_VectorInputIsBodyNotSummary(t *testing.T) {
 	s := NewStore(t.TempDir(), memory.TokenizeWords)
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Stop)
-	s.SetDenseSpace(&fakeDenseSpace{})
+	ds := &bigramSpace{}
+	s.SetDenseSpace(ds)
 
-	const sentinel = "紫蓝红三色带"
+	const sentinel = "量子纠缠态退相干时间测量"
 	_, err := s.ContextToDoc("context_archived", []ContextEntry{{
 		Timestamp: time.Now(),
 		Source:    "test",
@@ -246,15 +247,16 @@ func TestRetrieval_VectorInputIsBodyNotSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 另一篇同长度干扰文档
+	// 与哨兵完全无关的干扰文档（越长越能测出"摘要被当成内容"）
 	_, _ = s.ContextToDoc("context_archived", []ContextEntry{{
 		Timestamp: time.Now().Add(time.Minute),
 		Source:    "test",
 		Content:   "另一条用户消息",
-		Response:  "这是完全不同的一段时间较长的正文内容，与配色毫无关系。",
+		Response: "这是完全不同的一段很长的正文内容，只谈插件安装与打包部署流程，" +
+			"与物理测量毫无关系，纯粹用来干扰检索。" + strings.Repeat("补充无关叙述。", 20),
 	}}, nil, nil, nil, nil)
 
-	s.BuildDenseIndex(&fakeDenseSpace{})
+	s.BuildDenseIndex(ds)
 
 	hits := s.QueryScored(sentinel, 1)
 	if len(hits) == 0 {

@@ -197,11 +197,35 @@ func (s *Store) BuildDenseIndex(ds vector.MultimodalEmbedder) {
 	log.Printf("[document memory] dense index built: %d new vectors", count)
 }
 
-// denseFor 计算文档的稠密向量：文本向量与其一等记忆块的媒体向量融合。
+// denseFor 计算文档的稠密向量：**事件正文** ⊕ 同事件媒体块的向量。
 //
-// 只有与当前统一空间同指纹的块向量才参与融合：不同模型/维度的旧向量
-// 属于另一个坐标系，混进去会算出一个两边都不像的方向。
-// 任意一路缺失时退化为另一路；都不可用返回 nil。
+// ## 为什么不能用 Summary
+//
+// 旧实现是 `VectorizeDense(doc.Summary + " " + doc.Content)`，而 Summary
+// 由 summarizeEntries → jieba 词袋生成，同一来源的摘要**逐字同质**：
+//
+//	来自 1 个来源的 1 条对话 (src0) 涉及: 用户, 提问
+//	来自 1 个来源的 1 条对话 (src1) 涉及: 用户, 提问
+//
+// 实测（真实 chineseclip，4 篇主题完全不同的短正文）两两余弦 0.85~0.95 ——
+// 几乎同向；查询分数全挤在 0.70~0.78，区分度 0.08 ⇒ 检索等同失效。
+//
+// 这与设计直接矛盾：ARCHITECTURE 写的是「统一多模态空间（主）」，而
+// Summary 属于主路径的输入，却由最末一级的词法分词产出。
+//
+// ## 媒体怎么办：不需要单独生成摘要
+//
+// 媒体块与文本块**在同一事件内**（Doc.Events[i].Blocks），事件的正文进入
+// 向量即覆盖了它的语义。为媒体单独生成描述正是 CAS 时代「描述式索引」
+// 的错误（描述是模型生成的二手信息），已在 v1.2.0 整体拆除，不重走。
+//
+// 若将来要「按图搜图」，那是视觉路（RecallBlocks 读块自己的向量）的职责，
+// 已有独立通路，与本函数无关。
+//
+// ## 存量兼容
+//
+// 无 Events 的旧文档（本次改动前归档的）退回 Content —— 那是当时唯一的
+// 原文载体，虽然它是渲染视图，但比 Summary 更接近内容。
 func (s *Store) denseFor(doc *Doc) []float64 {
 	if s.denseSpace == nil || !s.denseSpace.Loaded() {
 		return nil
@@ -209,9 +233,16 @@ func (s *Store) denseFor(doc *Doc) []float64 {
 	fp := s.denseSpace.Fingerprint()
 	dim := s.denseSpace.Dim()
 	var parts [][]float64
-	if tv, err := s.denseSpace.VectorizeDense(doc.Summary + " " + doc.Content); err == nil && len(tv) > 0 {
-		parts = append(parts, tv)
+
+	// 文本路：用事件正文（原文），不用 Summary（jieba 词袋）。
+	// 媒体块的语义由同一事件的文本覆盖，因此这里不需要为媒体单独编码。
+	if text := documentTextForVector(doc); text != "" {
+		if tv, err := s.denseSpace.VectorizeDense(text); err == nil && len(tv) > 0 {
+			parts = append(parts, tv)
+		}
 	}
+
+	// 媒体路：块自带的多模态向量（同空间同维度才参与融合）。
 	for _, b := range doc.Blocks {
 		// 只比指纹不够：指纹相同但**维度不同**的块会被 FuseVectors 按
 		// 「最大维度」拼成错维度向量（并覆盖掉文本向量），而结果又被
@@ -222,6 +253,39 @@ func (s *Store) denseFor(doc *Doc) []float64 {
 		}
 	}
 	return vector.FuseVectors(parts...)
+}
+
+// documentTextForVector 取文档用于向量化的文本：**正文**。
+//
+// 有 Events 时按事件顺序拼原文（来自块里的正文）；无 Events 的存量文档
+// 退回 Content（渲染视图，但仍是原文最接近的载体）。
+// 绝不含 Summary —— 那是 jieba 词袋，会把全库拉向同一方向。
+func documentTextForVector(doc *Doc) string {
+	if doc == nil {
+		return ""
+	}
+	if !doc.HasEvents() {
+		return strings.TrimSpace(doc.Content)
+	}
+	var b strings.Builder
+	for _, ev := range doc.Events {
+		in, resp, _ := ev.InOut()
+		if in != "" {
+			b.WriteString(in)
+			b.WriteString("\n")
+		}
+		if resp != "" {
+			b.WriteString(resp)
+			b.WriteString("\n")
+		}
+		for _, tr := range ev.ToolResults {
+			if tr.Output != "" {
+				b.WriteString(tr.Output)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 // Reindex 重建 TF-IDF 索引（fallback 路径变更时调用）。
