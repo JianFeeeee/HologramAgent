@@ -1054,6 +1054,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 					Source:    "cold_storage",
 					Input:     fmt.Sprintf("加载文档记忆: %s", query),
 					Response:  content,
+					NoMemory:  true, // 同上：回填不产生新记忆
 				})
 				n = 1
 			}
@@ -1304,6 +1305,14 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 			Source:    ev.Source,
 			Input:     input,
 			Response:  response,
+			// ★ 回填事件**不参与记忆计算、不再归档回 L2**。
+			//
+			// 它们本来就在记忆体系里（来自 L2，可能已蒸馏进 L3）。
+			// 不标记的后果是自激震荡：
+			//   doc_query 从 L2 取出 → Prune 因相关而保留它们、
+			//   把真正的新事件挤掉 → 下一轮 Prune 又归档回 L2 →
+			//   再被 doc_query 召回 ⇒ 块在 L1↔L2 之间反复搬迁。
+			NoMemory:  true,
 			ToolsUsed: append([]string(nil), ev.ToolsUsed...),
 			ToolResults: func() []ToolResultItem {
 				var out []ToolResultItem
