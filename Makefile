@@ -273,6 +273,14 @@ csrc-fuzz:
 #
 # 优先级：CC_ARM64（显式指定） > clang --target > aarch64-linux-gnu-gcc > SKIP
 #
+# ★ 宿主头泄漏陷阱（CI 实测）：只加 -isystem 指向 aarch64 头还不够 ——
+#   宿主 /usr/include/stdint.h 会先被找到，它再 include <bits/libc-header-start.h>
+#   （amd64 布局），aarch64 目标下必然找不到：
+#       /usr/include/stdint.h:26: fatal error: 'bits/libc-header-start.h' file not found
+#   所以 clang-target 模式必须 -nostdinc 剃掉全部默认路径，再按
+#   「clang 内建头 → aarch64 目标头」顺序加回（见下方 ARM64_INC）。
+#   explicit / cross-gcc 模式用编译器自带搜索路径，不传这些。
+#
 # ★ 两个假通过陷阱（实测踩到，勿删）：
 #   1. 显式 CC_ARM64 指向不存在的命令时，`cmd | head` 的退出码是 head 的（恒 0），
 #      command-not-found(127) 被吞 ⇒ 门禁显示"通过"。所以循环里改用 PIPESTATUS[0]，
@@ -295,20 +303,22 @@ csrc-cross:
 		echo "  [SKIP] 无 clang、无 aarch64-linux-gnu-gcc（未装任何交叉前端）"; exit 0; \
 	fi; \
 	\
-	ARM64_SYSINC=""; \
+	ARM64_INC="-nostdinc -isystem $$(clang -print-resource-dir)/include"; \
 	for d in /usr/aarch64-linux-gnu/include /usr/include/aarch64-linux-gnu; do \
-		[ -d "$$d" ] && ARM64_SYSINC="$$ARM64_SYSINC -isystem $$d"; \
+		[ -d "$$d" ] && ARM64_INC="$$ARM64_INC -isystem $$d"; \
 	done; \
 	\
 	if [ "$$MODE" = "clang-target" ]; then \
 		printf '#include <string.h>\nint main(void){return 0;}\n' > /tmp/_archchk.c; \
-		if ! clang --target=aarch64-linux-gnu $$ARM64_SYSINC -fsyntax-only /tmp/_archchk.c >/dev/null 2>&1; then \
+		if ! clang --target=aarch64-linux-gnu $$ARM64_INC -fsyntax-only /tmp/_archchk.c >/dev/null 2>&1; then \
 			echo "  [SKIP] clang 交叉前端不可用（缺 aarch64 libc 头，装 libc6-dev-arm64-cross 即可）"; exit 0; \
 		fi; \
 	fi; \
 	\
+	EXTRA_INC=""; \
+	[ "$$MODE" = "clang-target" ] && EXTRA_INC="$$ARM64_INC"; \
 	for src in $(CSRC_SRCS); do \
-		$$CC $(CSRC_CFLAGS) -Werror -fsyntax-only $$src 2>&1 | head -20; \
+		$$CC $$EXTRA_INC $(CSRC_CFLAGS) -Werror -fsyntax-only $$src 2>&1 | head -20; \
 		rc=$${PIPESTATUS[0]}; \
 		if [ "$$rc" != "0" ]; then ok=0; fi; \
 	done; \
