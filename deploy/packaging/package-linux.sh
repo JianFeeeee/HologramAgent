@@ -728,6 +728,18 @@ build_tar() {
     [ -f "$src" ] && cp "$src" "$staging/usr/bin/$bin"
   done
 
+  # ★ 启动依赖图必须与 homed 同目录。内核启动时比对「磁盘图 digest」与
+  # 「二进制内嵌 digest」，读不到图 ⇒ 生产构建直接拒绝启动（退出码 1）。
+  # 此前 build_tar 漏了这一条：装 tar 包的机器 homed 一启动就死。
+  if [ -f "$BUILD_DIR/depgraph.bin" ]; then
+    cp "$BUILD_DIR/depgraph.bin" "$staging/usr/bin/depgraph.bin"
+    chmod 644 "$staging/usr/bin/depgraph.bin"
+  else
+    echo "ERROR: 缺少 $BUILD_DIR/depgraph.bin —— 内核与依赖图必须来自同一次构建。" >&2
+    echo "       先跑 make build（它会生成图并注入 digest），再打包。" >&2
+    return 1
+  fi
+
   # setup script
   local setup_src="$PROJECT_ROOT/deploy/packaging/linux/setup.sh"
   [ -f "$setup_src" ] && cp "$setup_src" "$staging/usr/lib/hologram/setup.sh"
