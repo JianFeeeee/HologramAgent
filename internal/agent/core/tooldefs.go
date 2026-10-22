@@ -251,7 +251,19 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 主动 skill_info 拉取全文按文档执行
 	if a.skillIndex != nil {
 		if idx := a.skillIndex.SkillIndex(); idx != "" {
-			prompt = appendPromptBlock(prompt, "【可用技能】以下是已安装的原生技能。当用户请求与某技能描述匹配时，\n先用 skill_info(\"技能名\") 拉取全文，再严格按文档步骤执行：\n"+idx)
+			// ★ 措辞从"用户请求匹配某技能时"改成"**调用插件工具之前**"。
+			//
+			// 旧措辞把人带偏成"只有用户点名要某个技能才去读"，而 skill 的真实
+			// 用途是**工具的使用说明**：里面写着参数怎么填、有哪些已知坑
+			// （例如 QQ 的"拉私聊历史只传 user_id，不要传 group_id"）、
+			// 以及按需插件要先 plugin_start 拉起。
+			//
+			// 不看 skill 就直接调工具，是这个仓库反复吃过亏的一类错误。
+			prompt = appendPromptBlock(prompt, "【可用技能】这些是插件配套的**使用说明书**，不是可选装饰。\n"+
+				"**规则**：准备调用某个插件的工具（或工具调用失败、参数不确定）时，**先看这里有没有同名技能的**"+
+				"（如 file-tools / cmd-tools / qq-tools），用 skill_info(\"技能名\") 读全文，"+
+				"再严格按其中步骤与坑位说明执行。技能里通常会写明：工具该怎么调、需要先启动哪个插件、常见报错怎么读。\n"+
+				"用户明确要求用某技能时同样先 skill_info 读全文，不要凭名字猜做法。\n\n"+idx)
 		}
 	}
 
@@ -328,6 +340,18 @@ func (a *Agent) buildToolCatalog() string {
 	var sb strings.Builder
 	sb.WriteString("\n\n【可用工具能力】\n")
 	sb.WriteString("工具按插件分组注册。需要某个插件的具体工具时，调用 get_plugin_tools(\"{插件名}\") 获取该插件的完整工具定义（名称/参数/用途）。\n")
+	// ★ 说明"按需插件"这回事（2026-10-22）。
+	//
+	// 插件有两种启动形态（SDK autostart.go）：
+	//   常驻（auto_start 缺省/true）—— 工具一开始就在清单里
+	//   按需（auto_start=false）  —— 初始不在清单里，要靠 plugin_start 拉起
+	//
+	// 不说清这件事的后果：模型看到"清单里没有某能力"就断定"没有这个能力"，
+	// 于是绕道去用别的工具硬凑，或者干脆告诉用户做不到。
+	sb.WriteString("★ **工具清单里没有 ≠ 没有这个能力**：部分插件是**按需加载**的，" +
+		"它们的工具一开始不在清单里。需要时先 get_plugin_tools(\"插件名\") 看它有哪些工具、" +
+		"再 plugin_start(\"插件名\") 把它拉起来，工具就会出现。对应的 skill（同类名字或同名技能）" +
+		"会说明这个插件是常驻还是按需、以及拉起后怎么用。\n")
 	for _, plg := range order {
 		sb.WriteString(fmt.Sprintf("- %s (%d 个工具)", plg, byPlugin[plg]))
 		if d := pluginDesc[plg]; d != "" {

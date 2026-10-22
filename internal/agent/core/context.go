@@ -35,18 +35,19 @@ type ContextEvent struct {
 	ToolsUsed   []string         `json:"tools_used,omitempty"`
 	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
 
-	// NoMemory 标记这条事件**不参与记忆计算与再归档**。
+	// NoMemory 标记这条事件**不参与记忆计算**（不向量化、不提关键词、不蒸馏），
+	// 但**照常参与归档**（离开 L1 时会写回 L2）。
 	//
-	// ★ 为 doc_query 的回填而设（2026-10-22）。回填是把 L2 的历史事件
-	// 按原时间戳放回 L1 —— 它们**已经**在记忆体系里了。若不加标记：
+	// ★ 与 ToolDef.NoMemory 语义一致：只影响计算层，不影响存储层。
 	//
-	//	① 计算层：它们会被重新向量化、参与 Prune 打分 ⇒ 因为与当前输入
-	//	   相关而倾向被保留，挤掉真正的新事件；
-	//	② 归档层：Prune 会把它们**再次**归档回 L2 ⇒ 下次 doc_query
-	//	   又召回同一批 ⇒ 块在 L1↔L2 之间反复搬迁，自激震荡。
+	// ★★ 为什么不能顺手把归档也关掉（2026-10-22 踩过的坑）：
 	//
-	// 语义与 ToolDef.NoMemory / ChannelDef.NoMemory 一致：
-	// **原文保留在上下文里可读**，只是不进计算、不再产生新记忆。
+	//	doc_query 的 Consume 已经**从 L2 删除**了原文。若回填事件在 L1
+	//	被裁掉时又不归档，它就**三层都不在**了 —— 内容被永久丢弃。
+	//	L1 是它最后的落脚点，必须能落回去。
+	//
+	//	所以"回填事件不再归档"是错的。它确实该重新归档（那才是迁移闭环），
+	//	该抑制的只是"重新计算向量/再次进蒸馏"—— 那才是自激的入口。
 	NoMemory bool `json:"no_memory,omitempty"`
 	// --- 原生多模态记忆 ---
 	// 一等记忆块：块本身随事件在层间迁移，身份不变，不建引用计数。
@@ -231,7 +232,9 @@ func (c *RelevanceContext) load() {
 
 func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolDef, channelDefLookup func(name string) (sdk.ChannelDef, bool)) string {
 	// 事件自带 NoMemory（doc_query 回填的历史事件）：不进计算层。
-	// 原文仍在上下文里可读，只是不参与向量化/关键词/蒸馏。
+	//
+	// 为什么回填事件不参与计算：它们的内容刚刚在 L2 里被向量化过一次，
+	// 再算一次只会让"同一内容"在向量空间里被重复加权。但它们**照常归档**。
 	if evt.NoMemory {
 		return ""
 	}
@@ -538,24 +541,14 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 
 	archived := 0
 	if docStore != nil && len(archive) > 0 {
-		// ★ 回填事件（NoMemory）**不再归档回 L2**。
+		// ★ 回填事件（NoMemory）**照常归档** —— 这是数据不丢的关键。
 		//
-		// 这是自激震荡的根：doc_query 把事件从 L2 取到 L1，Prune 又把它们
-		// 归档回 L2 —— 下一轮 doc_query 再召回同一批，块在两层间反复搬迁。
-		// 它们本来就在记忆体系里（来源可能是 L2 或 L3），无需重新落库。
-		filtered := archive[:0]
-		skippedNoMemory := 0
-		for _, s := range archive {
-			if s.event != nil && s.event.NoMemory {
-				skippedNoMemory++
-				continue
-			}
-			filtered = append(filtered, s)
-		}
-		archive = filtered
-		if skippedNoMemory > 0 {
-			log.Printf("[agent] prune: 跳过 %d 条回填事件（NoMemory，它们在记忆体系里已有归属）", skippedNoMemory)
-		}
+		// 曾经在这里跳过它们（理由是"防自激"），那是错的：
+		// doc_query 的 Consume 已经把 L2 副本删掉了，L1 是唯一副本。
+		// 跳过归档 = 裁掉即丢失（L1、L2、L3 三层都不在）。
+		//
+		// 自激的入口不在"归档"这一侧，而在"重新计算向量"那一侧 ——
+		// 那已经由 textForVector 里 `if evt.NoMemory { return "" }` 挡住。
 	}
 	if docStore != nil && len(archive) > 0 {
 		entries := make([]document.ContextEntry, len(archive))
