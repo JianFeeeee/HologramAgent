@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 func newTestSeg(t *testing.T) *Segment {

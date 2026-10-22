@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // ErrToolNotFound 表示「工具不存在」（未注册 / 所属插件已卸载或崩溃）。

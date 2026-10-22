@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
-	sdkmeta "github.com/JianFeeeee/homeagentsdk/meta"
+	sdkmeta "github.com/JianFeeeee/hologramagentsdk/meta"
 )
 
 func TestExpandPromptVars(t *testing.T) {

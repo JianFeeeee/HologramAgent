@@ -3,7 +3,7 @@ package io
 import (
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // drainOne 取出一条注入事件；没有则 Fatal。

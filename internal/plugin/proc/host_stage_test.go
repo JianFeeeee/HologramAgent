@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 本文件是 2026-09-04 06:56:18 线上 crash 的回归测试。

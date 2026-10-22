@@ -12,7 +12,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // ---- 测试辅助 ----

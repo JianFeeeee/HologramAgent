@@ -2,7 +2,7 @@ package sdk
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // KnowledgeAPI 是内置插件使用的全量知识库接口。

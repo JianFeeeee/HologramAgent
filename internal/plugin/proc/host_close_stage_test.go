@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // TestHost_CloseWaitsForInflightStage 钉死不变量：

@@ -24,7 +24,7 @@ import (
 
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	internalSDK "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // secretE2EPlugin 是一个**用真实模板**编译的插件：它只做两件事 ——
@@ -32,7 +32,7 @@ import (
 const secretE2EPlugin = `package main
 
 import (
-	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 type secretPlugin struct{ name string }
