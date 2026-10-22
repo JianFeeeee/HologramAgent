@@ -9,7 +9,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 统一输入主干（processInput / resolveInput / injectedBlocks）与

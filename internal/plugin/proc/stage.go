@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // stage 执行：把内核的 RunStage 并发扇出接到共享段（§3.4，风险 3.4 的落点）。

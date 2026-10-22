@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 端到端：用**真实 hmapdev 模板**编译的插件，经内核 proc 通道加载运行。
@@ -25,7 +25,7 @@ const e2ePluginSource = `package main
 import (
 	"strings"
 
-	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 type e2ePlugin struct{ name string }
@@ -148,8 +148,8 @@ func buildPluginWithRealTemplate(t *testing.T, businessCode string) string {
 	}
 	mustWriteFile(t, filepath.Join(dir, "go.mod"),
 		"module e2eplugin\n\ngo 1.25\n\n"+
-			"require github.com/JianFeeeee/homeagentsdk v0.9.2\n\n"+
-			"replace github.com/JianFeeeee/homeagentsdk => "+sdkPath+"\n")
+			"require github.com/JianFeeeee/hologramagentsdk v0.9.2\n\n"+
+			"replace github.com/JianFeeeee/hologramagentsdk => "+sdkPath+"\n")
 
 	bin := filepath.Join(dir, "plugin.bin")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
@@ -241,7 +241,7 @@ func TestE2E_RealTemplatePluginFullLifecycle(t *testing.T) {
 func TestE2E_RealTemplateReadOnlyPluginDoesNotOverwrite(t *testing.T) {
 	const readerSource = `package main
 
-import sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+import sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 
 type readerPlugin struct{ name string }
 

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 const PackageExt = ".hmap"

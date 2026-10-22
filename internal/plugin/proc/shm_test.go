@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 本文件验证共享内存 stage 并发的正确性——**整个迁移最关键的一环**（§4.4 风险 3.4）。

@@ -1,5 +1,5 @@
--- HomeAgent Lua Plugin SDK
--- Interface contract between Lua plugins and HomeAgent kernel.
+-- HologramAgent Lua Plugin SDK
+-- Interface contract between Lua plugins and HologramAgent kernel.
 -- !impl functions are replaced by Go implementations at runtime.
 -- Standalone/debug: pure Lua mock implementations are used.
 -- Usage: local sdk = require("sdk")

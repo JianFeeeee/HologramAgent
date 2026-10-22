@@ -22,7 +22,7 @@ import (
 	"fmt"
 
 	internalSecurity "github.com/JianFeeeee/HologramAgent/internal/security"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // secretsImpl 实现 pubsdk.SecretsAPI。
