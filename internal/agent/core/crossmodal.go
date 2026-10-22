@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
@@ -234,37 +235,142 @@ func fuseCrossModal(textHits, visualHits []CrossModalHit, topK int, cfg CrossMod
 	return merged
 }
 
-// crossModalMarkdown 把融合候选渲染成注入上下文的文本。
-// 文档行给出摘要；媒体行只给 MIME + 短块 ID（不再有生成的描述）。
+// crossModalMarkdown 把融合候选渲染成注入提示词的文本。
+//
+// ## 为什么改
+//
+// 旧输出是这样的：
+//
+//	【跨模态相关记忆】
+//	[1] 来自 4 个来源的 61 条对话 (cold_storage, agentcli...) (来源:context_archived) 相关度:0.78（文本命中）
+//
+// 三个问题，都被生产日志证实：
+//
+//  1. 只有**统计描述**（几个来源几条对话），不是内容 —— 模型无法判断相关性；
+//  2. **没有一个字**说"你可以把这些原文取回来" —— 模型看完只能忽略；
+//  3. 来源写了 `context_archived` 这种内部标记，对模型无意义。
+//
+// 现在每条给出「时间 · 来源 · 正文开头」，并在块尾**明确告知 doc_query 的作用**：
+// 这才是让预填充真正被用起来的必要条件。
 func (a *Agent) crossModalMarkdown(hits []CrossModalHit) string {
 	if len(hits) == 0 {
 		return ""
 	}
 	var lines []string
 	for i, h := range hits {
-		marker := ""
-		switch {
-		case h.DoubleHit:
-			marker = "（图文双命中）"
-		case h.Doc != nil:
-			marker = "（文本命中）"
-		case h.Media != nil:
-			marker = "（视觉命中）"
-		}
-		parts := []string{fmt.Sprintf("[%d]", i+1)}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("[%d]", i+1))
+
+		// 时间 + 来源：让模型知道"这是什么时候、谁的事"
 		if h.Doc != nil {
-			parts = append(parts, h.Doc.Summary)
-			if h.Doc.Source != "" {
-				parts = append(parts, fmt.Sprintf("(来源:%s)", h.Doc.Source))
+			if h.Doc.HasEvents() {
+				first := h.Doc.Events[0].Timestamp
+				last := h.Doc.Events[len(h.Doc.Events)-1].Timestamp
+				if first.Equal(last) {
+					parts = append(parts, first.Format("2006-01-02 15:04"))
+				} else {
+					parts = append(parts, fmt.Sprintf("%s→%s",
+						first.Format("01-02 15:04"), last.Format("01-02 15:04")))
+				}
+				// 真实来源（跳过内部归档标记，它对模型无意义）
+				if src := firstRealSource(h.Doc.Events); src != "" {
+					parts = append(parts, src)
+				}
+			} else {
+				parts = append(parts, h.Doc.CreatedAt.Format("2006-01-02 15:04"))
 			}
 		}
+
+		// 正文开头：真实内容，模型可据此判断相关性
+		if h.Doc != nil {
+			if head := docHeadlineForPrompt(h.Doc); head != "" {
+				parts = append(parts, head)
+			}
+		}
+		// 媒体只报类型与数量，不编描述（描述式索引已在 v1.2.0 拆除）
 		if h.Media != nil {
-			if line := blockLabel(h.Media); line != "" {
-				parts = append(parts, line)
+			label := string(h.Media.Modality)
+			if h.Media.MIME != "" {
+				label = h.Media.MIME
+			}
+			parts = append(parts, "["+label+"]")
+		}
+		if h.DoubleHit {
+			parts = append(parts, "（图文双命中）")
+		}
+		parts = append(parts, fmt.Sprintf("相关度:%.2f", h.Fused))
+		lines = append(lines, strings.Join(parts, " · "))
+	}
+
+	var b strings.Builder
+	b.WriteString("【历史记忆（L2，自动预填充）】\n")
+	b.WriteString("下面是按语义相似度从历史层挑出的相关片段 —— **不是当前对话**。\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString("\n要其中某条的完整原文与当时过程：用 doc_query，它会把那些事件" +
+		"按原始时间戳插回你的对话时序。")
+	return b.String()
+}
+
+// firstRealSource 取事件里第一个非内部标记的来源。
+//
+// `context_archived` 是内核归档动作的标记，不是"谁说的"，对模型无意义。
+func firstRealSource(events []document.DocEvent) string {
+	for _, ev := range events {
+		if ev.Source != "" && ev.Source != "context_archived" && ev.Source != "cold_storage" {
+			return ev.Source
+		}
+	}
+	if len(events) > 0 {
+		return events[0].Source
+	}
+	return ""
+}
+
+// docHeadlineForPrompt 取文档正文的第一句，作为注入行里的内容提示。
+//
+// 不截断成"摘要"：这里只是一行提示，完整内容在 L2 里、需要时用 doc_query 取。
+func docHeadlineForPrompt(d *document.Doc) string {
+	if d == nil {
+		return ""
+	}
+	if d.HasEvents() {
+		for _, ev := range d.Events {
+			in, resp, _ := ev.InOut()
+			for _, cand := range []string{in, resp} {
+				if line := firstMeaningfulLineForPrompt(cand); line != "" {
+					return truncateRunesForPrompt(line, 60)
+				}
 			}
 		}
-		parts = append(parts, fmt.Sprintf("相关度:%.2f%s", h.Fused, marker))
-		lines = append(lines, strings.Join(parts, " "))
+		return ""
 	}
-	return "【跨模态相关记忆】\n" + strings.Join(lines, "\n")
+	return truncateRunesForPrompt(firstMeaningfulLineForPrompt(d.Content), 60)
+}
+
+func firstMeaningfulLineForPrompt(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		hasWord := false
+		for _, r := range line {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				hasWord = true
+				break
+			}
+		}
+		if hasWord {
+			return strings.Join(strings.Fields(line), " ")
+		}
+	}
+	return ""
+}
+
+func truncateRunesForPrompt(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }

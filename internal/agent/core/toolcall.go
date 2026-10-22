@@ -1030,26 +1030,21 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		if len(docs) == 0 {
 			return "未找到相关文档记忆"
 		}
-		var parts []string
-		var refs []string
+
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("已召回 %d 篇历史记忆，原文已按各自**原始时间戳**插回对话时序（不是当前对话）：\n", len(docs)))
+
+		totalEvents := 0
 		for i, d := range docs {
-			parts = append(parts, fmt.Sprintf("[%d] %s (来源: %s)", i+1, d.Summary, d.Source))
-			if len(d.Tags) > 0 {
-				parts = append(parts, "  标签: "+strings.Join(d.Tags, ", "))
-			}
-			// ★★ 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件
+			// 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件。
 			//
-			// 设计原文（ARCHITECTURE「记忆流转」② Document 层）：
-			//
-			//	doc_query → Consume(读取并删除)
-			//	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
-			//
-			// 此前实现用 d.CreatedAt（归档时刻）造一条 cold_storage 事件、
-			// 正文取 d.Content（渲染视图）再截 2000 字、块完全没回填 ——
-			// 三处都偏离：时间错位、正文二次截断、块两层消失。
-			if n := a.restoreDocEvents(d); n == 0 {
-				// 存量文档（无 Events）降级：整篇渲成一个事件，保持既有行为。
-				// 不伪造成「有原始事件」——那时归档确实只有渲染视图。
+			// ARCHITECTURE「记忆流转」② Document 层：
+			//   doc_query → Consume(读取并删除)
+			//             → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
+			n := a.restoreDocEvents(d)
+			if n == 0 {
+				// 存量文档（无 Events）降级：整篇渲成一个事件。
+				// 不伪造成「有原始事件」—— 那时归档确实只有渲染视图。
 				content := d.Content
 				if labels := a.blockLabelsForDoc(d); labels != "" {
 					content = content + "\n关联媒体: " + labels
@@ -1060,11 +1055,25 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 					Input:     fmt.Sprintf("加载文档记忆: %s", query),
 					Response:  content,
 				})
+				n = 1
 			}
-			refs = append(refs, fmt.Sprintf("#%d(%s)", i+1, d.Summary))
+			totalEvents += n
+
+			// ★ 每条给出「什么时候 + 谁说的 + 正文开头」，
+			//   让模型**立刻**能判断这笔召回有没有用。
+			//
+			// 旧返回只有「[1] 来自 1 个来源的 1 条对话 (agent) 涉及: ok」——
+			// jieba 词袋，零信息量，模型无法据此判断相关性。
+			b.WriteString(fmt.Sprintf("\n[%d] %s\n", i+1, docRecallHeadline(d, n)))
+
+			// 附上少量真实正文行，供模型即时判断（完整原文在时序里）。
+			if preview := docRecallPreview(d, n, 3); preview != "" {
+				b.WriteString(preview)
+			}
 		}
-		return fmt.Sprintf("已加载 %d 篇文档记忆: %s\n(正文已按原时间戳回填到对话时序，直接读时序即可)",
-			len(docs), strings.Join(refs, ", "))
+
+		b.WriteString(fmt.Sprintf("\n共回填 %d 条事件。要引用其中的细节，直接看对话时序里对应时间点即可。", totalEvents))
+		return b.String()
 
 	case "doc_commit":
 		content, _ := tc.Arguments["content"].(string)
@@ -1076,18 +1085,9 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			summary = truncateStr(content, 100)
 		}
 
-		tagsRaw, _ := tc.Arguments["tags"].([]interface{})
-		var tags []string
-		for _, t := range tagsRaw {
-			if s, ok := t.(string); ok {
-				tags = append(tags, s)
-			}
-		}
-
 		doc := &document.Doc{
 			Summary: summary,
 			Content: content,
-			Tags:    tags,
 			Source:  "manual",
 		}
 
@@ -1323,4 +1323,111 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 		d.Events[0].Timestamp.Format("01-02 15:04:05"),
 		d.Events[len(d.Events)-1].Timestamp.Format("01-02 15:04:05"), blocks)
 	return n
+}
+
+// docRecallHeadline 生成一条召回结果的首行：「时间跨度 · 来源 · 事件数 · 媒体数」。
+//
+// 为什么不用 Doc.Summary：那是 jieba 词袋（"来自 N 个来源的 M 条对话 涉及: ok"），
+// 零信息量。模型看到它无法判断这笔召回有没有用 —— 这正是 agent 几乎不用
+// doc_query 的直接原因之一。
+func docRecallHeadline(d *document.Doc, eventCount int) string {
+	if d == nil {
+		return ""
+	}
+	var parts []string
+	if d.HasEvents() {
+		first := d.Events[0].Timestamp
+		last := d.Events[len(d.Events)-1].Timestamp
+		if first.Equal(last) {
+			parts = append(parts, first.Format("2006-01-02 15:04"))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s → %s",
+				first.Format("01-02 15:04"), last.Format("01-02 15:04")))
+		}
+		// 来源集合（去重，最多 3 个）
+		seen := map[string]bool{}
+		var srcs []string
+		for _, ev := range d.Events {
+			if ev.Source != "" && !seen[ev.Source] {
+				seen[ev.Source] = true
+				srcs = append(srcs, ev.Source)
+				if len(srcs) >= 3 {
+					break
+				}
+			}
+		}
+		if len(srcs) > 0 {
+			parts = append(parts, strings.Join(srcs, "/"))
+		}
+	} else {
+		parts = append(parts, d.CreatedAt.Format("2006-01-02 15:04"))
+		if d.Source != "" {
+			parts = append(parts, d.Source)
+		}
+	}
+	parts = append(parts, fmt.Sprintf("%d 条事件", eventCount))
+	if n := len(d.Blocks); n > 0 {
+		media := 0
+		for i := range d.Blocks {
+			if d.Blocks[i].Modality != memory.BlockText {
+				media++
+			}
+		}
+		if media > 0 {
+			parts = append(parts, fmt.Sprintf("含 %d 份媒体", media))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// docRecallPreview 取少量**真实正文**行，让模型即时判断相关性。
+//
+// 只取前 maxLines 行、每行截短：完整原文已在对话时序里（restoreDocEvents 回填），
+// 这里只是"先给你看一眼是什么"，不是全文。
+func docRecallPreview(d *document.Doc, eventCount, maxLines int) string {
+	if d == nil || maxLines <= 0 {
+		return ""
+	}
+	var out []string
+	add := func(s string) bool {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return len(out) < maxLines
+		}
+		out = append(out, "    "+oneLinePreview(s, 100))
+		return len(out) < maxLines
+	}
+
+	if d.HasEvents() {
+		for _, ev := range d.Events {
+			in, resp, _ := ev.InOut()
+			if in != "" && !add(in) {
+				return strings.Join(out, "\n")
+			}
+			if resp != "" && !add(resp) {
+				return strings.Join(out, "\n")
+			}
+		}
+	} else {
+		// 存量文档：从渲染视图取前几行
+		for _, line := range strings.Split(d.Content, "\n") {
+			if !add(line) {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, "\n")
+}
+
+// oneLinePreview 把一段文本压成单行短摘要（换行折叠、超长截断）。
+func oneLinePreview(s string, maxRunes int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "…"
 }

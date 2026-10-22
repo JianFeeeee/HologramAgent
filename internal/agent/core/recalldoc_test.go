@@ -284,3 +284,73 @@ func TestRecallByDoc_StressManyEvents(t *testing.T) {
 	}
 	t.Logf("回填 %d 条耗时 %v", got, elapsed)
 }
+
+// ⑥ doc_query 的返回值必须**带真实内容**，不能只有统计描述。
+//
+// 断点史（生产日志实测）：旧返回值是
+//
+//	已加载 3 篇文档记忆: #1(来自 1 个来源的 1 条对话 (agent) 涉及: ok), #2(...)
+//
+// 全 jieba 词袋，零信息量 ⇒ agent 无法判断这笔召回有没有用 ⇒ 几乎不再调用。
+//
+// 本判据要求返回值同时具备三件事：
+//  1. 明确说明原文去了哪里（"插回对话时序"）
+//  2. 每条给出时间 + 来源（可判断"这是哪次的事"）
+//  3. 每条给出真实正文片段（可判断"这是不是我要的"）
+func TestRecallByDoc_ReturnValueCarriesRealContent(t *testing.T) {
+	a := newToolTestAgent(t)
+
+	const sentinel = "紫蓝红三色带按六比三比一"
+	archiveEvents(t, a, []ContextEvent{{
+		Timestamp: time.Date(2026, 6, 7, 8, 9, 10, 0, time.UTC),
+		Source:    "webui",
+		Input:     "配色方案怎么定？",
+		Response:  "结论：" + sentinel + "，主色紫、辅色蓝、点缀红。",
+	}})
+
+	out := a.executeDocTool(agentAPI.ToolCall{
+		Name:      "doc_query",
+		Arguments: map[string]interface{}{"query": "配色方案 紫蓝红", "top_k": float64(3)},
+	})
+
+	// 1) 必须说明原文去了时序
+	if !strings.Contains(out, "时序") {
+		t.Errorf("返回值没说原文去了哪里：\n%s", out)
+	}
+	// 2) 必须有时间（年月日或月-日）
+	if !strings.Contains(out, "2026-06-07") && !strings.Contains(out, "06-07") {
+		t.Errorf("返回值没有时间信息：\n%s", out)
+	}
+	// 3) 必须有来源
+	if !strings.Contains(out, "webui") {
+		t.Errorf("返回值没有来源信息：\n%s", out)
+	}
+	// 4) ★ 必须有真实正文（否则模型无法判断相关性）
+	if !strings.Contains(out, "六比三比一") {
+		t.Errorf("返回值不含真实正文片段（模型无法判断相关性）：\n%s", out)
+	}
+	// 5) 不得回退成 jieba 词袋的模板摘要
+	if strings.Contains(out, "涉及:") {
+		t.Errorf("返回值仍是 jieba 词袋模板摘要：\n%s", out)
+	}
+}
+
+// ⑦ 旧格式文档的召回也要给出可判断的信息（降级路径不能退化成无内容）。
+func TestRecallByDoc_LegacyReturnAlsoCarriesContent(t *testing.T) {
+	a := newToolTestAgent(t)
+	if err := a.docStore.Insert(&document.Doc{
+		Summary: "旧格式摘要",
+		Content: "[10:00] legacy: 旧格式文档里的真实正文在这里",
+		Source:  "context_archived",
+		Meta:    map[string]string{"content_hash": "legacy-2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := a.executeDocTool(agentAPI.ToolCall{
+		Name:      "doc_query",
+		Arguments: map[string]interface{}{"query": "旧格式文档 真实正文", "top_k": float64(3)},
+	})
+	if !strings.Contains(out, "真实正文在这里") {
+		t.Errorf("存量文档召回没有给出正文：\n%s", out)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
@@ -34,12 +35,10 @@ type ChannelCleaner func(source string) func(string) string
 // Content 只是**渲染视图**（供摘要、人工阅读、SDK 的 Doc.Content 字段），
 // 不是原文载体。原文在 Events 里，正文内联在文本块里。
 type Doc struct {
-	ID       string     `json:"id"`
-	Summary  string     `json:"summary"`
-	Content  string     `json:"content"` // 渲染视图，不是原文
-	Events   []DocEvent `json:"events,omitempty"`
-	Tags     []string   `json:"tags"`
-	Entities []string   `json:"entities"`
+	ID      string     `json:"id"`
+	Summary string     `json:"summary"`
+	Content string     `json:"content"` // 渲染视图，不是原文
+	Events  []DocEvent `json:"events,omitempty"`
 
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
@@ -93,9 +92,35 @@ type DocEvent struct {
 // 「把 Content 塞进一条事件」，而不是假装能回填。
 func (d *Doc) HasEvents() bool { return d != nil && len(d.Events) > 0 }
 
+// docVectorAlgoVersion 是**文档向量算法**的版本标记。
+//
+// 为什么必需：DenseFP 只记录"哪个向量空间（模型）"，不记录"用什么文本算的"。
+// 2026-10-22 把输入从 `Summary + Content` 改成"事件正文"后，指纹不变
+// ⇒ 存量文档全部命中 `DenseFP == 指纹` 的跳过条件 ⇒ **永不重算**，
+// 修复对已有数据完全无效（实测：1055 篇存量仍是旧分数 0.78/0.79/0.76，
+// 区分度 0.003，与新算法的判据结果不符）。
+//
+// 所以把算法版本编进 DenseFP：算法一变，指纹后缀变，存量自动重算一次。
+//
+// 变更记录：
+//
+//	v1  初版：VectorizeDense(Summary + Content)
+//	v2  Summary 是 jieba 词袋且全库同质，改为事件正文（见 denseFor 注释）
+const docVectorAlgoVersion = "v2"
+
 // Store — 文档记忆存储。
-// 主路径：denseSpace（稠密多模态向量，与媒体共享空间）。
+//
+// 主路径：denseSpace（稠密向量，与媒体共享的统一空间）。
 // Fallback：tfidf（TF-IDF 倒排索引，仅稠密空间不可用时加载）。
+//
+// ★ 关于 fallback 的定位（不要误删）：
+//
+//	它是「稠密空间没加载」时的兜底，**不是**「词袋当语义」的第二套真相。
+//	设计要求（ARCHITECTURE「向量层级：统一多模态空间（主）→ 词嵌入 → TF-IDF（回退）」）
+//	明确保留这条降级链：模型不可用时服务不能整个失去检索能力。
+//
+//	★ 但它**绝不能**是主路径：一旦稠密空间可用，jieba 词袋就不该参与
+//	  （实测主题不同的文档两两余弦 0.85~0.95，检索等同失效 —— 见 denseFor 注释）。
 type Store struct {
 	dir   string
 	mu    sync.RWMutex
@@ -112,7 +137,8 @@ type Store struct {
 	denseSpace vector.MultimodalEmbedder
 }
 
-// NewStore 创建文档存储。tokenizer 由外层注入（如 jieba），核心不直接依赖分词库。
+// NewStore 创建文档存储。tokenizer 由外层注入（如 jieba），供 TF-IDF 回退路径使用
+// （仅稠密空间不可用时加载；主路径不碰它）。
 func NewStore(dir string, tokenizer tfidf.Tokenizer) *Store {
 	return &Store{
 		dir:  dir,
@@ -175,7 +201,7 @@ func (s *Store) BuildDenseIndex(ds vector.MultimodalEmbedder) {
 	log.Printf("[document memory] building dense index for %d docs (dim=%d)", len(s.docs), ds.Dim())
 	count := 0
 	for _, doc := range s.docs {
-		if doc.DenseVec != nil && len(doc.DenseVec) == ds.Dim() && doc.DenseFP == ds.Fingerprint() {
+		if doc.DenseVec != nil && len(doc.DenseVec) == ds.Dim() && doc.DenseFP == s.vectorFingerprint() {
 			continue
 		}
 		vec := s.denseFor(doc)
@@ -183,7 +209,7 @@ func (s *Store) BuildDenseIndex(ds vector.MultimodalEmbedder) {
 			continue
 		}
 		doc.DenseVec = vec
-		doc.DenseFP = ds.Fingerprint()
+		doc.DenseFP = s.vectorFingerprint()
 		count++
 	}
 	if count > 0 {
@@ -197,11 +223,35 @@ func (s *Store) BuildDenseIndex(ds vector.MultimodalEmbedder) {
 	log.Printf("[document memory] dense index built: %d new vectors", count)
 }
 
-// denseFor 计算文档的稠密向量：文本向量与其一等记忆块的媒体向量融合。
+// denseFor 计算文档的稠密向量：**事件正文** ⊕ 同事件媒体块的向量。
 //
-// 只有与当前统一空间同指纹的块向量才参与融合：不同模型/维度的旧向量
-// 属于另一个坐标系，混进去会算出一个两边都不像的方向。
-// 任意一路缺失时退化为另一路；都不可用返回 nil。
+// ## 为什么不能用 Summary
+//
+// 旧实现是 `VectorizeDense(doc.Summary + " " + doc.Content)`，而 Summary
+// 由 summarizeEntries → jieba 词袋生成，同一来源的摘要**逐字同质**：
+//
+//	来自 1 个来源的 1 条对话 (src0) 涉及: 用户, 提问
+//	来自 1 个来源的 1 条对话 (src1) 涉及: 用户, 提问
+//
+// 实测（真实 chineseclip，4 篇主题完全不同的短正文）两两余弦 0.85~0.95 ——
+// 几乎同向；查询分数全挤在 0.70~0.78，区分度 0.08 ⇒ 检索等同失效。
+//
+// 这与设计直接矛盾：ARCHITECTURE 写的是「统一多模态空间（主）」，而
+// Summary 属于主路径的输入，却由最末一级的词法分词产出。
+//
+// ## 媒体怎么办：不需要单独生成摘要
+//
+// 媒体块与文本块**在同一事件内**（Doc.Events[i].Blocks），事件的正文进入
+// 向量即覆盖了它的语义。为媒体单独生成描述正是 CAS 时代「描述式索引」
+// 的错误（描述是模型生成的二手信息），已在 v1.2.0 整体拆除，不重走。
+//
+// 若将来要「按图搜图」，那是视觉路（RecallBlocks 读块自己的向量）的职责，
+// 已有独立通路，与本函数无关。
+//
+// ## 存量兼容
+//
+// 无 Events 的旧文档（本次改动前归档的）退回 Content —— 那是当时唯一的
+// 原文载体，虽然它是渲染视图，但比 Summary 更接近内容。
 func (s *Store) denseFor(doc *Doc) []float64 {
 	if s.denseSpace == nil || !s.denseSpace.Loaded() {
 		return nil
@@ -209,9 +259,16 @@ func (s *Store) denseFor(doc *Doc) []float64 {
 	fp := s.denseSpace.Fingerprint()
 	dim := s.denseSpace.Dim()
 	var parts [][]float64
-	if tv, err := s.denseSpace.VectorizeDense(doc.Summary + " " + doc.Content); err == nil && len(tv) > 0 {
-		parts = append(parts, tv)
+
+	// 文本路：用事件正文（原文），不用 Summary（jieba 词袋）。
+	// 媒体块的语义由同一事件的文本覆盖，因此这里不需要为媒体单独编码。
+	if text := documentTextForVector(doc); text != "" {
+		if tv, err := s.denseSpace.VectorizeDense(text); err == nil && len(tv) > 0 {
+			parts = append(parts, tv)
+		}
 	}
+
+	// 媒体路：块自带的多模态向量（同空间同维度才参与融合）。
 	for _, b := range doc.Blocks {
 		// 只比指纹不够：指纹相同但**维度不同**的块会被 FuseVectors 按
 		// 「最大维度」拼成错维度向量（并覆盖掉文本向量），而结果又被
@@ -222,6 +279,50 @@ func (s *Store) denseFor(doc *Doc) []float64 {
 		}
 	}
 	return vector.FuseVectors(parts...)
+}
+
+// vectorFingerprint 返回「向量空间指纹 + 文档向量算法版本」。
+//
+// 只比空间指纹不够：换算法（同一模型、不同输入文本）时必须触发重算，
+// 否则存量数据永远停留在旧算法的结果上（实测后果见 docVectorAlgoVersion）。
+func (s *Store) vectorFingerprint() string {
+	if s.denseSpace == nil {
+		return ""
+	}
+	return s.denseSpace.Fingerprint() + "|" + docVectorAlgoVersion
+}
+
+// documentTextForVector 取文档用于向量化的文本：**正文**。
+//
+// 有 Events 时按事件顺序拼原文（来自块里的正文）；无 Events 的存量文档
+// 退回 Content（渲染视图，但仍是原文最接近的载体）。
+// 绝不含 Summary —— 那是 jieba 词袋，会把全库拉向同一方向。
+func documentTextForVector(doc *Doc) string {
+	if doc == nil {
+		return ""
+	}
+	if !doc.HasEvents() {
+		return strings.TrimSpace(doc.Content)
+	}
+	var b strings.Builder
+	for _, ev := range doc.Events {
+		in, resp, _ := ev.InOut()
+		if in != "" {
+			b.WriteString(in)
+			b.WriteString("\n")
+		}
+		if resp != "" {
+			b.WriteString(resp)
+			b.WriteString("\n")
+		}
+		for _, tr := range ev.ToolResults {
+			if tr.Output != "" {
+				b.WriteString(tr.Output)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 // Reindex 重建 TF-IDF 索引（fallback 路径变更时调用）。
@@ -261,7 +362,7 @@ func (s *Store) Insert(doc *Doc) error {
 	// 主路径：稠密向量（文本 ⊕ 媒体块）
 	if s.denseSpace != nil && s.denseSpace.Loaded() && len(doc.DenseVec) == 0 {
 		doc.DenseVec = s.denseFor(doc)
-		doc.DenseFP = s.denseSpace.Fingerprint()
+		doc.DenseFP = s.vectorFingerprint()
 	}
 
 	// Fallback 路径：缓存文本，延迟训练
@@ -298,8 +399,6 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 	content := contentFromEvents(events)
 	contentHash := simpleHash(content)
 	summary := summarizeEntries(entries, cleanFn, toolCleanFn, channelCleaner)
-	tags := extractTags(entries, cleanFn, toolCleanFn, channelCleaner)
-	entities := extractEntities(entries, cleanFn, toolCleanFn, channelCleaner)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -312,12 +411,10 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 			d.Events = events
 			d.Source = source
 			d.Summary = summary
-			d.Tags = tags
-			d.Entities = entities
 			d.Blocks = flattenEventBlocks(events)
 			d.DenseVec = s.denseFor(d)
 			if s.denseSpace != nil {
-				d.DenseFP = s.denseSpace.Fingerprint()
+				d.DenseFP = s.vectorFingerprint()
 			}
 			s.dirty = true
 			return d, nil
@@ -330,8 +427,8 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 		meta["is_archived_context"] = "true"
 	}
 	doc := &Doc{
-		ID: id, Summary: summary, Content: content, Tags: tags,
-		Entities: entities, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		ID: id, Summary: summary, Content: content,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		LastAccess: time.Now(), AccessCount: 1, Source: source, Meta: meta,
 		Events: events,
 		Blocks: flattenEventBlocks(events),
@@ -339,7 +436,7 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 	s.docs[id] = doc
 	doc.DenseVec = s.denseFor(doc)
 	if s.denseSpace != nil {
-		doc.DenseFP = s.denseSpace.Fingerprint()
+		doc.DenseFP = s.vectorFingerprint()
 	}
 	text := summary + " " + content
 	if s.tfidfIdx != nil {
@@ -667,128 +764,76 @@ func blocksFromEntries(entries []ContextEntry) []memory.MemoryBlock {
 	return out
 }
 
+// summarizeEntries 生成文档摘要 —— **纯展示用**，不参与任何向量计算。
+//
+// ★ 这里曾经调用 memory.ExtractKeywords（jieba Tag 分词 + 停用词），
+//
+//	产出形如「来自 1 个来源的 1 条对话 (agent) 涉及: map, content, 是不是」。
+//	两个后果都是实测的：
+//
+//	1. **不是摘要，是词袋清单**：模型与人都无法从中知道这篇讲什么；
+//	2. **全库同质**：同一来源的摘要逐字相同，一旦被当作向量输入
+//	   （denseFor 曾用 doc.Summary），四篇主题完全不同的文档两两余弦
+//	   达到 0.85~0.95，检索等同失效。
+//
+// 现在改为取**首条事件的正文开头**：那是真实内容，可读、可判断。
+// 仍然只是展示视图 —— 原文在 Events 的文本块里，摘要是它的短引用。
 func summarizeEntries(entries []ContextEntry, cleanText func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) string {
 	if len(entries) == 0 {
 		return ""
 	}
-	sources := make(map[string]int)
-	var topics []string
+	// 优先取用户/agent 的实质正文（而非工具输出），取到即止。
 	for _, e := range entries {
-		sources[e.Source]++
 		content := e.Content
 		if channelCleaner != nil {
 			if c := channelCleaner(e.Source); c != nil {
 				content = c(content)
 			}
 		}
-		words := memory.ExtractKeywords(cleanText(content))
-		topics = append(topics, words...)
-		for _, tr := range e.ToolResults {
-			out := tr.Output
-			if toolCleanFn != nil {
-				if c := toolCleanFn(tr.Name, tr.Output); c == "" {
-					continue
-				} else {
-					out = c
-				}
-			}
-			toolWords := memory.ExtractKeywords(out)
-			topics = append(topics, toolWords...)
+		if cleanText != nil {
+			content = cleanText(content)
 		}
-	}
-	summary := fmt.Sprintf("来自 %d 个来源的 %d 条对话", len(sources), len(entries))
-	var srcList []string
-	for s := range sources {
-		srcList = append(srcList, s)
-	}
-	summary += " (" + strings.Join(srcList, ", ") + ")"
-	if len(topics) > 0 {
-		seen := make(map[string]bool)
-		var uniq []string
-		for _, t := range topics {
-			if !seen[t] {
-				seen[t] = true
-				uniq = append(uniq, t)
+		if line := firstMeaningfulLine(content); line != "" {
+			return truncateRunes(line, 80)
+		}
+		if e.Response != "" {
+			if line := firstMeaningfulLine(e.Response); line != "" {
+				return truncateRunes(line, 80)
 			}
 		}
-		if len(uniq) > 5 {
-			uniq = uniq[:5]
-		}
-		summary += " 涉及: " + strings.Join(uniq, ", ")
 	}
-	return summary
+	return fmt.Sprintf("%d 条事件", len(entries))
 }
 
-func extractTags(entries []ContextEntry, cleanText func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) []string {
-	tagSet := make(map[string]bool)
-	for _, e := range entries {
-		content := e.Content
-		if channelCleaner != nil {
-			if c := channelCleaner(e.Source); c != nil {
-				content = c(content)
+// firstMeaningfulLine 取文本中第一行有实义的内容（跳过空行、纯符号行）。
+func firstMeaningfulLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// 跳过纯符号/空白
+		hasWord := false
+		for _, r := range line {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				hasWord = true
+				break
 			}
 		}
-		for _, kw := range memory.ExtractKeywords(cleanText(content)) {
-			tagSet[kw] = true
-		}
-		for _, tr := range e.ToolResults {
-			out := tr.Output
-			if toolCleanFn != nil {
-				if c := toolCleanFn(tr.Name, tr.Output); c == "" {
-					continue
-				} else {
-					out = c
-				}
-			}
-			for _, kw := range memory.ExtractKeywords(out) {
-				tagSet[kw] = true
-			}
+		if hasWord {
+			return strings.Join(strings.Fields(line), " ")
 		}
 	}
-	var tags []string
-	for t := range tagSet {
-		if len(tags) >= 10 {
-			break
-		}
-		tags = append(tags, t)
-	}
-	return tags
+	return ""
 }
 
-func extractEntities(entries []ContextEntry, cleanText func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) []string {
-	var entities []string
-	seen := make(map[string]bool)
-	for _, e := range entries {
-		content := e.Content
-		if channelCleaner != nil {
-			if c := channelCleaner(e.Source); c != nil {
-				content = c(content)
-			}
-		}
-		for _, kw := range memory.ExtractKeywords(cleanText(content)) {
-			if len(kw) >= 2 && !seen[kw] {
-				seen[kw] = true
-				entities = append(entities, kw)
-			}
-		}
-		for _, tr := range e.ToolResults {
-			out := tr.Output
-			if toolCleanFn != nil {
-				if c := toolCleanFn(tr.Name, tr.Output); c == "" {
-					continue
-				} else {
-					out = c
-				}
-			}
-			for _, kw := range memory.ExtractKeywords(out) {
-				if len(kw) >= 2 && !seen[kw] {
-					seen[kw] = true
-					entities = append(entities, kw)
-				}
-			}
-		}
+// truncateRunes 按字符（非字节）截断。
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
 	}
-	return entities
+	return string(r[:max]) + "…"
 }
 
 // simpleHash 是用于「内容是否同一份」比对的快速摘要。
