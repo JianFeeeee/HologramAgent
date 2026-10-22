@@ -141,34 +141,57 @@ type ProxyDef struct {
 	Auth string `json:"auth,omitempty"`
 }
 
-// ProxyAuth 取值。空串按 ProxyAuthHomeAgent 处理（安全的默认）。
+// ProxyAuth 取值。空串按 ProxyAuthAgent 处理（安全的默认）。
 const (
-	// ProxyAuthHomeAgent 表示由 HomeAgent 统一保护：浏览器走门户会话
-	// （homeagent_session cookie），非浏览器客户端走 X-API-Key。
+	// ProxyAuthAgent 表示由内核统一保护：浏览器走门户会话
+	// （HologramAgent session cookie），非浏览器客户端走 X-API-Key。
 	// 两者都没有时返回 401，而不是把请求透传给上游。
-	ProxyAuthHomeAgent = "homeagent"
+	ProxyAuthAgent = "agent"
 
-	// ProxyAuthNone 表示不经 HomeAgent 鉴权，直接把请求转发给上游。
+	// ProxyAuthNone 表示不经内核鉴权，直接把请求转发给上游。
 	//
 	// 适用场景：上游自己有鉴权且调用方不是浏览器（设备/嵌入式客户端），
 	// 或上游是刻意公开的服务。选用它意味着**信任上游自身的鉴权**，
 	// 且该服务在网络层可达范围内对所有人开放。
 	ProxyAuthNone = "none"
+
+	// ProxyAuthAgentLegacy 是旧值的字面量，**只用于兼容读取**，不要在新声明里写它。
+	//
+	// 为什么必须继续接受（2026-10-22）：`Auth` 是写进 plugin.json 的**持久化
+	// 声明值**，存量插件的配置文件里已经写着旧值（本机实测 huawei_smarthome 的
+	// plugin.json:19 就是 "auth": "homeagent"）。删掉这个分支 ⇒ 那些插件在加载
+	// 时被判为非法声明，反代直接不生效，且症状是"插件好好的但页面打不开"。
+	//
+	// 这正是 sdkModuleNames 处理 module 路径改名时的同一条教训：**协议值的
+	// 改名必须保留旧值的读取路径**，否则存量数据无声失效。
+	ProxyAuthAgentLegacy = "homeagent"
 )
 
-// ValidProxyAuth 校验 Auth 取值；空串合法（等价 ProxyAuthHomeAgent）。
+// ProxyAuthHomeAgent 是 ProxyAuthAgent 的旧名，仅为**存量源码**保留。
+//
+// Deprecated: 用 ProxyAuthAgent。存量插件的 plugin.json 里写的旧值仍被
+// ValidProxyAuth/EffectiveProxyAuth 接受（见 ProxyAuthAgentLegacy）。
+const ProxyAuthHomeAgent = ProxyAuthAgent
+
+// ValidProxyAuth 校验 Auth 取值；空串合法（等价 ProxyAuthAgent）。
+//
+// 同时接受旧值 ProxyAuthAgentLegacy —— 存量 plugin.json 里写的仍是它。
 func ValidProxyAuth(auth string) bool {
 	switch auth {
-	case "", ProxyAuthHomeAgent, ProxyAuthNone:
+	case "", ProxyAuthAgent, ProxyAuthNone, ProxyAuthAgentLegacy:
 		return true
 	}
 	return false
 }
 
-// EffectiveProxyAuth 返回生效的鉴权模式（空串归一化为 ProxyAuthHomeAgent）。
+// EffectiveProxyAuth 返回生效的鉴权模式（空串与旧值都归一化为 ProxyAuthAgent）。
+//
+// 归一化旧值是关键：下游一律只可能拿到 ProxyAuthAgent，不必各自兼容旧值
+// （否则每个判断点都要写 `== ProxyAuthAgent || == ProxyAuthAgentLegacy`，
+// 漏一处就是鉴权绕过）。
 func EffectiveProxyAuth(auth string) string {
-	if auth == "" {
-		return ProxyAuthHomeAgent
+	if auth == "" || auth == ProxyAuthAgentLegacy {
+		return ProxyAuthAgent
 	}
 	return auth
 }
