@@ -6,25 +6,8 @@ import (
 	"testing"
 )
 
-// 存量 plugin.json 里写的是旧值 "homeagent"（本机实测 huawei_smarthome）。
-// 改名后必须**继续接受并归一化**它 —— 否则那些插件在加载时被判为非法声明，
-// 反代直接不生效，症状是"插件好好的但页面打不开"，且没有任何报错指向改名。
-func TestProxyAuthLegacyValueStillAccepted(t *testing.T) {
-	if !ValidProxyAuth(ProxyAuthAgentLegacy) {
-		t.Fatalf("旧值 %q 必须仍被接受", ProxyAuthAgentLegacy)
-	}
-	if ProxyAuthAgentLegacy == ProxyAuthAgent {
-		t.Fatal("旧值应与新值不同，否则本判据测不到东西")
-	}
-	// ★ 归一化是最关键的一步：下游一律只可能拿到新值，
-	// 否则每个判断点都要写两遍比较，漏一处就是鉴权绕过。
-	if got := EffectiveProxyAuth(ProxyAuthAgentLegacy); got != ProxyAuthAgent {
-		t.Fatalf("旧值应归一化为 %q，实际 %q", ProxyAuthAgent, got)
-	}
-}
-
-func TestProxyAuthDefaultsToHomeAgent(t *testing.T) {
-	// 空串必须归一化为「HomeAgent 统一保护」——这是安全默认。
+func TestProxyAuthDefaultsToHologramAgent(t *testing.T) {
+	// 空串必须归一化为「HologramAgent 统一保护」——这是安全默认。
 	// 若哪天有人把默认改成 none，这条会立刻红。
 	if got := EffectiveProxyAuth(""); got != ProxyAuthAgent {
 		t.Fatalf("空 auth 应归一化为 %q，实际 %q", ProxyAuthAgent, got)
@@ -41,6 +24,27 @@ func TestProxyAuthDefaultsToHomeAgent(t *testing.T) {
 		if ValidProxyAuth(bad) {
 			t.Errorf("%q 应非法", bad)
 		}
+	}
+}
+
+// 存量 plugin.json 里写的是旧值 "homeagent"（本机实测 huawei_smarthome）。
+// 改名后必须**继续接受并归一化**它 —— 否则那些插件在加载时被判为非法声明，
+// 反代直接不生效，症状是"插件好好的但页面打不开"，且没有任何报错指向改名。
+func TestProxyAuthLegacyValueStillAccepted(t *testing.T) {
+	if !ValidProxyAuth(ProxyAuthAgentLegacy) {
+		t.Fatalf("旧值 %q 必须仍被接受", ProxyAuthAgentLegacy)
+	}
+	if ProxyAuthAgentLegacy == ProxyAuthAgent {
+		t.Fatal("旧值应与新值不同，否则本判据测不到东西")
+	}
+	// ★ 归一化是最关键的一步：下游一律只可能拿到新值，
+	// 否则每个判断点都要写两遍比较，漏一处就是鉴权绕过。
+	if got := EffectiveProxyAuth(ProxyAuthAgentLegacy); got != ProxyAuthAgent {
+		t.Fatalf("旧值应归一化为 %q，实际 %q", ProxyAuthAgent, got)
+	}
+	// 存量 plugin.json 的字面量必须能过校验（这是真实数据，不是假设）。
+	if !ValidProxyAuth("homeagent") {
+		t.Fatal(`存量 plugin.json 里的 "auth": "homeagent" 必须仍被接受`)
 	}
 }
 
