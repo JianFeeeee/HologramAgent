@@ -187,7 +187,9 @@ jobs:
       #      而不是把整个 job 拖到 job 级 timeout（后者报错信息毫无指向性）
       #   3. 装完立即 `command -v` 复核，缺工具就红 —— 见下方"缺工具即失败"
       - name: 安装 C 工具链（已装则跳过）
-        timeout-minutes: 6
+        # 120s(update) + 180s(install) = 300s，给 5 分钟正好；
+        # 超出说明 timeout 命令本身没生效，此时应当红而不是继续等。
+        timeout-minutes: 5
         run: |
           set -uo pipefail
           need=""
@@ -201,17 +203,29 @@ jobs:
           fi
 
           echo "需要安装:$need"
-          # apt-get 自己的超时：卡住时 4 分钟内失败，而不是拖到 6 分钟 step 超时。
-          # 重试一次 —— runner 网络偶发抖动不该让门禁变红。
-          sudo apt-get -o Acquire::http::Timeout=60 \
-                       -o Acquire::https::Timeout=60 \
-                       -o Acquire::Retries=3 \
-                       update -qq
+
+          # ★ 2026-10-22 实测：加 Acquire::*Timeout=60 + Retries=3 之后仍然卡满
+          # 6 分钟 step 超时，且**日志里一个 apt 输出都没有** —— 因为 `-qq`
+          # 把一切静默了。卡死不可观测正是它拖满超时的原因：既看不到卡在哪个
+          # 源，也看不到到底在下载什么。
+          #
+          # 所以：
+          #   · 去掉 `-qq`，保留可读进度（否则下次卡死仍然无从诊断）
+          #   · 用 `timeout` 命令做外层硬超时 —— Acquire::Timeout 只管单个连接，
+          #     不管 apt 整体（源重试、DPkg 锁等待都不受它约束）
+          #   · 失败后**不重试整段**：宁可红一次让人看见，也不要为偶发网络
+          #     抖动掩盖真实问题
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2"
           # shellcheck disable=SC2086
-          sudo apt-get -o Acquire::http::Timeout=60 \
-                       -o Acquire::https::Timeout=60 \
-                       -o Acquire::Retries=3 \
-                       install -y -qq --no-install-recommends $need
+          if ! timeout 120 sudo apt-get $APT_OPTS update; then
+            echo "::error::apt-get update 超时/失败（120s）—— runner 网络或源不可用"
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          if ! timeout 180 sudo apt-get $APT_OPTS install -y --no-install-recommends $need; then
+            echo "::error::apt-get install 超时/失败（180s）需要安装:$need"
+            exit 1
+          fi
 
       # ── 缺工具即失败（★ 这条是本次加固的核心）────────────────────
       #
