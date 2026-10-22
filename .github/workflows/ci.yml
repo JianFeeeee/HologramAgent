@@ -167,19 +167,98 @@ jobs:
   csrc:
     name: C infrastructure gates
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 门禁本身实测 0~1 秒（csrc-lint/abi/headers/sanitize/cross 各自 <1s）。
+    # 这 15 分钟全部是给 apt-get 的余量 —— 卡死历来只发生在装包阶段。
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
-      # clang 供双编译器告警对照；gcc-aarch64 供跨架构编译门禁。
-      # 门禁在缺工具时是显式 SKIP 而不是假通过，这里装齐以免静默降级。
-      - name: 安装 C 工具链
+      # ── 安装 C 工具链 ─────────────────────────────────────────────
+      #
+      # ★ 加固点（2026-10-22）：实测两次该 job 卡死 20 分钟并超时，
+      # 而**本地同一门禁 0~1 秒全通过**（make check-csrc）。卡死点全在
+      # apt-get：ubuntu-latest runner 上 `apt-get update` 偶发挂住不返回，
+      # 既没有失败也没有进展，只能等 job 级 timeout。
+      #
+      # 三重加固：
+      #   1. 逐包检查是否已安装 —— runner 镜像通常自带 cmake/clang，
+      #      已装就跳过 apt-get（多数情况直接走这条，完全不碰网络）
+      #   2. 需要装时给 apt-get 加自身的超时与重试，让它**自己失败**，
+      #      而不是把整个 job 拖到 job 级 timeout（后者报错信息毫无指向性）
+      #   3. 装完立即 `command -v` 复核，缺工具就红 —— 见下方"缺工具即失败"
+      - name: 安装 C 工具链（已装则跳过）
+        timeout-minutes: 6
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake clang gcc-aarch64-linux-gnu
+          set -uo pipefail
+          need=""
+          command -v cmake             >/dev/null || need="$need cmake"
+          command -v clang             >/dev/null || need="$need clang"
+          command -v aarch64-linux-gnu-gcc >/dev/null || need="$need gcc-aarch64-linux-gnu"
 
+          if [ -z "$need" ]; then
+            echo "✅ 三件套已存在，跳过 apt-get：$(command -v cmake clang aarch64-linux-gnu-gcc | tr '\n' ' ')"
+            exit 0
+          fi
+
+          echo "需要安装:$need"
+          # apt-get 自己的超时：卡住时 4 分钟内失败，而不是拖到 6 分钟 step 超时。
+          # 重试一次 —— runner 网络偶发抖动不该让门禁变红。
+          sudo apt-get -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 \
+                       -o Acquire::Retries=3 \
+                       update -qq
+          # shellcheck disable=SC2086
+          sudo apt-get -o Acquire::http::Timeout=60 \
+                       -o Acquire::https::Timeout=60 \
+                       -o Acquire::Retries=3 \
+                       install -y -qq --no-install-recommends $need
+
+      # ── 缺工具即失败（★ 这条是本次加固的核心）────────────────────
+      #
+      # 此前门禁在缺工具时打 `[SKIP] ... exit 0` —— **CI 照样变绿**。
+      # 那意味着：apt-get 悄悄失败（或将来有人删掉安装步骤）⇒ 五道门禁
+      # 全部跳过 ⇒ job 绿 ⇒ 让人以为 C 侧有门禁，实际一个都没跑。
+      #
+      # 静默降级比红更危险：红会有人修，绿没人看。
+      # 所以 CI 里显式要求工具必须在场，SKIP 视为失败。
+      - name: 确认 C 工具链齐备（缺则失败，不接受 SKIP）
+        run: |
+          set -euo pipefail
+          miss=""
+          for t in cmake clang aarch64-linux-gnu-gcc; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "  ✅ $t: $(command -v "$t")"
+            else
+              echo "  ❌ $t 缺失" >&2
+              miss="$miss $t"
+            fi
+          done
+          [ -z "$miss" ] || {
+            echo "::error::C 工具链缺失:$miss —— 缺工具时门禁会 SKIP 并 exit 0，等于假装通过"
+            exit 1
+          }
+
+      # ── 跑门禁 ──────────────────────────────────────────────────
+      # 门禁自身 0~1 秒，给它 5 分钟绰绰有余；超出说明是异常（不是慢）。
       - name: make check-csrc
-        run: make check-csrc
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          make check-csrc 2>&1 | tee /tmp/csrc.log
+
+          # ★ 二次确认：任何 [SKIP] 都视为失败。
+          #
+          # Makefile 里每道门禁在缺依赖时 `echo "[SKIP] ..."; exit 0`，
+          # 这在本机是合理的（开发者未必装了交叉工具链），但在 CI 里
+          # 就等于把"没验证"伪装成"通过"。上面那步已保证工具齐备，
+          # 这里再拦一次是为了覆盖将来新增门禁时漏配依赖的情况。
+          if grep -q '\[SKIP\]' /tmp/csrc.log; then
+            echo "::error::门禁出现 [SKIP]，说明有检查没真正执行："
+            grep '\[SKIP\]' /tmp/csrc.log >&2
+            echo "CI 里不接受 SKIP —— 要么装上依赖，要么明确从 check-csrc 摘掉这条。" >&2
+            exit 1
+          fi
+          echo "✅ 全部门禁实际执行，无 SKIP"
 
   # ── 文档站构建（mkdocs，纯 Python，无外部依赖）──
   docs:
