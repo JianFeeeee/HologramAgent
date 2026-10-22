@@ -295,10 +295,15 @@ csrc-cross:
 		echo "  [SKIP] 无 clang、无 aarch64-linux-gnu-gcc（未装任何交叉前端）"; exit 0; \
 	fi; \
 	\
+	ARM64_SYSINC=""; \
+	for d in /usr/aarch64-linux-gnu/include /usr/include/aarch64-linux-gnu; do \
+		[ -d "$$d" ] && ARM64_SYSINC="$$ARM64_SYSINC -isystem $$d"; \
+	done; \
+	\
 	if [ "$$MODE" = "clang-target" ]; then \
-		printf 'int main(void){return 0;}\n' > /tmp/_archchk.c; \
-		if ! clang --target=aarch64-linux-gnu -fsyntax-only /tmp/_archchk.c 2>/dev/null; then \
-			echo "  [SKIP] clang 不支持 --target=aarch64-linux-gnu（版本过旧）"; exit 0; \
+		printf '#include <string.h>\nint main(void){return 0;}\n' > /tmp/_archchk.c; \
+		if ! clang --target=aarch64-linux-gnu $$ARM64_SYSINC -fsyntax-only /tmp/_archchk.c >/dev/null 2>&1; then \
+			echo "  [SKIP] clang 交叉前端不可用（缺 aarch64 libc 头，装 libc6-dev-arm64-cross 即可）"; exit 0; \
 		fi; \
 	fi; \
 	\

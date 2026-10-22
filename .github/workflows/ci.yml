@@ -204,6 +204,10 @@ jobs:
           need=""
           command -v cmake >/dev/null || need="$need cmake"
           command -v clang >/dev/null || need="$need clang"
+          # aarch64 的 libc 头（1.7MB，仅头文件，**不含编译器**）。
+          # 用它 + 已预装的 clang 交叉前端，替代 10MB+ 的完整交叉 GCC
+          # （实测那个会卡在下载 cpp-13-aarch64，180s 超时）。
+          [ -d /usr/aarch64-linux-gnu/include ] || need="$need libc6-dev-arm64-cross"
 
           if [ -z "$need" ]; then
             echo "✅ 依赖已存在，跳过 apt-get：$(command -v cmake clang | tr '\n' ' ')"
