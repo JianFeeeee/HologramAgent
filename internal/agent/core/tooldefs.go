@@ -234,11 +234,17 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 		"- **例外二**：写类工具（记忆/知识/文档写入等）以及不声明**并发安全**的工具，这一批会退回依次执行 —— "+
 		"只是变慢，不影响结果，你不用为它调整写法。")
 
-	prompt = appendPromptBlock(prompt, "【输出规则】消息不会自动发送到对话来源通道，你必须自己决定如何回复：\n")
+	prompt = appendPromptBlock(prompt, "【输出规则】\n")
+	// ★ 这一句是本段最重要的：用户明确要求「必须显式调用 outputch 才会输出给用户」。
+	// 模型最常见的错误不是不会调工具，而是**以为返回文本就等于回复了**——
+	// 异步通道下那等于自言自语（用户永远收不到）。
+	prompt += "**只有显式调用 `output_send__{通道名}` 才会把内容送达用户。**" +
+		"返回纯文本只是在这次推理里说话，用户看不到 —— 除非是下面说的同步通道。\n"
 	prompt += "- **不要假设当前通道是某个固定值**：同一会话里可能同时有多个来源（多设备、多通道、子任务）。\n"
 	prompt += "  先看这条消息本身与上下文里的来源信息，再决定往哪里回；不确定有哪些通道时先调 output_list_channels。\n"
-	prompt += "- 同步通道（webui / cli / 终端）：直接返回纯文本，内核会把文本交给等待方显示，无需调用工具。\n"
-	prompt += "- 异步通道（qq / wechat / 群聊等）：返回纯文本**【不会】**自动送达用户，必须调用 output_send__{通道名} 工具（注意 meta 里带上正确的 user_id 或 group_id）才能真正把消息发出去。\n"
+	prompt += "- 同步通道（webui / cli / 终端）：直接返回纯文本即可，内核会把它交给等待方显示，**这是唯一的例外**。\n"
+	prompt += "- 异步通道（qq / wechat / 群聊等）：**必须**调用 output_send__{通道名}，并在 meta 里带上正确的 user_id 或 group_id。\n"
+	prompt += "- 一次调用可以发多条：payload 传数组即可（type/meta 也支持数组一一对应，只给一个值则应用到每一条）。\n"
 	prompt += "- 不确定当前通道的发送方式时，先用 output_send__{通道名}_help 查看该通道的 meta 格式和 type 枚举，再决定。\n"
 	// ❗这里**不得**限制"一轮只能发一次"。设计上输出是 agent 的**主动调用**：
 	// 收到一次输入后，可以往**任意（已授权的）通道**发**任意多次**（分段播报、
@@ -770,20 +776,40 @@ func (a *Agent) buildToolDefs() []interface{} {
 			desc = ch.Name + " 输出通道"
 		}
 
-		tools = append(tools, toolDef("output_send__"+ch.Name, desc+"。能力: "+capStr+"。payload 为消息载荷（type 默认 text，可省略），meta 为 JSON 发送元数据。用 _help 查看 meta 格式与 type 枚举。", map[string]interface{}{
-			"payload": map[string]interface{}{
-				"type":        "string",
-				"description": "消息载荷。type=text 时填文字，type=file/image 时填 URL 或路径",
-			},
-			"meta": map[string]interface{}{
-				"type":        "string",
-				"description": "JSON 对象，包含发送所需的元数据。用 output_send__" + ch.Name + "_help 查看 meta 格式",
-			},
-			"type": map[string]interface{}{
-				"type":        "string",
-				"description": "载荷类型，默认 text；其它枚举用 channel._help 查看",
-			},
-		}, "payload"))
+		// ★ 一次可发多条、多种类型（2026-10-22）。
+		//
+		// payload / type / meta 同时接受字符串与数组 —— 单值时行为与旧版逐字相同
+		// （向后兼容）。描述里**不写** type 的具体枚举：那是插件自定义字段，
+		// 内核不该承载它的语义文档（用户明确要求技术性内容收敛到 skill 与 _help）。
+		tools = append(tools, toolDef("output_send__"+ch.Name,
+			desc+"。能力: "+capStr+"。\n"+
+				"payload 是消息载荷，可以是**一条字符串**，也可以是**数组**（一次发多条）。\n"+
+				"type 是载荷类型，meta 是发送元数据 —— 两者的格式与取值由该通道定义，"+
+				"用 output_send__"+ch.Name+"_help 或对应 skill 查看。\n"+
+				"type/meta 只给一个值时，会应用到 payload 的每一条。",
+			map[string]interface{}{
+				"payload": map[string]interface{}{
+					"description": "消息载荷。字符串=发一条；数组=一次发多条（按数组顺序送达）",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+				"type": map[string]interface{}{
+					"description": "载荷类型。字符串=全部同类型；数组=与 payload 一一对应（数量必须相等）。缺省按通道默认",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+				"meta": map[string]interface{}{
+					"description": "发送元数据（JSON 字符串）。只给一个值时广播给所有条；数组则一一对应。格式见 _help 或对应 skill",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+			}, "payload"))
 
 		tools = append(tools, toolDef("output_send__"+ch.Name+"_help", "查看 "+ch.Name+" 输出通道的 meta 格式说明和 type 枚举", map[string]interface{}{}))
 	}

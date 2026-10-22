@@ -6,16 +6,33 @@ import (
 	"testing"
 )
 
+// 存量 plugin.json 里写的是旧值 "homeagent"（本机实测 huawei_smarthome）。
+// 改名后必须**继续接受并归一化**它 —— 否则那些插件在加载时被判为非法声明，
+// 反代直接不生效，症状是"插件好好的但页面打不开"，且没有任何报错指向改名。
+func TestProxyAuthLegacyValueStillAccepted(t *testing.T) {
+	if !ValidProxyAuth(ProxyAuthAgentLegacy) {
+		t.Fatalf("旧值 %q 必须仍被接受", ProxyAuthAgentLegacy)
+	}
+	if ProxyAuthAgentLegacy == ProxyAuthAgent {
+		t.Fatal("旧值应与新值不同，否则本判据测不到东西")
+	}
+	// ★ 归一化是最关键的一步：下游一律只可能拿到新值，
+	// 否则每个判断点都要写两遍比较，漏一处就是鉴权绕过。
+	if got := EffectiveProxyAuth(ProxyAuthAgentLegacy); got != ProxyAuthAgent {
+		t.Fatalf("旧值应归一化为 %q，实际 %q", ProxyAuthAgent, got)
+	}
+}
+
 func TestProxyAuthDefaultsToHomeAgent(t *testing.T) {
 	// 空串必须归一化为「HomeAgent 统一保护」——这是安全默认。
 	// 若哪天有人把默认改成 none，这条会立刻红。
-	if got := EffectiveProxyAuth(""); got != ProxyAuthHomeAgent {
-		t.Fatalf("空 auth 应归一化为 %q，实际 %q", ProxyAuthHomeAgent, got)
+	if got := EffectiveProxyAuth(""); got != ProxyAuthAgent {
+		t.Fatalf("空 auth 应归一化为 %q，实际 %q", ProxyAuthAgent, got)
 	}
 	if got := EffectiveProxyAuth(ProxyAuthNone); got != ProxyAuthNone {
 		t.Fatalf("显式 none 应保持 none，实际 %q", got)
 	}
-	for _, ok := range []string{"", ProxyAuthHomeAgent, ProxyAuthNone} {
+	for _, ok := range []string{"", ProxyAuthAgent, ProxyAuthNone} {
 		if !ValidProxyAuth(ok) {
 			t.Errorf("%q 应合法", ok)
 		}
@@ -86,7 +103,7 @@ func TestValidateProxyDef(t *testing.T) {
 		{Target: "http://127.0.0.1:12100"},
 		{Target: "127.0.0.1:12100", Host: "huawei"},
 		{Target: "127.0.0.1:12100", Auth: ProxyAuthNone},
-		{Target: "127.0.0.1:12100", Auth: ProxyAuthHomeAgent, WebSocket: true},
+		{Target: "127.0.0.1:12100", Auth: ProxyAuthAgent, WebSocket: true},
 		{Target: "127.0.0.1:3000/base", Host: "x"},
 		{Target: "https://example.com", Host: "ext"}, // 远程上游也允许（由 auth 决定安全性）
 	}

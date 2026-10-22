@@ -589,7 +589,10 @@ func (h *Handler) serveProxyHost(w http.ResponseWriter, r *http.Request) bool {
 			})
 			return true
 		}
-		if rt.Auth == sdk.ProxyAuthHomeAgent && !h.authorizeProxy(w, r) {
+		// 用 EffectiveProxyAuth 而不是直接比常量：存量 plugin.json 里可能写着
+		// 旧值（ProxyAuthAgentLegacy）。直接比常量 ⇒ 旧值被判为"非门户鉴权"
+		// ⇒ **鉴权被绕过**，这是本仓最不能出的错。
+		if sdk.EffectiveProxyAuth(rt.Auth) == sdk.ProxyAuthAgent && !h.authorizeProxy(w, r) {
 			return true
 		}
 		if rt.reverse == nil {
@@ -622,7 +625,7 @@ func (h *Handler) serveProxyHost(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	if route.Auth == sdk.ProxyAuthHomeAgent && !h.authorizeProxy(w, r) {
+	if sdk.EffectiveProxyAuth(route.Auth) == sdk.ProxyAuthAgent && !h.authorizeProxy(w, r) {
 		return true // 已写 401
 	}
 
@@ -842,7 +845,9 @@ func parseManualRoutes(text string) []proxyDecl {
 			out = append(out, proxyDecl{
 				Plugin: "manual", Name: "invalid", Host: "invalid",
 				Target: "",
-				Auth:   "homeagent",
+				// 非法行占位：用默认安全值（不是裸字面量 —— 契约值改名时
+				// 裸字面量会被漏掉，届时这里悄悄变成"无鉴权"）。
+				Auth: sdk.ProxyAuthAgent,
 			})
 			continue
 		}

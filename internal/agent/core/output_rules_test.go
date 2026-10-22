@@ -37,6 +37,37 @@ func TestSystemPromptDoesNotRestrictOutputCount(t *testing.T) {
 	}
 }
 
+// 「必须显式调用 outputch 才会送达用户」必须写在提示词里（用户 2026-10-22 明确要求）。
+//
+// 模型最常见的错误不是不会调工具，而是**以为返回文本就等于回复了**——
+// 在异步通道上那等于自言自语，用户永远收不到。
+//
+// 变异：删掉这句 ⇒ 红。改成只在「异步通道」那一条里提 ⇒ 红（模型会漏读分项规则）。
+func TestSystemPromptRequiresExplicitOutputCall(t *testing.T) {
+	parent, _, _ := newRootForResidents(t)
+	defer parent.Stop()
+
+	prompt := parent.buildSystemPrompt("", "你好")
+
+	// 必须是**开篇总述**级别的一句，不能只藏在分项里。
+	if !strings.Contains(prompt, "只有显式调用 `output_send__{通道名}` 才会把内容送达用户") {
+		t.Fatalf("系统提示词必须以总述句明确「只有显式调用 outputch 才会送达用户」，当前：\n%s",
+			prompt[:min(600, len(prompt))])
+	}
+	// 且必须点明"返回纯文本用户看不到"，否则模型仍会以为直接回答就行。
+	if !strings.Contains(prompt, "返回纯文本只是在这次推理里说话，用户看不到") {
+		t.Error("应显式说明「返回纯文本用户看不到」")
+	}
+	// 同步通道是唯一的例外，必须说清，否则模型在 webui 上也会多余地调工具。
+	if !strings.Contains(prompt, "这是唯一的例外") {
+		t.Error("同步通道例外必须显式标为「唯一的例外」")
+	}
+	// 批量能力要让模型知道（一 call 多发是本次内核新增能力）。
+	if !strings.Contains(prompt, "payload 传数组") {
+		t.Error("提示词应告知 payload 可传数组一次发多条")
+	}
+}
+
 // 输出工具的 type 可省略，缺省按 text 处理（判据该拦的是"不知道发什么"，
 // 不是"没写众所周知的默认值"）。
 func TestOutputSendTypeDefaultsToText(t *testing.T) {
