@@ -110,7 +110,7 @@ func TestFuse_向量失手时符号能救回(t *testing.T) {
 
 // ★ 反向：符号不能压过明显更相关的向量命中。
 func TestFuse_不误伤强向量命中(t *testing.T) {
-	strong := MemoryBlock{ID: "b-strong", Text: "从零开发 HomeAgent QQ 插件：使用 plugindev 工具链"}
+	strong := MemoryBlock{ID: "b-strong", Text: "从零开发 HologramAgent QQ 插件：使用 plugindev 工具链"}
 	other := MemoryBlock{ID: "b-other", Text: "AgentMail 投递规则"}
 
 	vecHits := []BlockHit{

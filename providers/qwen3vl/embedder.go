@@ -2,7 +2,7 @@
 
 // Package qwen3vl provides the optional Qwen3-VL-Embedding ONNX provider.
 // Model-specific tokenization, preprocessing, graph layout, and runtime code
-// live here rather than in the HomeAgent core.
+// live here rather than in the HologramAgent core.
 package qwen3vl
 
 import (

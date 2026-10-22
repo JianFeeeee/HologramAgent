@@ -68,7 +68,7 @@ function requireSkillsDir() {
 const cmd = process.argv[2];
 
 if (!cmd || cmd === 'help' || cmd === '--help') {
-  console.log(`HomeAgent OpenClaw Adapter 1.0.0 (openclaw-compatible)
+  console.log(`HologramAgent OpenClaw Adapter 1.0.0 (openclaw-compatible)
 Usage: openclaw <command> [args]
 
 Commands:
@@ -89,7 +89,7 @@ Commands:
 }
 
 if (cmd === '--version' || cmd === 'version') {
-  console.log('HomeAgent OpenClaw Adapter 1.0.0 (openclaw-compatible)');
+  console.log('HologramAgent OpenClaw Adapter 1.0.0 (openclaw-compatible)');
   process.exit(0);
 }
 
@@ -123,8 +123,8 @@ if (cmd === 'doctor') {
 }
 
 if (cmd === 'update') {
-  console.log('Update check: HomeAgent OpenClaw Adapter is bundled with HomeAgent.');
-  console.log('To update, update HomeAgent itself.');
+  console.log('Update check: HologramAgent OpenClaw Adapter is bundled with HologramAgent.');
+  console.log('To update, update HologramAgent itself.');
   process.exit(0);
 }
 
@@ -176,7 +176,7 @@ if (cmd === 'auth:login' || cmd === 'auth:qrcode') {
 }
 
 if (cmd === 'auth:status') {
-  console.log('Auth status: running in HomeAgent mode (not applicable)');
+  console.log('Auth status: running in HologramAgent mode (not applicable)');
   process.exit(0);
 }
 

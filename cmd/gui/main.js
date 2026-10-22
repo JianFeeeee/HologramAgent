@@ -185,7 +185,7 @@ async function adoptSlSession(url) {
 }
 
 // 带 Electron cookie jar 的 fetch（跟随外部网关 302 → login 域 → 回跳，最多 6 跳），
-// 使 POST /api/v1/login 真正触达内层 HomeAgent 并取回 homeagent_session。
+// 使 POST /api/v1/login 真正触达内层 HologramAgent 并取回 homeagent_session。
 async function sessionFetch(initUrl, opts) {
   const { session } = require("electron");
   let url = initUrl;
@@ -430,7 +430,7 @@ function createWindow(show = true) {
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    title: "HomeAgent",
+    title: "HologramAgent",
     frame: false,
     show: false, // 一律先不显示，由 ready-to-show 决定
     icon: path.join(__dirname, "icon.ico"),
@@ -806,7 +806,7 @@ ipcMain.handle("webui:openLogin", (_, { url, username, password }) => {
     parent: mainWindow,
     modal: true,
     autoHideMenuBar: true,
-    title: "HomeAgent - 网关联机登录",
+    title: "HologramAgent - 网关联机登录",
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   const u = encodeURIComponent(username || "");
@@ -1456,7 +1456,7 @@ async function connectDeviceBridgeOnce(cfg) {
     op: "hello",
     device: {
       device_id: deviceBridgeId,
-      name: "HomeAgent GUI",
+      name: "HologramAgent GUI",
       kind: "computer",
       authorized: authorized,
       caps: [
@@ -1986,8 +1986,8 @@ function executeHomeagentCmd(capability, reqId) {
       const h = Math.min(parseInt(area.height || 600, 10) - 40, 560);
       const html = /<\/?[a-z][\s\S]*>/i.test(raw)
         ? raw
-        : "<div style='font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%;padding:24px;box-sizing:border-box'><h1 style='margin:0 0 16px;color:#ff7fac'>HomeAgent</h1><p style='font-size:16px;line-height:1.6;white-space:pre-wrap;word-break:break-all'>" +
-          String(raw || "HomeAgent 远程屏幕提示").replace(/</g, "&lt;") +
+        : "<div style='font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100%;padding:24px;box-sizing:border-box'><h1 style='margin:0 0 16px;color:#ff7fac'>HologramAgent</h1><p style='font-size:16px;line-height:1.6;white-space:pre-wrap;word-break:break-all'>" +
+          String(raw || "HologramAgent 远程屏幕提示").replace(/</g, "&lt;") +
           "</p></div>";
       try {
         if (screensueWin && !screensueWin.isDestroyed()) screensueWin.destroy();
@@ -1999,7 +1999,7 @@ function executeHomeagentCmd(capability, reqId) {
           alwaysOnTop: true,
           frame: false,
           resizable: true,
-          title: "HomeAgent · screensue",
+          title: "HologramAgent · screensue",
           webPreferences: { nodeIntegration: false, contextIsolation: true },
         });
         screensueWin.setAlwaysOnTop(true, "screen-saver");
@@ -3223,7 +3223,7 @@ async function setDeviceAuthorized(authorized) {
         op: "hello",
         device: {
           device_id: deviceBridgeId,
-          name: "HomeAgent GUI",
+          name: "HologramAgent GUI",
           kind: "computer",
           authorized: !!authorized,
           caps: [
@@ -3291,7 +3291,7 @@ function buildTrayMenuTemplate() {
   const electron = require("electron");
   const TMenu = electron.Menu;
   const tpl = [];
-  tpl.push({ label: "HomeAgent", enabled: true });
+  tpl.push({ label: "HologramAgent", enabled: true });
   tpl.push({ type: "separator" });
   // 远程连接状态（缓存避免每次读文件）
   const connLabel = trayConnCache.connLabel || "未连接";
@@ -3404,7 +3404,7 @@ function initTray() {
       img = nImg.createEmpty();
     }
     tray = new Tray(img);
-    tray.setToolTip("HomeAgent - 个人智能管家");
+    tray.setToolTip("HologramAgent - 个人智能管家");
     rebuildTrayMenu();
     tray.on("double-click", () => showMainWindow());
     console.log("[tray] READY: " + (tray ? "tray-created" : "null"));
@@ -3525,7 +3525,7 @@ app.whenReady().then(async () => {
   // 「启动时不显示主窗口，驻留托盘后台运行」，但主进程从来没读过它 ——
   // whenReady 无条件 createWindow()，于是必然弹窗。
   //
-  // 实测（本机，prefs.silentStart=true）：窗口标题 HomeAgent 照样出现。
+  // 实测（本机，prefs.silentStart=true）：窗口标题 HologramAgent 照样出现。
   //
   // 与 applyAutoLaunch 里的 openAsHidden 是两回事：那个是告诉 OS「开机自启
   // 时如何启动」（仅 Windows/macOS 生效），这里是本进程自己决定要不要显示，
@@ -3605,7 +3605,7 @@ let notifSeq = 0;
 ipcMain.handle("notify:show", (_, payload) => {
   try {
     const p = payload || {};
-    const title = String(p.title || "HomeAgent");
+    const title = String(p.title || "HologramAgent");
     const body = String(p.body || "");
     if (!body) return { ok: false, error: "empty body" };
     if (!Notification.isSupported()) return { ok: false, error: "unsupported" };
@@ -3721,10 +3721,10 @@ function saveGuiPrefs(p) {
 }
 
 // Electron LoginItem 写入的注册表项名是「electron.app.<exe 名>」。
-// 产物改名过（HomeAgent.exe → homeagent-gui.exe）就会多出一条旧项，
+// 产物改名过（HologramAgent.exe → homeagent-gui.exe）就会多出一条旧项，
 // 且 setLoginItemSettings 不会清理它们 ⇒ 开机启动两次同一个 exe。
 // 实测本机 Run 键里确实同时存在：
-//   electron.app.HomeAgent     = "E:\program\homeagent\...\homeagent-gui.exe"
+//   electron.app.HologramAgent     = "E:\program\homeagent\...\homeagent-gui.exe"
 //   electron.app.homeagent-gui =  E:\program\homeagent\...\homeagent-gui.exe
 // 两条指向同一 exe，所以表面看是两个自启动，实际是同一份的重复。
 //

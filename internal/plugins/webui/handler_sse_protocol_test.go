@@ -217,7 +217,7 @@ func TestClientsRecognizeServerEventTypes(t *testing.T) {
 		mustKnow []string
 	}{
 		{"GUI", "../../../cmd/gui/renderer/app.js", false, sseMustKnow},
-		{"鸿蒙", "../../../cmd/ohos/HomeAgent/entry/src/main/ets", true, sseMustKnow},
+		{"鸿蒙", "../../../cmd/ohos/HologramAgent/entry/src/main/ets", true, sseMustKnow},
 		{"CLI", "../../../cmd/waiter", true, cliMustKnow},
 	}
 
@@ -280,7 +280,7 @@ func TestNoPhantomFrameTypes(t *testing.T) {
 
 	// 客户端源码里搜幽灵字面量（排除注释行，避免判据被说明文字喂饱）。
 	scan := []string{
-		"../../../cmd/ohos/HomeAgent/entry/src/main/ets/common/ChatSse.ets",
+		"../../../cmd/ohos/HologramAgent/entry/src/main/ets/common/ChatSse.ets",
 	}
 
 	for _, p := range scan {
@@ -413,7 +413,7 @@ func TestDeviceBridgeOpCoverage(t *testing.T) {
 	downOps := []string{"bind_ack", "cmd", "hello_ack", "push", "cmd_speech_start", "cmd_speech_end"}
 
 	// 客户端源码：鸿蒙端设备桥。
-	const p = "../../../cmd/ohos/HomeAgent/entry/src/main/ets/common/DeviceBridge.ets"
+	const p = "../../../cmd/ohos/HologramAgent/entry/src/main/ets/common/DeviceBridge.ets"
 	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatalf("读 %s: %v", p, err)

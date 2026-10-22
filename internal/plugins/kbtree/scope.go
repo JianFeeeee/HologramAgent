@@ -8,7 +8,7 @@ import (
 
 // scope 是知识库对外暴露范围。
 //
-// 存在的理由：kbtree 是**唯一**把知识库开放给外部进程的通道（HomeAgent
+// 存在的理由：kbtree 是**唯一**把知识库开放给外部进程的通道（HologramAgent
 // 自己的 agent 走进程内直调，不经此）。没有范围限制时，任何拿到 token 的
 // agent 都能 /tree 列出全部条目、/search 取回任意条目全文 —— 而本机库里
 // 混着个人内容（教材摘录、课表、身份合并规则），不该 broadly 可读。

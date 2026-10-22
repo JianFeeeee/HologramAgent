@@ -155,9 +155,9 @@ func (r *ProviderRegistry) Dispatch(typeStr string, data json.RawMessage, plugin
 	}
 	switch lookupType {
 	case "provider":
-		log.Printf("[clawhubadapter] generic LLM provider from %s handled natively by HomeAgent", pluginName)
+		log.Printf("[clawhubadapter] generic LLM provider from %s handled natively by HologramAgent", pluginName)
 	case "embedding", "memory_embedding":
-		log.Printf("[clawhubadapter] embedding provider %s from %s ignored (HomeAgent uses native embeddings)", lookupType, pluginName)
+		log.Printf("[clawhubadapter] embedding provider %s from %s ignored (HologramAgent uses native embeddings)", lookupType, pluginName)
 	default:
 		log.Printf("[clawhubadapter] unknown provider type: %s (plugin: %s)", typeStr, pluginName)
 	}

@@ -1,4 +1,4 @@
-# HomeAgent 主仓 CI。
+# HologramAgent 主仓 CI。
 #
 # 设计原则：**CI 里跑的每一条命令，都是本地已实测通过的命令**。
 # 不写「应该有用来试试」的步骤 —— 未验证的 CI 步骤会把假红灯变成常态，
@@ -235,11 +235,11 @@ jobs:
       #
       # 取值依据（实测 2026-10-21，直连不带代理，非推测）：
       #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
-      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/HologramAgent         → 301  ← 旧名，跳转到上面
       #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
       #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
       #
-      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 背景：gitcode 侧镜像仓已由 HologramAgent 改名为 HologramAgent（与 GitHub
       # 主仓同名）。旧地址仍 301 跳转，跟随后也能到达，但走重定向 ⇒ 别再用它。
       # 判定两仓同一对象：两地址 git ls-remote 的 refs 列表 md5 相同。
       #
@@ -263,7 +263,7 @@ jobs:
         with:
           # 必须取完整历史：镜像可能在任意旧提交上，快进需要共同祖先。
           fetch-depth: 0
-      # ★ 改名（HomeAgent → HologramAgent）后的必然过渡态：gitcode 上的镜像仓
+      # ★ 改名（HologramAgent → HologramAgent）后的必然过渡态：gitcode 上的镜像仓
       #   是**另一个账号下的独立仓库**，改 GitHub 仓名不会自动建出它。
       #   若不在这里显式探测，缺少目标仓时只会得到 git 的原始报错
       #   （"repository not found" 混在 push 输出里），看不出是「仓没建」。

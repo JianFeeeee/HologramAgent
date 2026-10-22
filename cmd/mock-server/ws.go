@@ -349,7 +349,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_2_clipboardsue_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
-					Command: "homeagent-clipboardsue HomeAgent远程测试_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
+					Command: "homeagent-clipboardsue HologramAgent远程测试_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
 					CmdType: "homeagent",
 				})
 
@@ -404,7 +404,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_6_screensue_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
-					Command: `homeagent-screensue 10 <!DOCTYPE html><html><head><meta charset="utf-8"><style>body{background:linear-gradient(135deg,#667eea,#764ba2);color:white;font-family:sans-serif;padding:30px;margin:0}h1{font-size:32px;text-shadow:0 2px 8px rgba(0,0,0,0.3)}.card{background:rgba(255,255,255,0.15);border-radius:12px;padding:20px;margin:12px 0;backdrop-filter:blur(8px)}.badge{display:inline-block;background:#4ade80;color:#000;padding:3px 10px;border-radius:16px;font-weight:bold}</style></head><body><h1>HomeAgent GUI 全量测试</h1><div class="card"><h2>能力测试结果</h2><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>能力</th><th>结果</th></tr><tr><td>screensee 截图</td><td><span class="badge">通过</span></td></tr><tr><td>clipboard 读写</td><td><span class="badge">通过</span></td></tr><tr><td>computeruse 操控</td><td><span class="badge">通过</span></td></tr><tr><td>speakeruse TTS</td><td><span class="badge">通过</span></td></tr><tr><td>screensue 渲染</td><td><span class="badge">通过</span></td></tr></table></div><p style="text-align:center;color:rgba(255,255,255,0.7)">2026-08-23 19:50</p></body></html>`,
+					Command: `homeagent-screensue 10 <!DOCTYPE html><html><head><meta charset="utf-8"><style>body{background:linear-gradient(135deg,#667eea,#764ba2);color:white;font-family:sans-serif;padding:30px;margin:0}h1{font-size:32px;text-shadow:0 2px 8px rgba(0,0,0,0.3)}.card{background:rgba(255,255,255,0.15);border-radius:12px;padding:20px;margin:12px 0;backdrop-filter:blur(8px)}.badge{display:inline-block;background:#4ade80;color:#000;padding:3px 10px;border-radius:16px;font-weight:bold}</style></head><body><h1>HologramAgent GUI 全量测试</h1><div class="card"><h2>能力测试结果</h2><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>能力</th><th>结果</th></tr><tr><td>screensee 截图</td><td><span class="badge">通过</span></td></tr><tr><td>clipboard 读写</td><td><span class="badge">通过</span></td></tr><tr><td>computeruse 操控</td><td><span class="badge">通过</span></td></tr><tr><td>speakeruse TTS</td><td><span class="badge">通过</span></td></tr><tr><td>screensue 渲染</td><td><span class="badge">通过</span></td></tr></table></div><p style="text-align:center;color:rgba(255,255,255,0.7)">2026-08-23 19:50</p></body></html>`,
 					CmdType: "homeagent",
 				})
 

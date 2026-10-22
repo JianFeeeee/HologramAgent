@@ -296,7 +296,7 @@ func (s *MockServer) handlePlugins(w http.ResponseWriter, r *http.Request) {
 func (s *MockServer) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, []ChatMessage{
 		{Role: "user", Content: "你好"},
-		{Role: "assistant", Content: "你好！我是 HomeAgent，有什么可以帮你的？"},
+		{Role: "assistant", Content: "你好！我是 HologramAgent，有什么可以帮你的？"},
 		{Role: "user", Content: "测试消息"},
 		{Role: "assistant", Content: "这是模拟后端的测试回复，GUI 连接正常 ✅"},
 	})
@@ -361,7 +361,7 @@ func (s *MockServer) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 func (s *MockServer) handleMemoryGraph(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"nodes": []map[string]interface{}{
-			{"id": "1", "label": "HomeAgent", "group": "system"},
+			{"id": "1", "label": "HologramAgent", "group": "system"},
 			{"id": "2", "label": "GUI 测试", "group": "user"},
 		},
 		"edges": []map[string]interface{}{
@@ -511,7 +511,7 @@ func main() {
 	server.registerRoutes(mux)
 
 	addr := ":9099"
-	log.Printf("=== HomeAgent Mock Server ====")
+	log.Printf("=== HologramAgent Mock Server ====")
 	log.Printf("监听地址: http://0.0.0.0%s", addr)
 	log.Printf("API 基础路径: http://0.0.0.0%s/api/v1/", addr)
 	log.Printf("SSE 端点: http://0.0.0.0%s/api/v1/chat/events", addr)

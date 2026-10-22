@@ -14,7 +14,7 @@
 #
 # 同步目标：
 #   cmd/gui/package.json                        version
-#   cmd/ohos/HomeAgent/AppScope/app.json5       versionName + versionCode
+#   cmd/ohos/HologramAgent/AppScope/app.json5       versionName + versionCode
 #
 # waiter 不在此列：它直接引用 internal/meta.Version（同一进程内编译），
 # 没有第二份版本字段可漂。
@@ -49,7 +49,7 @@ PY
 )"
 
 GUI_PKG="$ROOT/cmd/gui/package.json"
-OHOS_APP="$ROOT/cmd/ohos/HomeAgent/AppScope/app.json5"
+OHOS_APP="$ROOT/cmd/ohos/HologramAgent/AppScope/app.json5"
 
 DRIFT=0
 note() { printf '  %-52s %s\n' "$1" "$2"; }

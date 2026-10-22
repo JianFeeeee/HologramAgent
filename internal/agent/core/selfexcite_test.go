@@ -52,21 +52,30 @@ func TestSelfExcite_DocQueryDeclaresNoMemory(t *testing.T) {
 	}
 }
 
-// ② 回填事件必须带 NoMemory，且不得被 Prune 再次归档回 L2。
+// ② 回填事件必须带 NoMemory（不参与计算），但**必须照常归档**（数据不丢）。
 //
-// 变异：restoreDocEvents 不置 NoMemory ⇒ 红（Prune 会把它归档回 L2）。
+// ★ 这里曾经写反过：要求"不得被 Prune 再归档回 L2"。
+//
+//	doc_query 的 Consume 已经把 L2 副本删掉，L1 是唯一副本 ——
+//	不归档就等于三层都不在，内容永久丢失。
+//
+// 变异：
+//
+//	· restoreDocEvents 不置 NoMemory ⇒ 它会参与计算（重复加权）
+//	· Prune 跳过 NoMemory 事件 ⇒ 内容丢失（本判据要抓这个）
 func TestSelfExcite_RestoredEventsNotReArchived(t *testing.T) {
 	a := newToolTestAgent(t)
 
+	const marker = "自激测试：这条会被归档"
 	// 先归档一条事件到 L2
 	archiveEvents(t, a, []ContextEvent{{
 		Timestamp: time.Now().Add(-2 * time.Hour),
 		Source:    "webui",
-		Input:     "自激测试：这条会被归档",
+		Input:     marker,
 		Response:  "然后被 doc_query 取回",
 	}})
 
-	// 召回
+	// 召回（Consume 会把 L2 副本删掉）
 	out := a.executeDocTool(agentAPI.ToolCall{
 		Name:      "doc_query",
 		Arguments: map[string]interface{}{"query": "自激测试 归档", "top_k": float64(3)},
@@ -75,13 +84,16 @@ func TestSelfExcite_RestoredEventsNotReArchived(t *testing.T) {
 		t.Fatalf("未召回：%s", out)
 	}
 
-	// 回填的事件必须带 NoMemory 标记
+	// ① 回填事件必须带 NoMemory（不参与计算）
 	restored := 0
 	for _, e := range a.context.Recent(0) {
-		if e.Source == "webui" && strings.Contains(e.Input, "自激测试") {
+		if e.Source == "webui" && strings.Contains(e.Input, marker) {
 			restored++
 			if !e.NoMemory {
-				t.Error("回填事件没有 NoMemory 标记 —— Prune 会把它再归档回 L2，形成自激回路")
+				t.Error("回填事件没有 NoMemory 标记 —— 它会再被向量化/蒸馏，同一内容重复加权")
+			}
+			if len(e.Vector) > 0 {
+				t.Error("回填事件被向量化了（NoMemory 未生效）")
 			}
 		}
 	}
@@ -89,10 +101,20 @@ func TestSelfExcite_RestoredEventsNotReArchived(t *testing.T) {
 		t.Fatal("没有回填任何事件")
 	}
 
-	// ③ 真实验证回路：再 Prune 一次。
-	//
-	// 关键不是"文档数不变"（filler 本身也会被归档），而是
-	// **L2 里不得出现含回填事件内容的新文档**。
+	// ② L1 是唯一副本（L2 已被 Consume 删除）——确认这一点
+	for _, d := range a.docStore.RecentDocs(1000) {
+		if !d.HasEvents() {
+			continue
+		}
+		for _, ev := range d.Events {
+			in, _, _ := ev.InOut()
+			if strings.Contains(in, marker) {
+				t.Fatalf("L2 里仍有该事件（%s）—— 前提不成立，本判据失去意义", d.ID)
+			}
+		}
+	}
+
+	// ③ ★ 关键：裁掉它时**必须能落回 L2**，否则内容永久丢失
 	for i := 0; i < 14; i++ {
 		a.context.Append(ContextEvent{
 			Timestamp: time.Now(),
@@ -103,17 +125,21 @@ func TestSelfExcite_RestoredEventsNotReArchived(t *testing.T) {
 	}
 	a.context.Prune("当前输入", 2, a.docStore)
 
+	var foundInL2 bool
 	for _, d := range a.docStore.RecentDocs(1000) {
 		if !d.HasEvents() {
 			continue
 		}
 		for _, ev := range d.Events {
 			in, _, _ := ev.InOut()
-			if strings.Contains(in, "自激测试") {
-				t.Errorf("回填事件被 Prune 又归档回了 L2（doc=%s）—— 自激回路成立：\n"+
-					"下次 doc_query 会再召回同一批，块在 L1↔L2 之间反复搬迁", d.ID)
+			if strings.Contains(in, marker) {
+				foundInL2 = true
 			}
 		}
+	}
+	if !foundInL2 {
+		t.Error("回填事件被裁掉后没有归档回 L2 —— Consume 已删除原副本，" +
+			"L1 是唯一副本，不归档就是内容永久丢失（三层都不在）")
 	}
 }
 

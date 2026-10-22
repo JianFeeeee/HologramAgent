@@ -3,7 +3,7 @@
   "version": "1.4.0",
   "author": "JianFeeeee <jianfeeeee@homeagent.local>",
   "homepage": "https://github.com/JianFeeeee/HologramAgent",
-  "description": "HomeAgent Desktop GUI - Multi-connection management dashboard",
+  "description": "HologramAgent Desktop GUI - Multi-connection management dashboard",
   "main": "main.js",
   "scripts": {
     "start": "electron . --no-sandbox",
@@ -25,7 +25,7 @@
   },
   "build": {
     "appId": "com.homeagent.gui",
-    "productName": "HomeAgent",
+    "productName": "HologramAgent",
     "linux": {
       "target": [
         "deb",

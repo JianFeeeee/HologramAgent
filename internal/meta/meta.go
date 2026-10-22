@@ -1,10 +1,10 @@
-// Package meta 收集 HomeAgent 内核的全部元数据。
+// Package meta 收集 HologramAgent 内核的全部元数据。
 // 版本号通过 `go build -ldflags` 注入，默认值为 dev 版本。
 // SDK 仓的 meta/meta.go 应与此保持同步。
 package meta
 
 var (
-	// Version 是 HomeAgent 内核版本号。
+	// Version 是 HologramAgent 内核版本号。
 	// 通过 `-ldflags="-X github.com/JianFeeeee/HologramAgent/internal/meta.Version=vX.Y.Z"` 注入。
 	//
 	// 1.0.0：外部插件从 C ABI 动态库迁到子进程 + 共享内存。
@@ -39,7 +39,7 @@ var (
 	BuildTime = "unknown"
 
 	// KernelName 是内核名称。
-	KernelName = "HomeAgent"
+	KernelName = "HologramAgent"
 
 	// SDKCompatibleVersion 是此内核可兼容的最高 SDK 版本（semver）。
 	//

@@ -327,9 +327,21 @@ func (a *Agent) executeToolCallInner(tc agentAPI.ToolCall, channel string, turnS
 			// 工具是动态注册的，"不存在"是常态而非异常（插件未加载/已卸载/崩溃）。
 			// 文案必须让模型知道该做什么，而不是含糊的"执行失败"——
 			// 后者会让模型反复重试同一个不存在的名字。
-			return toolOutcome{Text: fmt.Sprintf("工具 %s 不存在或未注册：它可能属于未加载/已崩溃的插件。"+
-				"先调 get_plugin_tools(\"\") 看当前可用工具，或 output_list_channels 看通道；"+
-				"确认名称无误后再调用", tc.Name)}
+			// ★ 提示必须**先指向 skill**（2026-10-22）。
+			//
+			// 按需插件（auto_start=false）的工具不在初始清单里，而它的
+			// skill 正是"这个插件是什么、要怎么用、需要先启动什么"的唯一
+			// 说明（SDK autostart.go 的 OnDemandNeedsSkill 就是这条契约）。
+			//
+			// 此前这里只提 get_plugin_tools / output_list_channels，
+			// 一个字没提 skill —— 模型调用了、失败了，提示却不告诉它去
+			// 看说明书，于是只能盲目试工具名。
+			return toolOutcome{Text: fmt.Sprintf("工具 %s 不存在或未注册（它可能属于未加载的插件）。按这个顺序处理：\n"+
+				"1. 先看【可用技能】里有没有相关的：有就先 skill_info(\"技能名\") 读全文 —— "+
+				"skill 里写着该插件的正确用法、已知坑，以及需要先启动哪个插件；\n"+
+				"2. 没有相关 skill 就调 get_plugin_tools(\"\") 查当前可用的插件与工具；\n"+
+				"3. 通道相关的不确定时用 output_list_channels 看有哪些通道。\n"+
+				"确认之后再调用，不要反复重试同一个名字。", tc.Name)}
 		}
 		return toolOutcome{Text: fmt.Sprintf("工具 %s 执行失败: %v", tc.Name, err)}
 	}
@@ -1258,7 +1270,7 @@ const (
 //
 //	我先写的版本是查库（DominantBlockFingerprint）—— **错的**：
 //	库里只有旧空间的块时，多数取值就是旧指纹，
-//	拿它当过滤条件等于「不��滤」，旧块原样通过。
+//	拿它当过滤条件等于「不过滤」，旧块原样通过。
 //	（判据当场抓住：测试库里唯一的块是 old-fp，而当前空间是 fp1。）
 //
 //	隔离的语义是「只信任当前空间写入的块」，
@@ -1305,13 +1317,15 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 			Source:    ev.Source,
 			Input:     input,
 			Response:  response,
-			// ★ 回填事件**不参与记忆计算、不再归档回 L2**。
+			// ★ 回填事件**不参与记忆计算**，但**照常参与归档**。
 			//
-			// 它们本来就在记忆体系里（来自 L2，可能已蒸馏进 L3）。
-			// 不标记的后果是自激震荡：
-			//   doc_query 从 L2 取出 → Prune 因相关而保留它们、
-			//   把真正的新事件挤掉 → 下一轮 Prune 又归档回 L2 →
-			//   再被 doc_query 召回 ⇒ 块在 L1↔L2 之间反复搬迁。
+			// 为什么要标记：它们的内容刚在 L2 里被向量化过一次，
+			// 再算一次会让同一内容在向量空间里被重复加权（自激）。
+			//
+			// ★★ 为什么仍要归档（不能顺手关掉）：
+			//   Consume 已经把 L2 副本删了，L1 是**唯一副本**。
+			//   裁掉时不归档 = 三层都不在 = 内容永久丢失。
+			//   （这个错犯过：曾用同一个 NoMemory 同时关掉计算与归档。）
 			NoMemory:  true,
 			ToolsUsed: append([]string(nil), ev.ToolsUsed...),
 			ToolResults: func() []ToolResultItem {

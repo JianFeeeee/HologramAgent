@@ -268,7 +268,7 @@ func (p *Plugin) downloadImage(imgURL, baseName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; HomeAgent/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; HologramAgent/1.0)")
 	resp, err := dl.Do(req)
 	if err != nil {
 		return "", err

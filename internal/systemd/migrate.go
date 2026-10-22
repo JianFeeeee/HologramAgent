@@ -94,7 +94,7 @@ func (p MigratePlan) Script() string {
 	unitPath := filepath.Join("/etc/systemd/system", UnitName)
 
 	fmt.Fprintf(&b, `#!/usr/bin/env bash
-# HomeAgent 数据目录迁移：%s → %s
+# HologramAgent 数据目录迁移：%s → %s
 #
 # ★ 这是**破坏性**操作。脚本已内置：
 #   · 目标目录非空则拒绝执行

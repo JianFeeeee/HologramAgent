@@ -140,7 +140,7 @@ func TestOpenAIModelsRequiresAuth(t *testing.T) {
 //	假流式实现 → 先同步等 InjectTextSync 返回（被扣住，阻塞数秒），
 //	              等不到就什么都发不出去 → 首帧迟到数秒。
 //
-// 所以断言「首帧远早于总计 700ms 的生成时间」��就是判据的全部。
+// 所以断言「首帧远早于总计 700ms 的生成时间」就是判据的全部。
 func TestOpenAIStreamIsActuallyStreaming(t *testing.T) {
 	srv, iom, bus := newOpenAITestServer(t)
 

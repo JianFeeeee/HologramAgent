@@ -108,7 +108,7 @@ func TestDiscoverGatewayUnavailableReportsError(t *testing.T) {
 	}
 }
 
-// 老版本 HomeAgent 没有该端点（404）→ 返回错误而不是 panic/空成功。
+// 老版本 HologramAgent 没有该端点（404）→ 返回错误而不是 panic/空成功。
 func TestDiscoverGatewayOldServerFallsBack(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()

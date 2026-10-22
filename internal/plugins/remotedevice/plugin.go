@@ -77,7 +77,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 
 	// ---- 设置 ----------------
 	s.Settings().RegisterDef(sdk.ConfigDef{Key: "listen_addr", Default: defaultAddr, Type: "string", DisplayName: "监听地址", Description: "设备网关 HTTP/WS 监听地址（默认 127.0.0.1:9890，仅本机）；填 127.0.0.1:0 让系统分配空闲端口", Category: "remotedevice"})
-	// ---- 反代声明（HomeAgent 自带能力）----
+	// ---- 反代声明（HologramAgent 自带能力）----
 	//
 	// 设备网关需要被外部访问（设备/客户端要连 WS），但它默认只监听本机
 	// 127.0.0.1:9890。声明后由 webui 的对外端口按 Host 子域反代出去，

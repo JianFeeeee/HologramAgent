@@ -2009,7 +2009,7 @@ function updateOverview() {
 	ovSet(
 		"ov-version-sub",
 		kv
-			? (kb.kernel_name || "HomeAgent") +
+			? (kb.kernel_name || "HologramAgent") +
 					(kb.commit && kb.commit !== "unknown"
 						? " · " + String(kb.commit).slice(0, 7)
 						: "")
@@ -5590,7 +5590,7 @@ function renderProxyServicesCard() {
 	html +=
 		'<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">' +
 		__(
-			"插件服务经 HomeAgent 同一端口反代。子域形态需要 DNS 能解析 ",
+			"插件服务经 HologramAgent 同一端口反代。子域形态需要 DNS 能解析 ",
 			"Proxied through the same port. The subdomain form needs DNS for ",
 		) +
 		"<b>" +
@@ -6281,7 +6281,7 @@ function renderKernel() {
 		'<div class="kv-row"><span class="key">' +
 		__("内核", "Kernel") +
 		'</span><span class="val">' +
-		escHtml(b.kernel_name || "HomeAgent") +
+		escHtml(b.kernel_name || "HologramAgent") +
 		"</span></div>" +
 		'<div class="kv-row"><span class="key">' +
 		__("内核版本", "Kernel version") +
