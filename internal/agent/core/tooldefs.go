@@ -177,6 +177,26 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 		prompt = appendPromptBlock(prompt, memContext)
 	}
 
+	// 【三层记忆】是**内核运行时块**（提示词分层规范：内核行为由内核生成）。
+	//
+	// 它讲的是内核的真实执行语义（哪些内容在哪一层、何时会进上下文、
+	// 哪个工具会做什么），不是工具用法 —— 工具用法归各 ToolDef.Description。
+	//
+	// 为什么必须有这一段：此前系统提示词从未解释 L1/L2/L3 是什么，
+	// agent 只能从工具名猜。生产日志实测：agent 几乎从不调用 doc_query，
+	// 即使调用了也只看返回值、不知道原文已被回填到对话时序。
+	prompt = appendPromptBlock(prompt, "【三层记忆】记忆分三层，你要知道自己现在在看哪一层：\n"+
+		"- **对话时序（L1，你现在看得到）**：最近的事件，按时间排列在上面那段【对话时序】里。"+
+		"窗口放不下的会更早被移出，但不会丢。\n"+
+		"- **历史记忆（L2，不直接给你看）**：被移出窗口的事件，连同**完整原文**（含图片/音频）保存在这里。"+
+		"每次你收到新输入，内核会按语义相似度自动挑几篇相关的放在【历史记忆】块里，"+
+		"但那只是片段 —— 要看某次的完整原文与过程，调用 `doc_query`："+
+		"它会把命中的事件**按原始时间戳插回你的对话时序**（不是返回一段摘要，那些事件真的回到了时间线上）。\n"+
+		"- **图记忆（L3，长期）**：实体与关系（谁是什么、某值现在是多少、谁和谁什么关系），"+
+		"用 `memory_recall` 查、`memory_commit` 记。\n"+
+		"选择口径：要**原文与过程** → `doc_query`；要**关系与当前值** → `memory_recall`；"+
+		"要**成文的可复用知识** → `knowledge_search`。")
+
 	// 记忆维护：具体选哪个工具、各有什么副作用，都写在 memory_* 的工具描述里
 	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
 	prompt = appendPromptBlock(prompt, "【记忆维护】用户要求整理或清理记忆时，必须真的调用 memory_* 工具去做，"+
@@ -556,24 +576,47 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	if a.docStore != nil {
-		tools = append(tools, toolDefWith("doc_query", "查询文档记忆。输入查询内容，返回相关文档摘要。", map[string]interface{}{
-			"query": map[string]interface{}{"type": "string", "description": "查询内容"},
-			"top_k": map[string]interface{}{"type": "integer", "description": "返回数量", "default": 3},
-		}, []string{"query"}, parallelOpts()))
-		tools = append(tools, toolDef("doc_commit", "提交一条文档记忆。将重要信息显式写入文档记忆层。", map[string]interface{}{
-			"content": map[string]interface{}{"type": "string", "description": "文档内容"},
-			"summary": map[string]interface{}{"type": "string", "description": "摘要（可选）"},
-			"tags": map[string]interface{}{
-				"type":        "array",
-				"description": "标签列表",
-				"items":       map[string]interface{}{"type": "string"},
-			},
-			"media_digests": map[string]interface{}{
-				"type":        "array",
-				"description": "可选：这篇文档关联的媒体 digest（对话或 memory_recall 的「关联媒体」里显示的十六进制串，短的即可）。填了以后检索到这篇文档就能看到并取回原图/音频。",
-				"items":       map[string]interface{}{"type": "string"},
-			},
-		}, "content"))
+		// ★ doc_query / doc_commit 的描述必须与**真实行为**一致。
+		//
+		// 旧描述只有一句「查询文档记忆。输入查询内容，返回相关文档摘要」：
+		//   · "文档记忆"没有定义，模型不知道 L2 是什么；
+		//   · "返回相关文档摘要"与真实行为**不符**（真实是把事件逐条按
+		//     原始时间戳插回对话时序）；
+		//   · 没说什么时候该用，也没说与 memory_recall 的分工。
+		// 结果：生产实测 agent 几乎不调用 doc_query，即使调用也只看返回值、
+		// 不知道原文已回填到时序。
+		tools = append(tools, toolDefWith("doc_query",
+			"从**历史记忆层**（L2）召回过去的事件原文。"+
+				"\n\n**这一层是什么**：当前对话窗口里只看得到最近的事件；更早的事件被移出窗口后，"+
+				"连同原文完整保存在历史层，不会丢失。"+
+				"\n\n**何时用**：记得«这事办过/说过»但想不起细节；需要当时的原始过程而非结论；"+
+				"跨会话、跨天追问；用户问\"上次那个\"/\"之前怎么弄的\"。只想知道某个事实的当前值、"+
+				"或某个实体的关系，用 memory_recall（图记忆），不要用这个。"+
+				"\n\n**调用后会发生什么**：命中的事件会**逐条按原始时间戳插回你的对话时序**"+
+				"（就是【对话时序】那一段，出现在它当时的时间点上），"+
+				"返回值会列出每条的时间/来源/正文开头。要引用细节，读时序里对应时间点即可。"+
+				"\n\n**副作用**：召回即从历史层取出（消费式），该文档不再留在 L2。",
+			map[string]interface{}{
+				"query": map[string]interface{}{"type": "string", "description": "查询内容，用当时可能出现的词描述"},
+				"top_k": map[string]interface{}{"type": "integer", "description": "召回多少篇（默认 3）", "default": 3},
+			}, []string{"query"}, parallelOpts()))
+
+		tools = append(tools, toolDef("doc_commit",
+			"把**整段结论/过程**写进历史记忆层（L2）。"+
+				"\n\n**适合写什么**：做完一件事的完整过程与结论、排查链条、方案取舍的理由 —— "+
+				"这些内容长、有上下文、以后要回看原文。"+
+				"\n\n**不适合写什么**：单个事实或实体关系（谁是谁、某值等于多少、偏好）→ 用 memory_commit；"+
+				"可复用的成文知识 → 用 knowledge_create。"+
+				"\n\n写入后会参与后续的自动预填充与 doc_query 召回。",
+			map[string]interface{}{
+				"content": map[string]interface{}{"type": "string", "description": "文档内容（完整正文，不要自己截断）"},
+				"summary": map[string]interface{}{"type": "string", "description": "一句话摘要（可选，留空则由正文首行生成）"},
+				"media_digests": map[string]interface{}{
+					"type":        "array",
+					"description": "可选：这篇文档关联的媒体 digest（对话或 memory_recall 的「关联媒体」里显示的十六进制串，短的即可）。填了以后检索到这篇文档就能看到并取回原图/音频。",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+			}, "content"))
 	}
 
 	if a.social != nil {

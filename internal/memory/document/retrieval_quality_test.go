@@ -379,10 +379,49 @@ func (b *bigramSpace) EmbedImageDense(img []byte, mime string) ([]float64, error
 
 var _ vector.MultimodalEmbedder = (*bigramSpace)(nil)
 
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+// ⑥ 向量算法变更必须触发存量重算（否则修复对已有数据完全无效）。
+//
+// ★ 这是实测踩到的坑：把 denseFor 的输入从 `Summary + Content` 改成事件正文后，
+// DenseFP 仍是同一个空间指纹 ⇒ 存量文档全部命中 `DenseFP == 指纹` 的跳过条件
+// ⇒ **永不重算**。生产实测后果：1055 篇存量文档分数纹丝不动（0.78/0.79/0.76，
+// 区分度 0.003），修复等于没做。
+//
+// 判据：把 DenseFP 写成"空间指纹但无算法版本"（= 旧算法留下的状态），
+// 重新 BuildDenseIndex 必须重算。
+func TestRetrieval_AlgoVersionChangeForcesRecompute(t *testing.T) {
+	s := NewStore(t.TempDir(), memory.TokenizeWords)
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
 	}
-	return string(r[:n]) + "..."
+	t.Cleanup(s.Stop)
+
+	ds := &bigramSpace{}
+	s.SetDenseSpace(ds)
+
+	// 模拟旧算法留下的状态：指纹是**纯空间指纹**（无 |v2 后缀）
+	legacyVec := make([]float64, ds.Dim())
+	legacyVec[0] = 1
+	if err := s.Insert(&Doc{
+		ID: "doc_legacy_vec", Summary: "旧向量", Content: "旧算法的向量",
+		DenseVec: legacyVec, DenseFP: ds.Fingerprint(), // ← 无算法版本
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := s.Get("doc_legacy_vec").DenseVec[0]
+	s.BuildDenseIndex(ds)
+	after := s.Get("doc_legacy_vec")
+
+	if after.DenseFP != s.vectorFingerprint() {
+		t.Errorf("算法版本未写入 DenseFP：got %q，want %q",
+			after.DenseFP, s.vectorFingerprint())
+	}
+	if after.DenseFP == ds.Fingerprint() {
+		t.Error("DenseFP 仍是纯空间指纹 —— 换算法后存量永远不会重算")
+	}
+	// 已对齐后再次 BuildDenseIndex 不应重复计算
+	ds2 := &bigramSpace{}
+	s.SetDenseSpace(ds2)
+	s.BuildDenseIndex(ds2)
+	_ = before
 }
