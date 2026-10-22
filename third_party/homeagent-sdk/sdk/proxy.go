@@ -6,20 +6,20 @@ import (
 	"strings"
 )
 
-// 反向代理声明：插件告诉 HomeAgent「我起了个 HTTP 服务，请把它反代出去」。
+// 反向代理声明：插件告诉 HologramAgent「我起了个 HTTP 服务，请把它反代出去」。
 //
 // 为什么需要：插件自带 Web UI / HTTP API 时，监听地址在插件自己的配置里
 // （如 127.0.0.1:12100），外部无从得知；而 webui 的对外端口通常只有一个
 // （默认 :8080，且常经 frp 单端口隧道穿透）。没有声明机制时，用户只能
 // 「知道端口 + 自己配转发」，插件换端口就失效。
 //
-// 设计取舍——**声明式而非注册式**：声明写在 plugin.json 里，由 HomeAgent
+// 设计取舍——**声明式而非注册式**：声明写在 plugin.json 里，由 HologramAgent
 // 在加载插件时读取聚合，而不是让插件在运行期调 API 注册。理由：
 //  1. 静态可发现：未启动/已崩溃的插件，其服务声明依然可见（可给出准确报错
 //     「插件 X 声明了 ui 但目标 127.0.0.1:12100 不可达」，而不是静默 404）；
 //  2. 可版本化：声明随插件包一起分发、可 diff、可审计；
-//  3. 旧内核无害：manifest 解析忽略未知字段，未支持该能力的 HomeAgent 读旧
-//     插件、或旧 HomeAgent 读新插件都不会报错。
+//  3. 旧内核无害：manifest 解析忽略未知字段，未支持该能力的 HologramAgent 读旧
+//     插件、或旧 HologramAgent 读新插件都不会报错。
 //
 // 与 ToolDef / ChannelDef / ConfigDef 同族：SDK 定义声明契约，内核实现行为。
 // 声明方式与其它能力一致 —— 在 Start() 里调 RegisterProxy(name, def)，
@@ -64,7 +64,7 @@ import (
 type ProxyDef struct {
 	// Name 是同一插件内多条声明的唯一标识（如 "ui"、"api"）。
 	// 运行期由 RegisterProxy 的第一个参数填入；声明式由 plugin.json 的
-	// name 键填入。省略时由 HomeAgent 兜底为 "service"。
+	// name 键填入。省略时由 HologramAgent 兜底为 "service"。
 	Name string `json:"name,omitempty"`
 	// Host 是**子域名标签**（不含基域名），如 "huawei" 对应 huawei.<基域名>。
 	//
@@ -72,12 +72,12 @@ type ProxyDef struct {
 	// （DNS label 规则）。省略时默认取插件名（下划线转连字符，因为下划线
 	// 不是合法 DNS label 字符）。
 	//
-	// 冲突处理：两个插件声明同一 Host 时，HomeAgent 不做「后者覆盖前者」——
+	// 冲突处理：两个插件声明同一 Host 时，HologramAgent 不做「后者覆盖前者」——
 	// 那样会让先声明者静默消失。冲突条目被拒绝并在反代表里记录原因。
 	Host string `json:"host,omitempty"`
 
 	// Target 是上游地址，形如 "127.0.0.1:12100" 或 "http://127.0.0.1:12100"。
-	// 可带路径前缀（如 "127.0.0.1:3000/base"），HomeAgent 转发时保留该前缀。
+	// 可带路径前缀（如 "127.0.0.1:3000/base"），HologramAgent 转发时保留该前缀。
 	//
 	// 端口由插件自己填它**实际监听**的地址，避免「声明与实际漂移」。
 	Target string `json:"target"`
@@ -135,7 +135,7 @@ type ProxyDef struct {
 	//
 	// 为什么做成可声明项：设备网关（remotedevice）这类服务的调用方是**设备**，
 	// 它们不可能持有浏览器会话 cookie，而服务自身已有接入令牌（如 ws_token）。
-	// 强制走 HomeAgent 门户鉴权会把这类链路挡死；反过来，插件自带的 UI 若
+	// 强制走 HologramAgent 门户鉴权会把这类链路挡死；反过来，插件自带的 UI 若
 	// 声明 none，就等于把管理界面裸露给任何能访问该端口的人。
 	// 因此必须由插件**逐条**声明，而不是全局一刀切。
 	Auth string `json:"auth,omitempty"`
@@ -198,7 +198,7 @@ func EffectiveProxyAuth(auth string) string {
 
 // ValidProxyHostLabel 校验子域名标签是否合法（DNS label 规则）。
 //
-// 独立成导出函数：插件作者在写声明时、HomeAgent 在加载时、工具链在打包时
+// 独立成导出函数：插件作者在写声明时、HologramAgent 在加载时、工具链在打包时
 // 都要用同一套规则判定，避免三处各写一份而互相不一致。
 func ValidProxyHostLabel(label string) bool {
 	if label == "" || len(label) > 63 {
@@ -246,7 +246,7 @@ func NormalizeProxyHost(pluginName string) string {
 
 // ValidateProxyDef 校验一条反代声明，返回人类可读的错误说明（合法时为空）。
 //
-// 为什么要在 SDK 里做校验：HomeAgent 加载插件时必须能明确拒绝坏声明并说明
+// 为什么要在 SDK 里做校验：HologramAgent 加载插件时必须能明确拒绝坏声明并说明
 // 原因（而不是静默忽略导致用户以为配好了）；插件作者也需要在本地就能查出
 // 拼错的 Target/Host。同一套规则两端共用。
 func ValidateProxyDef(d ProxyDef) string {
@@ -338,7 +338,7 @@ func (s *PluginSDK) SetProxyRegistrar(r ProxyRegistrar) {
 	s.apiMu.Unlock()
 }
 
-// RegisterProxy 声明一个需要 HomeAgent 反代出去的服务。
+// RegisterProxy 声明一个需要 HologramAgent 反代出去的服务。
 //
 // 与 RegisterTool / RegisterInputChannel / RegisterOutputChannel 同一风格：
 // 显式给名字 + 声明体。名字用于展示、日志与冲突提示（不参与路由 —— 路由键是
