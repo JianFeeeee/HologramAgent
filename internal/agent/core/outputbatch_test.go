@@ -260,19 +260,65 @@ func TestOutputSend_KernelDoesNotInterpretType(t *testing.T) {
 	}
 }
 
-// ⑦ 空 payload 与非字符串元素必须被拒（不能静默发空消息）。
-func TestOutputSend_RejectsEmptyEntries(t *testing.T) {
+// ⑦ 空 payload 交给插件判断，内核不拦（★ 实测踩到的真实缺陷）。
+//
+// 原先这里是"含空条目必须整 call 拒绝"。但内核**不知道 payload 的语义**：
+// QQ 的 `type=sticker` + `meta.sticker_index=1` 需要 payload 留空占位，
+// 真实 URL 由插件从收藏表情里取。旧实现在内核判空 ⇒ 插件侧的放行分支
+// 永远走不到 ⇒ 生产实测报 "payload 不能为空"，功能完全不可用。
+//
+// 正确边界：**参数是否存在归内核，参数值是否合法归插件**。
+//
+// 变异：把 trim 判空加回去 ⇒ 红（内核又替插件做决定了）。
+func TestOutputSend_EmptyPayloadDeferredToPlugin(t *testing.T) {
 	ch := newRecordingChannel()
 	a := newOutputTestAgent(t, ch, agentIO.CapText)
 
 	out := a.executeOutputSendTool(sendArgs(map[string]interface{}{
 		"payload": []interface{}{"正常", "   "},
+		"meta":    `{"sticker_index":1}`,
+	}))
+	// 内核应把两条都交给插件（内容合法性由插件判）
+	if len(ch.calls) != 2 {
+		t.Errorf("内核不该拦空条目，应交插件判断，实际只发 %d 条（返回 %q）", len(ch.calls), out)
+	}
+}
+
+// ⑦b 单个空 payload 是"占位"，不是"没传"。
+//
+// 区别：`payload: ""` 说明模型明确给了空占位；"没传 payload 键"才是真没提供。
+// 前者必须走到插件（否则 sticker_index 用法永远不可用）。
+func TestOutputSend_EmptyStringIsNotMissing(t *testing.T) {
+	ch := newRecordingChannel()
+	a := newOutputTestAgent(t, ch, agentIO.CapText)
+
+	out := a.executeOutputSendTool(sendArgs(map[string]interface{}{
+		"payload": "",
+		"type":    "sticker",
+		"meta":    `{"user_id":1,"sticker_index":1}`,
+	}))
+	if len(ch.calls) != 1 {
+		t.Fatalf("空字符串 payload 应交给插件（sticker_index 用法依赖它），实际 %d 次调用（返回 %q）",
+			len(ch.calls), out)
+	}
+	if p, _ := ch.calls[0]["payload"].(string); p != "" {
+		t.Errorf("payload 应原样透传空串，实际 %q", p)
+	}
+}
+
+// ⑦c 但"完全没传 payload 键"仍必须拒绝（结构性错误，内核能判）。
+func TestOutputSend_MissingPayloadStillRejected(t *testing.T) {
+	ch := newRecordingChannel()
+	a := newOutputTestAgent(t, ch, agentIO.CapText)
+
+	out := a.executeOutputSendTool(sendArgs(map[string]interface{}{
+		"type": "text",
 	}))
 	if len(ch.calls) != 0 {
-		t.Errorf("含空条目的批量必须整 call 拒绝，实际发了 %d 条", len(ch.calls))
+		t.Errorf("完全没传 payload 必须拒绝，实际发了 %d 条", len(ch.calls))
 	}
-	if !strings.Contains(out, "为空") {
-		t.Errorf("返回值应指出空条目，实际: %q", out)
+	if !strings.Contains(out, "payload 不能为空") {
+		t.Errorf("返回值应说明 payload 不能为空，实际 %q", out)
 	}
 }
 

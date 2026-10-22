@@ -68,11 +68,17 @@ func parseOutputItems(args map[string]interface{}) ([]outputItem, error) {
 	if len(payloads) == 0 {
 		return nil, fmt.Errorf("payload 不能为空")
 	}
-	for i, p := range payloads {
-		if strings.TrimSpace(p) == "" {
-			return nil, fmt.Errorf("payload 第 %d 条为空", i+1)
-		}
-	}
+	// ★ 空字符串元素**不在这里拒绝**（2026-10-22 实测踩到）。
+	//
+	// 内核不知道 payload 的语义：它可能是"要发的内容"，也可能是占位 ——
+	// 例如 QQ 的 `type=sticker` + `meta.sticker_index=1`，真实 URL 由插件从
+	// 收藏表情里取，模型根本不知道该往 payload 填什么。内核在这里判空，
+	// 等于用一个它不理解的字段把插件的合法用法挡掉（实测报
+	// "payload 不能为空"，而插件侧的放行分支永远走不到）。
+	//
+	// 正确边界：**参数是否存在归内核管，参数值是否合法归插件管**。
+	// 所以只拒绝"整条数组里没有任何一项"这种结构性错误（上面那条），
+	// 逐项内容交给插件判断并返回 error。
 
 	// type 对齐：省略 / 单值 ⇒ 广播；否则必须与 payload 等长
 	if len(types) == 0 {
@@ -125,9 +131,12 @@ func parseOutputItems(args map[string]interface{}) ([]outputItem, error) {
 func stringOrArray(v interface{}) []string {
 	switch t := v.(type) {
 	case string:
-		if t == "" {
-			return nil
-		}
+		// 空字符串**保留**为一个元素，不当"未提供"处理。
+		//
+		// 区别很重要：`payload: ""` 是"模型明确给了一个空载荷占位"
+		// （插件可能从 meta 里取真实内容，如 QQ 的 sticker_index），
+		// 而"没传 payload 这个键"才是真的没提供。前者归插件判断合法性，
+		// 后者由 parseOutputItems 的 len==0 拦下。
 		return []string{t}
 	case []string:
 		return t
@@ -246,7 +255,11 @@ func (a *Agent) sendOneOutput(channel string, item outputItem) (string, bool) {
 	if stageCtx.Response != nil {
 		return fmt.Sprintf("输出被插件拦截: %s", *stageCtx.Response), false
 	}
-	if stageCtx.FinalText == "" {
+	// 只有"原本非空、被插件清空"才是异常（防插件静默吞掉内容却仍算成功）。
+	//
+	// 原本就空 ⇒ 合法占位（如 type=sticker + meta.sticker_index，真实 URL
+	// 由插件自己取），不能报"被清空"——那是拿内核不理解的字段做判断。
+	if item.payload != "" && stageCtx.FinalText == "" {
 		return "输出被插件清空", false
 	}
 	args["payload"] = stageCtx.FinalText
