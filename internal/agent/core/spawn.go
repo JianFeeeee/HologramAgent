@@ -112,7 +112,7 @@ const defaultChildMaxTurns = 5
 // 不把父的【输出规则】/【中断消息】/【记忆清理】/【可用技能】/人格那几节一并搬过来：
 // 子被显式禁用了 output_send__*（结果回父而非直接回用户），也无需保留记忆或响应中断；
 // 搬来只会白占提示词预算。
-const childSystemPromptTemplate = `你是 HomeAgent 的子任务助手。
+const childSystemPromptTemplate = `你是 HologramAgent 的子任务助手。
 请完成以下任务。完成即可，无需保留记忆或查询历史。
 
 【执行纪律】这是硬性要求，不是建议：

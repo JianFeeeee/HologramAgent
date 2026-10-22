@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 )
 
-// shmMagic 标识 HomeAgent 的 StageContext 共享段。
+// shmMagic 标识 HologramAgent 的 StageContext 共享段。
 //
 // **不设版本号**：段布局自描述 —— 内核把描述符个数写进 header
 // （offFieldCount），插件据此定位标志位，不再用自己编译期的常量推算。
@@ -27,7 +27,7 @@ import (
 // 协议兼容性由双方版本号的**主版本**在握手上校验（见 protocol.go 的
 // MajorVersion）。
 const (
-	shmMagic uint32 = 0x48415348 // "HASH" — HomeAgent SHared
+	shmMagic uint32 = 0x48415348 // "HASH" — HologramAgent SHared
 )
 
 // 段布局（所有偏移均相对**段起始**，arena 内偏移相对 arenaBase）：

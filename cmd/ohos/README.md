@@ -1,4 +1,4 @@
-# HomeAgent 鸿蒙客户端
+# HologramAgent 鸿蒙客户端
 
 HarmonyOS / OpenHarmony 原生客户端，用 ArkTS + ArkUI 实现（不是 WebView 套壳）。
 功能与 WebUI 对齐：SSE 流式对话、工具调用卡片、思考过程折叠、附件上传预览、
@@ -7,7 +7,7 @@ HarmonyOS / OpenHarmony 原生客户端，用 ArkTS + ArkUI 实现（不是 WebV
 ## 工程结构
 
 ```
-HomeAgent/
+HologramAgent/
 ├── AppScope/                     应用级配置与图标
 ├── oh_modules/                   依赖（.gitignore 忽略，但**必须存在**，见下节）
 ├── entry/src/main/
@@ -98,7 +98,7 @@ HomeAgent/
 1. **准备签名配置**（`build-profile.json5` 含密码明文，未入库）：
 
    ```bash
-   cd cmd/ohos/HomeAgent
+   cd cmd/ohos/HologramAgent
    cp build-profile.json5.example build-profile.json5
    ```
 
@@ -109,7 +109,7 @@ HomeAgent/
 2. **构建 HAP**：
 
    ```bash
-   cd cmd/ohos/HomeAgent
+   cd cmd/ohos/HologramAgent
    # ⚠️ 不要用仓库里的 ./hvigorw：它是符号链接，启动脚本按 $(dirname $0) 定位，
    #    会报 File not found: <repo>/cmd/ohos/hvigor/bin/hvigorw。
    #    一律用 command-line-tools 里的绝对路径（本机为 /opt/huawei/command-line-tools/bin/hvigorw）：

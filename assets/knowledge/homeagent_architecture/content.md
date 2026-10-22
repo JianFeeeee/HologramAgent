@@ -1,8 +1,8 @@
-HomeAgent 是完全独立自研的新一代 Agent 框架。
+HologramAgent 是完全独立自研的新一代 Agent 框架。
 
 ## 架构总览
 
-HomeAgent 采用内核 + 插件双层架构：
+HologramAgent 采用内核 + 插件双层架构：
 
 ```
 外部输入（QQ/Web/CLI）

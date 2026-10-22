@@ -25,7 +25,7 @@
 ## 1. 已知的关键教训（不重犯）
 
 1. **两侧 usage 同名不同义**（已归一，勿改回去）：
-   - HomeAgent：`prompt_tokens` **含**缓存（OpenAI 口径）
+   - HologramAgent：`prompt_tokens` **含**缓存（OpenAI 口径）
    - pi：`input` 是**未命中侧**，`totalTokens = input + cacheRead + output`（Anthropic 口径，受控实验实证）
    - ⇒ 两侧各自过归一函数（pi_bench.py `_usage_of` / memory_recall.py `_norm_ha_usage`+`_norm_pi_usage`），汇总只认归一后的键
 2. **缓存命中率恒 100% 的假绿已修**（`59c0689`）：上游只报命中侧时 `miss = prompt - read`。修复前 100.0% → 修复后 87.6%。
@@ -33,7 +33,7 @@
 4. **内核会 dedupe 完全相同的输入**（`skipped:true`）：多轮/重跑必须让每条文本不同。
 5. **pi 必须隔离配置目录 + 端口**：`PI_CODING_AGENT_DIR=${PI_ISO}` + `PI_A2A_PORT`/`PI_ACP_PORT` 给空闲端口。隔离后无扩展 ⇒ `pi -p` 跑完自己退出。
 6. **pi 的工具事件**：事件名 `tool_execution_start`、字段 `toolName`（写错只是静默为空）。
-7. **★ 超窗校验是判据的前提，不是可选项**：旧 200k 跑分因实例窗口（HomeAgent 1M / pi 600k）大于灌入量 253k，实际测的是「窗口内召回」—— 跑 19 分钟、数字漂亮、完全无效。memory_recall.py 已加 `--expect-window` 校验（对无效配置直接拒跑）；新会话用它，并先实测两侧真实窗口。
+7. **★ 超窗校验是判据的前提，不是可选项**：旧 200k 跑分因实例窗口（HologramAgent 1M / pi 600k）大于灌入量 253k，实际测的是「窗口内召回」—— 跑 19 分钟、数字漂亮、完全无效。memory_recall.py 已加 `--expect-window` 校验（对无效配置直接拒跑）；新会话用它，并先实测两侧真实窗口。
 8. **改 LLM 配置必须重启实例**：provider 启动时构建，`/settings set` 落库但不生效。
 9. **不要用 `pkill -f`**：会匹配到自己这条 shell 命令行。用 pid 文件或 `pgrep` 精确 pid。
 10. **面板懒渲染**：WebUI 的 `#chat-panel-chat` 只在 `switchTab('chat')` 后存在；浏览器验证先切页。
@@ -42,7 +42,7 @@
 ## 2. 测试 A：零基础认知对比（质量，可多实例并行）
 
 **目的**：同模型、同一份材料，只变 harness，测认知而非"翻自己的库"。
-（旧版硬伤：knowledge-stats 让 pi 读 HomeAgent 自己的 graph.db ⇒ pi 97s/317k token 全是权限差异，不是能力差异。）
+（旧版硬伤：knowledge-stats 让 pi 读 HologramAgent 自己的 graph.db ⇒ pi 97s/317k token 全是权限差异，不是能力差异。）
 
 材料：`${BENCH_MATERIAL}/{incident-2026-08.md, config-notes.md}`（若不存在，按 git 历史里的任务集重建；材料必须含：512 连接池上限、4200 峰值、v2.30.4、87 订单、"600" **不在**材料里须自己算 200+400、ttl=0=永不过期、N+1、对账批处理）。
 
@@ -54,7 +54,7 @@
 # ① 起隔离实例（窗口两侧都配 200000）
 BIN=${REPO}/build/homed \
   bash scripts/capability-bench/spawn-instance.sh a 18082 200000
-# ② HomeAgent 侧
+# ② HologramAgent 侧
 python3 scripts/capability-bench/bench.py --socket ${INSTANCE_A}/cli.sock \
   --api-key "$(cat "${INSTANCE_A}/apikey")"   # 由 spawn-instance.sh 写入 \
   --tasks scripts/capability-bench/tasks.zerobasis.json --out ${OUT_DIR}/ha --timeout 300
@@ -63,14 +63,14 @@ python3 scripts/capability-bench/pi_bench.py \
   --tasks scripts/capability-bench/tasks.zerobasis.json --out ${OUT_DIR}/pi --timeout 300
 # ④ 对比
 python3 scripts/capability-bench/compare.py --a ${OUT_DIR}/ha --b ${OUT_DIR}/pi \
-  --label-a HomeAgent --label-b pi --out ${OUT_DIR}
+  --label-a HologramAgent --label-b pi --out ${OUT_DIR}
 ```
 
 验收：两侧任务集一致（compare.py 会检查）；逐任务看通过与 token；失败原因必须留在 compare.md。
 
 ## 3. 测试 B：200k 超窗记忆召回（性能敏感 ⇒ 独占实例，串行跑）
 
-**目的**：多轮对话超出窗口后，早期内容的召回率（HomeAgent 向量裁剪 vs pi 压缩）。
+**目的**：多轮对话超出窗口后，早期内容的召回率（HologramAgent 向量裁剪 vs pi 压缩）。
 
 **★ v3 填充模型（`95224eb`，当前唯一有效版本）**
 
@@ -102,7 +102,7 @@ verify 分支 ⇒ **永不触发**（表现为「覆盖新值找不到」，不�
 
 **★ 先把两侧窗口真实配成一致（这是上次翻车点）**：
 
-- HomeAgent：`core.llm.sources.deepseek.context_window = 200000`（spawn-instance.sh 第 3 参传 200000），起后 `sqlite3 ... "SELECT value FROM config WHERE key LIKE '%context_window%'"` 验证 = 200000
+- HologramAgent：`core.llm.sources.deepseek.context_window = 200000`（spawn-instance.sh 第 3 参传 200000），起后 `sqlite3 ... "SELECT value FROM config WHERE key LIKE '%context_window%'"` 验证 = 200000
 - pi：把隔离目录 `${PI_ISO}/models.json` 的 AUTO 模型 `contextWindow` 改成 200000，并用 python3 读回验证
 
 执行（串行，先 A 后 pi；v3 填充实测 `overshoot` 需给 1.45 才能达到 1.23×）：

@@ -31,9 +31,9 @@ import (
 var shmNameSeq atomic.Uint64
 
 const (
-	shmNamePrefix   = "Local\\HomeAgentShm"
-	evtRingNamePfx  = "Local\\HomeAgentEvtRing"
-	evtEventNamePfx = "Local\\HomeAgentEvtSignal"
+	shmNamePrefix   = "Local\\HologramAgentShm"
+	evtRingNamePfx  = "Local\\HologramAgentEvtRing"
+	evtEventNamePfx = "Local\\HologramAgentEvtSignal"
 	envStageShmName = "HOMEAGENT_SHM_STAGE"
 	envEvtRingName  = "HOMEAGENT_SHM_EVTRING"
 	envEvtEventName = "HOMEAGENT_EVT_EVENT"

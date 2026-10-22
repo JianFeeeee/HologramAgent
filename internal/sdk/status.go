@@ -310,7 +310,7 @@ type BuildStatus struct {
 	// SDKCompatible 是本内核可兼容的最高 SDK 版本。
 	// 插件用旧 SDK 编译时靠它判断能不能加载。
 	SDKCompatible string `json:"sdk_compatible"`
-	// KernelName 是内核名（HomeAgent）。
+	// KernelName 是内核名（HologramAgent）。
 	KernelName string `json:"kernel_name"`
 	// SourceURL 是本次构建对应的源码地址。AGPL-3.0 §13 要求：向使用者提供网络
 	// 服务时，要给他们拿到 Corresponding Source 的机会——WebUI 状态页会把它渲染成

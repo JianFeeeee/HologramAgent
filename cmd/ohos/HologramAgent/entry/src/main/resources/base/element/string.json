@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "HologramAgent"
+    },
+    {
+      "name": "read_pasteboard_reason",
+      "value": "用于在应用前台按你的授权响应 agent 的剪贴板读取请求"
+    }
+  ]
+}

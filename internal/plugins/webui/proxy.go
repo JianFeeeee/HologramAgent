@@ -20,13 +20,13 @@ import (
 )
 
 // 通用反向代理：插件声明自带 HTTP 服务（plugin.json 的 proxies），
-// HomeAgent 按 **Host 子域标签** 把它们从 webui 的同一端口反代出去。
+// HologramAgent 按 **Host 子域标签** 把它们从 webui 的同一端口反代出去。
 //
 // ## 为什么是 Host 路由而不是路径前缀
 //
 // 插件自带 UI 普遍使用根绝对路径（实测 huawei_smarthome 的前端是
 // `api('/api/status')` → `fetch('/api/status')`）。若挂在 `/p/huawei/` 下，
-// 这些请求会打到 HomeAgent 自己的 `/api/status`，**静默错路由**。路径前缀方案
+// 这些请求会打到 HologramAgent 自己的 `/api/status`，**静默错路由**。路径前缀方案
 // 要么要求所有插件改前端，要么做 HTML/JS 内容重写——后者对拼进 JS 字符串的
 // 绝对路径只是"按概率能用"，会产生「页面能开、某个按钮就坏」的静默故障。
 //
@@ -43,7 +43,7 @@ import (
 //
 // ## 认证
 //
-// 逐条由插件声明（ProxyAuthHomeAgent / ProxyAuthNone），默认 HomeAgent 统一保护。
+// 逐条由插件声明（ProxyAuthHomeAgent / ProxyAuthNone），默认 HologramAgent 统一保护。
 // 但 Host 路由下**子域与主门户不同源**，浏览器不会把门户的 homeagent_session
 // 发给子域——所以受保护模式下由反代层校验门户会话/API Key，校验通过后放行。
 // 详见 authorizeProxy。
@@ -658,7 +658,7 @@ func (h *Handler) authorizeProxy(w http.ResponseWriter, r *http.Request) bool {
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="homeagent"`)
 	writeJSON(w, http.StatusUnauthorized, map[string]string{
-		"error": "该服务由 HomeAgent 统一保护，需要先登录门户或用 X-API-Key 访问",
+		"error": "该服务由 HologramAgent 统一保护，需要先登录门户或用 X-API-Key 访问",
 		"hint":  "浏览器先访问门户登录；脚本用 -H 'X-API-Key: <key>' 或 ?__token=<key>",
 	})
 	return false

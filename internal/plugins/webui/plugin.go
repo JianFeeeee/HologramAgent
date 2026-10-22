@@ -240,7 +240,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	s.Settings().RegisterDef(sdk.ConfigDef{Key: "username", Default: "admin", Type: "string", DisplayName: "登录用户名", Description: "Web 控制台登录用户名", Category: "webui"})
 	s.Settings().RegisterDef(sdk.ConfigDef{Key: "password", Default: "", Type: "password", DisplayName: "Web 控制台登录密码", Description: "Web 控制台登录密码", Category: "webui"})
 	s.Settings().RegisterDef(sdk.ConfigDef{Key: "session_ttl_hours", Default: "24", Type: "int", DisplayName: "会话时长(小时)", Description: "登录 cookie 有效时长", Category: "webui"})
-	// ---- 通用反代（HomeAgent 自带能力）----
+	// ---- 通用反代（HologramAgent 自带能力）----
 	// 基域名：默认 localhost ⇒ <标签>.localhost:<端口> 开箱即用（RFC 6761 强制
 	// 解析到 loopback，无需 DNS/证书/hosts）。远程访问时改成本机可达的域名，
 	// 如 webui.example.com ⇒ <标签>.webui.example.com。

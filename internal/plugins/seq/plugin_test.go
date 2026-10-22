@@ -65,7 +65,7 @@ func TestSeqCreateSchemaDeclaresRequired(t *testing.T) {
 
 // ③ seq_create 的 description 必须说明 groups 与 file **二选一**。
 //
-// 这是最容易让模型犯错的地方：两个都传或都不传该怎么���，必须写清。
+// 这是最容易让模型犯错的地方：两个都传或都不传该怎么办，必须写清。
 func TestSeqCreateExplainsMutuallyExclusiveInput(t *testing.T) {
 	p := newTestPlugin(t)
 	desc := p.toolDefs()["seq_create"].Description

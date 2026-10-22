@@ -96,9 +96,9 @@ func TestPackagingBuildShGeneratesGraphForHomed(t *testing.T) {
 // Go 对未知 `-X` 路径**静默忽略**（不报错）⇒ 发行包版本/commit 全 unknown。
 func TestPackagingLdflagsUseCurrentModulePath(t *testing.T) {
 	src := readOrSkip(t, buildSh)
-	if strings.Contains(src, "gitcode.com/JianFeeeee/HomeAgent") {
+	if strings.Contains(src, "gitcode.com/JianFeeeee/HologramAgent") {
 		t.Fatal("★ build.sh 的 LDFLAGS 用的是**历史**模块路径 " +
-			"`gitcode.com/JianFeeeee/HomeAgent`；当前模块是 " +
+			"`gitcode.com/JianFeeeee/HologramAgent`；当前模块是 " +
 			"`github.com/JianFeeeee/HologramAgent`。\n" +
 			"   `-X` 对未知路径**静默无效** ⇒ 发行包的 Version/Commit/BuildTime " +
 			"全是默认值（实测 --version 输出 unknown）")

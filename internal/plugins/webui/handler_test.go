@@ -406,7 +406,7 @@ func TestHandleStaticServesHTML(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "HomeAgent Dashboard") {
+	if !strings.Contains(w.Body.String(), "HologramAgent Dashboard") {
 		t.Error("expected dashboard HTML")
 	}
 }

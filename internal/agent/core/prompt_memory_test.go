@@ -190,3 +190,53 @@ func TestPrefillMarkdownCarriesContentAndGuide(t *testing.T) {
 		t.Errorf("预填充文案没有说明来源层：\n%s", md)
 	}
 }
+
+// ⑥ 技术性内容不得留在系统提示词里（收敛到 skill / 工具描述）。
+//
+// 背景（用户 2026-10-22）：agent 说话人机味重。查明主因不是性格设定，
+// 而是系统提示词里堆了**模型无法据以行动的实现细节**：
+//
+//	【工具执行顺序】1272 字（ParallelSafe 声明、批内降级、内核判据…）
+//	【三层记忆】   1069 字（L1/L2/L3 编号、消费式删除、向量空间…）
+//
+// 合计占提示词的绝大部分，而且全是"说明书腔"。模型学不到怎么用它，
+// 却会照着这种语气说话。收敛后两段合计不到 500 字。
+//
+// 本判据钉住：这些术语不得回到系统提示词。
+func TestSystemPromptHasNoImplementationJargon(t *testing.T) {
+	a := newToolTestAgent(t)
+	prompt := a.buildSystemPrompt("", "测试输入")
+
+	jargon := []string{
+		"ParallelSafe",  // 工具声明项，模型不判断也改不了
+		"batchRunnable", // 内核内部函数名
+		"消费式",           // L2 取出语义的实现说法
+		"DenseCosine",   // 算法名
+		"fingerprint",   // 向量空间标识
+		"向量空间",          // 实现概念
+		"批内降级",          // 内核调度细节
+		"自激",            // 设计隐患，模型无需知道
+	}
+	for _, j := range jargon {
+		if strings.Contains(prompt, j) {
+			t.Errorf("系统提示词含实现术语 %q —— 技术内容应下沉到 skill / 工具描述，\n"+
+				"留在这里只会让回复带上说明书腔，且模型无法据此行动", j)
+		}
+	}
+}
+
+// ⑦ 提示词长度上限（防止技术说明再次淤积）。
+//
+// 当前实测 1723 字（收敛前 2309）。上限取 2000：留有增删余地，
+// 但堵住"又加一大段实现说明"这种回潮。
+func TestSystemPromptStaysCompact(t *testing.T) {
+	a := newToolTestAgent(t)
+	prompt := a.buildSystemPrompt("", "测试输入")
+
+	const maxRunes = 2000
+	if n := len([]rune(prompt)); n > maxRunes {
+		t.Errorf("系统提示词 %d 字，超过上限 %d —— \n"+
+			"新加的内容先问：模型会据此做什么不同的事？答不上来就该进 skill 或工具描述",
+			n, maxRunes)
+	}
+}

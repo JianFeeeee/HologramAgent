@@ -6,7 +6,7 @@
 // 文案写着「启动时不显示主窗口，驻留托盘后台运行」，但主进程从来没读过它
 // —— whenReady 无条件 createWindow()，于是必然弹窗。
 //
-// 实测（本机，prefs.silentStart=true）：窗口标题 HomeAgent 照样出现。
+// 实测（本机，prefs.silentStart=true）：窗口标题 HologramAgent 照样出现。
 //
 // 本判据钉住三件事：
 //   1. whenReady 真的读 silentStart 并据此决定 show

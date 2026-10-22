@@ -741,7 +741,7 @@ async function api(p, o) {
 
 // 从服务端发现设备网关地址（自动链接的权威来源）。
 //
-// 失败不报错：老版本 HomeAgent 没有这个端点，回退到本地推导即可
+// 失败不报错：老版本 HologramAgent 没有这个端点，回退到本地推导即可
 // （见 renderDeviceChannel 里的 state.discoveredGateway || 旧口径）。
 //
 // 优先 url_portal（门户同源形态）：GUI 主进程连 WS 走系统解析器，
@@ -1083,7 +1083,7 @@ async function refreshAll() {
             // 服务端列表未含本机（可能离线），仍展示本地状态
             state.devices.push({
               device_id: dbinfo.deviceId,
-              name: "HomeAgent GUI",
+              name: "HologramAgent GUI",
               kind: "computer",
               authorized: dbinfo.authorized,
               online: false,
@@ -1555,7 +1555,7 @@ function renderOverview() {
           b.commit && b.commit !== "unknown" ? String(b.commit).slice(0, 7) : "";
         return (
           "v" + escHtml(v) +
-          '<div class="stat-sub">' + escHtml(b.kernel_name || "HomeAgent") +
+          '<div class="stat-sub">' + escHtml(b.kernel_name || "HologramAgent") +
           (sha ? " · " + escHtml(sha) : "") + "</div>"
         );
       })(),
@@ -1819,8 +1819,8 @@ function buildChatLayout() {
       "</h2>" +
       "<p>" +
       __(
-        "连接 HomeAgent 服务端后即可开始对话。请在设置中添加后端连接。",
-        "Connect to a HomeAgent server to start chatting. Add a backend connection in Settings.",
+        "连接 HologramAgent 服务端后即可开始对话。请在设置中添加后端连接。",
+        "Connect to a HologramAgent server to start chatting. Add a backend connection in Settings.",
       ) +
       "</p>" +
       '<button class="btn btn-primary" onclick="goSettingsConn()">' +
@@ -1853,7 +1853,7 @@ function buildChatLayout() {
   if (state.messages.length === 0) {
     html +=
       '<div class="empty-state" style="flex:1;display:flex;align-items:center;justify-content:center"><p>' +
-      __("开始与您的 HomeAgent 聊天吧", "Start chatting with your HomeAgent") +
+      __("开始与您的 HologramAgent 聊天吧", "Start chatting with your HologramAgent") +
       "</p></div>";
   }
   html +=
@@ -2229,7 +2229,7 @@ function renderChat() {
   if (msgs.length === 0) {
     html =
       '<div class="empty-state" style="flex:1;display:flex;align-items:center;justify-content:center"><p>' +
-      __("开始与您的 HomeAgent 聊天吧", "Start chatting with your HomeAgent") +
+      __("开始与您的 HologramAgent 聊天吧", "Start chatting with your HologramAgent") +
       "</p></div>";
   } else {
     msgs.forEach((m, i) => {
@@ -5963,7 +5963,7 @@ function renderGuiPrefs() {
     sw(
       "autoLaunch",
       __("开机自启", "Auto launch on start"),
-      __("登录后自动启动 HomeAgent（静默）", "Start silently at login"),
+      __("登录后自动启动 HologramAgent（静默）", "Start silently at login"),
       "saveGuiPrefs('autoLaunch', this.checked)",
     ) +
     sw(
@@ -6041,7 +6041,7 @@ function renderConnSection() {
     "</h3>" +
     "<label>" +
     __("名称", "Name") +
-    '</label><input id="conn-name" placeholder="My HomeAgent">' +
+    '</label><input id="conn-name" placeholder="My HologramAgent">' +
     "<label>" +
     __("连接类型", "Type") +
     '</label><select id="conn-type" onchange="toggleConnType()">' +
@@ -6734,7 +6734,7 @@ async function connectFetchSSE(url) {
               String(p.content || "").slice(0, 40);
             notifyTurnOnce(
               _sig,
-              "HomeAgent",
+              "HologramAgent",
               String(p.content || "").slice(0, 160) || __("（空回复）", "(empty reply)"),
             );
             endChatTurn();
@@ -7329,8 +7329,8 @@ function renderDevices() {
     html +=
       '<p style="color:var(--text-muted)">' +
       __(
-        "暂无设备接入。设备通过 WebSocket 连接到设备网关（默认经 HomeAgent 反代到 devices.<基域名>，或直连 127.0.0.1:9890/api/v1/device/ws），携带 token 后 hello 登记、bind 授权。",
-        "No devices yet. Devices connect via WebSocket (proxied by HomeAgent at devices.<base-domain>, or directly 127.0.0.1:9890/api/v1/device/ws), hello to register, bind to authorize.",
+        "暂无设备接入。设备通过 WebSocket 连接到设备网关（默认经 HologramAgent 反代到 devices.<基域名>，或直连 127.0.0.1:9890/api/v1/device/ws），携带 token 后 hello 登记、bind 授权。",
+        "No devices yet. Devices connect via WebSocket (proxied by HologramAgent at devices.<base-domain>, or directly 127.0.0.1:9890/api/v1/device/ws), hello to register, bind to authorize.",
       ) +
       "</p>";
   } else {

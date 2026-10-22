@@ -15,7 +15,7 @@ func TestAbstain_符号零出现则拒答(t *testing.T) {
 	blocks := []MemoryBlock{
 		{ID: "1", Text: "脚本路径改为 /data/homeagent"},
 		{ID: "2", Text: "13010/13011 而非 12011"},
-		{ID: "3", Text: "从零开发 HomeAgent QQ 插件：使用 plugindev 工具链"},
+		{ID: "3", Text: "从零开发 HologramAgent QQ 插件：使用 plugindev 工具链"},
 	}
 
 	cases := []struct {

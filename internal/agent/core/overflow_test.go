@@ -21,7 +21,7 @@ type fakeOverflowProvider struct {
 
 func (p *fakeOverflowProvider) MaxContextTokens() int { return p.window }
 
-// newOverflowAgent 造一个够用���超页测试 Agent。
+// newOverflowAgent 造一个够用的超页测试 Agent。
 func newOverflowAgent(window, maxContextSize int, events int, chunkChars int) *Agent {
 	a := &Agent{
 		io:             agentIO.NewIOManager(),
@@ -237,7 +237,7 @@ func TestOverflow_T5_恢复预算耗尽则终止(t *testing.T) {
 		t.Fatalf("首次应正常裁剪：handled=%v pruned=%d", handled, pruned)
 	}
 	if f.OverflowRecover != 1 {
-		t.Fatalf("首次应记一次恢复，��际 %d", f.OverflowRecover)
+		t.Fatalf("首次应记一次恢复，实际 %d", f.OverflowRecover)
 	}
 
 	// 制造「裁不动」：每次检查前把上下文压到只剩 1 条大事件
@@ -524,7 +524,7 @@ func TestOverflow_protected按预算收紧(t *testing.T) {
 	// 大窗口 ⇒ 用满配置值（这正是「1M 下这套调度器能更好」的机制）
 	big := newOverflowAgent(1_000_000, 30, 12, 200)
 	if got := big.effectiveProtectedCount(); got != big.context.ProtectedCount() {
-		t.Fatalf("大窗口下应��满配置值 %d，实际 %d", big.context.ProtectedCount(), got)
+		t.Fatalf("大窗口下应达满配置值 %d，实际 %d", big.context.ProtectedCount(), got)
 	}
 }
 

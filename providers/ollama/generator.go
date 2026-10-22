@@ -1,7 +1,7 @@
 // Package ollamagen implements the generation.Provider SPI over a local Ollama
 // HTTP endpoint.
 //
-// It lives outside the HomeAgent core: the core depends only on pkg/generation
+// It lives outside the HologramAgent core: the core depends only on pkg/generation
 // and selects this provider by name through configuration. Prompt rendering,
 // JSON-schema constraint, sampling, and the Ollama wire format are all owned
 // here.

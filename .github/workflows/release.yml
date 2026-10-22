@@ -308,7 +308,7 @@ jobs:
           [ "$PRE" = "true" ] && FLAGS+=(--prerelease)
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "HomeAgent $VERSION
+            --notes "HologramAgent $VERSION
 
           产物清单与校验见 SHA256SUMS。
           - \`hologramagent_${VERSION}_linux_amd64.tar.gz\` — 内核 + CLI + GUI 打包
@@ -361,11 +361,11 @@ jobs:
       #
       # 取值依据（实测 2026-10-21，直连不带代理，非推测）：
       #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
-      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/HologramAgent         → 301  ← 旧名，跳转到上面
       #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
       #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
       #
-      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 背景：gitcode 侧镜像仓已由 HologramAgent 改名为 HologramAgent（与 GitHub
       # 主仓同名）。旧地址仍 301 跳转，跟随后也能到达，但走重定向 ⇒ 别再用它。
       # 判定两仓同一对象：两地址 git ls-remote 的 refs 列表 md5 相同。
       #
@@ -390,7 +390,7 @@ jobs:
           name: linux-amd64
           path: dist
       # ★ 前置检查：gitcode 镜像仓是否存在。
-      #   改名（HomeAgent → HologramAgent）后 gitcode 目标仓需要**人工新建**，
+      #   改名（HologramAgent → HologramAgent）后 gitcode 目标仓需要**人工新建**，
       #   不探的话失败会埋在 push/curl 的原始输出里，看不出是「仓没建」。
       #   语义：token 未配 = 可选项跳过（上一步）；token 有但仓不存在 = 硬失败。
       #
