@@ -387,6 +387,18 @@ type toolDefOptions struct {
 	// 而 output_send__* 是**投递到子 pipeline** 的长任务，天然可能超过 60s
 	// （实测两次 60s 超时）。留空 = 用内核默认 60s，行为不变。
 	timeout string
+
+	// noMemory 声明该工具的**输出**不参与记忆计算（向量化/关键词/蒸馏），
+	// 原文仍留在上下文可读。语义与 ToolDef.NoMemory 一致。
+	//
+	// ★ 注意：doc_query 的 noMemory **不写在这里**，而是由 init() 里的
+	//   显式名单登记。原因：工具表是按需构造的（受 `if a.docStore != nil`
+	//   之类条件控制），而 textForVector 可能在构造之前被调用 ——
+	//   靠构造时登记会让声明"时有时无"。声明是静态事实，init 期定死。
+	//
+	//   本字段保留给"确实想跟着工具构造走"的场景（工具不存在就不需要
+	//   抑制它的输出），与 init 名单二选一即可。
+	noMemory bool
 }
 
 // parallelOpts 是"可并发"的声明项。
@@ -422,6 +434,17 @@ func toolDefWith(name, description string, properties map[string]interface{}, re
 	if opts.timeout != "" {
 		registerBuiltinToolTimeout(name, opts.timeout)
 	}
+	// 声明项也要落在**包级聚合表**上，供 textForVector 查询。
+	//
+	// ⚠️ 不在 declare*Tool 里做、而在这里做，是因为有先例的教训：
+	//   让 toolDefWith 自己登记 parallel 曾导致"聚合表是空的"——
+	//   那些工具都在 `if a.knowledge != nil` 之类的条件分支里。
+	//   但 noMemory 的情况不同：它必须在**工具真被构造出来时**才成立
+	//   （工具不在表里，也就没有输出要抑制）。两者语义一致：
+	//   登记的是"这个工具的声明"，构造时登记最准确。
+	if opts.noMemory {
+		declareNoMemoryTool(name)
+	}
 	return def.ToSchema()
 }
 
@@ -450,6 +473,22 @@ func init() {
 		"secret_list",
 	} {
 		declareParallelTool(name)
+	}
+
+	// 输出不进记忆计算的内置工具。
+	//
+	// ★ 必须在这里显式登记，不能只靠 toolDefWith 构造时登记：
+	//   工具表是**按需构造**的（buildToolDefs 每轮重建，且受
+	//   `if a.docStore != nil` 之类的条件分支控制），而 textForVector
+	//   在工具被构造之前也可能被调用 ⇒ 声明会"时有时无"。
+	//   声明是静态事实，就该在 init 期定死（与上面 parallel 同一理由）。
+	//
+	// 目前只有 doc_query：它的返回值含被召回事件的正文片段，
+	// 而那些正文已在记忆体系里 —— 再参与向量化/蒸馏就是重复注入。
+	for _, name := range []string{
+		"doc_query",
+	} {
+		declareNoMemoryTool(name)
 	}
 }
 
@@ -808,9 +847,35 @@ var builtinDefs = &builtinDefRegistry{byName: map[string]sdk.BuiltinToolDef{}}
 // 那些工具都在 `if a.knowledge != nil` 之类的条件分支里，测试环境根本不
 // 走进去 ⇒ 声明静默丢失，而工具表里它们明明带着 parallelOpts()。
 // 症状是"判据全绿但并发能力为零"—— 判据查的是同一张空表，自证。
+// declareNoMemoryTool 在**工具定义处**登记"输出不进记忆计算"声明。
+//
+// 与 declareParallelTool 同构：声明是静态的，在 init 期聚合一次，
+// 运行期只查表。落在工具自己的结构体上，内核里不出现任何工具名硬编码。
+func declareNoMemoryTool(name string) {
+	builtinDefs.mu.Lock()
+	d := builtinDefs.byName[name]
+	d.Name = name
+	d.NoMemory = true
+	builtinDefs.byName[name] = d
+	builtinDefs.mu.Unlock()
+}
+
+// noMemoryOf 查询内置工具的输出是否不进记忆计算。
+// 未登记 ⇒ 参与记忆（保守：与 SDK 零值语义一致）。
+func noMemoryOf(name string) bool {
+	builtinDefs.mu.RLock()
+	defer builtinDefs.mu.RUnlock()
+	return builtinDefs.byName[name].NoMemory
+}
+
 func declareParallelTool(name string) {
 	builtinDefs.mu.Lock()
-	builtinDefs.byName[name] = sdk.BuiltinToolDef{Name: name, ParallelSafe: true}
+	// ★ 按字段合并而非整体覆盖：同一工具可能同时声明 noMemory 与 parallel，
+	//   覆盖会让后登记的那项静默丢失（声明丢一个是最难察觉的一类问题）。
+	d := builtinDefs.byName[name]
+	d.Name = name
+	d.ParallelSafe = true
+	builtinDefs.byName[name] = d
 	builtinDefs.mu.Unlock()
 }
 

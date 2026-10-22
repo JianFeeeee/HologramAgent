@@ -34,6 +34,20 @@ type ContextEvent struct {
 	Response    string           `json:"response,omitempty"`
 	ToolsUsed   []string         `json:"tools_used,omitempty"`
 	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
+
+	// NoMemory 标记这条事件**不参与记忆计算与再归档**。
+	//
+	// ★ 为 doc_query 的回填而设（2026-10-22）。回填是把 L2 的历史事件
+	// 按原时间戳放回 L1 —— 它们**已经**在记忆体系里了。若不加标记：
+	//
+	//	① 计算层：它们会被重新向量化、参与 Prune 打分 ⇒ 因为与当前输入
+	//	   相关而倾向被保留，挤掉真正的新事件；
+	//	② 归档层：Prune 会把它们**再次**归档回 L2 ⇒ 下次 doc_query
+	//	   又召回同一批 ⇒ 块在 L1↔L2 之间反复搬迁，自激震荡。
+	//
+	// 语义与 ToolDef.NoMemory / ChannelDef.NoMemory 一致：
+	// **原文保留在上下文里可读**，只是不进计算、不再产生新记忆。
+	NoMemory bool `json:"no_memory,omitempty"`
 	// --- 原生多模态记忆 ---
 	// 一等记忆块：块本身随事件在层间迁移，身份不变，不建引用计数。
 	Blocks   []memory.MemoryBlock `json:"blocks,omitempty"` // 一等记忆块（text/image/video/audio）
@@ -216,6 +230,11 @@ func (c *RelevanceContext) load() {
 }
 
 func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolDef, channelDefLookup func(name string) (sdk.ChannelDef, bool)) string {
+	// 事件自带 NoMemory（doc_query 回填的历史事件）：不进计算层。
+	// 原文仍在上下文里可读，只是不参与向量化/关键词/蒸馏。
+	if evt.NoMemory {
+		return ""
+	}
 	var text string
 	switch {
 	case evt.Source == "agent" && evt.Response != "":
@@ -237,11 +256,23 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 	}
 
 	// 计算层：附加工具输出，NoMemory 跳过，其余经 Cleaner 过滤
-	if toolDefLookup != nil {
+	{
 		noMemory := make(map[string]bool)
 		for _, tr := range evt.ToolResults {
-			def := toolDefLookup(tr.Name)
-			if def != nil && def.NoMemory {
+			// ① 插件工具（含 proc 桥）：走 StageHost 的 ToolDef 声明
+			if toolDefLookup != nil {
+				if def := toolDefLookup(tr.Name); def != nil && def.NoMemory {
+					noMemory[tr.Name] = true
+					continue
+				}
+			}
+			// ② 内置工具（core 自己的 switch 分派）：走包级声明表。
+			//
+			// ★ doc_query 属于这一类 —— 它的返回值含被召回事件的正文片段，
+			//   而那些正文已在记忆体系里（来自 L2/L3）。若返回值再参与向量化
+			//   与蒸馏，就是把同一内容重新注入记忆，与「回填事件不再归档」
+			//   构成同一个自激回路的两个入口。
+			if noMemoryOf(tr.Name) {
 				noMemory[tr.Name] = true
 			}
 		}
@@ -250,9 +281,10 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 				continue
 			}
 			cleaned := tr.Output
-			def := toolDefLookup(tr.Name)
-			if def != nil && def.Cleaner != nil {
-				cleaned = def.Cleaner(cleaned)
+			if toolDefLookup != nil {
+				if def := toolDefLookup(tr.Name); def != nil && def.Cleaner != nil {
+					cleaned = def.Cleaner(cleaned)
+				}
 			}
 			text += " " + cleaned
 		}
@@ -505,6 +537,26 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 	})
 
 	archived := 0
+	if docStore != nil && len(archive) > 0 {
+		// ★ 回填事件（NoMemory）**不再归档回 L2**。
+		//
+		// 这是自激震荡的根：doc_query 把事件从 L2 取到 L1，Prune 又把它们
+		// 归档回 L2 —— 下一轮 doc_query 再召回同一批，块在两层间反复搬迁。
+		// 它们本来就在记忆体系里（来源可能是 L2 或 L3），无需重新落库。
+		filtered := archive[:0]
+		skippedNoMemory := 0
+		for _, s := range archive {
+			if s.event != nil && s.event.NoMemory {
+				skippedNoMemory++
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		archive = filtered
+		if skippedNoMemory > 0 {
+			log.Printf("[agent] prune: 跳过 %d 条回填事件（NoMemory，它们在记忆体系里已有归属）", skippedNoMemory)
+		}
+	}
 	if docStore != nil && len(archive) > 0 {
 		entries := make([]document.ContextEntry, len(archive))
 		for i, s := range archive {
