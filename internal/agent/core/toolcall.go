@@ -1037,24 +1037,33 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			if len(d.Tags) > 0 {
 				parts = append(parts, "  标签: "+strings.Join(d.Tags, ", "))
 			}
-			content := d.Content
-			if len(content) > 2000 {
-				content = content[:2000] + "..."
+			// ★★ 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件
+			//
+			// 设计原文（ARCHITECTURE「记忆流转」② Document 层）：
+			//
+			//	doc_query → Consume(读取并删除)
+			//	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
+			//
+			// 此前实现用 d.CreatedAt（归档时刻）造一条 cold_storage 事件、
+			// 正文取 d.Content（渲染视图）再截 2000 字、块完全没回填 ——
+			// 三处都偏离：时间错位、正文二次截断、块两层消失。
+			if n := a.restoreDocEvents(d); n == 0 {
+				// 存量文档（无 Events）降级：整篇渲成一个事件，保持既有行为。
+				// 不伪造成「有原始事件」——那时归档确实只有渲染视图。
+				content := d.Content
+				if labels := a.blockLabelsForDoc(d); labels != "" {
+					content = content + "\n关联媒体: " + labels
+				}
+				a.context.InsertByTimestamp(ContextEvent{
+					Timestamp: d.CreatedAt,
+					Source:    "cold_storage",
+					Input:     fmt.Sprintf("加载文档记忆: %s", query),
+					Response:  content,
+				})
 			}
-			// 媒体块标签单独一行进冷存事件：正文可能被上面的 2000 字截断，
-			// 截掉之后模型就不知道这篇文档带过图。
-			if labels := a.blockLabelsForDoc(d); labels != "" {
-				content = content + "\n关联媒体: " + labels
-			}
-			a.context.InsertByTimestamp(ContextEvent{
-				Timestamp: d.CreatedAt,
-				Source:    "cold_storage",
-				Input:     fmt.Sprintf("加载文档记忆: %s", query),
-				Response:  content,
-			})
 			refs = append(refs, fmt.Sprintf("#%d(%s)", i+1, d.Summary))
 		}
-		return fmt.Sprintf("已加载 %d 篇文档记忆: %s\n(完整内容参见对话时序中 cold_storage 事件)",
+		return fmt.Sprintf("已加载 %d 篇文档记忆: %s\n(正文已按原时间戳回填到对话时序，直接读时序即可)",
 			len(docs), strings.Join(refs, ", "))
 
 	case "doc_commit":
@@ -1261,4 +1270,57 @@ func (a *Agent) currentFingerprint() string {
 		return ""
 	}
 	return a.multimodalSpace.Fingerprint()
+}
+
+// restoreDocEvents 把一篇 L2 文档的原始事件**逐条按原时间戳迁回 L1**。
+//
+// 返回回填的事件条数；0 表示这篇文档没有可回填的原始事件（存量文档）。
+//
+// ## 依据
+//
+// ARCHITECTURE「记忆流转」② Document 层的读取分支：
+//
+//	doc_query → Consume(读取并删除)
+//	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
+//	          → 文档以原始时间戳写入 context 时间线, 从 docStore 删除
+//
+// L1 与 L2 结构同构，召回是**迁移**：事件连同它持有的块从 L2 换到 L1，
+// 块 ID 与向量全程不变（不重建、不重算）。
+//
+// ## 块为什么要一起回填
+//
+// Consume 已把文档从 L2 删掉，而块的字节只存在于那篇文档里。
+// 不回填块 = 块两层都不在 = 永久丢内容（生产实测这一敞口约 248MB）。
+func (a *Agent) restoreDocEvents(d *document.Doc) int {
+	if a == nil || a.context == nil || d == nil || !d.HasEvents() {
+		return 0
+	}
+
+	n, blocks := 0, 0
+	for _, ev := range d.Events {
+		input, response, held := ev.InOut()
+		a.context.InsertByTimestamp(ContextEvent{
+			Timestamp: ev.Timestamp, // ★ 原始时间戳：回到事件发生的位置
+			Source:    ev.Source,
+			Input:     input,
+			Response:  response,
+			ToolsUsed: append([]string(nil), ev.ToolsUsed...),
+			ToolResults: func() []ToolResultItem {
+				var out []ToolResultItem
+				for _, tr := range ev.ToolResults {
+					out = append(out, ToolResultItem{Name: tr.Name, Output: tr.Output})
+				}
+				return out
+			}(),
+			Blocks: append([]memory.MemoryBlock(nil), held...),
+		})
+		n++
+		blocks += len(held)
+	}
+
+	log.Printf("[agent] doc→context: %s 逐条回填 %d 条原始事件（%s → %s），块 %d 个迁回 L1",
+		d.ID, n,
+		d.Events[0].Timestamp.Format("01-02 15:04:05"),
+		d.Events[len(d.Events)-1].Timestamp.Format("01-02 15:04:05"), blocks)
+	return n
 }

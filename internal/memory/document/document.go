@@ -1,6 +1,8 @@
 package document
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,23 +25,73 @@ import (
 type ChannelCleaner func(source string) func(string) string
 
 // Doc — 记忆文档：由上下文提炼而来
+//
+// ## L1/L2 同构
+//
+// 文档的主体是 **Events**（事件列表），与 RelevanceContext 的事件列表同一结构。
+// 区别不在形态，而在是否被直接投喂给模型：L1 进 system prompt 时序，L2 要经召回才进去。
+//
+// Content 只是**渲染视图**（供摘要、人工阅读、SDK 的 Doc.Content 字段），
+// 不是原文载体。原文在 Events 里，正文内联在文本块里。
 type Doc struct {
-	ID          string               `json:"id"`
-	Summary     string               `json:"summary"`
-	Content     string               `json:"content"`
-	Tags        []string             `json:"tags"`
-	Entities    []string             `json:"entities"`
-	CreatedAt   time.Time            `json:"created_at"`
-	UpdatedAt   time.Time            `json:"updated_at"`
-	Source      string               `json:"source"`
-	Meta        map[string]string    `json:"meta,omitempty"`
-	AccessCount int                  `json:"access_count"`
-	LastAccess  time.Time            `json:"last_access"`
-	Blocks      []memory.MemoryBlock `json:"blocks,omitempty"`    // 一等记忆块（text/image/video/audio）
-	Vector      tfidf.Vector         `json:"vector,omitempty"`    // TF-IDF 稀疏向量（fallback 时持久化）
-	DenseVec    []float64            `json:"dense_vec,omitempty"` // 多模态稠密向量（主路径）
-	DenseFP     string               `json:"dense_fp,omitempty"`  // DenseVec 所属统一空间指纹，变化时触发重算
+	ID       string     `json:"id"`
+	Summary  string     `json:"summary"`
+	Content  string     `json:"content"` // 渲染视图，不是原文
+	Events   []DocEvent `json:"events,omitempty"`
+	Tags     []string   `json:"tags"`
+	Entities []string   `json:"entities"`
+
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	Source      string            `json:"source"`
+	Meta        map[string]string `json:"meta,omitempty"`
+	AccessCount int               `json:"access_count"`
+	LastAccess  time.Time         `json:"last_access"`
+
+	// Blocks 是本文档持有的**全部**块（事件里的文本块 + 媒体块去重后的并集）。
+	//
+	// ★ 为什么还留一个扁平列表而不是只看 Events：
+	//   · 向量检索／跨模态融合要能不遍历事件就拿到所有块；
+	//   · L2→L3 蒸馏按块迁移；
+	//   · 存量文档（无 Events）只有这一个字段有块。
+	//
+	// ★ 它是**视图**，不是事实源：块的真实归属在 Events[i].Blocks 里。
+	//   两者由 ContextToDoc 同一处产出，不得分别修改。
+	Blocks []memory.MemoryBlock `json:"blocks,omitempty"`
+
+	Vector   tfidf.Vector `json:"vector,omitempty"`    // TF-IDF 稀疏向量（fallback 时持久化）
+	DenseVec []float64    `json:"dense_vec,omitempty"` // 多模态稠密向量（主路径）
+	DenseFP  string       `json:"dense_fp,omitempty"`  // DenseVec 所属统一空间指纹，变化时触发重算
 }
+
+// DocEvent 是一条被 L2 持有的**原始事件**，与 L1 的 ContextEvent 同构。
+//
+// ★ 为何正文不在字段里、而在块里
+//
+// 正文（含多媒体正文）内联在块里：文本块的 Text 是正文，媒体块的 Data 是字节。
+// 事件只是块的容器。因此本结构**不重复存一份正文字符串** ——
+// 那会出现「块里的正文」与「字段里的正文」两份真相。
+//
+// 读原文 = 读 Blocks 里文本块的 Text。
+type DocEvent struct {
+	Timestamp   time.Time        `json:"ts"`
+	Source      string           `json:"source"`
+	ToolsUsed   []string         `json:"tools_used,omitempty"`
+	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
+
+	// Blocks 是本事件持有的块，**正文就在里面**。
+	//
+	// 顺序约定（复原时按此顺序回填 ContextEvent）：
+	//   Input 文本块 → Response 文本块 → 媒体块…
+	// 由 docBlocksForEntry 保证；回填由 blocksToInOut 对称解读。
+	Blocks []memory.MemoryBlock `json:"blocks,omitempty"`
+}
+
+// HasEvents 报告这篇文档是否保存了可逐条回填的原始事件。
+//
+// 存量文档（Events 引入之前归档的）没有它 —— 调用方必须据此降级到
+// 「把 Content 塞进一条事件」，而不是假装能回填。
+func (d *Doc) HasEvents() bool { return d != nil && len(d.Events) > 0 }
 
 // Store — 文档记忆存储。
 // 主路径：denseSpace（稠密多模态向量，与媒体共享空间）。
@@ -234,18 +287,15 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 		cleanFn = func(text string) string { return text }
 	}
 
-	var parts []string
-	for _, e := range entries {
-		line := fmt.Sprintf("[%s] %s: %s", e.Timestamp.Format("15:04"), e.Source, e.Content)
-		if e.Response != "" {
-			line += fmt.Sprintf(" → %s", truncate(e.Response, 100))
-		}
-		for _, tr := range e.ToolResults {
-			line += fmt.Sprintf("\n  [工具] %s: %s", tr.Name, truncate(tr.Output, 200))
-		}
-		parts = append(parts, line)
-	}
-	content := strings.Join(parts, "\n")
+	// ★★ 原文落位：正文进块，事件列表成为文档主体（L1/L2 同构）
+	//
+	// 此前这里把每条事件拍平成一行字符串，并对正文 truncate(..,100)、
+	// 对工具输出 truncate(..,200) —— 原文在落库那一刻就不存在了。
+	// 现在事件逐条保留，正文各自成为文本块（内联在块的 Text 里）。
+	//
+	// Content 只是渲染视图（见 contentFromEvents），不是原文载体。
+	events := docEventsFromEntries(entries)
+	content := contentFromEvents(events)
 	contentHash := simpleHash(content)
 	summary := summarizeEntries(entries, cleanFn, toolCleanFn, channelCleaner)
 	tags := extractTags(entries, cleanFn, toolCleanFn, channelCleaner)
@@ -259,11 +309,12 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 			d.UpdatedAt = time.Now()
 			d.LastAccess = time.Now()
 			d.Content = content
+			d.Events = events
 			d.Source = source
 			d.Summary = summary
 			d.Tags = tags
 			d.Entities = entities
-			d.Blocks = blocksFromEntries(entries)
+			d.Blocks = flattenEventBlocks(events)
 			d.DenseVec = s.denseFor(d)
 			if s.denseSpace != nil {
 				d.DenseFP = s.denseSpace.Fingerprint()
@@ -282,7 +333,8 @@ func (s *Store) ContextToDoc(source string, entries []ContextEntry, _ interface{
 		ID: id, Summary: summary, Content: content, Tags: tags,
 		Entities: entities, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		LastAccess: time.Now(), AccessCount: 1, Source: source, Meta: meta,
-		Blocks: blocksFromEntries(entries),
+		Events: events,
+		Blocks: flattenEventBlocks(events),
 	}
 	s.docs[id] = doc
 	doc.DenseVec = s.denseFor(doc)
@@ -594,6 +646,7 @@ type ContextEntry struct {
 	Source      string
 	Content     string
 	Response    string
+	ToolsUsed   []string
 	ToolResults []ToolResultItem
 	Blocks      []memory.MemoryBlock // 一等记忆块随事件一起迁移到文档
 }
@@ -738,17 +791,212 @@ func extractEntities(entries []ContextEntry, cleanText func(string) string, tool
 	return entities
 }
 
-func truncate(s string, max int) string {
-	if len([]rune(s)) <= max {
-		return s
-	}
-	return string([]rune(s)[:max]) + "..."
+// simpleHash 是用于「内容是否同一份」比对的快速摘要。
+//
+// ★ 旧实现是 O(n²) 且哈希串长度正比于内容长度：
+//
+//	h := fmt.Sprintf("%x", len(s))
+//	for _, c := range s { h += fmt.Sprintf("%x", c) }   // 每 rune 一次 Sprintf + 字符串拼接
+//
+// 两个后果都是实测出来的：
+//
+//  1. **性能**：1.25MB 正文归档耗时 270 秒（压力测试实测）。
+//     字符串 `+=` 每轮重新分配并拷贝整个累积串 ⇒ 总拷贝量 O(n²)。
+//  2. **体积**：哈希串本身是内容的 2.2 倍
+//     （生产实测 content 52072 字符 → content_hash 114491 字符）。
+//     它存在每篇文档的 meta 里，等于把正文又存了一遍还更胖。
+//
+// 换成 sha256 前 16 字节：定长 32 hex、O(n) 一次遍历。
+// 用途不变（仅在同一批归档里去重），不需要密码学强度之外的任何性质。
+func simpleHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:16])
 }
 
-func simpleHash(s string) string {
-	h := fmt.Sprintf("%x", len(s))
-	for _, c := range s {
-		h += fmt.Sprintf("%x", c)
+// ──────────────────────────────────────────────
+// L1 ↔ L2 的块级互转
+//
+// 设计前提：正文（含多媒体正文）内联在块里，事件只是块的容器。
+// 因此归档 = 把事件正文落成文本块 + 保留事件原有的媒体块；
+// 召回 = 从块读回正文，按原时间戳插回 L1。
+// ──────────────────────────────────────────────
+
+// entryTextBlockID 由「事件身份 + 正文角色」派生文本块 ID。
+//
+// 为何不能像原句块那样只用内容派生：
+//
+//	SentenceBlockID(sha256(text)) 会让**两句话恰好相同**的正文合并成一个块。
+//	对话里「好的。」「收到」这类短答应大量重复，合并后
+//	「哪一条事件说过这句话」就不可知了 —— 而 L2 必须能按事件逐条回填。
+//
+// 所以 ID 掺入事件身份（时间戳纳秒 + 来源 + 角色），保证一事一块，
+// 同时仍是**内容稳定**的：同一条事件重复归档得到同一个块 ID（幂等）。
+func entryTextBlockID(evtTS time.Time, source, role, text string) string {
+	h := sha256.New()
+	h.Write([]byte(strconv.FormatInt(evtTS.UnixNano(), 10)))
+	h.Write([]byte{0})
+	h.Write([]byte(source))
+	h.Write([]byte{0})
+	h.Write([]byte(role))
+	h.Write([]byte{0})
+	h.Write([]byte(text))
+	return "blk_txt_" + hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// TextBlockRole 标记文本块在一对事件里的角色。
+//
+// 正文各自一块（不是 Input+Response 合成一块），为的是两段内容能
+// **分别按自己的向量被检索**：用户的提问与模型的回答语义常常不同。
+const (
+	TextBlockRoleInput    = "input"
+	TextBlockRoleResponse = "response"
+)
+
+// docBlocksForEntry 把一条上下文事件落成「文本块 + 媒体块」的块列表。
+//
+// 顺序约定（回填时按此对称解读）：
+//
+//	Input 文本块（若有）→ Response 文本块（若有）→ 媒体块…
+//
+// 媒体块原样保留（迁移语义：同一块 ID、同一向量，只换持有层）。
+func docBlocksForEntry(e ContextEntry) []memory.MemoryBlock {
+	var out []memory.MemoryBlock
+	now := e.Timestamp
+	if now.IsZero() {
+		now = time.Now()
 	}
-	return h
+
+	// 文本块：正文内联在 Text 里，不带向量。
+	//
+	// 为什么不在这里算向量：L2 的检索向量由 Doc.denseFor 用整篇文档文本算一次，
+	// 单条事件的文本块不参与 L2 召回（它是回填用的载体）。
+	// 这与「向量只算一次」一致 —— 不在迁移路径上重算。
+	if t := strings.TrimSpace(e.Content); t != "" {
+		out = append(out, memory.MemoryBlock{
+			ID:        entryTextBlockID(now, e.Source, TextBlockRoleInput, t),
+			Modality:  memory.BlockText,
+			Text:      t,
+			Source:    e.Source,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	if t := strings.TrimSpace(e.Response); t != "" {
+		out = append(out, memory.MemoryBlock{
+			ID:        entryTextBlockID(now, e.Source, TextBlockRoleResponse, t),
+			Modality:  memory.BlockText,
+			Text:      t,
+			Source:    e.Source,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	out = append(out, e.Blocks...)
+	return out
+}
+
+// blocksToEntry 是 docBlocksForEntry 的逆操作：从块列表读回事件的
+// Input / Response 正文与它持有的块。
+//
+// 识别规则：文本块按 ID 前缀里的角色区分（Input 在前、Response 在后），
+// 其余块（媒体/未知来源的文本块）原样作为「事件持有的块」返回。
+func blocksToEntry(ev *DocEvent) (input, response string, held []memory.MemoryBlock) {
+	if ev == nil {
+		return "", "", nil
+	}
+	for i := range ev.Blocks {
+		b := ev.Blocks[i]
+		if b.Modality != memory.BlockText {
+			held = append(held, b)
+			continue
+		}
+		switch {
+		case input == "" && isEntryTextBlock(b, ev, TextBlockRoleInput):
+			input = b.Text
+		case response == "" && isEntryTextBlock(b, ev, TextBlockRoleResponse):
+			response = b.Text
+		default:
+			// 不是本事件派生出的文本块（例如蒸馏来的原句块）：当作持有块。
+			held = append(held, b)
+		}
+	}
+	return input, response, held
+}
+
+// isEntryTextBlock 判断文本块是否为本事件按该角色派生出来的那一块。
+func isEntryTextBlock(b memory.MemoryBlock, ev *DocEvent, role string) bool {
+	return b.ID == entryTextBlockID(ev.Timestamp, ev.Source, role, b.Text)
+}
+
+// docEventsFromEntries 把 L1 交来的一批事件转成 L2 的事件列表。
+func docEventsFromEntries(entries []ContextEntry) []DocEvent {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]DocEvent, 0, len(entries))
+	for _, e := range entries {
+		ev := DocEvent{
+			Timestamp: e.Timestamp,
+			Source:    e.Source,
+			ToolsUsed: append([]string(nil), e.ToolsUsed...),
+			Blocks:    docBlocksForEntry(e),
+		}
+		for _, tr := range e.ToolResults {
+			ev.ToolResults = append(ev.ToolResults, ToolResultItem{Name: tr.Name, Output: tr.Output})
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// flattenEventBlocks 取事件列表里全部块（去重后的并集），供 Doc.Blocks 使用。
+//
+// 它是视图：真实归属在 Events[i].Blocks 里。之所以仍要扁平化，
+// 是因为向量融合、L3 蒸馏、存量兼容三条路都按「文档持有哪些块」工作。
+func flattenEventBlocks(events []DocEvent) []memory.MemoryBlock {
+	seen := make(map[string]bool)
+	var out []memory.MemoryBlock
+	for _, ev := range events {
+		for i := range ev.Blocks {
+			b := ev.Blocks[i]
+			if b.ID == "" || seen[b.ID] {
+				continue
+			}
+			seen[b.ID] = true
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// contentFromEvents 用事件正文渲染出 Doc.Content。
+//
+// ★ 这是**视图**，不是原文：它为了让摘要/人工阅读/SDK 的 Doc.Content 有东西可看，
+// 也为了让存量逻辑（依赖 Content 做摘要与 TF-IDF）继续工作。
+// 原文永远以 Events[i].Blocks 里文本块的 Text 为准。
+//
+// 为什么视图里也**不截断**：视图可以比原文简洁，但不该主动丢掉信息——
+// 真正决定给模型看多少的是渲染层（按 token 预算），不是存储层。
+func contentFromEvents(events []DocEvent) string {
+	var parts []string
+	for _, ev := range events {
+		input, response, _ := blocksToEntry(&ev)
+		line := fmt.Sprintf("[%s] %s: %s", ev.Timestamp.Format("15:04"), ev.Source, input)
+		if response != "" {
+			line += " → " + response
+		}
+		for _, tr := range ev.ToolResults {
+			line += fmt.Sprintf("\n  [工具] %s: %s", tr.Name, tr.Output)
+		}
+		parts = append(parts, line)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// InOut 从一条 L2 事件读回它的 Input 正文、Response 正文与持有的块。
+//
+// 这是 blocksToEntry 的导出形态：L1（agent/core）需要它来回填 ContextEvent，
+// 而正文住在块里，所以必须由本包解读块的角色与归属。
+func (ev *DocEvent) InOut() (input, response string, held []memory.MemoryBlock) {
+	return blocksToEntry(ev)
 }
