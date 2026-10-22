@@ -770,20 +770,40 @@ func (a *Agent) buildToolDefs() []interface{} {
 			desc = ch.Name + " 输出通道"
 		}
 
-		tools = append(tools, toolDef("output_send__"+ch.Name, desc+"。能力: "+capStr+"。payload 为消息载荷（type 默认 text，可省略），meta 为 JSON 发送元数据。用 _help 查看 meta 格式与 type 枚举。", map[string]interface{}{
-			"payload": map[string]interface{}{
-				"type":        "string",
-				"description": "消息载荷。type=text 时填文字，type=file/image 时填 URL 或路径",
-			},
-			"meta": map[string]interface{}{
-				"type":        "string",
-				"description": "JSON 对象，包含发送所需的元数据。用 output_send__" + ch.Name + "_help 查看 meta 格式",
-			},
-			"type": map[string]interface{}{
-				"type":        "string",
-				"description": "载荷类型，默认 text；其它枚举用 channel._help 查看",
-			},
-		}, "payload"))
+		// ★ 一次可发多条、多种类型（2026-10-22）。
+		//
+		// payload / type / meta 同时接受字符串与数组 —— 单值时行为与旧版逐字相同
+		// （向后兼容）。描述里**不写** type 的具体枚举：那是插件自定义字段，
+		// 内核不该承载它的语义文档（用户明确要求技术性内容收敛到 skill 与 _help）。
+		tools = append(tools, toolDef("output_send__"+ch.Name,
+			desc+"。能力: "+capStr+"。\n"+
+				"payload 是消息载荷，可以是**一条字符串**，也可以是**数组**（一次发多条）。\n"+
+				"type 是载荷类型，meta 是发送元数据 —— 两者的格式与取值由该通道定义，"+
+				"用 output_send__"+ch.Name+"_help 或对应 skill 查看。\n"+
+				"type/meta 只给一个值时，会应用到 payload 的每一条。",
+			map[string]interface{}{
+				"payload": map[string]interface{}{
+					"description": "消息载荷。字符串=发一条；数组=一次发多条（按数组顺序送达）",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+				"type": map[string]interface{}{
+					"description": "载荷类型。字符串=全部同类型；数组=与 payload 一一对应（数量必须相等）。缺省按通道默认",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+				"meta": map[string]interface{}{
+					"description": "发送元数据（JSON 字符串）。只给一个值时广播给所有条；数组则一一对应。格式见 _help 或对应 skill",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+			}, "payload"))
 
 		tools = append(tools, toolDef("output_send__"+ch.Name+"_help", "查看 "+ch.Name+" 输出通道的 meta 格式说明和 type 枚举", map[string]interface{}{}))
 	}
