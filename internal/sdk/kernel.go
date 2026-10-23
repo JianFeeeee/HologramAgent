@@ -1,6 +1,6 @@
 package sdk
 
-import pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+import pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 
 // KernelControlAPI 是内核重启/关机通道（转发公开 SDK 的同名接口）。
 //

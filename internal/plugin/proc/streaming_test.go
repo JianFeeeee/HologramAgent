@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 流式输出压测（§4.3 标记「风险高」的那一项）。

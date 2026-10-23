@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 func (h *coreHandler) secrets(method string, params json.RawMessage) (interface{}, error) {

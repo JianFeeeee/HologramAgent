@@ -10,7 +10,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
-	sdkmeta "github.com/JianFeeeee/homeagentsdk/meta"
+	sdkmeta "github.com/JianFeeeee/hologramagentsdk/meta"
 )
 
 func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string) string {

@@ -45,7 +45,7 @@ import (
 	"os/exec"
 	"time"
 
-	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 type gcPlugin struct{ name string }
@@ -378,7 +378,7 @@ import (
 	"syscall"
 	"time"
 
-	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 type gcPlugin struct{ name string }

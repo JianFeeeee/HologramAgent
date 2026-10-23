@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // appendPlaceholder 复刻 process() 循环顶部的补位逻辑。

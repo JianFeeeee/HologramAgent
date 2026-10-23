@@ -3,7 +3,7 @@ package sdk
 import (
 	"context"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // LLMAPI 是内置插件使用的全量 LLM Provider 接口。

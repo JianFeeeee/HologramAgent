@@ -9,7 +9,7 @@ import (
 	"time"
 
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // ---- 事件类型编码（编译时确定，与 pubsdk.EventType 一一对应）----

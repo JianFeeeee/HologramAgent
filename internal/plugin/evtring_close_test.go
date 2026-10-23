@@ -5,7 +5,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // TestEventRing_CloseUnsubscribesFromBus 钉死：EventRing.Close 必须把

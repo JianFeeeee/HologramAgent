@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // qq 插件「重复申请 stage 锁」的生产诊断与修复（2026-10-07）
