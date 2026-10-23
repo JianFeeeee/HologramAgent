@@ -6,6 +6,17 @@ import (
 	"image"
 
 	// 契约要求 provider 自行解码 Data，所以这里注册常见图像格式。
+	//
+	// ★ webp 必须注册（2026-10-23 实测）：线上 551 个图像块里有 4 个是
+	// `image/webp`（由 see_image 抓取的第三方图片），它们**永远嵌不进去** ——
+	// 启动时向量迁移报「失败=4」，但错误被 continue 吞掉、没有任何日志，
+	// 只看到数字对不上。根因就是这里少了 webp 注册：
+	//
+	//     image.Decode(...) → "image: unknown format"
+	//
+	// Go 标准库不含 webp 解码器（那是 x/image 的子包），所以这是新增依赖的
+	// 唯一理由。x/image 是纯 Go、无 cgo，不改变二进制形态。
+	_ "golang.org/x/image/webp"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
