@@ -24,7 +24,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 
 	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
@@ -246,15 +245,30 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 	return agent
 }
 
-// wirePluginSDK 把内核依赖注入插件注册表（原 cmd/homed 的整块平移）。
+// wirePluginSDK 注入**只有 agent 才知道**的那两项（KERNEL-REGISTRY-SETLOCK 去重后）。
+//
+// ## 为什么这里不再注入那 7 项底层依赖（2026-10-24 去重）
+//
+// 原先本函数与 pluginhost.injectBaseDeps 各自把 LuaVM/BaseAPIKey/Supervisor/
+// Tracker/Config/StageHost/Indexer 写一遍，而两个模块同处启动图第 4 层、
+// **并行执行** ⇒ 同一批字段被两个 goroutine 无锁写（实测 4% 概率报 DATA RACE）。
+//
+// 判掉哪一侧：留 pluginhost，砍这边。理由是**必要性不对称**：
+//
+//	· pluginhost 的注入是**必需**的 —— 它自己紧接着就 LoadSkipping 拉插件，
+//	  而它刻意 `Requires()` 不含 agent（核心收益：插件不必等 agent 那 35 秒）。
+//	  砍掉它 ⇒ 第 4 层加载的插件拿到全 nil 依赖。
+//	· agent 这边注入的这批值是**同一批 ks.* 字段的同一份值**，写第二次
+//	  没有新增信息；砍掉它 ⇒ 语义不变（pluginhost 侧的 nil 守卫更严，
+//	  Supervisor 只因 FacSupervisor 已在 Requires 里而恒非 nil）。
+//
+// ## 注意：去重**不能**替代加锁
+//
+// 去重后本函数仍有 SetStatusProvider / SetDeviceAuthQuery 两项要写，而
+// pluginhost 同时可能正在加载插件（buildSDK 读 status）⇒ 写读依然并发。
+// 所以 registry 侧 Set*/读侧的锁是**真正的修复**，去重只是消除了一处
+// 无意义的重复写。两件事都做，缺一不可。
 func wirePluginSDK(k *kernelboot.KernelState) {
-	k.PluginRegistry.SetLuaVM(k.LuaVM)
-	k.PluginRegistry.SetBaseAPIKey(k.BaseAPIKey)
-	k.PluginRegistry.SetSupervisor(supervisor.NewSDKAdapter(k.Supervisor))
-	k.PluginRegistry.SetTracker(k.Tracker)
-	k.PluginRegistry.SetConfig(k.Cfg)
-	k.PluginRegistry.SetStageHost(k.StageHost)
-	k.PluginRegistry.SetIndexer(k.Memory.Indexer)
 	k.PluginRegistry.SetStatusProvider(k.Agent)
 }
 
