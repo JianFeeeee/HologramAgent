@@ -62,6 +62,39 @@ jobs:
       - name: go vet ./...
         run: go vet ./...
 
+      # ── CI 配置门禁自检（.github/scripts/check-ci-gates.py）──
+      #
+      # ## 为什么 CI 要检查自己的配置文件
+      #
+      # ci.yml 是「静默退化」的高发区：把 race 门的动态枚举改回写死包列表，
+      # 流水线照样绿（只是罩得少了），没人会发现。该脚本用 yaml.safe_load
+      # 解析（丢掉注释 ⇒ 「注释里写一句同名机制」顶不了包），断言这些仍在：
+      #   · race 门动态枚举 + 真剔除 cmd/gui + go test -race 真吃了枚举结果
+      #   · -skip 排除表每项都写了原因（缺原因那一步自己会失败）
+      #   · go job 的「整机启动图判据」步骤还在、且带 -count=1
+      #   · cross job 的 cmd 清单是实测枚举、构建真吃枚举结果
+      #   · 每个 run 步骤的 bash 语法
+      #
+      # ★ 位置刻意放在 go test 之前：它是纯静态检查（只读 ci.yml，秒级，
+      #   无网络、无 cgo、不建库不起端口），而 go test ./... 要跑 20 分钟。
+      #   门禁本身坏掉应该第一时间红，不该等全量测试跑完才发现。
+      #
+      # ★ 不假设 runner 自带 pyyaml：先探测、缺了才装（幂等，几秒）。
+      #   「我以为 runner 有」正是假红/假绿的来源，代价比显式装一行高得多。
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: CI 配置门禁自检（动态枚举 / 排除表 / 启动图判据不许静默退化）
+        run: |
+          set -euo pipefail
+          if ! python3 -c 'import yaml' 2>/dev/null; then
+            echo "  pyyaml 缺失，安装"
+            python3 -m pip install --quiet pyyaml
+          fi
+          python3 -c 'import yaml; print("  pyyaml", yaml.__version__)'
+          python3 .github/scripts/check-ci-gates.py
+
       # ./... 不点名 cmd/gui（该目录是纯 Electron，无 .go 文件）：
       # 显式 `go test ./cmd/gui` 会报 "no Go files"，那是误报，不是缺陷。
       - name: go test ./...

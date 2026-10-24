@@ -21,9 +21,12 @@
 //
 // 判据有两条（缺一不可）：
 //
-//	· `TestEveryRegisteredModuleIsCompiledIn` —— 用 AST 扫源码树里的
-//	  `kernelmod.Register(X{})`，与登记表做集合比对（独立真相源，
-//	  手写清单会跟着漏，所以不用清单）
+//	· `TestEveryRegisteredModuleIsCompiledIn` —— 用 AST 扫源码树里
+//	  「目录+类型名 复合键 + Name/Requires/Provides/Init 四方法齐全」的类型，
+//	  取其 Name() 与登记表做集合比对（独立真相源）。
+//	  ★ 刻意**不**扫 `kernelmod.Register(...)` 调用点：删掉某模块的 init() 后
+//	  调用点消失，源码侧与登记表侧会同时少一个 ⇒ 比对照样相等 ⇒ 假绿。
+//	  手写模块名清单同理（清单会跟着漏），两者都不用。
 //	· `TestRealRegistryAssemblesWholeMachine` 等 —— 用真实登记表装配整机、
 //	  断言每个模块都进图且设施就绪、并严格逆序关闭（见同目录测试文件）
 package modules
