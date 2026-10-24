@@ -169,12 +169,16 @@ else:
 
         # ── 反向：空体没有任何标记 ⇒ 必须红（这就是 ID:19 的假绿入口）──
         #
-        # ★ 样本数必须被断言（ID:19 变异 M8 抓出来的缺口）：
-        #   上面这组反向自测自己也可能被改坏 —— 把容器换成 `[] and [...]`
-        #   或 `[] or [...]` 后循环空转、一条都不跑，而**没人发现**。
-        #   实测：那份变异下本脚本 exit=0、零失败（自测静默死掉）。
-        #   所以先把样本集固化成一个常量，再断言它的长度，
-        #   这样"改坏容器"与"删掉样本"都会红。
+        # ★ 自测自身的可被改坏性（ID:19 变异 M8/M8d 抓出来的缺口）：
+        #   初版把四条反向样本放在一个 for 循环里。把容器改成 `[] and [...]`
+        #   或 `[] or [...]` 后循环空转、一条都不跑，而**没人发现**
+        #   —— 实测那份变异下本脚本 exit=0、零失败（自测静默死掉）。
+        #   补一道"旁路重算 _ran"也不够：M8d 证明旁路能正常数出 4/4，
+        #   而真正做判断的那段已被空转（两份逻辑脱钩了）。
+        #
+        # ⇒ 结论：**不用可被改坏的容器驱动断言**。把四条显式展开，
+        #   样本集只当"取值源"用（下标直取），不存在"改坏 for 容器"这个面。
+        #   这样只剩两种可能：样本被删（len 断言报）或某条真的没咬住（逐条报）。
         _EMPTY_BAD_CASES = [
             ("完全空体", ""),
             ("只有空行", "\n"),
@@ -184,16 +188,19 @@ else:
         if len(_EMPTY_BAD_CASES) != 4:
             fails.append("空表反向样本数变了（期望 4，实际 %d）—— 除新增样本，否则说明样本被删"
                          % len(_EMPTY_BAD_CASES))
-        for _bad_name, _bad_inner in _EMPTY_BAD_CASES:
-            if _run_body(_replace_table(_bad_inner)).returncode == 0:
+
+        def _must_reject(idx):
+            """断言第 idx 个空表形态**必须**被保。"""
+            _n, _i = _EMPTY_BAD_CASES[idx]
+            if _run_body(_replace_table(_i)).returncode == 0:
                 fails.append(
                     "空表形态「%s」竟通过 ⇒ 空表显式声明守卫已失效"
-                    "（表被删空与有意清空无法区分，排除项漏删会静默变绿）" % _bad_name)
-        # 且必须真的跑了 4 条（防容器被换成 `[] and [...]` 这类空转写法）
-        _ran = sum(1 for _n, _i in _EMPTY_BAD_CASES
-                   if _run_body(_replace_table(_i)).returncode != 0)
-        if _ran != 4:
-            fails.append("空表反向自测实际只咬了 %d/4 条 —— 自测自身被改坏或空转" % _ran)
+                    "（表被删空与有意清空无法区分，排除项漏删会静默变绿）" % _n)
+
+        _must_reject(0)  # 完全空体
+        _must_reject(1)  # 只有空行
+        _must_reject(2)  # 只有空行+空白
+        _must_reject(3)  # 非显式标记的注释
 
         _probe = "test|internal/probe/synthetic|TestSyntheticProbe"
         # 只打 reason：reason 空、ticket 有效
