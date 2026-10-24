@@ -80,7 +80,8 @@ type MemoryBundle struct {
 //	· 少一层间接 ⇒ 少一处可能出错的地方
 //
 // 顺序正确性由**声明**驱动：`Build()` 校验缺依赖 / 环 / 重名，
-// 判据断言关键顺序（见 internal/kernelboot/modules 的判据）。
+// 判据断言关键顺序（见 internal/kernelboot/modules/registry_test.go 的
+// TestLayerTopologyIsRespected：用真实模块登记表装配整机，逐层断言层间有序）。
 //
 // ## ★ 并发
 //
