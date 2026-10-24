@@ -166,7 +166,7 @@ check(
 // ── 5) 页面不得再引用公网 CDN ───────────────────────────────────────
 //
 // 与服务端 starmap_vendor_test.go 同一判据（那里钉 WebUI，这里钉 GUI）。
-// HomeAgent 支持离线/内网部署，而前端有 4 个硬依赖在公网上时，
+// HologramAgent 支持离线/内网部署，而前端有 4 个硬依赖在公网上时，
 // 断网/出口受限环境下星图必坏、且用户无从修复。
 
 const htmlSrc = readFileSync(join(here, "renderer", "index.html"), "utf8");

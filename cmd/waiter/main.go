@@ -184,7 +184,7 @@ func main() {
 		dt = cfg.DeviceToken
 	}
 	// 网关地址优先向门户**发现**（服务端才知道子域标签与基域名），
-	// 失败再回退到用户配置 —— 老版本 HomeAgent 没有发现端点。
+	// 失败再回退到用户配置 —— 老版本 HologramAgent 没有发现端点。
 	// 只在用户已配置门户地址时尝试：没配门户就没有可问的对象。
 	if portal := cfg.Remote; portal != "" {
 		if discovered, err := discoverGateway(portal, cfg.APIKey, 5*time.Second); err == nil {
@@ -317,9 +317,9 @@ func runLineMode(state *State, cfg *Config, history *History) {
 		addrLabel = cfg.Remote
 	}
 	if colors {
-		fmt.Printf("%sHomeAgent CLI%s %s%s (%s://%s)%s\n", colorBold, colorReset, colorDim, "v"+meta.Version, modeLabel, addrLabel, colorReset)
+		fmt.Printf("%sHologramAgent CLI%s %s%s (%s://%s)%s\n", colorBold, colorReset, colorDim, "v"+meta.Version, modeLabel, addrLabel, colorReset)
 	} else {
-		fmt.Printf("HomeAgent CLI v%s (%s://%s)\n", meta.Version, modeLabel, addrLabel)
+		fmt.Printf("HologramAgent CLI v%s (%s://%s)\n", meta.Version, modeLabel, addrLabel)
 	}
 	fmt.Println("Type /help for commands.")
 

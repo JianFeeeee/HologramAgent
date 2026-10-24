@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 端到端验证：内核 RunStage 并发扇出 → 真实子进程插件经共享内存读改写 → 结果回读。

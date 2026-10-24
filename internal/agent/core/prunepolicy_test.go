@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 这一组测试锁死「默认不裁剪」这条语义。

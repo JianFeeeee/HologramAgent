@@ -10,7 +10,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
-	sdkmeta "github.com/JianFeeeee/homeagentsdk/meta"
+	sdkmeta "github.com/JianFeeeee/hologramagentsdk/meta"
 )
 
 func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string) string {
@@ -157,7 +157,7 @@ func appendPromptBlock(prompt, block string) string {
 func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	prompt := expandPromptVars(a.systemPrompt)
 	if prompt == "" {
-		prompt = "你是小宅，HomeAgent 的看板娘，一个家政型 AI 管家助手。绝不用 Unicode emoji，只用颜文字表达情感，句尾带语气词。WebUI 概览页展示你的立绘。"
+		prompt = "你是小宅，HologramAgent 的看板娘，一个家政型 AI 管家助手。绝不用 Unicode emoji，只用颜文字表达情感，句尾带语气词。WebUI 概览页展示你的立绘。"
 	}
 
 	// 驻留子：在**固定提示词之上**注入任务提示词（设计 §7「创建」）。
@@ -176,6 +176,29 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	if memContext != "" {
 		prompt = appendPromptBlock(prompt, memContext)
 	}
+
+	// 【三层记忆】是**内核运行时块**（提示词分层规范：内核行为由内核生成）。
+	//
+	// 它讲的是内核的真实执行语义（哪些内容在哪一层、何时会进上下文、
+	// 哪个工具会做什么），不是工具用法 —— 工具用法归各 ToolDef.Description。
+	//
+	// 为什么必须有这一段：此前系统提示词从未解释 L1/L2/L3 是什么，
+	// agent 只能从工具名猜。生产日志实测：agent 几乎从不调用 doc_query，
+	// 即使调用了也只看返回值、不知道原文已被回填到对话时序。
+	// 【三层记忆】只留**模型据此选择工具**的语义。
+	//
+	// 技术性内容（L1/L2/L3 编号、向量空间、消费式删除、缩略语）全部下沉到
+	// 对应工具的 description 与 skill：模型只需要知道"哪里有原文、哪里有
+	// 关系、用什么去取"，不需要知道内核怎么存。
+	//
+	// ★ 但有一件事必须说：doc_query 会把历史事件**插回时序**，而不是返回
+	//   一段摘要 —— 这与模型对"检索工具"的默认预期相反，不说就会误用。
+	prompt = appendPromptBlock(prompt, "【三层记忆】你这儿有三种记忆，按需要的东西选：\n"+
+		"- **对话时序（L1）**：最近的对话就在上面的【对话时序】里，直接能看。\n"+
+		"- **历史记忆（L2）**：更早的事被移出窗口了，但原文还在。要看某段完整经过用 `doc_query` —— "+
+		"它会把那些事**按原始时间戳插回你的对话时序**，你随后就能像看当前对话一样读它们。\n"+
+		"- **图记忆（L3）**：事实与关系（谁是什么、某值现在多少）用 `memory_recall`；"+
+		"成文的可复用知识用 `knowledge_search`。")
 
 	// 记忆维护：具体选哪个工具、各有什么副作用，都写在 memory_* 的工具描述里
 	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
@@ -200,17 +223,28 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	//
 	// ⚠️ 措辞必须与 batchRunnable 的**真实**判据一致（全批 ParallelSafe
 	// 才并发 + 同通道保序），否则只是把"没说"换成"说错"。
-	prompt = appendPromptBlock(prompt, "【工具执行顺序】同一条回复里给出多个工具调用时，内核**默认并行执行**（同时跑），不是依次执行。这带来三条你必须知道的规则：\n")
-	prompt += "- **不要依赖执行顺序**：若某个调用的参数需要另一个调用的结果，就**分两轮**——先发前一个，看到结果后再发下一个。写在同一轮里就等于假设了不存在的先后。\n"
-	prompt += "- **例外一：同一通道的输出发送会保序**。对**同一个**通道连续调用多次 `output_send__`，内核会**按你发出的顺序依次执行**（用户可见消息顺序敏感），不会并发打乱。所以「先发回执、再发结论」这类有序发送可以放在同一轮；但若后续内容依赖前一条的用户反应，仍应分轮。\n"
-	prompt += "- **例外二：不并发安全的工具不会并发**。写类工具（记忆/知识/文档写入等）与未声明并发安全的工具，**整批会退回依次执行**——同一批里只要有一个这样的工具，这一批就全部串行。这对你是透明的：你不需要判断，只需知道「同轮并发」不是无条件保证的。\n"
-	prompt += "- 工具是否并发安全由**工具自己声明**（`ParallelSafe`），不由你决定；你只需按上面第 1 条判断能否同轮发出。\n"
+	// 【工具执行顺序】只留**模型必须据此作决定**的三条。
+	//
+	// 技术性内容（ParallelSafe 声明、批内降级、内核如何判据）全部下沉：
+	// 那是实现细节，模型既不需要也改不了 —— 讲它只会让回复带上说明书腔。
+	// 判断依据仍是真实的 batchRunnable 语义（勿写反）。
+	prompt = appendPromptBlock(prompt, "【工具执行顺序】同一条回复里的多个工具调用默认**并行**执行。\n"+
+		"- 不要依赖先后：后一个要用前一个的结果时，分两轮发。\n"+
+		"- **例外一**：对同一通道的多次输出会**保序**（按你发出的顺序送达），所以「先回执、再结论」可以放同一轮。\n"+
+		"- **例外二**：写类工具（记忆/知识/文档写入等）以及不声明**并发安全**的工具，这一批会退回依次执行 —— "+
+		"只是变慢，不影响结果，你不用为它调整写法。")
 
-	prompt = appendPromptBlock(prompt, "【输出规则】消息不会自动发送到对话来源通道，你必须自己决定如何回复：\n")
+	prompt = appendPromptBlock(prompt, "【输出规则】\n")
+	// ★ 这一句是本段最重要的：用户明确要求「必须显式调用 outputch 才会输出给用户」。
+	// 模型最常见的错误不是不会调工具，而是**以为返回文本就等于回复了**——
+	// 异步通道下那等于自言自语（用户永远收不到）。
+	prompt += "**只有显式调用 `output_send__{通道名}` 才会把内容送达用户。**" +
+		"返回纯文本只是在这次推理里说话，用户看不到 —— 除非是下面说的同步通道。\n"
 	prompt += "- **不要假设当前通道是某个固定值**：同一会话里可能同时有多个来源（多设备、多通道、子任务）。\n"
 	prompt += "  先看这条消息本身与上下文里的来源信息，再决定往哪里回；不确定有哪些通道时先调 output_list_channels。\n"
-	prompt += "- 同步通道（webui / cli / 终端）：直接返回纯文本，内核会把文本交给等待方显示，无需调用工具。\n"
-	prompt += "- 异步通道（qq / wechat / 群聊等）：返回纯文本**【不会】**自动送达用户，必须调用 output_send__{通道名} 工具（注意 meta 里带上正确的 user_id 或 group_id）才能真正把消息发出去。\n"
+	prompt += "- 同步通道（webui / cli / 终端）：直接返回纯文本即可，内核会把它交给等待方显示，**这是唯一的例外**。\n"
+	prompt += "- 异步通道（qq / wechat / 群聊等）：**必须**调用 output_send__{通道名}，并在 meta 里带上正确的 user_id 或 group_id。\n"
+	prompt += "- 一次调用可以发多条：payload 传数组即可（type/meta 也支持数组一一对应，只给一个值则应用到每一条）。\n"
 	prompt += "- 不确定当前通道的发送方式时，先用 output_send__{通道名}_help 查看该通道的 meta 格式和 type 枚举，再决定。\n"
 	// ❗这里**不得**限制"一轮只能发一次"。设计上输出是 agent 的**主动调用**：
 	// 收到一次输入后，可以往**任意（已授权的）通道**发**任意多次**（分段播报、
@@ -231,7 +265,19 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 主动 skill_info 拉取全文按文档执行
 	if a.skillIndex != nil {
 		if idx := a.skillIndex.SkillIndex(); idx != "" {
-			prompt = appendPromptBlock(prompt, "【可用技能】以下是已安装的原生技能。当用户请求与某技能描述匹配时，\n先用 skill_info(\"技能名\") 拉取全文，再严格按文档步骤执行：\n"+idx)
+			// ★ 措辞从"用户请求匹配某技能时"改成"**调用插件工具之前**"。
+			//
+			// 旧措辞把人带偏成"只有用户点名要某个技能才去读"，而 skill 的真实
+			// 用途是**工具的使用说明**：里面写着参数怎么填、有哪些已知坑
+			// （例如 QQ 的"拉私聊历史只传 user_id，不要传 group_id"）、
+			// 以及按需插件要先 plugin_start 拉起。
+			//
+			// 不看 skill 就直接调工具，是这个仓库反复吃过亏的一类错误。
+			prompt = appendPromptBlock(prompt, "【可用技能】这些是插件配套的**使用说明书**，不是可选装饰。\n"+
+				"**规则**：准备调用某个插件的工具（或工具调用失败、参数不确定）时，**先看这里有没有同名技能的**"+
+				"（如 file-tools / cmd-tools / qq-tools），用 skill_info(\"技能名\") 读全文，"+
+				"再严格按其中步骤与坑位说明执行。技能里通常会写明：工具该怎么调、需要先启动哪个插件、常见报错怎么读。\n"+
+				"用户明确要求用某技能时同样先 skill_info 读全文，不要凭名字猜做法。\n\n"+idx)
 		}
 	}
 
@@ -308,6 +354,18 @@ func (a *Agent) buildToolCatalog() string {
 	var sb strings.Builder
 	sb.WriteString("\n\n【可用工具能力】\n")
 	sb.WriteString("工具按插件分组注册。需要某个插件的具体工具时，调用 get_plugin_tools(\"{插件名}\") 获取该插件的完整工具定义（名称/参数/用途）。\n")
+	// ★ 说明"按需插件"这回事（2026-10-22）。
+	//
+	// 插件有两种启动形态（SDK autostart.go）：
+	//   常驻（auto_start 缺省/true）—— 工具一开始就在清单里
+	//   按需（auto_start=false）  —— 初始不在清单里，要靠 plugin_start 拉起
+	//
+	// 不说清这件事的后果：模型看到"清单里没有某能力"就断定"没有这个能力"，
+	// 于是绕道去用别的工具硬凑，或者干脆告诉用户做不到。
+	sb.WriteString("★ **工具清单里没有 ≠ 没有这个能力**：部分插件是**按需加载**的，" +
+		"它们的工具一开始不在清单里。需要时先 get_plugin_tools(\"插件名\") 看它有哪些工具、" +
+		"再 plugin_start(\"插件名\") 把它拉起来，工具就会出现。对应的 skill（同类名字或同名技能）" +
+		"会说明这个插件是常驻还是按需、以及拉起后怎么用。\n")
 	for _, plg := range order {
 		sb.WriteString(fmt.Sprintf("- %s (%d 个工具)", plg, byPlugin[plg]))
 		if d := pluginDesc[plg]; d != "" {
@@ -367,6 +425,18 @@ type toolDefOptions struct {
 	// 而 output_send__* 是**投递到子 pipeline** 的长任务，天然可能超过 60s
 	// （实测两次 60s 超时）。留空 = 用内核默认 60s，行为不变。
 	timeout string
+
+	// noMemory 声明该工具的**输出**不参与记忆计算（向量化/关键词/蒸馏），
+	// 原文仍留在上下文可读。语义与 ToolDef.NoMemory 一致。
+	//
+	// ★ 注意：doc_query 的 noMemory **不写在这里**，而是由 init() 里的
+	//   显式名单登记。原因：工具表是按需构造的（受 `if a.docStore != nil`
+	//   之类条件控制），而 textForVector 可能在构造之前被调用 ——
+	//   靠构造时登记会让声明"时有时无"。声明是静态事实，init 期定死。
+	//
+	//   本字段保留给"确实想跟着工具构造走"的场景（工具不存在就不需要
+	//   抑制它的输出），与 init 名单二选一即可。
+	noMemory bool
 }
 
 // parallelOpts 是"可并发"的声明项。
@@ -402,6 +472,17 @@ func toolDefWith(name, description string, properties map[string]interface{}, re
 	if opts.timeout != "" {
 		registerBuiltinToolTimeout(name, opts.timeout)
 	}
+	// 声明项也要落在**包级聚合表**上，供 textForVector 查询。
+	//
+	// ⚠️ 不在 declare*Tool 里做、而在这里做，是因为有先例的教训：
+	//   让 toolDefWith 自己登记 parallel 曾导致"聚合表是空的"——
+	//   那些工具都在 `if a.knowledge != nil` 之类的条件分支里。
+	//   但 noMemory 的情况不同：它必须在**工具真被构造出来时**才成立
+	//   （工具不在表里，也就没有输出要抑制）。两者语义一致：
+	//   登记的是"这个工具的声明"，构造时登记最准确。
+	if opts.noMemory {
+		declareNoMemoryTool(name)
+	}
 	return def.ToSchema()
 }
 
@@ -430,6 +511,22 @@ func init() {
 		"secret_list",
 	} {
 		declareParallelTool(name)
+	}
+
+	// 输出不进记忆计算的内置工具。
+	//
+	// ★ 必须在这里显式登记，不能只靠 toolDefWith 构造时登记：
+	//   工具表是**按需构造**的（buildToolDefs 每轮重建，且受
+	//   `if a.docStore != nil` 之类的条件分支控制），而 textForVector
+	//   在工具被构造之前也可能被调用 ⇒ 声明会"时有时无"。
+	//   声明是静态事实，就该在 init 期定死（与上面 parallel 同一理由）。
+	//
+	// 目前只有 doc_query：它的返回值含被召回事件的正文片段，
+	// 而那些正文已在记忆体系里 —— 再参与向量化/蒸馏就是重复注入。
+	for _, name := range []string{
+		"doc_query",
+	} {
+		declareNoMemoryTool(name)
 	}
 }
 
@@ -556,24 +653,47 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	if a.docStore != nil {
-		tools = append(tools, toolDefWith("doc_query", "查询文档记忆。输入查询内容，返回相关文档摘要。", map[string]interface{}{
-			"query": map[string]interface{}{"type": "string", "description": "查询内容"},
-			"top_k": map[string]interface{}{"type": "integer", "description": "返回数量", "default": 3},
-		}, []string{"query"}, parallelOpts()))
-		tools = append(tools, toolDef("doc_commit", "提交一条文档记忆。将重要信息显式写入文档记忆层。", map[string]interface{}{
-			"content": map[string]interface{}{"type": "string", "description": "文档内容"},
-			"summary": map[string]interface{}{"type": "string", "description": "摘要（可选）"},
-			"tags": map[string]interface{}{
-				"type":        "array",
-				"description": "标签列表",
-				"items":       map[string]interface{}{"type": "string"},
-			},
-			"media_digests": map[string]interface{}{
-				"type":        "array",
-				"description": "可选：这篇文档关联的媒体 digest（对话或 memory_recall 的「关联媒体」里显示的十六进制串，短的即可）。填了以后检索到这篇文档就能看到并取回原图/音频。",
-				"items":       map[string]interface{}{"type": "string"},
-			},
-		}, "content"))
+		// ★ doc_query / doc_commit 的描述必须与**真实行为**一致。
+		//
+		// 旧描述只有一句「查询文档记忆。输入查询内容，返回相关文档摘要」：
+		//   · "文档记忆"没有定义，模型不知道 L2 是什么；
+		//   · "返回相关文档摘要"与真实行为**不符**（真实是把事件逐条按
+		//     原始时间戳插回对话时序）；
+		//   · 没说什么时候该用，也没说与 memory_recall 的分工。
+		// 结果：生产实测 agent 几乎不调用 doc_query，即使调用也只看返回值、
+		// 不知道原文已回填到时序。
+		tools = append(tools, toolDefWith("doc_query",
+			"从**历史记忆层**（L2）召回过去的事件原文。"+
+				"\n\n**这一层是什么**：当前对话窗口里只看得到最近的事件；更早的事件被移出窗口后，"+
+				"连同原文完整保存在历史层，不会丢失。"+
+				"\n\n**何时用**：记得«这事办过/说过»但想不起细节；需要当时的原始过程而非结论；"+
+				"跨会话、跨天追问；用户问\"上次那个\"/\"之前怎么弄的\"。只想知道某个事实的当前值、"+
+				"或某个实体的关系，用 memory_recall（图记忆），不要用这个。"+
+				"\n\n**调用后会发生什么**：命中的事件会**逐条按原始时间戳插回你的对话时序**"+
+				"（就是【对话时序】那一段，出现在它当时的时间点上），"+
+				"返回值会列出每条的时间/来源/正文开头。要引用细节，读时序里对应时间点即可。"+
+				"\n\n**副作用**：召回即从历史层取出（消费式），该文档不再留在 L2。",
+			map[string]interface{}{
+				"query": map[string]interface{}{"type": "string", "description": "查询内容，用当时可能出现的词描述"},
+				"top_k": map[string]interface{}{"type": "integer", "description": "召回多少篇（默认 3）", "default": 3},
+			}, []string{"query"}, parallelOpts()))
+
+		tools = append(tools, toolDef("doc_commit",
+			"把**整段结论/过程**写进历史记忆层（L2）。"+
+				"\n\n**适合写什么**：做完一件事的完整过程与结论、排查链条、方案取舍的理由 —— "+
+				"这些内容长、有上下文、以后要回看原文。"+
+				"\n\n**不适合写什么**：单个事实或实体关系（谁是谁、某值等于多少、偏好）→ 用 memory_commit；"+
+				"可复用的成文知识 → 用 knowledge_create。"+
+				"\n\n写入后会参与后续的自动预填充与 doc_query 召回。",
+			map[string]interface{}{
+				"content": map[string]interface{}{"type": "string", "description": "文档内容（完整正文，不要自己截断）"},
+				"summary": map[string]interface{}{"type": "string", "description": "一句话摘要（可选，留空则由正文首行生成）"},
+				"media_digests": map[string]interface{}{
+					"type":        "array",
+					"description": "可选：这篇文档关联的媒体 digest（对话或 memory_recall 的「关联媒体」里显示的十六进制串，短的即可）。填了以后检索到这篇文档就能看到并取回原图/音频。",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+			}, "content"))
 	}
 
 	if a.social != nil {
@@ -656,20 +776,40 @@ func (a *Agent) buildToolDefs() []interface{} {
 			desc = ch.Name + " 输出通道"
 		}
 
-		tools = append(tools, toolDef("output_send__"+ch.Name, desc+"。能力: "+capStr+"。payload 为消息载荷（type 默认 text，可省略），meta 为 JSON 发送元数据。用 _help 查看 meta 格式与 type 枚举。", map[string]interface{}{
-			"payload": map[string]interface{}{
-				"type":        "string",
-				"description": "消息载荷。type=text 时填文字，type=file/image 时填 URL 或路径",
-			},
-			"meta": map[string]interface{}{
-				"type":        "string",
-				"description": "JSON 对象，包含发送所需的元数据。用 output_send__" + ch.Name + "_help 查看 meta 格式",
-			},
-			"type": map[string]interface{}{
-				"type":        "string",
-				"description": "载荷类型，默认 text；其它枚举用 channel._help 查看",
-			},
-		}, "payload"))
+		// ★ 一次可发多条、多种类型（2026-10-22）。
+		//
+		// payload / type / meta 同时接受字符串与数组 —— 单值时行为与旧版逐字相同
+		// （向后兼容）。描述里**不写** type 的具体枚举：那是插件自定义字段，
+		// 内核不该承载它的语义文档（用户明确要求技术性内容收敛到 skill 与 _help）。
+		tools = append(tools, toolDef("output_send__"+ch.Name,
+			desc+"。能力: "+capStr+"。\n"+
+				"payload 是消息载荷，可以是**一条字符串**，也可以是**数组**（一次发多条）。\n"+
+				"type 是载荷类型，meta 是发送元数据 —— 两者的格式与取值由该通道定义，"+
+				"用 output_send__"+ch.Name+"_help 或对应 skill 查看。\n"+
+				"type/meta 只给一个值时，会应用到 payload 的每一条。",
+			map[string]interface{}{
+				"payload": map[string]interface{}{
+					"description": "消息载荷。字符串=发一条；数组=一次发多条（按数组顺序送达）",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+				"type": map[string]interface{}{
+					"description": "载荷类型。字符串=全部同类型；数组=与 payload 一一对应（数量必须相等）。缺省按通道默认",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+				"meta": map[string]interface{}{
+					"description": "发送元数据（JSON 字符串）。只给一个值时广播给所有条；数组则一一对应。格式见 _help 或对应 skill",
+					"oneOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					},
+				},
+			}, "payload"))
 
 		tools = append(tools, toolDef("output_send__"+ch.Name+"_help", "查看 "+ch.Name+" 输出通道的 meta 格式说明和 type 枚举", map[string]interface{}{}))
 	}
@@ -732,7 +872,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	// 而「读本地文件」是 IO —— 三个工具读文件却住在内核进程内，
 	// 无沙箱、无能力面、无审计，正是 capability.go 那套权限梯度要防的事。
 	//
-	// 留在这里的是**待��退场**的部分：下面这一大块 pendingMedia 只服务于
+	// 留在这里的是**待退场**的部分：下面这一大块 pendingMedia 只服务于
 	// 那三个工具的工具面。input 通路（processInput 直接把 media block
 	// 拼进本轮请求）**不依赖它**，所以可安全移除。
 	// 退场顺序见 docs 或本次提交的说明；先确保插件侧能力等价。
@@ -765,9 +905,35 @@ var builtinDefs = &builtinDefRegistry{byName: map[string]sdk.BuiltinToolDef{}}
 // 那些工具都在 `if a.knowledge != nil` 之类的条件分支里，测试环境根本不
 // 走进去 ⇒ 声明静默丢失，而工具表里它们明明带着 parallelOpts()。
 // 症状是"判据全绿但并发能力为零"—— 判据查的是同一张空表，自证。
+// declareNoMemoryTool 在**工具定义处**登记"输出不进记忆计算"声明。
+//
+// 与 declareParallelTool 同构：声明是静态的，在 init 期聚合一次，
+// 运行期只查表。落在工具自己的结构体上，内核里不出现任何工具名硬编码。
+func declareNoMemoryTool(name string) {
+	builtinDefs.mu.Lock()
+	d := builtinDefs.byName[name]
+	d.Name = name
+	d.NoMemory = true
+	builtinDefs.byName[name] = d
+	builtinDefs.mu.Unlock()
+}
+
+// noMemoryOf 查询内置工具的输出是否不进记忆计算。
+// 未登记 ⇒ 参与记忆（保守：与 SDK 零值语义一致）。
+func noMemoryOf(name string) bool {
+	builtinDefs.mu.RLock()
+	defer builtinDefs.mu.RUnlock()
+	return builtinDefs.byName[name].NoMemory
+}
+
 func declareParallelTool(name string) {
 	builtinDefs.mu.Lock()
-	builtinDefs.byName[name] = sdk.BuiltinToolDef{Name: name, ParallelSafe: true}
+	// ★ 按字段合并而非整体覆盖：同一工具可能同时声明 noMemory 与 parallel，
+	//   覆盖会让后登记的那项静默丢失（声明丢一个是最难察觉的一类问题）。
+	d := builtinDefs.byName[name]
+	d.Name = name
+	d.ParallelSafe = true
+	builtinDefs.byName[name] = d
 	builtinDefs.mu.Unlock()
 }
 

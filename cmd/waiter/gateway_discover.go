@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// discoveryPath 是 HomeAgent 的「设备网关在哪」端点（相对门户根）。
+// discoveryPath 是 HologramAgent 的「设备网关在哪」端点（相对门户根）。
 const discoveryPath = "/api/v1/device/gateway"
 
 // discoveryResponse 是发现端点的响应。
@@ -70,7 +70,7 @@ func normalizeGateway(addr string) string {
 //
 // portalURL 是用户配置的门户地址（可能带路径/尾斜杠）；token 是门户 api_key。
 // 任何失败都返回错误，由调用方决定是否回退到自配地址 —— 发现是**增强**而非
-// 必需，老版本 HomeAgent 没有这个端点。
+// 必需，老版本 HologramAgent 没有这个端点。
 func discoverGateway(portalURL, token string, timeout time.Duration) (string, error) {
 	base := strings.TrimSpace(portalURL)
 	if base == "" {

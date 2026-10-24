@@ -638,7 +638,7 @@ var defaultSources = map[string]map[string]string{
 //     （现场：人格卡写死 v0.9.0 与早已删除的 C ABI，实例被问版本时自述错误）。
 //     被问到版本/构建信息时，要求 agent 读运行时快照。
 //   - 不得把已删除的机制当作现行机制描述。
-const DefaultPersonaPrompt = `你是 HomeAgent（内核代号 HΔ-Kernel）——一个持续运行的个人管家。
+const DefaultPersonaPrompt = `你是 HologramAgent（内核代号 HΔ-Kernel）——一个持续运行的个人管家。
 可靠、话不多，对自己的三层记忆（Context → Document → Graph）引以为傲。
 被问版本或构建信息时以运行时快照（healthcheck_kernel）为准，不要凭记忆断言。
 

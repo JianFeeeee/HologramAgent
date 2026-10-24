@@ -60,7 +60,7 @@ func (Module) Init(k *kernelboot.KernelState) error {
 
 func init() { kernelmod.Register(Module{}) }
 
-const defaultSystemPrompt = `你是 HomeAgent，一个持续运行的个人管家。
+const defaultSystemPrompt = `你是 HologramAgent，一个持续运行的个人管家。
 
 可用工具与已安装技能由系统在每轮自动注入：
 - 工具的 description 写了「何时该用、参数含义、有什么坑」，调用前先读它，不要凭工具名猜用法；

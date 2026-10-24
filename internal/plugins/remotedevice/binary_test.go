@@ -300,7 +300,7 @@ func TestWSBinaryMediaToFile(t *testing.T) {
 	}
 	// ★ 2026-10-06：文件名含内容摘要（SaveInlineMedia）。
 	//   截屏/录像这类会被反复抓取的媒体，用 reqID 命名会把同内容存成多份、
-	//   不同内容却可能覆盖 —— 摘要后缀两���都避免。
+	//   不同内容却可能覆盖 —— 摘要后缀两边都避免。
 	if filepath.Dir(fp) != mediaDir {
 		t.Fatalf("file 应落在媒体目录 %s，实际 %s", mediaDir, fp)
 	}
@@ -457,7 +457,7 @@ func TestScreenseeEndToEnd(t *testing.T) {
 	}()
 
 	// agent 调用 screensee
-	// ★ 2026-10-06：默认走落盘 + 回路径；旧的自���描述路径用 auto_describe=true。
+	// ★ 2026-10-06：默认走落盘 + 回路径；旧的自动描述路径用 auto_describe=true。
 	res, err := dev.Execute("screensee", map[string]interface{}{
 		"device_id": "see-dev", "auto_describe": true,
 	})

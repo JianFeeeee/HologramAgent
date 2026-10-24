@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // Plugin 是 registry 可加载的子进程插件，与内置插件同构的启停接口。

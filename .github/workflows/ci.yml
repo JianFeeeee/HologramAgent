@@ -1,4 +1,4 @@
-# HomeAgent 主仓 CI。
+# HologramAgent 主仓 CI。
 #
 # 设计原则：**CI 里跑的每一条命令，都是本地已实测通过的命令**。
 # 不写「应该有用来试试」的步骤 —— 未验证的 CI 步骤会把假红灯变成常态，
@@ -521,19 +521,124 @@ jobs:
   csrc:
     name: C infrastructure gates
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 门禁本身实测 0~1 秒（csrc-lint/abi/headers/sanitize/cross 各自 <1s）。
+    # 这 15 分钟全部是给 apt-get 的余量 —— 卡死历来只发生在装包阶段。
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
-      # clang 供双编译器告警对照；gcc-aarch64 供跨架构编译门禁。
-      # 门禁在缺工具时是显式 SKIP 而不是假通过，这里装齐以免静默降级。
-      - name: 安装 C 工具链
+      # ── 安装 C 工具链 ─────────────────────────────────────────────
+      #
+      # ★ 加固点（2026-10-22）：实测两次该 job 卡死 20 分钟并超时，
+      # 而**本地同一门禁 0~1 秒全通过**（make check-csrc）。卡死点全在
+      # apt-get：ubuntu-latest runner 上 `apt-get update` 偶发挂住不返回，
+      # 既没有失败也没有进展，只能等 job 级 timeout。
+      #
+      # 三重加固：
+      #   1. 逐包检查是否已安装 —— runner 镜像通常自带 cmake/clang，
+      #      已装就跳过 apt-get（多数情况直接走这条，完全不碰网络）
+      #   2. 需要装时给 apt-get 加自身的超时与重试，让它**自己失败**，
+      #      而不是把整个 job 拖到 job 级 timeout（后者报错信息毫无指向性）
+      #   3. 装完立即 `command -v` 复核，缺工具就红 —— 见下方"缺工具即失败"
+      - name: 安装 C 工具链（已装则跳过）
+        # 120s(update) + 180s(install) = 300s，给 5 分钟正好；
+        # 超出说明 timeout 命令本身没生效，此时应当红而不是继续等。
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake clang gcc-aarch64-linux-gnu
+          set -uo pipefail
+          # ★ 不再需要 gcc-aarch64-linux-gnu（2026-10-22）。
+          #
+          # 实测：装它要从源拉 10MB+ 的 cpp-13 等依赖，在 runner 上卡住超时
+          # （15:47:39 开始下 cpp-13-aarch64，180s 后仍未完成）。
+          # 而 csrc-cross 只需要 `-fsyntax-only`，clang 自带交叉前端即可：
+          # `clang --target=aarch64-linux-gnu` 会真的切到 aarch64 目标
+          # （__aarch64__ 宏生效、指针宽度按该架构算），足以暴露本门禁要抓的
+          # 架构问题。Makefile 的 csrc-cross 已按
+          # CC_ARM64 > clang --target > aarch64-gcc > SKIP 的优先级挑选。
+          need=""
+          command -v cmake >/dev/null || need="$need cmake"
+          command -v clang >/dev/null || need="$need clang"
+          # aarch64 的 libc 头（1.7MB，仅头文件，**不含编译器**）。
+          # 用它 + 已预装的 clang 交叉前端，替代 10MB+ 的完整交叉 GCC
+          # （实测那个会卡在下载 cpp-13-aarch64，180s 超时）。
+          [ -d /usr/aarch64-linux-gnu/include ] || need="$need libc6-dev-arm64-cross"
 
+          if [ -z "$need" ]; then
+            echo "✅ 依赖已存在，跳过 apt-get：$(command -v cmake clang | tr '\n' ' ')"
+            exit 0
+          fi
+
+          echo "需要安装:$need"
+
+          # ★ 2026-10-22 实测：加 Acquire::*Timeout=60 + Retries=3 之后仍然卡满
+          # 6 分钟 step 超时，且**日志里一个 apt 输出都没有** —— 因为 `-qq`
+          # 把一切静默了。卡死不可观测正是它拖满超时的原因：既看不到卡在哪个
+          # 源，也看不到到底在下载什么。
+          #
+          # 所以：
+          #   · 去掉 `-qq`，保留可读进度（否则下次卡死仍然无从诊断）
+          #   · 用 `timeout` 命令做外层硬超时 —— Acquire::Timeout 只管单个连接，
+          #     不管 apt 整体（源重试、DPkg 锁等待都不受它约束）
+          #   · 失败后**不重试整段**：宁可红一次让人看见，也不要为偶发网络
+          #     抖动掩盖真实问题
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2"
+          # shellcheck disable=SC2086
+          if ! timeout 120 sudo apt-get $APT_OPTS update; then
+            echo "::error::apt-get update 超时/失败（120s）—— runner 网络或源不可用"
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          if ! timeout 180 sudo apt-get $APT_OPTS install -y --no-install-recommends $need; then
+            echo "::error::apt-get install 超时/失败（180s）需要安装:$need"
+            exit 1
+          fi
+
+      # ── 缺工具即失败（★ 这条是本次加固的核心）────────────────────
+      #
+      # 此前门禁在缺工具时打 `[SKIP] ... exit 0` —— **CI 照样变绿**。
+      # 那意味着：apt-get 悄悄失败（或将来有人删掉安装步骤）⇒ 五道门禁
+      # 全部跳过 ⇒ job 绿 ⇒ 让人以为 C 侧有门禁，实际一个都没跑。
+      #
+      # 静默降级比红更危险：红会有人修，绿没人看。
+      # 所以 CI 里显式要求工具必须在场，SKIP 视为失败。
+      - name: 确认 C 工具链齐备（缺则失败，不接受 SKIP）
+        run: |
+          set -euo pipefail
+          miss=""
+          for t in cmake clang; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "  ✅ $t: $(command -v "$t")"
+            else
+              echo "  ❌ $t 缺失" >&2
+              miss="$miss $t"
+            fi
+          done
+          [ -z "$miss" ] || {
+            echo "::error::C 工具链缺失:$miss —— 缺工具时门禁会 SKIP 并 exit 0，等于假装通过"
+            exit 1
+          }
+
+      # ── 跑门禁 ──────────────────────────────────────────────────
+      # 门禁自身 0~1 秒，给它 5 分钟绰绰有余；超出说明是异常（不是慢）。
       - name: make check-csrc
-        run: make check-csrc
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          make check-csrc 2>&1 | tee /tmp/csrc.log
+
+          # ★ 二次确认：任何 [SKIP] 都视为失败。
+          #
+          # Makefile 里每道门禁在缺依赖时 `echo "[SKIP] ..."; exit 0`，
+          # 这在本机是合理的（开发者未必装了交叉工具链），但在 CI 里
+          # 就等于把"没验证"伪装成"通过"。上面那步已保证工具齐备，
+          # 这里再拦一次是为了覆盖将来新增门禁时漏配依赖的情况。
+          if grep -q '\[SKIP\]' /tmp/csrc.log; then
+            echo "::error::门禁出现 [SKIP]，说明有检查没真正执行："
+            grep '\[SKIP\]' /tmp/csrc.log >&2
+            echo "CI 里不接受 SKIP —— 要么装上依赖，要么明确从 check-csrc 摘掉这条。" >&2
+            exit 1
+          fi
+          echo "✅ 全部门禁实际执行，无 SKIP"
 
   # ── 文档站构建（mkdocs，纯 Python，无外部依赖）──
   docs:
@@ -589,11 +694,11 @@ jobs:
       #
       # 取值依据（实测 2026-10-21，直连不带代理，非推测）：
       #   https://gitcode.com/JianFeeeee/HologramAgent     → 200  ← 当前用这个
-      #   https://gitcode.com/JianFeeeee/HomeAgent         → 301  ← 旧名，跳转到上面
+      #   https://gitcode.com/JianFeeeee/HologramAgent         → 301  ← 旧名，跳转到上面
       #   https://gitcode.com/JianFeeeee/hologramagentsdk  → 200（SDK 仓，另一对象）
       #   https://gitcode.com/JianFeeeee/homeagentsdk      → 404
       #
-      # 背景：gitcode 侧镜像仓已由 HomeAgent 改名为 HologramAgent（与 GitHub
+      # 背景：gitcode 侧镜像仓已由 HologramAgent 改名为 HologramAgent（与 GitHub
       # 主仓同名）。旧地址仍 301 跳转，跟随后也能到达，但走重定向 ⇒ 别再用它。
       # 判定两仓同一对象：两地址 git ls-remote 的 refs 列表 md5 相同。
       #
@@ -617,7 +722,7 @@ jobs:
         with:
           # 必须取完整历史：镜像可能在任意旧提交上，快进需要共同祖先。
           fetch-depth: 0
-      # ★ 改名（HomeAgent → HologramAgent）后的必然过渡态：gitcode 上的镜像仓
+      # ★ 改名（HologramAgent → HologramAgent）后的必然过渡态：gitcode 上的镜像仓
       #   是**另一个账号下的独立仓库**，改 GitHub 仓名不会自动建出它。
       #   若不在这里显式探测，缺少目标仓时只会得到 git 的原始报错
       #   （"repository not found" 混在 push 输出里），看不出是「仓没建」。

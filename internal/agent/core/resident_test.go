@@ -143,7 +143,7 @@ func TestResident_LifecycleAndNoOrphans(t *testing.T) {
 		t.Fatalf("销毁后 inputch 应回到未分配：%+v", ch)
 	}
 	// 父的入站 inputch（child/<id>）必须在销毁时一并注销，否则登记表残留脏数据——
-	// HomeAgent 实测：destroy 后 child/<id> 仍挂在根 agent 名下，且无工具可单独注销。
+	// HologramAgent 实测：destroy 后 child/<id> 仍挂在根 agent 名下，且无工具可单独注销。
 	if inbound, ok := reg.Lookup("child/child-1"); ok {
 		t.Fatalf("销毁后父的入站 inputch 应被注销，实际残留：%+v", inbound)
 	}

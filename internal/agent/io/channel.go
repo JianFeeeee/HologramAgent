@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // ErrToolNotFound 表示「工具不存在」（未注册 / 所属插件已卸载或崩溃）。
@@ -696,7 +696,7 @@ func (m *IOManager) GetInputChannelDef(name string) (ChannelDef, bool) {
 }
 
 // ToolDefOf 按工具名取其声明（含 Parameters schema）。
-// 用途：内核在执行前按 schema 预校验——没有它就只���校验到插件工具，
+// 用途：内核在执行前按 schema 预校验——没有它就只能校验到插件工具，
 // 而设备/通道工具（cmd_run、files_write 等）会完全绕过校验。
 func (m *IOManager) ToolDefOf(name string) (ToolDef, bool) {
 	m.mu.RLock()

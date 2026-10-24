@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HomeAgent</title>
+    <title>HologramAgent</title>
     <link rel="icon" type="image/svg+xml" href="icon.svg" />
     <link rel="stylesheet" href="style.css" />
     <!--
@@ -11,7 +11,7 @@
 
       为什么（与服务端 webui 插件同一条理由，见
       internal/plugins/webui/starmap_vendor_test.go 的注释）：
-      HomeAgent 明确支持离线/内网部署，而前端原本有 4 个硬依赖在公网上
+      HologramAgent 明确支持离线/内网部署，而前端原本有 4 个硬依赖在公网上
       （cdnjs/jsdelivr）。真实现象是「服务端 curl 同一批 URL 返回 200，
       但用户点星图看到『3D 星图不可用（CDN 加载失败）』」——不是服务端的问题，
       是客户端访问不到公共 CDN（内网/出口受限/断网）。
@@ -108,7 +108,7 @@
     <div id="app">
       <!-- 左侧图标栏：主页=对话，其余为二级页面 -->
       <aside class="rail" id="rail">
-        <div class="rail-logo"><img src="icon.svg" alt="HomeAgent" /></div>
+        <div class="rail-logo"><img src="icon.svg" alt="HologramAgent" /></div>
         <button
           class="rail-btn active"
           id="rail-chat"
@@ -318,7 +318,7 @@
 
       <div class="main">
         <div class="topbar">
-          <h1>HomeAgent</h1>
+          <h1>HologramAgent</h1>
           <span
             class="conn-indicator"
             id="conn-indicator"

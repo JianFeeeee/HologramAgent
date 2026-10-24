@@ -301,33 +301,42 @@ func TestPruneMigratesBlocksToDocument(t *testing.T) {
 	}
 
 	// 块应已到达 L2，且身份不变。
+	//
+	// ★ 2026-10-22 更新：L2 与 L1 同构后，事件正文也各自成为文本块
+	// （Input 一块、Response 一块），所以这里不能再假设「文档只有 1 个块」。
+	// 要断言的是**媒体块原样迁移**，而不是块总数。
 	var found *document.Doc
 	for _, d := range docStore.RecentDocs(20) {
-		if len(d.Blocks) > 0 {
-			found = d
-			break
+		for _, b := range d.Blocks {
+			if b.ID == block.ID {
+				found = d
+			}
 		}
 	}
 	if found == nil {
-		t.Fatal("归档文档应持有一等记忆块")
+		t.Fatal("媒体块未随归档事件迁移到 L2")
 	}
-	if len(found.Blocks) != 1 {
-		t.Fatalf("文档应有 1 个块，实际 %d", len(found.Blocks))
+	var got *memory.MemoryBlock
+	for i := range found.Blocks {
+		if found.Blocks[i].ID == block.ID {
+			got = &found.Blocks[i]
+		}
 	}
-	got := found.Blocks[0]
 	if got.ID != block.ID || got.Modality != block.Modality || got.MIME != block.MIME ||
 		got.Fingerprint != block.Fingerprint || len(got.Vector) != len(block.Vector) {
-		t.Fatalf("块身份应原样迁移:\n got  %+v\n want %+v", got, block)
+		t.Fatalf("块身份应原样迁移:\n got  %+v\n want %+v", *got, block)
 	}
 	// 字节随块迁移（union）
 	if string(got.Data) != string(block.Data) {
 		t.Fatalf("块字节应原样迁移: %q vs %q", got.Data, block.Data)
 	}
 
-	// 同一块不能同时留在 L0。
+	// 同一块不能同时留在 L0（L1）。
 	for _, e := range rc.Recent(100) {
-		if len(e.Blocks) > 0 {
-			t.Fatalf("块仍留在 L0（同一块同时存在于两层）: %+v", e.Blocks)
+		for _, b := range e.Blocks {
+			if b.ID == block.ID {
+				t.Fatalf("块仍留在 L1（同一块同时存在于两层）: %+v", b)
+			}
 		}
 	}
 }

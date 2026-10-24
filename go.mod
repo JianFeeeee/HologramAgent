@@ -13,12 +13,12 @@ require github.com/yanyiwu/gojieba v1.4.7
 require github.com/yalue/onnxruntime_go v1.13.0
 
 require (
-	github.com/JianFeeeee/homeagentsdk v0.9.2
+	github.com/JianFeeeee/hologramagentsdk v0.9.2
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	golang.org/x/sys v0.38.0
-	golang.org/x/text v0.3.8
+	golang.org/x/text v0.23.0
 )
 
 require (
@@ -41,6 +41,14 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	golang.org/x/image v0.25.0 // indirect
 )
 
-replace github.com/JianFeeeee/homeagentsdk => ./third_party/homeagent-sdk
+// SDK 仓 module 已改名为 hologramagentsdk（与 GitHub 仓名一致）。
+//
+// replace 指向本地源码副本，使主仓改动与 SDK 改动可在同一工作树内联调。
+// ★ 只能有这一条：Go 不允许同一目录被两个 module 路径 replace
+// （报 `used for two different module paths`）。所以主仓**所有** import 都已
+// 统一改为新名，旧的 homeagentsdk 路径不再保留。
+
+replace github.com/JianFeeeee/hologramagentsdk => ./third_party/homeagent-sdk

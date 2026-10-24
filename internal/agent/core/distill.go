@@ -558,12 +558,20 @@ func docToTriples(doc *document.Doc, embedder nlp.Vectorizer) []memory.Triple {
 	// 写入 L3 并以 document --contains--> block 边关联，
 	// 不经过文本描述与 NLP 提取器。
 
-	// NLP 通用提取
+	// NLP 通用提取。
+	//
+	// ★ 输入必须是**原文**，不能是视图。
+	//
+	// 旧代码抽的是 doc.Content —— 那在 Events 引入前是对事件的压缩渲染
+	// （Response 截 100 rune、工具输出截 200）。拿压缩过的文本做三元组抽取，
+	// 等于在丢失的信息上再丢一次：句子被截断后依存句法往往解析不出主谓宾。
+	//
+	// 现在优先用事件里的完整正文；存量文档没有 Events 才退回 Content。
 	e := nlp.NewExtractor(nil)
 	if embedder != nil {
 		e.SetEmbedder(embedder)
 	}
-	result := e.Extract(doc.Content)
+	result := e.Extract(documentOriginalText(doc))
 	if result != nil {
 		for _, nt := range result.Triples {
 			mt := nlp.ToMemoryTriple(nt)
@@ -634,4 +642,34 @@ func (a *Agent) processConsolidation(evt *agentIO.InputEvent, input string) {
 	}
 
 	log.Printf("[agent] consolidation done (%dms, tools=%v)", time.Since(start).Milliseconds(), toolsUsed)
+}
+
+// documentOriginalText 取文档的**原文**用于抽取/蒸馏。
+//
+// 有 Events 时按事件顺序拼正文（原文来自文本块）；存量文档退回 Content 视图。
+// 这是「视图不是记忆」在蒸馏侧的落地：抽取必须基于原文。
+func documentOriginalText(doc *document.Doc) string {
+	if doc == nil {
+		return ""
+	}
+	if !doc.HasEvents() {
+		return doc.Content
+	}
+	var b strings.Builder
+	for _, ev := range doc.Events {
+		in, resp, _ := ev.InOut()
+		if in != "" {
+			b.WriteString(in)
+			b.WriteString("\n")
+		}
+		if resp != "" {
+			b.WriteString(resp)
+			b.WriteString("\n")
+		}
+		for _, tr := range ev.ToolResults {
+			b.WriteString(tr.Output)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }

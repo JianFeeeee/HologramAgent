@@ -1,6 +1,6 @@
 {
   "name": "knowledge-base",
-  "description": "按分类树检索 HomeAgent 知识库：树形导航、分类内检索、以图搜知识",
+  "description": "按分类树检索 HologramAgent 知识库：树形导航、分类内检索、以图搜知识",
   "version": "1.1.0",
-  "author": "HomeAgent"
+  "author": "HologramAgent"
 }

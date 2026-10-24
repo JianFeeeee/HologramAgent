@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HomeAgent 部署验证脚本：检查 healthcheck 残留 / 记忆去重 / archived 残留 / 嵌入规格
+# HologramAgent 部署验证脚本：检查 healthcheck 残留 / 记忆去重 / archived 残留 / 嵌入规格
 # 用法: verify_deploy.sh [data_dir]  默认 /home/newqqagent
 set -u
 DATA_DIR="${1:-/home/newqqagent}"
@@ -8,7 +8,7 @@ ok()   { echo "[PASS] $1"; PASS=$((PASS+1)); }
 bad()  { echo "[FAIL] $1"; FAIL=$((FAIL+1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP+1)); }
 
-echo "== HomeAgent 部署验证 =="
+echo "== HologramAgent 部署验证 =="
 echo "数据目录: $DATA_DIR"
 echo "时间:     $(date '+%Y-%m-%d %H:%M:%S')"
 echo "模式:     只读检测，不修改/删除任何数据"

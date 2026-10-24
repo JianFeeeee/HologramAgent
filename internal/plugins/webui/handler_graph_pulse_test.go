@@ -10,7 +10,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // fakeGraphMemory 是一个最小 MemoryAPI 桩，只为把 GraphData 喂给 handler。

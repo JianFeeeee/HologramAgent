@@ -168,7 +168,7 @@ func (a *Agent) executeGetPluginTools(pluginName string) string {
 	}
 	// ★★ 收集**内置工具**（2026-05-05）。
 	//
-	// 原实���只收 StageHost(SDK 插件) 与 IOManager(设备) 两处，
+	// 原实现只收 StageHost(SDK 插件) 与 IOManager(设备) 两处，
 	// 而 describe_image / ocr_image / memory_recall / knowledge_* 等
 	// 都是内核 buildToolDefs 里直接 append 的 ⇒ **一条都数不到**。
 	// 症状：agent 能调这些工具，却调 get_plugin_tools("") 看不到它们，

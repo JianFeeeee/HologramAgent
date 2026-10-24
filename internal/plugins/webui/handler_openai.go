@@ -152,10 +152,28 @@ func (h *Handler) streamOpenAI(ctx context.Context, w http.ResponseWriter, model
 	// 写 goroutine：批量合并（16ms 窗口）后 flush，降 syscall 次数。
 	// 不 close(deltaCh) —— 订阅回调可能在 handler 返回后仍被总线异步触发，
 	// close 后再发会 panic（生产日志里出现过单日数千次）。
+	//
+	// ★★ 并发契约：本函数内 w 只有一个写者 = 下面这个 writer goroutine。
+	// 此前 handler goroutine 在收尾处直写 w（finish chunk/[DONE]/Flush），
+	// 与这里的写 goroutine 并发写同一个 http.ResponseWriter —— gzip 中间件
+	// 的 mode/wroteHeader/buf 被两个 goroutine 同时读写，-race 单跑即可
+	// 稳定复现 6~8 条 DATA RACE。修法选「单写者模型」而非给
+	// gzipResponseWriter 加锁：加锁只哄住 race detector（治标），且持锁跨
+	// 网络 Write/Flush 会把整条 SSE 卡在一个串行点上；「同一时刻只有一个
+	// goroutine 写 w」才是 SSE 帧完整性的正确约束。于是终止帧也必须交给
+	// 这个唯一的写者：见 finishCh / sendFinish。
+	finishCh := make(chan finishItem, 1)
+	writerExit := make(chan struct{})
+	// 用 safeclose 而不是裸 close：本仓 close 纪律测试
+	// （internal/safeclose/TestNoBareCloseOutsideSafeclose）禁止裸 close(chan)，
+	// 理由是「今天只关一次的 channel，明天多一条退出路径就变成关两次 ⇒ panic」。
+	var writerExitOnce sync.Once
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		// 终止帧全部写完（含 Flush）后才关闭，handler 侧据此确认已出网。
+		defer safeclose.Safe(&writerExitOnce, writerExit)
 		pending := make([]string, 0, 64)
 		flushPending := func() {
 			if len(pending) == 0 {
@@ -188,12 +206,40 @@ func (h *Handler) streamOpenAI(ctx context.Context, w http.ResponseWriter, model
 				}
 			case <-flushTicker.C:
 				flushPending()
+			case f := <-finishCh:
+				// 先把攒着的尾部 delta 发完，再发终止帧 —— 顺序不能反，
+				// 否则客户端会先看到 [DONE] 再看到内容（旧写法的缺陷）。
+				flushPending()
+				if f.timedOut {
+					fmt.Fprintf(w, "data: %s\n\n", `{"error":{"message":"agent timeout (300s)"}}`)
+				} else {
+					fmt.Fprintf(w, "%s\n", openAIChunkLine(completionID, created, model,
+						map[string]interface{}{}, "stop", f.usage))
+				}
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				flusher.Flush()
+				return
 			case <-done:
 				flushPending()
 				return
 			}
 		}
 	}()
+
+	// sendFinish 把「终止」交给唯一写者，并等它把终止帧真正写完（含 Flush）。
+	// 此后 handler goroutine 不再碰 w 一个字节。
+	//
+	// 必须**先发再等**：writer goroutine 只在「收到 finishCh」或「done 关闭」
+	// 时退出，而 done 的关闭在 defer 里（本函数返回之后）——先等退出后发
+	// 终止就是死锁。select 的 <-done 是防御：done 已关时 writer 可能已不在，
+	// 此时不能再等一个永不到来的接收者。
+	sendFinish := func(usage map[string]interface{}, timedOut bool) {
+		select {
+		case finishCh <- finishItem{usage: usage, timedOut: timedOut}:
+		case <-done:
+		}
+		<-writerExit
+	}
 
 	send := func(d deltaItem) {
 		select {
@@ -241,9 +287,8 @@ func (h *Handler) streamOpenAI(ctx context.Context, w http.ResponseWriter, model
 	select {
 	case response = <-respCh:
 	case <-ctx.Done():
-		fmt.Fprintf(w, "data: %s\n\n", `{"error":{"message":"agent timeout (300s)"}}`)
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		flusher.Flush()
+		// 超时也走同一个唯一写者出口：在这里直写 w 正是竞争的另一半。
+		sendFinish(nil, true)
 		return
 	}
 
@@ -252,11 +297,8 @@ func (h *Handler) streamOpenAI(ctx context.Context, w http.ResponseWriter, model
 		usage, _ = response.Payload["usage"].(map[string]interface{})
 	}
 
-	// finish chunk + [DONE]
-	fmt.Fprintf(w, "%s\n", openAIChunkLine(completionID, created, model,
-		map[string]interface{}{}, "stop", usage))
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	flusher.Flush()
+	// finish chunk + [DONE]：交给唯一写者发。
+	sendFinish(usage, false)
 }
 
 // openAIChunkLine 把一个 chunk 序列化成一行 SSE。
@@ -282,6 +324,15 @@ func openAIChunkLine(id string, created int64, model string, delta map[string]in
 	}
 	data, _ := json.Marshal(chunk)
 	return "data: " + string(data)
+}
+
+// finishItem 是流终止消息：由 handler goroutine 投递、由唯一的 writer
+// goroutine 消费并写出 finish chunk 与 [DONE]。
+type finishItem struct {
+	// usage 进 finish chunk（OpenAI 协议里 usage 只在收尾帧出现）。
+	usage map[string]interface{}
+	// timedOut 为真表示走 ctx 超时收尾（在流里报错而不是发 stop）。
+	timedOut bool
 }
 
 type deltaItem struct {
@@ -312,7 +363,7 @@ type openAIMessage struct {
 // OpenAI 客户端把它当作能力探测（probe）。请求方要的不是模型清单本身，
 // 而是一个「这个端点讲 OpenAI 协议」的确认。
 //
-// 所以这里返回 HomeAgent 自身作为唯一条目：调用方无论填哪个 id 都会
+// 所以这里返回 HologramAgent 自身作为唯一条目：调用方无论填哪个 id 都会
 // 被路由到同一个 agent（本端点的 model 参数确实只是透传）。
 // 不谎报 GPT 之类的名字 —— 那会让用户以为能选模型，而实际不能。
 func (h *Handler) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {

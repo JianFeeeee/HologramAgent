@@ -111,5 +111,5 @@ Core functionality is operational. Plugin system and SDK are ready for independe
 
 - Built-in plugins (13): webui / cli / agentcli / cfgmgr / healthcheck / kbtree / multimodal / pluginmgr / clawhubadapter / remotedevice / skillmgr / seemedia / seq
 - Criterion: **a plugin stays built-in only if it requires internal-SDK-only capabilities**; everything else ships as an .hmap external plugin (see ARCHITECTURE)
-- External plugin examples ([homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) repo `example/`, both Go and Lua types): qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
+- External plugin examples ([hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) repo `example/`, both Go and Lua types): qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
 - Distribution: `.hmap` plugin package format, installable via WebUI

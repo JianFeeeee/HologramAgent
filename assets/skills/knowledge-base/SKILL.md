@@ -1,16 +1,16 @@
 ---
 name: knowledge-base
-description: 按分类树检索 HomeAgent 知识库。当需要查阅项目知识、架构约定、历史决策，或用户提到"知识库/knowledge/知识库有哪些/这个项目的约定是什么"时使用。支持树形导航、分类内检索、以图搜知识。
+description: 按分类树检索 HologramAgent 知识库。当需要查阅项目知识、架构约定、历史决策，或用户提到"知识库/knowledge/知识库有哪些/这个项目的约定是什么"时使用。支持树形导航、分类内检索、以图搜知识。
 version: 1.1.0
-author: HomeAgent
+author: HologramAgent
 ---
 
 ## Usage
 
-先看树定位分类，再做定向检索。接口由 HomeAgent 的 `kbtree` 插件提供，
+先看树定位分类，再做定向检索。接口由 HologramAgent 的 `kbtree` 插件提供，
 只读、需 token。详见下方"接入"。
 
-HomeAgent 知识库按**分类树**组织（`tech/go/并发`、`life/sleep` …）。
+HologramAgent 知识库按**分类树**组织（`tech/go/并发`、`life/sleep` …）。
 
 ### 何时用
 
@@ -102,7 +102,7 @@ curl -s -H "$AUTH" "$BASE/search?q=goroutine&limit=5"
 若知识条目挂了图片，它在**多模态统一空间**里有向量，能被图片本身检索到。
 前提是宿主已接入多模态向量 provider（否则只是记录了媒体，不参与召回）。
 
-判断是否就绪：HomeAgent 自身的知识库接口会返回稠密路状态
+判断是否就绪：HologramAgent 自身的知识库接口会返回稠密路状态
 （`dense.enabled` / `dense.ready` / `dense.total`）。若为未启用，
 **不要承诺"能以图搜"**。
 
@@ -132,13 +132,13 @@ curl -s -H "$AUTH" "$BASE/search?q=goroutine&limit=5"
 - **分类不存在返回 404**，并在 `categories` 字段里附上现有分类 —— 用它自查
   拼写。
 - **`items=0` 只是不要正文**，`total_count` 仍准确，可用于判断规模。
-- **本服务只读**。写方法返回 405。要写知识请用 HomeAgent 主 agent 的
+- **本服务只读**。写方法返回 405。要写知识请用 HologramAgent 主 agent 的
   `knowledge_create`（或 WebUI 界面），不要试图绕过它直接写这个接口。
 - 知识名里不能有 `..`、空格（会被规范成 `_`）、点开头的段。
 
 ### 写入
 
-本服务不提供写入。若你在 HomeAgent 主 agent 内部，写入用内核工具：
+本服务不提供写入。若你在 HologramAgent 主 agent 内部，写入用内核工具：
 
 ```
 knowledge_create  name="tech/go/调度"  content="正文..."

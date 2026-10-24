@@ -1,12 +1,14 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
 
@@ -67,19 +69,41 @@ func (a *Agent) reembedStaleMedia() {
 
 	var jobsOnce sync.Once
 	jobs := make(chan memory.MemoryBlock, workers*2)
-	var done, failed int64
+	var done, failed, unsupported int64
 	var wg sync.WaitGroup
+
+	// 失败原因按错误文本聚合 —— 不逐条打日志（上千张图会刷屏），
+	// 但**必须留下"为什么失败"**。
+	//
+	// ★ 2026-10-23 实测教训：原先这里只 `failed++` 然后 continue，于是
+	//    「向量迁移完成: 成功=0 失败=4」成了唯一的线索 —— 没有任何日志说明
+	//    这 4 个是 webp（当时 chineseclip 未注册 webp 解码器）。失败不可观测
+	//    直接导致这次排查要从数据库里反查 mime 才找到根因。
+	var failMu sync.Mutex
+	failReasons := map[string]int{}
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for b := range jobs {
-				if err := a.reembedOneBlock(b, fp); err != nil {
-					atomic.AddInt64(&failed, 1)
+				err := a.reembedOneBlock(b, fp)
+				if err == nil {
+					atomic.AddInt64(&done, 1)
 					continue
 				}
-				atomic.AddInt64(&done, 1)
+				// 模态不受支持是**永久**状态（不是本次网络/服务抖动）：
+				// 这类块永远不会有向量，语义检索也永远搜不到它。
+				// 单独计数，避免它混在"失败"里让人以为重试就能好。
+				if errors.Is(err, vector.ErrModalityUnsupported) {
+					atomic.AddInt64(&unsupported, 1)
+				} else {
+					atomic.AddInt64(&failed, 1)
+				}
+				key := b.MIME + " | " + err.Error()
+				failMu.Lock()
+				failReasons[key]++
+				failMu.Unlock()
 			}
 		}()
 	}
@@ -93,8 +117,17 @@ func (a *Agent) reembedStaleMedia() {
 	}
 	safeclose.Safe(&jobsOnce, jobs)
 	wg.Wait()
-	log.Printf("[media] 向量迁移完成: 成功=%d 失败=%d 总计=%d fp=%s",
-		done, failed, len(targets), shortFP(fp))
+	log.Printf("[media] 向量迁移完成: 成功=%d 失败=%d 不支持=%d 总计=%d fp=%s",
+		done, failed, unsupported, len(targets), shortFP(fp))
+	// 逐类打印失败原因（聚合后通常只有 1~2 类）。
+	// 没有这段，运维只能看到"失败=N"而不知为何 —— 本次 webp 问题的排查成本
+	// 全花在这里。
+	if len(failReasons) > 0 {
+		log.Printf("[media] 失败原因分类（按 mime | error 聚合）:")
+		for reason, n := range failReasons {
+			log.Printf("[media]   %d 个: %s", n, reason)
+		}
+	}
 }
 
 // reembedOneBlock 为一个图像块重算向量并写回。负载就在块里，无需外部取字节。

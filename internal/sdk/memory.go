@@ -3,7 +3,7 @@ package sdk
 import (
 	"time"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // MemoryBlockView 是块的最小只读视图（供星图轮询端点）。

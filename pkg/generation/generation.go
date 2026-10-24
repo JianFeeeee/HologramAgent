@@ -1,7 +1,7 @@
 // Package generation defines the public SPI for text-generation providers used
 // by background pipelines (notably triple distillation).
 //
-// The HomeAgent core depends only on this package. Model runtimes, tokenizers,
+// The HologramAgent core depends only on this package. Model runtimes, tokenizers,
 // prompt templates, sampling, and model-specific configuration belong in
 // provider packages registered with Register.
 //

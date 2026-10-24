@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // Host 持有**被全部子进程插件共享的统一内存区域**，是共享数据面的

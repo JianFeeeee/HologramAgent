@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 func scenePolicyNoneEvent() *agentIO.InputEvent {

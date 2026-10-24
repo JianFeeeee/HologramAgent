@@ -8,7 +8,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 事件环基础测试：Host 创建事件环 → EventRing 写入 → 消费者读到。

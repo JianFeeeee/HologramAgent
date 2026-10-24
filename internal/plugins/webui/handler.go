@@ -36,7 +36,7 @@ var dashboardFS embed.FS
 //	看到「3D 星图不可用（CDN 加载失败）」—— 服务端 curl 同一 URL 是 200，
 //	说明是**浏览器**访问不到公网 CDN（内网 / 出口受限 / 断网）。
 //
-//	换 CDN 只是把同一个赌注重下���遍：HomeAgent 明确支持离线与内网部署，
+//	换 CDN 只是把同一个赌注重下一遍：HologramAgent 明确支持离线与内网部署，
 //	前端却有 4 个硬依赖在公网上，断网即坏且用户无从修复。
 //
 //	连带的两个理由：
@@ -50,7 +50,7 @@ var staticFS embed.FS
 
 var dashboardHTML string
 
-const loginHTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>HomeAgent 登录</title><style>
+const loginHTML = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>HologramAgent 登录</title><style>
 :root{--sakura-300:#ffb3c8;--sakura-400:#ff7fac;--sakura-500:#f33b7c;--frost-300:#88c0d0;--text-primary:#e8e6ee;--text-secondary:#a0a3b5;--text-muted:#6e7284;--bg-primary:#0d0d16;--bg-card:rgba(24,24,38,0.72);--bg-input:rgba(13,13,22,0.6);--border-color:rgba(255,255,255,0.09);--glass-border:rgba(255,255,255,0.12);--glass-blur:20px;--radius-lg:18px;--radius-md:12px;--radius-pill:999px;--shadow-glow:0 0 18px rgba(243,59,124,0.35);--ease-out:cubic-bezier(.22,.61,.36,1)}
 [data-theme="light"]{--text-primary:#23252e;--text-secondary:#5b5f73;--text-muted:#9aa0b5;--bg-primary:#f6f3f8;--bg-card:rgba(255,255,255,0.72);--bg-input:rgba(255,255,255,0.8);--border-color:rgba(35,37,46,0.1);--glass-border:rgba(255,255,255,0.75);--shadow-glow:0 0 18px rgba(243,59,124,0.28)}
 *{box-sizing:border-box}
@@ -74,7 +74,7 @@ button:disabled{opacity:.6;cursor:not-allowed;transform:none}
 .foot{margin-top:20px;font-size:11px;color:var(--text-muted);text-align:center}
 .foot svg{width:12px;height:12px;vertical-align:-2px}
 @media(max-width:480px){.login-card{padding:28px 22px 22px}}
-</style></head><body><div class="login-wrap"><div class="login-card"><div class="logo"><img src="/logo.svg" alt="HomeAgent"></div><h1>HomeAgent</h1><p class="sub">智能家居助手控制台</p><form id="login-form"><label>用户名</label><input id="username" autocomplete="username" placeholder="请输入用户名" required><label>密码</label><input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="submit" id="submit-btn">登 录</button><div id="err" class="err"></div></form></div><div class="foot">HomeAgent &middot; NapCat Theme</div></div><script>
+</style></head><body><div class="login-wrap"><div class="login-card"><div class="logo"><img src="/logo.svg" alt="HologramAgent"></div><h1>HologramAgent</h1><p class="sub">智能家居助手控制台</p><form id="login-form"><label>用户名</label><input id="username" autocomplete="username" placeholder="请输入用户名" required><label>密码</label><input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="submit" id="submit-btn">登 录</button><div id="err" class="err"></div></form></div><div class="foot">HologramAgent &middot; NapCat Theme</div></div><script>
 (function(){var m=window.matchMedia('(prefers-color-scheme: light)');function apply(){document.documentElement.setAttribute('data-theme',m.matches?'light':'dark')}apply();m.addEventListener('change',apply)})();
 document.getElementById('login-form').addEventListener('submit',async(e)=>{e.preventDefault();const username=document.getElementById('username').value.trim();const password=document.getElementById('password').value;const err=document.getElementById('err');const btn=document.getElementById('submit-btn');err.textContent='';if(!username||!password){err.textContent='请输入用户名和密码';return}btn.disabled=true;btn.textContent='登录中...';try{const r=await fetch('/api/v1/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});if(r.ok){location.href='/';return}let data={};try{data=await r.json()}catch(_){}err.textContent=data.error||'登录失败'}catch(_){err.textContent='网络错误,请重试'}finally{btn.disabled=false;btn.textContent='登 录'}});
 document.getElementById('password').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('login-form').dispatchEvent(new Event('submit'))});

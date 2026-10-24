@@ -17,7 +17,7 @@ import (
 //
 // 注入必须**晚绑定**且**per-agent**：内置工具的可见性由运行期状态门控
 // （`if a.memory != nil` / `if a.knowledge != nil` …），而驻留子是轻量内核、
-// memory 为 nil。�� ToolAPI 是全局单例，拿不到 agent，只能由 agent 自己
+// memory 为 nil。而 ToolAPI 是全局单例，拿不到 agent，只能由 agent 自己
 // 提供一份 provider。
 
 // builtinProvider 是 *Agent 上的适配器：把 agent 的内置工具面

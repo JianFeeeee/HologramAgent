@@ -69,7 +69,7 @@ func TestManifestWithoutTimeoutKeepsLegacyBehavior(t *testing.T) {
 	// 用真实的存量 plugin.json 内容（qq 插件，无 handshake_timeout_sec）
 	dir := t.TempDir()
 	legacy := `{
-  "author": "HomeAgent",
+  "author": "HologramAgent",
   "description": "QQ 消息收发插件，通过 NapCat 协议桥接",
   "entry": "plugin.bin",
   "name": "qq",

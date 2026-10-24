@@ -24,12 +24,20 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 自己攒视图，而不是去读内核里的某个状态组件。内核只提供事件总线与插件注册面——
 新增一类能力不需要改内核，也不会在核心里堆出第二套业务真相。
 
-**三层记忆架构** — 通过分级存储策略管理 Agent 长周期运行中的信息留存：
-- **Context 层**：内存中预训练词嵌入评分的事件窗口（StaticEmbedder 词向量 → CosineSimilarity，TF-IDF 回退），实时维护最近上下文，低相关性事件自动下沉到下一层
-- **Document 层**：JSON 文件 + TF-IDF 向量索引的临时记忆，支持显式提交和隐式归档，冷数据蒸馏到 Graph
-- **Graph 层**：SQLite 图数据库，持久化实体（entities）和关系（relations），BFS 遍历召回，蒸馏管道从对话中提取三元组
+**三层记忆架构** — 三层不是三种数据结构，而是**同一批记忆块的三层持有关系**：
+- **Context 层（L1，直接投喂）**：内存中预训练词嵌入评分的事件窗口（StaticEmbedder 词向量 → CosineSimilarity，TF-IDF 回退），实时维护最近上下文，低相关性事件自动下沉到下一层
+- **Document 层（L2，不直接投喂）**：与 L1 **结构同构**——同样的事件 + 同样的块，只是不直接进模型视野；支持显式提交和隐式归档，冷数据蒸馏到 Graph
+- **Graph 层（L3，持久）**：SQLite 图数据库，**顶层仍是三元组**（节点 + 关系边），但节点从 `entities` 表升级为 `memory_blocks`；BFS 遍历召回，蒸馏管道从对话中提取三元组
 
-三层递进：上下文 → 冷归档 → 长期图记忆，构成从短期到持久的信息衰减与整合管道。
+★ **L1 与 L2 唯一区别是「是否被直接投喂给模型」**：L2 不是 L1 的摘要层，也不是
+另一种数据形态。召回 = 把事件（连同它持有的块）从“不投喂”的持有层**迁回**“投喂”的持有层。
+
+★ **正文（含多媒体正文）内联在块里**：文本块的 `Text` 是正文，媒体块的 `Data` 是字节。
+不存在「块 + 外部正文」的分离形态。**任何一层都不压缩** —— 视图（检索摘要、渲染结果）
+可以是压缩的，但视图不是记忆。
+
+三层流动：上下文 → 冷归档 → 长期图记忆，构成从短期到持久的信息衰减与整合管道；
+每一次都是**迁移**（块 ID 与向量不变，只换持有层），不是复制。
 
 **媒体记忆（v1.2.0 起：一等记忆块）** — 图片/音频不是附属物，而是记忆的一等节点：
 - **内容寻址存储（CAS）**：digest 寻址，元数据在 SQLite、blob 在磁盘（两级分桶），相同字节只存一份，
@@ -101,5 +109,5 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 
 - 内置插件（13 个）：webui / cli / agentcli / cfgmgr / healthcheck / kbtree / multimodal / pluginmgr / clawhubadapter / remotedevice / skillmgr / seemedia / seq
 - 判定标准：**只有必须使用内部 SDK 能力（公开 SDK 没有的接口面）的插件才内置**，其余一律外置为 .hmap 插件（详见 ARCHITECTURE「内置插件的判定标准」）
-- 外部插件示例（[homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库 `example/`，含 Go 和 Lua 两种类型）：qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
+- 外部插件示例（[hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) 仓库 `example/`，含 Go 和 Lua 两种类型）：qq / files / a2a / ai_image / bili / browser / calendar / editdoc / memo / music / ocr / rss / sanitizer / weather / luademo
 - 打包分发：`.hmap` 插件包格式，通过 WebUI 安装

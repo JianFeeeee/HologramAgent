@@ -34,6 +34,21 @@ type ContextEvent struct {
 	Response    string           `json:"response,omitempty"`
 	ToolsUsed   []string         `json:"tools_used,omitempty"`
 	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
+
+	// NoMemory 标记这条事件**不参与记忆计算**（不向量化、不提关键词、不蒸馏），
+	// 但**照常参与归档**（离开 L1 时会写回 L2）。
+	//
+	// ★ 与 ToolDef.NoMemory 语义一致：只影响计算层，不影响存储层。
+	//
+	// ★★ 为什么不能顺手把归档也关掉（2026-10-22 踩过的坑）：
+	//
+	//	doc_query 的 Consume 已经**从 L2 删除**了原文。若回填事件在 L1
+	//	被裁掉时又不归档，它就**三层都不在**了 —— 内容被永久丢弃。
+	//	L1 是它最后的落脚点，必须能落回去。
+	//
+	//	所以"回填事件不再归档"是错的。它确实该重新归档（那才是迁移闭环），
+	//	该抑制的只是"重新计算向量/再次进蒸馏"—— 那才是自激的入口。
+	NoMemory bool `json:"no_memory,omitempty"`
 	// --- 原生多模态记忆 ---
 	// 一等记忆块：块本身随事件在层间迁移，身份不变，不建引用计数。
 	Blocks   []memory.MemoryBlock `json:"blocks,omitempty"` // 一等记忆块（text/image/video/audio）
@@ -216,6 +231,13 @@ func (c *RelevanceContext) load() {
 }
 
 func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolDef, channelDefLookup func(name string) (sdk.ChannelDef, bool)) string {
+	// 事件自带 NoMemory（doc_query 回填的历史事件）：不进计算层。
+	//
+	// 为什么回填事件不参与计算：它们的内容刚刚在 L2 里被向量化过一次，
+	// 再算一次只会让"同一内容"在向量空间里被重复加权。但它们**照常归档**。
+	if evt.NoMemory {
+		return ""
+	}
 	var text string
 	switch {
 	case evt.Source == "agent" && evt.Response != "":
@@ -237,11 +259,23 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 	}
 
 	// 计算层：附加工具输出，NoMemory 跳过，其余经 Cleaner 过滤
-	if toolDefLookup != nil {
+	{
 		noMemory := make(map[string]bool)
 		for _, tr := range evt.ToolResults {
-			def := toolDefLookup(tr.Name)
-			if def != nil && def.NoMemory {
+			// ① 插件工具（含 proc 桥）：走 StageHost 的 ToolDef 声明
+			if toolDefLookup != nil {
+				if def := toolDefLookup(tr.Name); def != nil && def.NoMemory {
+					noMemory[tr.Name] = true
+					continue
+				}
+			}
+			// ② 内置工具（core 自己的 switch 分派）：走包级声明表。
+			//
+			// ★ doc_query 属于这一类 —— 它的返回值含被召回事件的正文片段，
+			//   而那些正文已在记忆体系里（来自 L2/L3）。若返回值再参与向量化
+			//   与蒸馏，就是把同一内容重新注入记忆，与「回填事件不再归档」
+			//   构成同一个自激回路的两个入口。
+			if noMemoryOf(tr.Name) {
 				noMemory[tr.Name] = true
 			}
 		}
@@ -250,9 +284,10 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 				continue
 			}
 			cleaned := tr.Output
-			def := toolDefLookup(tr.Name)
-			if def != nil && def.Cleaner != nil {
-				cleaned = def.Cleaner(cleaned)
+			if toolDefLookup != nil {
+				if def := toolDefLookup(tr.Name); def != nil && def.Cleaner != nil {
+					cleaned = def.Cleaner(cleaned)
+				}
 			}
 			text += " " + cleaned
 		}
@@ -505,6 +540,16 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 	})
 
 	archived := 0
+	if docStore != nil && len(archive) > 0 {
+		// ★ 回填事件（NoMemory）**照常归档** —— 这是数据不丢的关键。
+		//
+		// 曾经在这里跳过它们（理由是"防自激"），那是错的：
+		// doc_query 的 Consume 已经把 L2 副本删掉了，L1 是唯一副本。
+		// 跳过归档 = 裁掉即丢失（L1、L2、L3 三层都不在）。
+		//
+		// 自激的入口不在"归档"这一侧，而在"重新计算向量"那一侧 ——
+		// 那已经由 textForVector 里 `if evt.NoMemory { return "" }` 挡住。
+	}
 	if docStore != nil && len(archive) > 0 {
 		entries := make([]document.ContextEntry, len(archive))
 		for i, s := range archive {

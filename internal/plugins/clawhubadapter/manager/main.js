@@ -596,14 +596,14 @@ async function runCLI(skillsDir, cliArgs) {
     }
 
     case 'auth:status': {
-      console.log('Auth status: not implemented (running in HomeAgent mode)');
+      console.log('Auth status: not implemented (running in HologramAgent mode)');
       break;
     }
 
     case 'config:get': {
       const key = cliArgs[1];
       if (!key) throw new Error('Usage: openclaw config:get <key>');
-      // TODO: read from HomeAgent config system when bridged
+      // TODO: read from HologramAgent config system when bridged
       console.log(`(not available in CLI mode: ${key})`);
       break;
     }
@@ -612,7 +612,7 @@ async function runCLI(skillsDir, cliArgs) {
       const key = cliArgs[1];
       const value = cliArgs[2];
       if (!key || value === undefined) throw new Error('Usage: openclaw config:set <key> <value>');
-      // TODO: write to HomeAgent config system when bridged
+      // TODO: write to HologramAgent config system when bridged
       console.log(`(not available in CLI mode: ${key}=${value})`);
       break;
     }
@@ -635,7 +635,7 @@ async function runCLI(skillsDir, cliArgs) {
 
     case '--version':
     case 'version':
-      console.log('HomeAgent OpenClaw Adapter 1.0.0 (openclaw-compatible)');
+      console.log('HologramAgent OpenClaw Adapter 1.0.0 (openclaw-compatible)');
       break;
 
     case 'help':
