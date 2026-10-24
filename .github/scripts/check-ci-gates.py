@@ -106,11 +106,18 @@ for _n, r in evid:
 #   v4（本条）用**合成行**注入 TABLE 再真跑：
 #      · 不依赖任何真实排除项 ⇒ 排除项增删不会引起误报
 #      · 真跑 ⇒ `&& false` 这类「形似而无效」的改动会被抓出来
+#   v5（ID:19）堵空表假绿：v4 的 `(.*?)` 非贪婪且允许空串 ⇒ 排除表被删到
+#      空串时捕获体为空，下游只看 "$n" -eq 0 就静默走「无排除项」分支，
+#      排除项漏删/误删永远不会被任何人发现。现在要求**空表必须显式声明**
+#      （heredoc 里保留一行 `# none`），且下列三条各自有只违反它的坏输入做自测。
 #
 # 两条守卫必须**各自**用只违反它的输入来验，否则一条会顶另一条的包
 # （第一版我把 reason 与 ticket 同时清空，ticket 守卫兜住了，reason 守卫死没死看不出来）。
 import subprocess as _sp
 import tempfile as _tf
+
+# 空表显式标记：与 ci.yml 里的判据同一串（改一处必须同时改另一处）。
+_EMPTY_MARK = "# none"
 
 _tbl = None
 for _n, _r in race:
@@ -145,9 +152,32 @@ else:
             new_inner = (line + "\n" + inner) if inner.strip() else line
             return _tbl[:_m.start(1)] + new_inner + _tbl[_m.end(1):]
 
+        def _replace_table(new_inner):
+            """把 heredoc 的捕获体整段替换成 new_inner（用来造各种空表形态）。"""
+            return _tbl[:_m.start(1)] + new_inner + _tbl[_m.end(1):]
+
         # 正向：原样必须通过
         if _run_body(_tbl).returncode != 0:
             fails.append("排除表步骤用当前 ci.yml 实跑不通过（正向基线坏）")
+
+        # ── 正向：合法空表（显式 `# none` 标记）必须通过 ──
+        # ★ 这是"排除表可以合法为空"的必要性证明：最后一条 pkg 行被删掉后，
+        #   表本来就该空，不能一空就红。
+        if _run_body(_replace_table(_EMPTY_MARK)).returncode != 0:
+            fails.append("合法的空表（显式 `# none` 标记）竟被拒 —— 空表本应被允许，"
+                         "守卫不能把「排除项删干净」与「漏写标记」混为一谈")
+
+        # ── 反向：空体没有任何标记 ⇒ 必须红（这就是 ID:19 的假绿入口）──
+        for _bad_name, _bad_inner in [
+            ("完全空体", ""),
+            ("只有空行", "\n"),
+            ("只有空行+空白", "\n   \n"),
+            ("非显式标记的注释", "# 无排除项"),
+        ]:
+            if _run_body(_replace_table(_bad_inner)).returncode == 0:
+                fails.append(
+                    "空表形态「%s」竟通过 ⇒ 空表显式声明守卫已失效"
+                    "（表被删空与有意清空无法区分，排除项漏删会静默变绿）" % _bad_name)
 
         _probe = "test|internal/probe/synthetic|TestSyntheticProbe"
         # 只打 reason：reason 空、ticket 有效

@@ -231,6 +231,10 @@ jobs:
           tests=""; pkgs=""; n=0
           echo "════════ -race 排除表 ════════"
           while IFS='|' read -r grain target test reason ticket; do
+            # ★ 注释行跳过：空表用一行 `# none` 显式声明（见本步骤开头与下方校验）。
+            #   先在里出现 `#` 开头的一行时，否则会被当成粒度 `# none` 报
+            #   "粒度必须是 test 或 pkg"—— 标记本身反而把 step 撞红。
+            case "${grain}" in \#*) continue ;; esac
             [ -z "${grain// /}" ] && continue
             # ★ 结构校验：缺原因或缺单号 ⇒ 拒绝（不许无理由/无归属的排除）
             if [ -z "${reason// /}" ]; then
@@ -263,6 +267,15 @@ jobs:
                 ;;
             esac
           done <<< "$TABLE"
+
+          # ★ 空表必须**显式声明**：heredoc 里保留且只保留一行 `# none`。
+          #   为何不能允许"什么都没写"：那样"表被删空"与"有意清空"无法区分，
+          #   而门脚本（check-ci-gates.py）的正则捕获到空串后，会静默走下面的
+          #   "无排除项"分支 —— 排除项漏删/误删都不会有任何人发现（假绿，ID:19）。
+          if [ "$n" -eq 0 ] && ! grep -qEi '^[[:space:]]*#[[:space:]]*none[[:space:]]*$' <<< "$TABLE"; then
+            echo "::error::-race 排除表为空却没有显式空表标记 —— 请在上面的 heredoc 里保留一行 \`# none\`"
+            exit 1
+          fi
 
           if [ "$n" -eq 0 ]; then
             echo "  （无排除项）"
