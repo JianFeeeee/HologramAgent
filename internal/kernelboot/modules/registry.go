@@ -10,15 +10,22 @@
 //	① 新建一个文件（如 modules/mymod.go）
 //	② 写一个类型，实现 kernelboot.Module（Name/Requires/Provides/Init）
 //	③ 在同文件的 init() 里调 modules.Register(&MyMod{})
-//	④ 在 modules/imports.go 加一行 `_ "...modules"` —— **仅此而已**
+//	④ 在 `internal/kernelmod/all/all.go` 加一行空白 import —— **仅此而已**
 //
 // **不需要**编辑任何中央清单：依赖写在模块**自己**的 Requires() 里。
 //
-// ★ 为何要"防漏 import"的判据（见 registry_test.go）：
-// 忘了 import ⇒ 模块**根本不登记** ⇒ 它不参与装配 ⇒ 依赖它的模块报
+// ★ 为何要"防漏 import"的判据（见 `internal/kernelboot/modules/registry_test.go`）：
+// 忘了 import ⇒ 模块**根本不被编译进来** ⇒ 它不参与装配 ⇒ 依赖它的模块报
 // "缺依赖"（响亮），但**不依赖它的模块会静默少了那个设施**
 // （如插件注册表没建 ⇒ 插件全部加载不了，而错误信息指向插件而非根因）。
-// ⇒ 判据必须自动扫描目录，要求每个模块文件都被 import。
+//
+// 判据有两条（缺一不可）：
+//
+//	· `TestEveryRegisteredModuleIsCompiledIn` —— 用 AST 扫源码树里的
+//	  `kernelmod.Register(X{})`，与登记表做集合比对（独立真相源，
+//	  手写清单会跟着漏，所以不用清单）
+//	· `TestRealRegistryAssemblesWholeMachine` 等 —— 用真实登记表装配整机、
+//	  断言每个模块都进图且设施就绪、并严格逆序关闭（见同目录测试文件）
 package modules
 
 import (
