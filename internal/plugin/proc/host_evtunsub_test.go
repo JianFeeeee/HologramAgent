@@ -4,7 +4,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // stubSubscriber 是最小 EvtRingSubscriber 实现，用于验证「关停时统一退订」。

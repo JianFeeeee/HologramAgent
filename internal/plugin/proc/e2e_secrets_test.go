@@ -29,14 +29,14 @@ import (
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	internalSDK "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	internalSecurity "github.com/JianFeeeee/HologramAgent/internal/security"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // secretsE2EPlugin 用真实模板编译：只做变量库往返。
 const secretsE2EPlugin = `package main
 
 import (
-	sdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 type secPlugin struct{ name string }

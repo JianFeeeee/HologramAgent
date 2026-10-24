@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // handlePluginMgr 处理插件管理：reloadOne / listLoaded / isDisabled。

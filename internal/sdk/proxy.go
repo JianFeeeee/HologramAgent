@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // ProxyDef 是一条反代声明（见 pubsdk.ProxyDef 的完整文档，含「单一入口原则」）。
@@ -23,14 +23,24 @@ type ProxyDef = pubsdk.ProxyDef
 
 // 鉴权与 Host 规范化的常量/函数转发（调用方不必两处 import）。
 const (
+	// ProxyAuthAgent 表示由内核统一保护（门户会话或 X-API-Key）。
+	ProxyAuthAgent = pubsdk.ProxyAuthAgent
+	ProxyAuthNone  = pubsdk.ProxyAuthNone
+
+	// ProxyAuthAgentLegacy 是旧值 "homeagent"：存量 plugin.json 里写的仍是它。
+	// 只用于兼容读取；判断时一律先过 EffectiveProxyAuth 归一化。
+	ProxyAuthAgentLegacy = pubsdk.ProxyAuthAgentLegacy
+
+	// ProxyAuthHomeAgent 是 ProxyAuthAgent 的旧名，仅为存量源码保留。
+	//
+	// Deprecated: 用 ProxyAuthAgent。
 	ProxyAuthHomeAgent = pubsdk.ProxyAuthHomeAgent
-	ProxyAuthNone      = pubsdk.ProxyAuthNone
 )
 
 // ValidateProxyDef 校验一条声明，返回人类可读的错误（合法时为空）。
 func ValidateProxyDef(d ProxyDef) string { return pubsdk.ValidateProxyDef(d) }
 
-// EffectiveProxyAuth 返回生效的鉴权模式（空串按默认 homeagent 处理）。
+// EffectiveProxyAuth 返回生效的鉴权模式（空串与旧值都归一化为 ProxyAuthAgent）。
 func EffectiveProxyAuth(auth string) string { return pubsdk.EffectiveProxyAuth(auth) }
 
 // ValidProxyAuth 判断鉴权取值是否合法。

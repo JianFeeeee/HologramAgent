@@ -15,7 +15,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // 记忆面：图记忆 / 文档记忆 / 文本记忆 / 知识库 / LLM 源 / 变更追踪。

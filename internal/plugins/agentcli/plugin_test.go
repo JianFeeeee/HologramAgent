@@ -11,7 +11,7 @@ import (
 	"time"
 
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	sdkpub "github.com/JianFeeeee/homeagentsdk/sdk"
+	sdkpub "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 type toolCapture struct {

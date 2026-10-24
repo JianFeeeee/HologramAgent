@@ -10,7 +10,7 @@ import (
 // PersonaStaleHints 必须能认出会腐坏的人格内容——版本号字面量与已删除机制。
 func TestPersonaStaleHints(t *testing.T) {
 	// 现场真实文本（线上人格卡的原文）
-	stale := "你是 HomeAgent（内核代号 HΔ-Kernel，当前版本 v0.9.0）。\n当前运行的二进制是 v0.9.0（C ABI v2，构建于 2026-08-15）。"
+	stale := "你是 HologramAgent（内核代号 HΔ-Kernel，当前版本 v0.9.0）。\n当前运行的二进制是 v0.9.0（C ABI v2，构建于 2026-08-15）。"
 	hints := PersonaStaleHints(stale)
 	if len(hints) == 0 {
 		t.Fatal("未识别出写死版本号与 C ABI 的人格文本")
@@ -32,7 +32,7 @@ func TestPersonaStaleHints(t *testing.T) {
 // DefaultPersonaProbeClean 由 config 包的默认模板等价物构成——
 // 这里不复用 config 包以避免 import cycle，只断言「不含版本号与旧机制」的文本不被误报。
 func DefaultPersonaProbeClean() string {
-	return "你是 HomeAgent（内核代号 HΔ-Kernel）。外部插件是独立子进程，经 stdio JSON-RPC 通信；" +
+	return "你是 HologramAgent（内核代号 HΔ-Kernel）。外部插件是独立子进程，经 stdio JSON-RPC 通信；" +
 		"被问到版本时以运行时快照为准。"
 }
 

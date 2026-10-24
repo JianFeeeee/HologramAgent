@@ -1,6 +1,6 @@
 # 能力标定台（capability-bench）
 
-经 `cli.sock` 驱动一个 HomeAgent 实例跑任务集，记录**结果 + 账目**，产出
+经 `cli.sock` 驱动一个 HologramAgent 实例跑任务集，记录**结果 + 账目**，产出
 `report.md` / `results.json`。
 
 存在的理由：标定「能力」需要一个**可复现的驱动 + 记账 + 判据**，
@@ -126,7 +126,7 @@ mock 上报        prompt=300 completion=30 cache_read=200 cache_miss=100
 
 | | 输入总量 | 未命中侧 |
 | --- | --- | --- |
-| HomeAgent（OpenAI 口径） | `prompt_tokens` **含**缓存 | `cache_miss_tokens` |
+| HologramAgent（OpenAI 口径） | `prompt_tokens` **含**缓存 | `cache_miss_tokens` |
 | pi（Anthropic 口径） | `input + cacheRead` | `input` |
 
 实测实证（pi）：`totalTokens == input + cacheRead + output`。
@@ -147,7 +147,7 @@ python3 memory_recall.py --harness pi --window 200000 --overshoot 1.25 \
 
 **两侧必须把窗口配成同一个值**，否则比的不是策略而是配置：
 
-- HomeAgent：`core.llm.sources.<name>.context_window`
+- HologramAgent：`core.llm.sources.<name>.context_window`
 - pi：隔离目录 `models.json` 里的 `ctx`
 
 ⚠️ 消息**不能含换行**：`cli.sock` 按行读，一条多行消息会被拆成几十条独立消息

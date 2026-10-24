@@ -1,9 +1,9 @@
-// Package meta 收集 HomeAgent SDK 的全部元数据。
+// Package meta 收集 HologramAgent SDK 的全部元数据。
 // 版本号应与核心 meta.Version 保持一致。
 package meta
 
 var (
-	// Version 是 HomeAgent SDK 版本号。
+	// Version 是 HologramAgent SDK 版本号。
 	// 通过 `-ldflags="-X github.com/JianFeeeee/homeagentsdk/meta.Version=vX.Y.Z"` 注入。
 	//
 	// 版本号语义：**SDK 版本跟随核心的中版本，patch 位恒为 .0**。
@@ -57,7 +57,7 @@ var (
 	BuildTime = "unknown"
 
 	// SDKName 是 SDK 名称。
-	SDKName = "HomeAgent SDK"
+	SDKName = "HologramAgent SDK"
 
 	// SDKModule 是本 SDK 仓当前的 Go module path。
 	//

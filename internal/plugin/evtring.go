@@ -6,7 +6,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // EventRing 是 Bus 与 proc.EvtRing 之间的适配层。

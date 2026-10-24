@@ -3,7 +3,7 @@ package plugin
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
 	isdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // procCore 把内核的 *internal/sdk.PluginSDK 收窄成子进程插件可见的能力面。

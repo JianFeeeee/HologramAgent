@@ -1,6 +1,6 @@
 // Package embedding defines the public SPI for dense multimodal embedding providers.
 //
-// The HomeAgent core depends only on this package. Model runtimes, tokenizers,
+// The HologramAgent core depends only on this package. Model runtimes, tokenizers,
 // preprocessing, media decoding, and model-specific configuration belong in
 // provider packages registered with Register.
 package embedding

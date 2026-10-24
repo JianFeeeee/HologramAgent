@@ -10,7 +10,17 @@ HologramAgent 的认知架构由三个核心子系统构成：事件循环（eve
 
 **阶段管道（StageHost）** 管理两类注册：工具定义（ToolDef）与阶段处理器（StageHandler）。ToolDef 包含 `NoMemory bool` 和 `Cleaner func(string) string` 两个可选的记忆控制字段：`NoMemory=true` 时工具输出不参与向量化/jieba/蒸馏计算（原文保留）；`Cleaner` 在输出进入计算层前执行过滤（如提取 JSON 的 `content` 字段）。两者均不修改原文，只影响计算层输入。`RegisterTool` 拒绝同名注册，推断工具所属插件名，并维护工具到插件的映射表 `toolPlugins`。`RegisterStage` 将处理器追加至对应阶段的处理器列表。触发阶段执行时（`RunStage`），**所有已注册处理器通过 goroutine 并行执行**，共享同一 `*StageContext` 实例（通过 `sync.RWMutex` 保护并发访问）。单个处理器的 panic 被独立恢复，不影响其他处理器。短路语义通过检查 `ctx.Response != nil` 实现——任一阶段处理器可设置此值提前终止当前链路。工具执行 `ExecuteTool` 内置 panic 恢复与栈追踪记录。`UnregisterPluginTools` 在插件热重载时移除对应工具集。
 
-**上下文窗口（RelevanceContext）** 维护一个按时间排序的事件列表。`Append` 在录入前经 `textForVector` 聚合工具输出：按 `NoMemory` 跳过、`Cleaner` 过滤（插件为各自工具注册的清洗函数，如 QQ 外置插件剥离工具调用模板），最后经 `CleanText` 做基本空白规范化，再通过三分支向量策略（agent 事件用 Response，用户事件用 Input，cold_storage 用 Input+Response）计算嵌入向量。`Prune` 在事件数超过 `topK` 时触发，**无条件保护最近 10 条事件不被裁剪**（recency bias），对剩余候选事件计算与当前输入的 CosineSimilarity，按评分降序保留 `topK - 10` 条（下限为 0），之后按时间戳重排序。裁剪出的事件中，过滤掉 `agentcli` 和 `terminal` 来源后，其余通过 `docStore.ContextToDoc` 归档至 Document 层，保留原始时间戳。持久化采用 5 秒防抖写入磁盘 JSON 文件。
+**上下文窗口（RelevanceContext）** 维护一个按时间排序的事件列表。`Append` 在录入前经 `textForVector` 聚合工具输出：按 `NoMemory` 跳过、`Cleaner` 过滤（插件为各自工具注册的清洗函数），最后经 `CleanText` 做基本空白规范化，再通过三分支向量策略（agent 事件用 Response，用户事件用 Input，cold_storage 用 Input+Response）计算嵌入向量。`Prune` 在事件数超过 `topK` 时触发，**无条件保护最近 10 条事件不被裁剪**（recency bias），对剩余候选事件计算与当前输入的 CosineSimilarity，按评分降序保留 `topK - 10` 条（下限为 0），之后按时间戳重排序。裁剪出的事件通过 `docStore.ContextToDoc` **迁移**至 Document 层：事件连同它持有的块一起下沉，保留原始时间戳与完整正文。持久化采用 5 秒防抖写入磁盘 JSON 文件。
+
+> ★ **哪些事件不该进 L2，由插件自己声明，内核不认插件名**。
+>
+> 旧版这里写的是「过滤掉 `agentcli` 和 `terminal` 来源后归档」——那是在内核里
+> 硬编码插件行为，已废除。正确姿势是插件在注册时就声明：
+> - `ToolDef.NoMemory` / `ToolDef.Cleaner`：工具输出不进计算层
+> - `ChannelDef.NoMemory` / `ChannelDef.Cleaner`：该通道的输入不进计算层
+> - `InjectOptions.NoMemory`：本次注入不参与记忆
+>
+> 内核只消费这些**声明**（已由 `textForVector` 实现），不认识任何具体插件。
 
 **工具定义聚合自五个来源**：IOManager 注册的插件工具；StageHost 注册的 SDK 插件工具；Indexer 提供的记忆索引工具；内置条件工具（依据 memory / knowledge / docStore / social / pluginReg / providerManager 等模块的非空状态选择性添加，包括记忆操作、知识检索、文档查询、社交网络、插件重载、子代理生成、输出通道工具、LLM 源切换等）；以及按 `pendingMedia` 状态添加的媒体处理工具。`buildToolDefs()` 在每次 process 周期中重新聚合所有这些来源。
 
@@ -83,35 +93,64 @@ eventLoop() → processTextInput()
 
 ## 三层记忆
 
+### 记忆块是唯一载体，层是持有关系
+
+三层不是三种数据结构，而是**同一批记忆块的三层持有关系**：
+
+```
+记忆块 MemoryBlock（union）
+  ├─ 文本块：负载在 Text
+  └─ 媒体块：负载在 Data（配 MIME/宽高/尺寸）
+       ↑ 同一个块 ID 在 context → doc → graph 全程不变
+       ↑ 块自带 vector + fingerprint：向量只算一次，跨层复用
+```
+
+| 层 | 承载单元 | 与模型的关系 | 容量 | 流动性 |
+|---|---|---|---|---|
+| **L1 Context** | 事件（内联正文 + 块） | **直接投喂**（进 system prompt 时序） | 最近 n 条 / 上限 m 条 | 超限时按相似度迁出 |
+| **L2 Document** | 事件（内联正文 + 块） | **不直接投喂**（需召回才进 L1） | 无上限 | 冷到阈值后蒸馏进 L3 |
+| **L3 Graph** | 三元组（节点 + 关系边），节点即记忆块 | 不投喂（经召回进入 L1） | 持久 | 不流出 |
+
+★ **L1 与 L2 结构完全同构**，唯一区别是「是否被直接投喂给模型」。
+L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样的事件 + 同样的块，只是不直接进模型视野。
+
+★ **正文（含多媒体正文）内联在块里**：文本块的 `Text` 就是正文，媒体块的 `Data` 就是字节。
+不存在「块 + 外部正文」的分离形态，也不存在靠渲染字符串承载原文的路径。
+事件是块的容器，不是块的替代品。
+
+★ **任何一层都不压缩**。视图（检索摘要、给模型看的渲染）可以是压缩的，但视图不是记忆。
+
 ### 记忆流转
 
 ```
-① Context (工作窗口)
+① Context (工作窗口 — 直接投喂)
    RelevanceContext — 内存 events[] + JSON持久化
+   每条事件：Timestamp / Source / Input / Response(完整) / ToolsUsed / ToolResults / Blocks
    Append: 每次输入, CleanText → 三分支向量(textForVector)
             agent事件→Response, 用户事件→Input, cold_storage→Input+Response
             向量层级：统一多模态空间（主，带 fingerprint）→ StaticEmbedder 词嵌入 → TF-IDF（回退）
    Prune:  DenseCosine（仅同指纹才比较）→ 退化 StaticEmbedder CosineSimilarity；保留 topK + 最近10条
        ├── 保留 → timeline → 按时间排序 → system prompt
-       └── 低分 → Document 层归档 (原始时间戳)
+       └── 低分 → Document 层归档（迁移：事件连同块一起下沉，时间戳与正文不变）
    Save: 5s debounce 写盘
 
-         ↓ Prune 归档                          ↑ LLM 主动召回
+         ↓ Prune 归档（迁移）                    ↑ 召回（迁回）
 
-② Document (文件记忆)
-   DocStore — JSON文件 + 稠密向量（统一多模态空间；dense_fp 须与当前空间同指纹，不符即重算；兜底: StaticEmbedder / TF-IDF InvertedIndex）
+② Document (文件记忆 — 不直接投喂，结构与 L1 同构)
+   DocStore — 每篇文档 = 检索元数据 + 事件列表（内联正文 + 块）
    写入: Prune归档 / doc_commit / Graph快照(syncGraphToDocs)
    读取:
-       ├── 自动注入: Query(input, top3) → 同一向量空间下相似度摘要 → 【相关记忆文档】→ system prompt (只读)
-       └── LLM主动:  doc_query → Consume(读取并删除)
-                         → 逐条 context.Append{Timestamp: d.CreatedAt, Source: "cold_storage"}
-                         → 文档以原始时间戳写入 context 时间线, 从 docStore 删除
+       ├── 自动预填充: Query(input, top3) → 同一向量空间下相似度摘要 → 【相关记忆文档】→ system prompt (只读，不动层)
+       └── LLM主动:  doc_query → Consume(取走)
+                         → 逐条按各自原始时间戳把事件插回 L1 时序
+                         → 块随事件迁回（同一块 ID，向量不重算），L2 不再持有
    冷化: FindColdDocs(72h, ≤2次访问) → docToTriples → Graph
 
          ↓ 冷文档蒸馏                           ↑ 自动召回
 
-③ Graph (图数据库)
-   SQLite — entities + relations 表
+③ Graph (图数据库 — 顶层仍是三元组，节点即记忆块)
+   SQLite — memory_blocks（节点） + memory_block_edges（边）
+   三元组 = 【节点】【关系边】【节点】；putTripleBlocksTx 落为 src --edge_type--> dst
    写入: memory_commit / 冷文档蒸馏 / Pipeline 规则蒸馏 / memory_merge
    读取:
        ├── 自动召回: Indexer.BuildContext(input)
@@ -174,21 +213,33 @@ eventLoop() → processTextInput()
 - 向量化前统一经 `CleanText` 去模版噪声
 - 三分支 `textForVector`：agent 事件用 Response、用户事件用 Input、cold_storage 用 Input+Response
 - 预训练词嵌入 `StaticEmbedder` → CosineSimilarity，模型不可用时自动回退 TF-IDF
-- 保护最近 10 条记录免于淘汰，超出部分按相关性排序归档到文档记忆
-- 归档事件以原始时间戳写入文档记忆，后续 `doc_query` 召回时按原始时间戳插回时序
+- 保护最近 10 条记录免于淘汰，超出部分按相关性排序**迁移**到文档记忆
+- 迁移是事件**连同它持有的块**一起下沉，时间戳与正文不变；源事件清空块（同一块不同时留两层）
 
 ### Document 层
 
 `internal/memory/document/document.go` — `Store`
-- 消费即删模式：`doc_query` 检索到后删除
-- 双路召回：与 Context 共享的 StaticEmbedder 语义向量搜索 + jieba 关键词提取（模型未加载时回退 char-bigram TF-IDF）
+
+**与 Context 同构，只是不直接投喂给模型**：
+- 每篇文档 = 检索元数据（`ID`/`Summary`/`Vector`/`DenseVec`/`DenseFP`/`AccessCount`）
+  + **事件列表**（内联正文 + 块）
+- 正文内联在块里：文本块的 `Text` 是正文，媒体块的 `Data` 是字节
+- `Doc.Content` 只是**渲染视图**（供摘要/人工阅读/SDK 兼容），不是原文载体
+- 自动预填充：与 Context 共享的向量空间做相似度检索 → 摘要进 system prompt（**只读**，不动层）
+- 主动召回：`doc_query` 取走后，**逐条按各自原始时间戳**把事件插回 L1 时序，块随事件迁回
+- 冷化：`FindColdDocs(72h, ≤2次访问)` → `docToTriples` → Graph
 
 ### Graph 层
 
 `internal/memory/graph.go` — `GraphDB`
-- SQLite WAL 模式，两张表（驱动：mattn/go-sqlite3，CGo）
-- `Commit(triples)` — UPSERT entities + INSERT relations
-- `Recall(keywords, depth)` — 关键词 LIKE 搜索 + BFS 遍历
+
+**顶层结构仍是三元组，变的是节点的物理表示**：
+- SQLite WAL 模式（驱动：mattn/go-sqlite3，CGo）
+- `memory_blocks`（节点，带 vector + fingerprint + modality）+ `memory_block_edges`（边）
+- 三元组 = 【节点】【关系边】【节点】：`putTripleBlocksTx` 落为 `src --edge_type--> dst`
+- `entities` / `relations` 旧表是**存量过渡路径**，逐步退场（退场的是节点存储，不是三元组概念）
+- `Commit(triples)` — 写入时直接块化为节点 + 边
+- `Recall(keywords, depth)` — 关键词检索 + BFS 遍历
 
 ### 记忆工具（LLM 可直接调用）
 

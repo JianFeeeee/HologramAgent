@@ -1,3 +1,7 @@
+# 门禁脚本需要 bash 的 PIPESTATUS（/bin/sh=dash 不支持）。
+# 没有它就无法区分"编译器失败"与"head 成功" —— 实测会让门禁假通过。
+SHELL := /bin/bash
+
 .PHONY: test-gui all build build-plain build-cli build-gui clean install test run build-static build-linux-arm64 lint fmt sync-client-versions check-client-versions check-starmap-shared check-client-protocol csrc csrc-test csrc-lint csrc-abi csrc-headers csrc-sanitize csrc-cross csrc-fuzz check-csrc check-csrc-full
 # HOMED_TAGS 默认带 onnxruntime：发行版**默认启用**本地向量空间（与
 # deploy/packaging/build.sh 保持一致）。
@@ -255,21 +259,71 @@ csrc-fuzz:
 # C 侧的架构相关问题（endianness 假设、指针宽度、size_t vs int 宽度、
 # -fsanitize 不可用）只有真的用目标编译器编一遍才会暴露。
 # 与 deploy/packaging/build.sh 的 arm64 目标共用同一套 CC 变量。
+#
+# ## 为什么首选 clang --target，而不是 aarch64-linux-gnu-gcc（2026-10-22）
+#
+# 这道门禁只做 `-fsyntax-only`（不链接、不运行），而 clang 自带交叉前端：
+# `clang --target=aarch64-linux-gnu` 会真的切到 aarch64 目标（`__aarch64__`
+# 宏生效、指针宽度按该架构计算），足以暴露本门禁要抓的那类问题
+# （endianness 假设、指针/size_t 宽度、不支持的 C 扩展）。
+#
+# 而装 `gcc-aarch64-linux-gnu` 需要从源拉 10MB+ 的 cpp-13 等依赖 ——
+# 实测在 CI runner 上会卡住超时（见 .github/workflows/ci.yml 的加固说明）。
+# 既然只需要语法层验证，就不该为它引入一个会卡死的下载依赖。
+#
+# 优先级：CC_ARM64（显式指定） > clang --target > aarch64-linux-gnu-gcc > SKIP
+#
+# ★ 宿主头泄漏陷阱（CI 实测）：只加 -isystem 指向 aarch64 头还不够 ——
+#   宿主 /usr/include/stdint.h 会先被找到，它再 include <bits/libc-header-start.h>
+#   （amd64 布局），aarch64 目标下必然找不到：
+#       /usr/include/stdint.h:26: fatal error: 'bits/libc-header-start.h' file not found
+#   所以 clang-target 模式必须 -nostdinc 剃掉全部默认路径，再按
+#   「clang 内建头 → aarch64 目标头」顺序加回（见下方 ARM64_INC）。
+#   explicit / cross-gcc 模式用编译器自带搜索路径，不传这些。
+#
+# ★ 两个假通过陷阱（实测踩到，勿删）：
+#   1. 显式 CC_ARM64 指向不存在的命令时，`cmd | head` 的退出码是 head 的（恒 0），
+#      command-not-found(127) 被吞 ⇒ 门禁显示"通过"。所以循环里改用 PIPESTATUS[0]，
+#      且对显式指定的编译器先做 command -v 校验。
+#   2. 上述 PIPESTATUS 需要 bash；Make 默认 /bin/sh=dash 不支持（见文件顶 SHELL）。
 .PHONY: csrc-cross
 csrc-cross:
 	@echo "== C 侧交叉编译（linux/arm64）=="
-	@CC_ARM64=$${CC_ARM64:-aarch64-linux-gnu-gcc}; \
-	if ! command -v $$CC_ARM64 >/dev/null 2>&1; then \
-		echo "  [SKIP] $$CC_ARM64 不存在（未装交叉工具链）"; exit 0; \
-	fi; \
-	ok=1; \
-	for src in $(CSRC_SRCS); do \
-		if ! $$CC_ARM64 $(CSRC_CFLAGS) -Werror -fsyntax-only $$src 2>&1 | head -20; then \
-			ok=0; \
+	@ok=1; \
+	if [ -n "$${CC_ARM64:-}" ]; then \
+		if ! command -v "$$CC_ARM64" >/dev/null 2>&1; then \
+			echo "  [FAIL] CC_ARM64=$$CC_ARM64 不存在"; exit 1; \
 		fi; \
+		CC="$$CC_ARM64"; MODE="explicit"; \
+	elif command -v clang >/dev/null 2>&1; then \
+		CC="clang --target=aarch64-linux-gnu"; MODE="clang-target"; \
+	elif command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then \
+		CC="aarch64-linux-gnu-gcc"; MODE="cross-gcc"; \
+	else \
+		echo "  [SKIP] 无 clang、无 aarch64-linux-gnu-gcc（未装任何交叉前端）"; exit 0; \
+	fi; \
+	\
+	ARM64_INC="-nostdinc -isystem $$(clang -print-resource-dir)/include"; \
+	for d in /usr/aarch64-linux-gnu/include /usr/include/aarch64-linux-gnu; do \
+		[ -d "$$d" ] && ARM64_INC="$$ARM64_INC -isystem $$d"; \
+	done; \
+	\
+	if [ "$$MODE" = "clang-target" ]; then \
+		printf '#include <string.h>\nint main(void){return 0;}\n' > /tmp/_archchk.c; \
+		if ! clang --target=aarch64-linux-gnu $$ARM64_INC -fsyntax-only /tmp/_archchk.c >/dev/null 2>&1; then \
+			echo "  [SKIP] clang 交叉前端不可用（缺 aarch64 libc 头，装 libc6-dev-arm64-cross 即可）"; exit 0; \
+		fi; \
+	fi; \
+	\
+	EXTRA_INC=""; \
+	[ "$$MODE" = "clang-target" ] && EXTRA_INC="$$ARM64_INC"; \
+	for src in $(CSRC_SRCS); do \
+		$$CC $$EXTRA_INC $(CSRC_CFLAGS) -Werror -fsyntax-only $$src 2>&1 | head -20; \
+		rc=$${PIPESTATUS[0]}; \
+		if [ "$$rc" != "0" ]; then ok=0; fi; \
 	done; \
 	if [ "$$ok" = "1" ]; then \
-		echo "  $$CC_ARM64: 0 告警、编译通过 ✓（$(words $(CSRC_SRCS)) 个源文件）"; \
+		echo "  $$CC [$$MODE]: 0 告警、编译通过 ✓（$(words $(CSRC_SRCS)) 个源文件）"; \
 	else \
 		echo "  [FAIL] arm64 交叉编译失败"; exit 1; \
 	fi

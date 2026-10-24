@@ -9,7 +9,7 @@
 | 仓 | 位置 | 流水线 | 触发 |
 | --- | --- | --- | --- |
 | 主仓 HologramAgent | `github.com/JianFeeeee/HologramAgent`（公开） | `ci.yml` + `release.yml` | push / PR、`release/**` push |
-| SDK 仓 homeagentsdk | `github.com/JianFeeeee/homeagentsdk`（公开） | `release.yml` | `release/**` push |
+| SDK 仓 hologramagentsdk | `github.com/JianFeeeee/hologramagentsdk`（公开） | `release.yml` | `release/**` push |
 | gitcode 镜像 | `gitcode.com/JianFeeeee/HologramAgent`（与主仓同名） | 无（由主仓 Release 的 sync job 同步） | — |
 
 **分支保护**（main，公开仓免费）：10 项必须检查（Go build/vet/test、Race、
@@ -33,14 +33,14 @@ cross×5、GUI、C gates、Docs）+ `strict`（必须与 main 同步）+ 禁 for
 **gitcode 侧以后再改仓名，只改这三个定义点即可**，消费点无需动。
 
 **当前取值 `JianFeeeee/HologramAgent`**（与 GitHub 主仓同名）。gitcode 侧镜像仓
-**已由 `HomeAgent` 改名为 `HologramAgent`**；旧地址仍 301 跳转，跟随后也能到，
+**已由 `HologramAgent` 改名为 `HologramAgent`**；旧地址仍 301 跳转，跟随后也能到，
 但走重定向，不应再用。实测（2026-10-21 20:1x，直连不带代理，
 `curl -s -o /dev/null -w '%{http_code}' https://gitcode.com/JianFeeeee/<repo>`）：
 
 | 仓名 | HTTP | 说明 |
 | --- | --- | --- |
 | `HologramAgent` | **200** | 当前取值（主仓镜像） |
-| `HomeAgent` | 301 | 旧名，跳转到 `HologramAgent` |
+| `HologramAgent` | 301 | 旧名，跳转到 `HologramAgent` |
 | `homeagent-sdk` | 200 | SDK 仓，另一对象 |
 | `hologramagentsdk` | 200 | SDK 仓，另一对象 |
 | `homeagentsdk` | 404 | 不存在 |
@@ -49,7 +49,7 @@ cross×5、GUI、C gates、Docs）+ `strict`（必须与 main 同步）+ 禁 for
 判定「301 不是另一个仓、就是同一仓改名」的依据：两个地址 `git ls-remote`
 得到的 refs 列表 md5 相同（同一组分支与 SHA）。
 
-API 侧同样兼容两个名字：`/api/v5/repos/JianFeeeee/{HomeAgent,HologramAgent}`
+API 侧同样兼容两个名字：`/api/v5/repos/JianFeeeee/{HologramAgent,HologramAgent}`
 不带 token 都返回 **400**（需要鉴权，不是仓不存在），
 `/releases/tags/v1.3.13` 都返回 **200** 且响应体一致。
 
@@ -207,13 +207,15 @@ tar 写 stdout 收到 EPIPE ⇒ pipefail 判失败。**包越大越易触发**
 CI 的 sync job 需要仓库 secret `GITCODE_TOKEN`；**未配置时该 job 显式跳过**
 （不阻断 GitHub 侧发布）。
 
-**2026-09-29 已配置**：两仓（`JianFeeeee/HologramAgent`、`JianFeeeee/homeagentsdk`）
-均已设同名 secret，取值自 `~/.git-credentials` 里那条 `https://JianFeeeee:<token>@gitcode.com`。
+**2026-09-29 已配置**：两仓均已设同名 secret，取值自 `~/.git-credentials`
+里那条 `https://JianFeeeee:<token>@gitcode.com`。配置时 SDK 仓还叫
+`homeagentsdk`，2026-10-21 改名 `hologramagentsdk` 后 secret 随仓迁移，
+无需重设；下面命令写的是**当前**仓名。
 配置方式（经 stdin 传入，避免 token 出现在进程列表）：
 
 ```bash
 printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/HologramAgent
-printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/homeagentsdk
+printf '%s' "$TOKEN" | gh secret set GITCODE_TOKEN --repo JianFeeeee/hologramagentsdk
 ```
 
 验收：sync job 只在**新版本**发版时运行（`prepare.outputs.exists == 'false'`），
@@ -226,8 +228,8 @@ gh secret list --repo JianFeeeee/HologramAgent | grep GITCODE_TOKEN
 curl -s "https://gitcode.com/api/v5/user?access_token=$TOKEN"
 # ③ job 用的 private-token 头可读 release（两仓都测）
 #    ⚠ gitcode 侧主仓镜像现已改名为 HologramAgent（与 GitHub 同名），
-#      旧名 HomeAgent 仍 301 跳转。实测 2026-10-21 20:1x（直连不带代理）：
-#      /api/v5/repos/JianFeeeee/{HomeAgent,HologramAgent} 不带 token 均 400
+#      旧名 HologramAgent 仍 301 跳转。实测 2026-10-21 20:1x（直连不带代理）：
+#      /api/v5/repos/JianFeeeee/{HologramAgent,HologramAgent} 不带 token 均 400
 #      （需鉴权，非仓不存在）；/releases/tags/v1.3.13 两名字均 200 且响应一致。
 curl -s -H "private-token: $TOKEN" \
   "https://gitcode.com/api/v5/repos/JianFeeeee/HologramAgent/releases/tags/v1.3.13"
@@ -241,7 +243,7 @@ curl -s -H "private-token: $TOKEN" \
 
 ```bash
 # token 放 ~/.git-credentials（https://JianFeeeee:<token>@gitcode.com）
-# GITCODE_REPO 是 gitcode 镜像仓名（当前 HologramAgent，旧名 HomeAgent 为 301）。
+# GITCODE_REPO 是 gitcode 镜像仓名（当前 HologramAgent，旧名 HologramAgent 为 301）。
 ASSET_DIR=<产物目录> GITCODE_REPO=JianFeeeee/HologramAgent \
   python3 deploy/scripts/upload_assets.py <tag> <token>
 # release 条目必须先存在（脚本向 releases/<tag>/upload_url 取 OBS 签名 URL）

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 const PackageExt = ".hmap"
@@ -94,9 +94,9 @@ type PluginManifest struct {
 	// 那里能接受（0 与"未声明"语义相同），这里**不能**。
 	AutoStart *bool `json:"auto_start,omitempty"`
 
-	// Proxies 声明本插件需要 HomeAgent 反代出去的服务（自带 Web UI / HTTP API）。
+	// Proxies 声明本插件需要 HologramAgent 反代出去的服务（自带 Web UI / HTTP API）。
 	//
-	// 契约定义在公开 SDK（sdk.ProxyDecl），这里只做载体：HomeAgent 加载插件时
+	// 契约定义在公开 SDK（sdk.ProxyDecl），这里只做载体：HologramAgent 加载插件时
 	// 读取并聚合，按 Host 子域路由从 webui 的同一端口转发出去。**不声明 = 不被反代**。
 	//
 	// 字段解析忽略未知键（本仓无 DisallowUnknownFields），因此加这个字段

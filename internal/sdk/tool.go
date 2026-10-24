@@ -77,6 +77,17 @@ type BuiltinToolDef struct {
 	// 与 ToolDef.Timeout 同义（对外插件 / 内置插件两条路都要能声明）。
 	// 留空 = 内核默认 60s。
 	Timeout string
+	// NoMemory 声明本工具的**输出**不参与记忆计算（向量化/关键词/蒸馏），
+	// 但原文仍留在上下文的 ToolResults 里可读。
+	//
+	// 与 ToolDef.NoMemory 同义（对外插件经 proc 桥、内置工具经这里，
+	// 两条路必须能声明同一件事 —— 否则内置工具的输出无法抑制）。
+	//
+	// ★ 典型用例：doc_query 的返回值里含被召回事件的正文片段。
+	//   那些正文**已经在记忆体系里**（来自 L2/L3），若工具的返回文本再
+	//   参与一次向量化与蒸馏，就等于把同一内容重新注入记忆 ——
+	//   与「回填事件不再归档」是同一个自激回路的两个入口。
+	NoMemory bool
 }
 
 // ToSchema 转成下发给模型的 function schema。

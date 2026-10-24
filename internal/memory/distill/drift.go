@@ -152,7 +152,7 @@ func (c DriftCandidate) String() string {
 //
 // 判据（三条同时成立才列为候选）：
 //  1. 值形态相同（classifyValue 相同）
-//  2. 共���至少一个 subject（同实体上的属性）
+//  2. 共同至少一个 subject（同实体上的属性）
 //  3. 字段名不同（否则不是漂移）
 func containsDim(ss []string, s string) bool {
 	for _, x := range ss {

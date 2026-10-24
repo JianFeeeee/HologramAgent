@@ -108,8 +108,11 @@ prepare_gomod() {
       patched=1
     elif [ ! -d "$sdk_clone" ]; then
       echo ">>> Cloning SDK to $sdk_clone (in-repo SDK missing)..."
-      git clone git@github.com:JianFeeeee/homeagentsdk.git "$sdk_clone" 2>/dev/null || \
-      git clone https://github.com/JianFeeeee/homeagentsdk.git "$sdk_clone" 2>/dev/null || true
+      # 仓名用当前名 hologramagentsdk（旧名 homeagentsdk 仍 301 跳转，但别再用）。
+      # 注意：下面几处 replace 的 module 路径**仍是** homeagentsdk —— 已发布
+      # tag 的 go.mod 里 module 就是这个，改名后没变。
+      git clone git@github.com:JianFeeeee/hologramagentsdk.git "$sdk_clone" 2>/dev/null || \
+      git clone https://github.com/JianFeeeee/hologramagentsdk.git "$sdk_clone" 2>/dev/null || true
       if [ -d "$sdk_clone" ]; then
         sed -i.bak "s|^replace github.com/JianFeeeee/homeagentsdk => .*|replace github.com/JianFeeeee/homeagentsdk => ${sdk_clone}|" "$gomod"
         patched=1
@@ -724,6 +727,18 @@ build_tar() {
     local src="$BUILD_DIR/${bin}_linux_${TAR_ARCH}"
     [ -f "$src" ] && cp "$src" "$staging/usr/bin/$bin"
   done
+
+  # ★ 启动依赖图必须与 homed 同目录。内核启动时比对「磁盘图 digest」与
+  # 「二进制内嵌 digest」，读不到图 ⇒ 生产构建直接拒绝启动（退出码 1）。
+  # 此前 build_tar 漏了这一条：装 tar 包的机器 homed 一启动就死。
+  if [ -f "$BUILD_DIR/depgraph.bin" ]; then
+    cp "$BUILD_DIR/depgraph.bin" "$staging/usr/bin/depgraph.bin"
+    chmod 644 "$staging/usr/bin/depgraph.bin"
+  else
+    echo "ERROR: 缺少 $BUILD_DIR/depgraph.bin —— 内核与依赖图必须来自同一次构建。" >&2
+    echo "       先跑 make build（它会生成图并注入 digest），再打包。" >&2
+    return 1
+  fi
 
   # setup script
   local setup_src="$PROJECT_ROOT/deploy/packaging/linux/setup.sh"

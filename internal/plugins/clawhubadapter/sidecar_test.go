@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // mockSettings implements pubsdk.SettingsAPI for tests

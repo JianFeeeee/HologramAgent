@@ -28,7 +28,7 @@ import (
 	"sort"
 	"strings"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // RawFilesDirName 是包内资源目录名（与 hmapdev 的 RawFilesPrefix 一致）。

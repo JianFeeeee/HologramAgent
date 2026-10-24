@@ -55,7 +55,7 @@ func startDeviceBridge(addr, token string) error {
 	// 网关地址规范化（含「已是完整端点」「只有 host:port」两种旧输入形态）。
 	gateway := normalizeGateway(addr)
 
-	bridge := client.New(gateway, token, deviceID, "HomeAgent CLI", caps, info)
+	bridge := client.New(gateway, token, deviceID, "HologramAgent CLI", caps, info)
 	cmdRouter = client.NewCmdRouter()
 
 	// cmd_type 是主路由信号；保留 homeagent-* 文本前缀兼容旧服务端。
@@ -298,7 +298,7 @@ func execScreensue(reqID, args string) {
 		content = strings.Join(tokens[1:], " ")
 	}
 	if content == "" {
-		content = "HomeAgent 远程屏幕提示"
+		content = "HologramAgent 远程屏幕提示"
 	}
 
 	// 检测 HTML 内容
@@ -341,7 +341,7 @@ func screensueLinux(content string, isHTML bool, duration int) error {
 			body{font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;
 			align-items:center;height:100vh;margin:0;background:#0b1020;color:#eef1f8;}
 			h1{color:#ff7fac;margin-bottom:16px;}</style></head><body>
-			<h1>HomeAgent</h1><pre>%s</pre></body></html>`, content)
+			<h1>HologramAgent</h1><pre>%s</pre></body></html>`, content)
 	}
 	if err := os.WriteFile(tmpFile, []byte(htmlContent), 0644); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
@@ -389,7 +389,7 @@ func screensueLinux(content string, isHTML bool, duration int) error {
 
 	// 尝试 notify-send（桌面通知）
 	if _, err := exec.LookPath("notify-send"); err == nil {
-		_ = exec.Command("notify-send", "HomeAgent", content).Run()
+		_ = exec.Command("notify-send", "HologramAgent", content).Run()
 		return nil
 	}
 
@@ -405,7 +405,7 @@ func screensueLinux(content string, isHTML bool, duration int) error {
 	}
 
 	// 全部失败：打印到终端
-	fmt.Printf("\n=== HomeAgent Screensue ===\n%s\n===========================\n", content)
+	fmt.Printf("\n=== HologramAgent Screensue ===\n%s\n===========================\n", content)
 	return nil
 }
 
@@ -431,7 +431,7 @@ func screensueWindows(content string, isHTML bool, duration int) error {
 		go func() {
 			time.Sleep(time.Duration(duration) * time.Second)
 			_ = exec.Command("powershell", "-Command",
-				`[Windows.Forms.MessageBox]::Show("screensue 展示结束","HomeAgent")`).Run()
+				`[Windows.Forms.MessageBox]::Show("screensue 展示结束","HologramAgent")`).Run()
 		}()
 
 		return nil
@@ -441,7 +441,7 @@ func screensueWindows(content string, isHTML bool, duration int) error {
 	psScript := fmt.Sprintf(`
 		Add-Type -AssemblyName System.Windows.Forms
 		$popup = New-Object Windows.Forms.Form
-		$popup.Text = "HomeAgent"
+		$popup.Text = "HologramAgent"
 		$popup.Size = New-Object Drawing.Size(600,400)
 		$popup.StartPosition = "CenterScreen"
 		$popup.TopMost = $true
@@ -466,7 +466,7 @@ func screensueWindows(content string, isHTML bool, duration int) error {
 }
 
 func screensueFallback(content string, isHTML bool, duration int) error {
-	fmt.Printf("\n=== HomeAgent Screensue ===\n%s\n===========================\n", content)
+	fmt.Printf("\n=== HologramAgent Screensue ===\n%s\n===========================\n", content)
 	return nil
 }
 
@@ -959,7 +959,7 @@ func execDeviceInfo(reqID string) {
 	hostname, _ := os.Hostname()
 	info := map[string]interface{}{
 		"device_id": deviceBridgeID,
-		"name":      "HomeAgent CLI",
+		"name":      "HologramAgent CLI",
 		"kind":      "computer",
 		"caps":      []string{"status", "cmdrun", "deviceinfo", "cmdresult", "computeruse", "screensee", "clipboardsee", "clipboardsue", "camerasue", "speakeruse", "screensue"},
 		"info": map[string]interface{}{

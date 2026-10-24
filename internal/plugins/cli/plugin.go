@@ -527,7 +527,7 @@ func (p *Plugin) cmdStatus(conn net.Conn, s *sdk.PluginSDK) {
 
 	writeLine(conn, map[string]interface{}{
 		"type": "response",
-		"content": fmt.Sprintf(`HomeAgent 内核状态
+		"content": fmt.Sprintf(`HologramAgent 内核状态
   状态:   running
   运行:   %s
   LLM:    %s

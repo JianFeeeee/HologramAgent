@@ -240,7 +240,7 @@ internal/
 ├── config/         SQLite 配置中心
 ├── events/         事件总线
 └── internal/lua/adapters/   10 个 LLM 协议适配器脚本
-外部插件开发见 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库，使用 `hmapdev` 工具链开发，参考 `example/` 目录下的 Go 和 Lua 示例
+外部插件开发见 [hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) 仓库，使用 `hmapdev` 工具链开发，参考 `example/` 目录下的 Go 和 Lua 示例
 ```
 
 ## 项目状态
@@ -318,7 +318,7 @@ internal/
 > inline/small **30.4µs**、frame/small 51.5µs、inline/large 767µs、frame/large 398µs。
 > 保留原文不修改，以免伪造历史。
 
-**v1.1.1** — 多模态贯通**插件边界**。v1.1.0 让记忆系统支持了二进制多媒体节点，但那条链路只对内核自己开放；本版打通到插件与模型。公开 SDK 新增媒体字段与三个媒体注入接口（配套 [SDK v1.1.0](https://github.com/JianFeeeee/homeagentsdk/tree/v1.1.0)，整条 1.1.x 线共用），内核实现对应四个 RPC。桥接层此前在**静默裁字段**：插件交进来的 `Confidence`/类型/`SentenceText` 全被丢弃、`Doc` 只留三个字段、`Remove` 不解引用（媒体永久算「被引用」，GC 收不掉）。`processTextInput`/`processMediaInput` 归一成一条 `processInput`，媒体路径由此获得它一直缺的去重、`no_memory`、通道 `Cleaner`、中断语义、`EventRawInput`。修掉三处真实缺陷：**用户发的图从来没出现在 WebUI 聊天记录里**（媒体路径发布 map 而订阅方断言 string）、**`memory_commit` 的 `sentence_text` 从未暴露给模型**（而它是媒体绑定链的必经环节）、**`PluginSDK` 两处并发竞态**（`-race` 实测 11 处，插件重载瞬间偶发 nil 解引用崩溃）。
+**v1.1.1** — 多模态贯通**插件边界**。v1.1.0 让记忆系统支持了二进制多媒体节点，但那条链路只对内核自己开放；本版打通到插件与模型。公开 SDK 新增媒体字段与三个媒体注入接口（配套 [SDK v1.1.0](https://github.com/JianFeeeee/hologramagentsdk/tree/v1.1.0)，整条 1.1.x 线共用），内核实现对应四个 RPC。桥接层此前在**静默裁字段**：插件交进来的 `Confidence`/类型/`SentenceText` 全被丢弃、`Doc` 只留三个字段、`Remove` 不解引用（媒体永久算「被引用」，GC 收不掉）。`processTextInput`/`processMediaInput` 归一成一条 `processInput`，媒体路径由此获得它一直缺的去重、`no_memory`、通道 `Cleaner`、中断语义、`EventRawInput`。修掉三处真实缺陷：**用户发的图从来没出现在 WebUI 聊天记录里**（媒体路径发布 map 而订阅方断言 string）、**`memory_commit` 的 `sentence_text` 从未暴露给模型**（而它是媒体绑定链的必经环节）、**`PluginSDK` 两处并发竞态**（`-race` 实测 11 处，插件重载瞬间偶发 nil 解引用崩溃）。
 
 **v1.1.0** — 记忆系统支持**二进制多媒体节点**。内容寻址媒体存储（CAS + SQLite 元数据 + 磁盘 blob，`Get` always 重校 digest），贯通 L0（上下文事件）/L2（文档）/L3（图谱句子）三层，引用计数式 GC（有引用者绝不删）。视觉模型生成的描述文本是持久语义记忆，blob 只是可被容量 GC 淘汰的缓存。
 
@@ -326,7 +326,7 @@ internal/
 
 **v0.9.0** — C ABI v2：外部插件 Stage 回调支持写回（`invoke_stage` 增加 result 输出，插件可在 OnInput/AfterToolcall/PostAction 修改 RawMessage/LLMText/ToolResults 等并同步回内核），ABI 版本随内核 minor 对齐（v0.9.x → ABIVersion=2，`version_min=1` 向后兼容旧插件）。同步修复工具循环 zen 兼容补位误伤首轮 system 上下文的问题。配套 SDK 提供增强版 sanitizer 示例（坏 UTF-8/U+FFFD/ANSI 转义全链路清洗）。**该 ABI 已随 v1.0.0 退场。**
 
-**v0.8.0** — 核心可用，插件系统增强。内置 20+ 插件，外部插件开发见 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 仓库。新增输入通道 `NoMemory`/`Cleaner`、`ChannelDef`、插件禁用/启用系统（CLI + WebUI），`plugindev` 工具链完成 C ABI `ChannelDef` 传递。
+**v0.8.0** — 核心可用，插件系统增强。内置 20+ 插件，外部插件开发见 [hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) 仓库。新增输入通道 `NoMemory`/`Cleaner`、`ChannelDef`、插件禁用/启用系统（CLI + WebUI），`plugindev` 工具链完成 C ABI `ChannelDef` 传递。
 
 ## 文档
 
@@ -385,7 +385,7 @@ make install            # 安装到系统
 **通过网络提供服务时也要向使用者提供源码**（§13 Remote Network Interaction）。
 即：任何人把改过的 HologramAgent 对外提供网络服务，都必须让该服务的使用者拿到改动后的源码。
 
-插件与本项目通过公开 [homeagentsdk](https://github.com/JianFeeeee/homeagentsdk) 静态链接
+插件与本项目通过公开 [hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) 静态链接
 （SDK 源码会进入插件二进制），但那个仓**以 MIT 发布**——MIT 是宽松许可，拿到授权的代码不继承
 本项目的 AGPL。因此**外部插件不是本项目的衍生作品**，作者可自行选择许可（含闭源、商业、私有），
 既不必同许可、也不受 §13 网络条款约束。第三方插件生态的安全与活跃正建立在这条之上。

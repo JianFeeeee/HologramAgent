@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kbtree 客户端：按分类树检索 HomeAgent 知识库。
+# kbtree 客户端：按分类树检索 HologramAgent 知识库。
 #
 # 由 knowledge-base skill 调用（agent 读 SKILL.md 后按需调本脚本）。
 # 也可人工使用：
@@ -88,7 +88,7 @@ if ! (exec 3<>"/dev/tcp/${HOSTPORT%%:*}/${HOSTPORT##*:}") 2>/dev/null; then
   cat >&2 <<EOF
 kbtree: 连不上 $BASE（端口未监听）。
 
-最常见原因——**服务还没上线**。kbtree 是 HomeAgent 的内置插件，
+最常见原因——**服务还没上线**。kbtree 是 HologramAgent 的内置插件，
 需要二进制里含它才会启动。若 homed 是在合入该插件之前构建/部署的，
 就一直没有这个服务。上线后验证：
 

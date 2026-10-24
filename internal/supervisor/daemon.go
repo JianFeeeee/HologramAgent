@@ -69,7 +69,7 @@ func (d *Daemon) SetRestartHandler(fn func(id types.AgentID)) {
 }
 
 func (d *Daemon) Start() error {
-	log.Println("[homed] starting HomeAgent daemon")
+	log.Println("[homed] starting HologramAgent daemon")
 
 	go d.nm.Start(d.ctx, d.cfg.Defaults.LLMEndpoints)
 

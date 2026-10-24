@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // handleGraphMemory 处理图记忆（实体/关系）：recall / commit / introspect / merge / purge。

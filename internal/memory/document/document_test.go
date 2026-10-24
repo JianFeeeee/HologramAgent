@@ -26,7 +26,6 @@ func TestInsertAndQuery(t *testing.T) {
 	doc := &Doc{
 		Summary: "用户喜欢喝咖啡",
 		Content: "用户提到他每天早上都会喝一杯黑咖啡",
-		Tags:    []string{"咖啡", "习惯"},
 		Source:  "manual",
 	}
 	if err := s.Insert(doc); err != nil {
@@ -175,17 +174,43 @@ func TestReindex(t *testing.T) {
 	}
 }
 
+// summarizeEntries 现在是**纯展示摘要**：取首条事件的正文首行。
+//
+// 它曾经用 jieba 词袋生成「来自 N 个来源的 M 条对话 涉及: …」——
+// 那是词袋清单，且全库同质（一旦当向量输入就会让检索失效）。
 func TestSummarizeEntries(t *testing.T) {
 	entries := []ContextEntry{
-		{Source: "user", Content: "今天天气如何"},
+		{Source: "user", Content: "今天天气如何，要不要带伞"},
 		{Source: "user", Content: "明天会下雨吗"},
 	}
 	summary := summarizeEntries(entries, func(s string) string { return s }, nil, nil)
 	if summary == "" {
-		t.Error("summary should not be empty")
+		t.Fatal("summary 不应为空")
 	}
-	if !contains(summary, "2") {
-		t.Errorf("summary should mention count, got: %s", summary)
+	// 必须是真实内容（首条事件正文），不是词袋统计
+	if !contains(summary, "天气") {
+		t.Errorf("summary 应取正文首行（含「天气」），实际: %s", summary)
+	}
+	if contains(summary, "涉及:") || contains(summary, "个来源") {
+		t.Errorf("summary 仍是 jieba 词袋模板，实际: %s", summary)
+	}
+}
+
+// 摘要不读工具输出：工具输出属于事件结构，不是「这篇讲什么」。
+// 旧实现会把工具输出也拿去做关键词提取，于是摘要被工具噪音污染。
+func TestSummarizeEntriesIgnoresToolOutput(t *testing.T) {
+	entry := ContextEntry{
+		Content: "今天天气怎么样",
+		ToolResults: []ToolResultItem{
+			{Name: "search", Output: "手机 电脑 显卡 内存"},
+		},
+	}
+	summary := summarizeEntries([]ContextEntry{entry}, func(s string) string { return s }, nil, nil)
+	if contains(summary, "手机") || contains(summary, "显卡") {
+		t.Errorf("摘要被工具输出污染（应只用正文），实际: %s", summary)
+	}
+	if !contains(summary, "天气") {
+		t.Errorf("摘要应取正文首行，实际: %s", summary)
 	}
 }
 
@@ -193,16 +218,6 @@ func TestExtractKeywords(t *testing.T) {
 	kws := memory.ExtractKeywords("今天天气很好")
 	if len(kws) == 0 {
 		t.Error("should extract keywords from Chinese text")
-	}
-}
-
-func TestExtractTags(t *testing.T) {
-	entries := []ContextEntry{
-		{Content: "我喜欢喝咖啡和编程"},
-	}
-	tags := extractTags(entries, func(s string) string { return s }, nil, nil)
-	if len(tags) == 0 {
-		t.Error("should extract tags")
 	}
 }
 
@@ -346,92 +361,6 @@ func TestRemoveNonexistent(t *testing.T) {
 	}
 }
 
-func TestSummarizeEntriesWithToolCleanFn(t *testing.T) {
-	tests := []struct {
-		name        string
-		toolCleanFn func(name, output string) string
-		wantTopics  []string
-		notTopics   []string
-	}{
-		{
-			name:        "nil toolCleanFn uses raw output",
-			toolCleanFn: nil,
-			wantTopics:  []string{"手机", "电脑"},
-			notTopics:   nil,
-		},
-		{
-			name: "NoMemory returns empty skips tool output",
-			toolCleanFn: func(name, output string) string {
-				return ""
-			},
-			wantTopics: nil,
-			notTopics:  []string{"手机", "电脑"},
-		},
-		{
-			name: "Cleaner applies filter",
-			toolCleanFn: func(name, output string) string {
-				return "电脑 编程"
-			},
-			wantTopics: []string{"电脑", "编程"},
-			notTopics:  nil,
-		},
-	}
-
-	entry := ContextEntry{
-		Content: "今天天气",
-		ToolResults: []ToolResultItem{
-			{Name: "test_tool", Output: "手机 电脑"},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			summary := summarizeEntries([]ContextEntry{entry}, func(s string) string { return s }, tc.toolCleanFn, nil)
-			for _, w := range tc.wantTopics {
-				if !contains(summary, w) {
-					t.Errorf("summary should contain %q, got: %s", w, summary)
-				}
-			}
-			for _, n := range tc.notTopics {
-				if contains(summary, n) {
-					t.Errorf("summary should NOT contain %q, got: %s", n, summary)
-				}
-			}
-		})
-	}
-}
-
-func TestExtractTagsWithToolCleanFn(t *testing.T) {
-	entries := []ContextEntry{
-		{
-			Content: "对话",
-			ToolResults: []ToolResultItem{
-				{Name: "search", Output: "编程和咖啡"},
-			},
-		},
-	}
-
-	// toolCleanFn 返回 "" → NoMemory，工具输出被跳过
-	tagsSkip := extractTags(entries, func(s string) string { return s }, func(name, output string) string { return "" }, nil)
-	for _, tag := range tagsSkip {
-		if tag == "编程" || tag == "咖啡" {
-			t.Errorf("NoMemory tool should not contribute keywords, got tag: %s", tag)
-		}
-	}
-
-	// toolCleanFn 返回清洗文本 → 用清洗后内容提取关键词
-	tagsClean := extractTags(entries, func(s string) string { return s }, func(name, output string) string { return "咖啡 编程" }, nil)
-	found := false
-	for _, tag := range tagsClean {
-		if tag == "编程" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("cleaner output keywords should appear in tags, got: %v", tagsClean)
-	}
-}
-
 func TestContextToDocContentPreservesRawToolOutput(t *testing.T) {
 	dir, err := os.MkdirTemp("", "doc_toolclean_*")
 	if err != nil {
@@ -519,7 +448,7 @@ func TestBuildDenseIndexPersistsAcrossRestart(t *testing.T) {
 	}
 	s1.SetDenseSpace(sp)
 	s1.BuildDenseIndex(sp)
-	if got := s1.Get("doc_persist"); got == nil || len(got.DenseVec) != 8 || got.DenseFP != sp.fp {
+	if got := s1.Get("doc_persist"); got == nil || len(got.DenseVec) != 8 || got.DenseFP != s1.vectorFingerprint() {
 		t.Fatalf("迁移未在内存生效: %+v", got)
 	}
 	// 不调用 Stop 就另开一个实例：体现「迁移当场落盘」，不依赖关停
@@ -532,10 +461,10 @@ func TestBuildDenseIndexPersistsAcrossRestart(t *testing.T) {
 	if loaded == nil {
 		t.Fatal("重启后文档不见了")
 	}
-	if len(loaded.DenseVec) != 8 || loaded.DenseFP != sp.fp {
+	if len(loaded.DenseVec) != 8 || loaded.DenseFP != sp.fp+"|"+docVectorAlgoVersion {
 		t.Fatalf("迁移结果未落盘：期望 dim=8 fp=%q，实际 dim=%d fp=%q"+
 			"（后果：每次启动都重算同一批文档，磁盘状态永不收敛）",
-			sp.fp, len(loaded.DenseVec), loaded.DenseFP)
+			sp.fp+"|"+docVectorAlgoVersion, len(loaded.DenseVec), loaded.DenseFP)
 	}
 	// 已对齐 → 一次向量计算都不该发生
 	sp2 := &fakeSpace{fp: sp.fp, dim: 8}

@@ -3,9 +3,9 @@
     "零基础认知任务集 —— 两侧读**同一份材料**，不碰任何一方的内部状态。",
     "",
     "为何要重做（上一版的问题）：",
-    "  原来的 knowledge-stats 让 pi 去读 HomeAgent 自己的 graph.db / kbtree 服务，",
+    "  原来的 knowledge-stats 让 pi 去读 HologramAgent 自己的 graph.db / kbtree 服务，",
     "  等于把「能不能翻别人的数据库」当成认知能力 —— pi 花了 97s / 317k token",
-    "  （占它总 token 的 56%），而 HomeAgent 7s / 45k。那不是能力差异，",
+    "  （占它总 token 的 56%），而 HologramAgent 7s / 45k。那不是能力差异，",
     "  是「谁有权限看自己的库」。对比毫无意义。",
     "",
     "本集的材料：/var/tmp/zerobasis/{incident-2026-08.md, config-notes.md}",
@@ -18,7 +18,7 @@
     "  4. 抗干扰 —— cache 的 ttl=0 是「永不过期」，不是「永不过期」的反面",
     "  5. 综合 —— 用指定数字复述事故（考察有没有真的读进去）",
     "",
-    "⚠️ 提示词各不相同：HomeAgent 会把完全相同的输入判为 duplicate 直接跳过。"
+    "⚠️ 提示词各不相同：HologramAgent 会把完全相同的输入判为 duplicate 直接跳过。"
   ],
   "tasks": [
     {

@@ -1,7 +1,7 @@
 // Package kbtree 把知识库的**分类树**作为独立 HTTP 服务暴露给外部 agent。
 //
-// 定位（与 HomeAgent 内部知识工具的分工）：
-//   - HomeAgent 自己的 agent **直接调内部方法**（knowledge_search /
+// 定位（与 HologramAgent 内部知识工具的分工）：
+//   - HologramAgent 自己的 agent **直接调内部方法**（knowledge_search /
 //     knowledge_create 等内核工具），走的是进程内直调，最快、也最少攻击面。
 //   - 其它 agent（别的进程、别的机器、别的语言写的）走本插件的 HTTP 接口。
 //
@@ -194,7 +194,7 @@ func (p *Plugin) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"service":   "kbtree",
-		"purpose":   "HomeAgent 知识库分类树的只读访问（供外部 agent 使用）",
+		"purpose":   "HologramAgent 知识库分类树的只读访问（供外部 agent 使用）",
 		"read_only": true,
 		"endpoints": []string{
 			"GET /tree?category=&depth=&items=          分类树（可指定子树/层数）",

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // handleSettings 处理全部设置项读写（14 个 method 共用一条实现）。

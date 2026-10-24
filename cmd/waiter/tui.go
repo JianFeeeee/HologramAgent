@@ -653,7 +653,7 @@ func (m tuiModel) View() string {
 		dot = styleDotOff.Render("●")
 		connText = "disconnected"
 	}
-	left := styleTitle.Render("HomeAgent") + "  " + dot + " " + connText
+	left := styleTitle.Render("HologramAgent") + "  " + dot + " " + connText
 	right := styleDim.Render(truncMid(m.addrLabel(), maxInt(10, m.width-lipgloss.Width(left)-8)))
 	header := styleHeaderBox.Width(m.width).MaxWidth(m.width).Render(left + "  " + right)
 

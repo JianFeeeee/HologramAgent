@@ -90,7 +90,7 @@ fi
 # 没有可用的 win32-x64 payload 就**明确失败**，不产出"装完没有界面"的半残包。
 #
 # ★ payload 目录名有两个可能来源，必须都认：
-#   1. electron-builder（deploy/packaging/build.sh 的 build_gui，productName=HomeAgent）
+#   1. electron-builder（deploy/packaging/build.sh 的 build_gui，productName=HologramAgent）
 #      ⇒ build/homeagent-gui-win32-x64
 #   2. electron-packager（Makefile:331，GUI_BINARY=homeagent-gui）
 #      ⇒ build/homeagent-gui-win32-x64 之外的名字

@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "HomeAgent 能力标定任务集（starter）。",
+    "HologramAgent 能力标定任务集（starter）。",
     "设计原则：",
     "1. 每个任务都带显式 check —— 没有 check 的任务一律判失败：",
     "   「看起来答对了」不是证据，那正是假绿的来源。",

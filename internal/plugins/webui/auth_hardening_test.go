@@ -349,7 +349,7 @@ func TestServerHasReadSideTimeouts(t *testing.T) {
 	if srv.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout = %v，必须 > 0（keep-alive 空闲连接会无限累积）", srv.IdleTimeout)
 	}
-	// ReadTimeout 限制「读完整请求」的��间（含 body），防慢速上传。
+	// ReadTimeout 限制「读完整请求」的时间（含 body），防慢速上传。
 	if srv.ReadTimeout <= 0 {
 		t.Errorf("ReadTimeout = %v，必须 > 0（慢速上传会长期占用连接）", srv.ReadTimeout)
 	}

@@ -422,7 +422,7 @@ func (p *Plugin) handleScreensue(args map[string]interface{}) (interface{}, erro
 		return p.screensueLinux(content, duration)
 	case "darwin":
 		// macOS 用 osascript 弹窗
-		psScript := fmt.Sprintf(`display dialog "%s" with title "HomeAgent" buttons {"OK"} default button "OK giving up after %d"`, escapeAppleScriptString(content), duration)
+		psScript := fmt.Sprintf(`display dialog "%s" with title "HologramAgent" buttons {"OK"} default button "OK giving up after %d"`, escapeAppleScriptString(content), duration)
 		cmd := exec.Command("osascript", "-e", psScript)
 		_ = cmd.Run()
 		return map[string]interface{}{"content": "屏幕显示已触发"}, nil
@@ -431,7 +431,7 @@ func (p *Plugin) handleScreensue(args map[string]interface{}) (interface{}, erro
 		psScript := fmt.Sprintf(`
 			Add-Type -AssemblyName System.Windows.Forms
 			$form = New-Object System.Windows.Forms.Form
-			$form.Text = "HomeAgent"
+			$form.Text = "HologramAgent"
 			$form.Size = New-Object Drawing.Size(500,300)
 			$form.StartPosition = "CenterScreen"
 			$form.TopMost = $true
@@ -461,14 +461,14 @@ func (p *Plugin) screensueLinux(content string, duration int) (interface{}, erro
 		tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("local_screensue_%d.txt", time.Now().UnixNano()))
 		os.WriteFile(tmpFile, []byte(content), 0644)
 		defer os.Remove(tmpFile)
-		cmd := exec.Command("xterm", "-T", "HomeAgent", "-e", "cat", tmpFile)
+		cmd := exec.Command("xterm", "-T", "HologramAgent", "-e", "cat", tmpFile)
 		_ = cmd.Start()
 		go func() { time.Sleep(time.Duration(duration) * time.Second); cmd.Process.Kill() }()
 		return map[string]interface{}{"content": "屏幕显示已触发（xterm）"}, nil
 	}
 	// 回退 notify-send
 	if _, err := exec.LookPath("notify-send"); err == nil {
-		_ = exec.Command("notify-send", "HomeAgent", content).Run()
+		_ = exec.Command("notify-send", "HologramAgent", content).Run()
 		return map[string]interface{}{"content": "通知已发送"}, nil
 	}
 	return map[string]interface{}{"isError": true, "content": "无可用显示方式（安装 xterm 或 libnotify-bin）"}, nil

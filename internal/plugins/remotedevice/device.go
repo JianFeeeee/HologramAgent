@@ -43,7 +43,7 @@ func (d *devicectlDevice) Tools() []agentIO.ToolDef {
 		{
 			Name: "devicedetect",
 			Description: "扫描并列出已接入设备网关的设备（含在线/离线状态与授权状态）。" +
-				"用途：查看当前有哪些设备连接了 HomeAgent、是否在线、是否已授权。" +
+				"用途：查看当前有哪些设备连接了 HologramAgent、是否在线、是否已授权。" +
 				"参数 kind 可选，只返回该种类的设备。返回值 device_id 用于后续 device_ctl_* 工具。",
 			Parameters: map[string]interface{}{
 				"type": "object",

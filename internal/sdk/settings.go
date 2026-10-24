@@ -1,6 +1,6 @@
 package sdk
 
-import pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+import pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 
 // SettingsAPI 是内置插件使用的全量配置接口。
 type SettingsAPI interface {

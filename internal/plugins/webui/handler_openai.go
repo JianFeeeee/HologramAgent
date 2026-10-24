@@ -363,7 +363,7 @@ type openAIMessage struct {
 // OpenAI 客户端把它当作能力探测（probe）。请求方要的不是模型清单本身，
 // 而是一个「这个端点讲 OpenAI 协议」的确认。
 //
-// 所以这里返回 HomeAgent 自身作为唯一条目：调用方无论填哪个 id 都会
+// 所以这里返回 HologramAgent 自身作为唯一条目：调用方无论填哪个 id 都会
 // 被路由到同一个 agent（本端点的 model 参数确实只是透传）。
 // 不谎报 GPT 之类的名字 —— 那会让用户以为能选模型，而实际不能。
 func (h *Handler) handleOpenAIModels(w http.ResponseWriter, r *http.Request) {

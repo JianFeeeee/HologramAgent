@@ -33,7 +33,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	pubsdk "github.com/JianFeeeee/homeagentsdk/sdk"
+	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
 // Step 是任务状态机的游标。

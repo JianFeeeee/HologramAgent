@@ -199,7 +199,7 @@ func (p *Plugin) Stop() error {
 func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 	s.RegisterTool("plugin_install", sdk.ToolDef{
 		Name:        "plugin_install",
-		Description: "安装 HomeAgent 插件包（.hmap）。两种来源：url（http/https 下载）或 path（本机路径，配合 plugindev_build 的产物用这个）。插件已存在时传 overwrite=true 原地更新（升级/降级/重装，保留配置表，无需卸载重装）。更新后需调用 plgreload 或重启生效。",
+		Description: "安装 HologramAgent 插件包（.hmap）。两种来源：url（http/https 下载）或 path（本机路径，配合 plugindev_build 的产物用这个）。插件已存在时传 overwrite=true 原地更新（升级/降级/重装，保留配置表，无需卸载重装）。更新后需调用 plgreload 或重启生效。",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

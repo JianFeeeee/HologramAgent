@@ -3,7 +3,7 @@ package sdk
 import (
 	"sync"
 
-	"github.com/JianFeeeee/homeagentsdk/meta"
+	"github.com/JianFeeeee/hologramagentsdk/meta"
 )
 
 // SDKVersion 是对外暴露的 SDK 版本号。
