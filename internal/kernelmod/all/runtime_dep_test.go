@@ -86,7 +86,7 @@ func emptyState(t *testing.T) *kernelboot.KernelState {
 // 取真实 plan 的**第一层**单独跑：模块（config / kernel-api）本来就绪条件
 // 为空，若能通过 ⇒ 校验没把"合法的第 0 层"当成缺依赖。
 //
-// （整机正序不误报由 internal/kernelboot/modules 的整机判据覆盖：
+// （整机正序不误报由 internal/kernelmod/all 的整机判据覆盖（bootgraph_test.go）：
 // 它用真实 plan 跑完全部 5 层，装配成功后资产/关闭/泄漏全部断言。
 // 这里只做最小正向基线，避免重复一份整机夹具。）
 func TestRunRuntimeGuardDoesNotFireOnCorrectPrefix(t *testing.T) {

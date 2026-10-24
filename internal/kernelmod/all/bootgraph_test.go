@@ -1,29 +1,21 @@
-package modules
+package all
 
 // 「真实登记表 → 整机启动图」的判据（2026-10-24）。
 //
-// ╔══════════════════════════════════════════════════════════════════════╗
-// ║ ★★ 本包（internal/kernelboot/modules）当前**零生产调用**，是死包。   ║
-// ║                                                                      ║
-// ║ 实测（2026-10-24）：                                                  ║
-// ║   · 生产代码里 import 本包的包数 = 0                                  ║
-// ║   · BuildModules() / Names() / Register() 的外部调用点 = 0            ║
-// ║   · 真正的内核模块登记表是 internal/kernelmod（由 kernelmod/all      ║
-// ║     聚合 import，cmd/homed/kmod_runtime.go 消费）                      ║
-// ║                                                                      ║
-// ║ ⚠ 不要把本包当成主路径。它里面的 Register/BuildModules 是 kernelmod   ║
-// ║   那套注册表的**第二份实现**，留着只会让人下次接错口子。               ║
-// ║                                                                      ║
-// ║ 本文件为什么仍挂在这里：判据用真实登记表（kernelmod.Registered）装配   ║
-// ║   整机，是**占位**位置；挪去 internal/kernelmod/all/ 并删除本包，       ║
-// ║   需要单独一单（避免与本线混在一起，见下方 TODO）。                    ║
-// ║   去留决策与执行：另开一单（判据迁 kernelmod/all + 删本目录 +           ║
-// ║   同步改 registry.go / kernelstate.go / docs 的指引）。                ║
-// ╚══════════════════════════════════════════════════════════════════════╝
+// ## 迁移记录（ID:13，2026-10-24）
 //
-// TODO(死包清理)：本包零生产调用。判据已在此跑通并合入；把判据迁到
-// internal/kernelmod/all/（真实聚合入口、已有同族判据）后删除整个目录。
-// 触发条件：本线合入 main 后另开单。在那之前**不要**新增对本包的生产依赖。
+// 本文件原先挂在 `internal/kernelboot/modules/registry_test.go`，那个包
+// **零生产调用**（死包：Register/BuildModules 是 kernelmod 那套的**第二份
+// 实现**，外部调用点 = 0），只为了安放这组判据才留着。
+//
+// 现迁移到**真实聚合入口** `internal/kernelmod/all`：本包本来就是
+// 「把全部模块 import 进来」的那一层，判据放在这里，用的就是生产路径
+// 同一条 import 链（all → 各模块 init → kernelmod.Register）。
+// 死包与其第二份注册表实现已删除。
+//
+// ★ 迁移没有削弱任何判据的能力：下面判据 5 的真相源（扫 `..` 源码树的
+// 类型大小）与宿主包无关，换宿主前后都照样咬得住「登记了但漏 import」。
+// 变异亲测见本文件尾部「失败面」一节第 1–3 条。
 //
 // ## 这个文件补的是什么（此前完全没有的覆盖）
 //
@@ -136,11 +128,10 @@ import (
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
-
-	// ★ 真实登记表的**唯一入口**：聚合 import 决定"哪些模块被编译进来"。
-	// 本判据刻意用与 `cmd/homed/kmod_runtime.go` 完全相同的入口
-	// （若那里漏了 import，这里同样会漏 ⇒ 两边一起红，而不是判据自说自话）。
-	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/all"
+	// ★ 判据与被测对象现在同属一个包（internal/kernelmod/all）：
+	// 本文件就在聚合 import 的**那一层**里。因此不需要（也不能）再
+	// 空白 import 自己 —— 只要本包被编译，all.go 的聚合 import 就已生效。
+	// 这正是迁移的收益之一：判据用的是生产同一条 import 链，而非旁路。
 )
 
 // ─────────────────────────── 整机夹具 ───────────────────────────
@@ -668,7 +659,7 @@ func TestShutdownLeavesNoResidue(t *testing.T) {
 //	· 删 all/all.go 任一聚合 import ⇒ 红（该类型四方法仍在 ⇒ 源码侧多一个）
 //	· 删掉整个模块目录 ⇒ 反向断言红（登记表里有、源码树里没有）
 func TestEveryRegisteredModuleIsCompiledIn(t *testing.T) {
-	const modRoot = "../../kernelmod"
+	const modRoot = ".."
 	fromSource := scanModuleTypes(t, modRoot)
 	if len(fromSource) == 0 {
 		t.Fatal("★ 源码扫描一个模块都没找到 —— 扫描逻辑失效（判据会永远绿）")

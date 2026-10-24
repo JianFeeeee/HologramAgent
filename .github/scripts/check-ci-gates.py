@@ -158,10 +158,15 @@ else:
         if _run_body(_inject(_probe + "|合成探针原因|")).returncode == 0:
             fails.append("合成行「reason 有效 / ticket 空」竟通过 ⇒ ticket 守卫已失效")
 
-# ── 4. go job：整机启动图判据必须单列一步跑 kernelboot/modules ──
+# ── 4. go job：整机启动图判据必须单列一步跑 kernelmod/all ──
+#
+# ★ 目标包随 ID:13 从 internal/kernelboot/modules（死包，已删）迁到
+#   internal/kernelmod/all（真实聚合入口）。本断言跟着改，否则它盯的
+#   是一个**已不存在的包** —— 那会变成"永远红"或（更糟）"永远绿"的空转。
+GO_BOOT_PKG = "./internal/kernelmod/all/"
 gojob = step_runs("go")
-boot = [r for _n, r in gojob if "kernelboot/modules" in r and "go test" in r]
-check(bool(boot), "go job 缺少「整机启动图判据」步骤（go test ./internal/kernelboot/modules/）")
+boot = [r for _n, r in gojob if GO_BOOT_PKG in r and "go test" in r]
+check(bool(boot), "go job 缺少「整机启动图判据」步骤（go test " + GO_BOOT_PKG + "）")
 for r in boot:
     check("-count=1" in r, "整机启动图判据步骤必须带 -count=1（不许吃 go test 缓存）")
 

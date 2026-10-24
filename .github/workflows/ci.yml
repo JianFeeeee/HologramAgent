@@ -100,7 +100,7 @@ jobs:
       - name: go test ./...
         run: go test ./... -count=1 -timeout 20m
 
-      # 整机启动图判据（internal/kernelboot/modules/registry_test.go）。
+      # 整机启动图判据（internal/kernelmod/all/bootgraph_test.go）。
       #
       # ## 为什么单列一步（而不是只靠上面的 go test ./...）
       #
@@ -111,11 +111,14 @@ jobs:
       #   ② 它断言的是**跨模块的顺序与资源回收**，是"多跑几次才暴露"的那类，
       #      单独一步便于在 flaky 时被识别（这里带 -count=1，不吃缓存）
       #
+      # ★ 判据宿主是 internal/kernelmod/all（真实聚合入口），不是以前的
+      #   internal/kernelboot/modules（那个包零生产调用，已删除）。
+      #
       # ★ 不用 -race（那在 race job 里跑）：本判据含真实端口/挂载，
       #   -race 的插桩会让时序假设变松，两者分开放更便于定位。
       - name: 整机启动图判据（真实登记表装配 + 逆序关闭 + 无残留）
         run: |
-          go test ./internal/kernelboot/modules/ \
+          go test ./internal/kernelmod/all/ \
             -count=1 -timeout 10m -v
 
       # 跨平台客户端版本一致性：内核 internal/meta 是唯一事实源，
@@ -222,7 +225,7 @@ jobs:
       # ║                                                                  ║
       # ║ **整包永久排除不被接受。** 唯一出口是给 plugin.Registry 的 Set*   ║
       # ║ 加锁（修复单 KERNEL-REGISTRY-SETLOCK），修好后：                   ║
-      # ║   · 删掉本表里 kernelboot/modules 那一行                          ║
+      # ║   · 删掉本表里 kernelmod/all 那一行                               ║
       # ║   · **复跑一次** -race 全仓确认整机判据在 -race 下也稳定           ║
       # ║   · 删掉 evidence 步骤 ② 的静态断言                               ║
       # ║ 这三步没做完，本线不算收口。                                       ║
@@ -234,7 +237,7 @@ jobs:
           # 列名：粒度|目标|原因|修复单号   （用 | 分隔，原因内可含空格）
           read -r -d '' TABLE <<'EOF' || true
           test|internal/plugins/webui|TestOpenAIStreamIsActuallyStreaming|gzipResponseWriter 的 mode/wroteHeader/buf 无锁；handler goroutine（发 finish/[DONE]）与增量写 goroutine 并发写同一 ResponseWriter（gzip.go:139 读 mode vs gzip.go:206 写 mode）|WEBUI-GZIP-RACE
-          pkg|internal/kernelboot/modules|*（整包）|该包把真实整机装起来 ⇒ 第 4 层 agent 与 plugin-host 并行 Init 时，双方都无锁直写同一 plugin.Registry 的 7 个 Set*（SetLuaVM/SetBaseAPIKey/SetSupervisor/SetTracker/SetConfig/SetStageHost/SetIndexer，registry.go:231-284）。竞争在**内核装配**里，不在本包代码里；任何装整机的用例都会撞上|KERNEL-REGISTRY-SETLOCK
+          pkg|internal/kernelmod/all|*（整包）|该包把真实整机装起来（bootgraph_test.go 的整机判据） ⇒ 第 4 层 agent 与 plugin-host 并行 Init 时，双方都无锁直写同一 plugin.Registry 的 7 个 Set*（SetLuaVM/SetBaseAPIKey/SetSupervisor/SetTracker/SetConfig/SetStageHost/SetIndexer，registry.go:231-284）。竞争在**内核装配**里，不在本包代码里；任何装整机的用例都会撞上。★ 目标包随 ID:13 迁到此（原 internal/kernelboot/modules 已删）|KERNEL-REGISTRY-SETLOCK
           EOF
 
           tests=""; pkgs=""; n=0
@@ -291,7 +294,7 @@ jobs:
           SKIP="${{ steps.skip.outputs.tests }}"
 
           # 从全仓包列表里剔除 pkg 级排除项（按路径后缀精确匹配，
-          # 不用 grep 模糊匹配 —— 否则 kernelboot 会把 kernelboot/modules 一起剔掉）。
+          # 不用 grep 模糊匹配 —— 否则 kernelmod 会把 kernelmod/all 一起剔掉）。
           PKGS=""
           for p in ${{ steps.pkgs.outputs.pkgs }}; do
             drop=0
@@ -379,7 +382,7 @@ jobs:
           done
           echo "    仍为无锁直写的 Set*: $((total - locked))/$total"
           if [ "$locked" -gt 0 ]; then
-            echo "::error title=内核 setter 已加锁::KERNEL-REGISTRY-SETLOCK 可能已被修复（$locked/$total 个 Set* 形态已变）—— 请从 ci.yml 排除表删掉 kernelboot/modules 那一行"
+            echo "::error title=内核 setter 已加锁::KERNEL-REGISTRY-SETLOCK 可能已被修复（$locked/$total 个 Set* 形态已变）—— 请从 ci.yml 排除表删掉 kernelmod/all 那一行"
             fail=1
           fi
 
