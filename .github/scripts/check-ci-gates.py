@@ -97,8 +97,17 @@ for _n, r in evid:
           "取证步骤应显式检查 DATA RACE 报告数（否则取证没意义）")
 
 # ── 3. skip 排除表：每项必须写原因，无原因必须步骤自己失败 ──
-check(any("没有写原因" in r for _n, r in race),
-      "race job 缺少 -skip 排除表的结构校验（无原因的排除必须让步骤失败）")
+#
+# ★ 这里曾经写成 `any("没有写原因" in r ...)` —— 只检查**提示文案还在**。
+#   实测：把 `if [ -z "${reason// /}" ]; then` 改成 `if false; then`
+#   （文案全保留、校验实际失效），该断言仍然绿，而该步骤实跑 EXIT=0
+#   —— 也就是说「无原因必须失败」这条保证彻底破掉，判据却看不见。
+#   这正是本脚本自己在 docstring 里批判的「被文案顶包」，不能自己再犯。
+#   ⇒ 改为剥注释后断言**可执行的判空逻辑**：必须同时出现判空变量与 exit 1。
+race_code = "\n".join(code_lines(r) for _n, r in race)
+check('${reason// /}' in race_code and "exit 1" in race_code,
+      "race job 排除表缺少真校验：剥注释后必须能看到 ${reason// /} 判空 + exit 1，"
+      "只有提示文案不算（把 if 条件改 false 就能骗过纯文案断言）")
 
 # ── 4. go job：整机启动图判据必须单列一步跑 kernelboot/modules ──
 gojob = step_runs("go")
