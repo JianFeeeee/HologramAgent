@@ -87,13 +87,29 @@ package all
 //
 //  4. 把 Run 的层执行顺序改成逆序
 //     ⇒ 判据 1/2/3/4 红，但**红在装配失败**（第 4 层模块拿到 nil 依赖：
-//        「agent 依赖的设施 "memory" 对应的数据为 nil」），
+//        「agent 依赖的设施 “memory” 对应的数据为 nil」），
 //        不是「层间顺序断言」咬的 —— 装配先于断言就炸了。
 //     ⇒ 把某一层整个跳过：**内核 panic**（llm.buildProviderManager 拿到
 //        0x0 的 LuaVM，SIGSEGV）。仍是红的，但形态是崩溃不是可读断言。
-//     ★ 结论：这两种改动确实能被发现，但报错可读性差（崩在业务代码里）。
-//        要"红得干净"得让 kernelboot.Run 对 nil 依赖显式报错 —— 那是业务改动，
-//        不在本线权限内，已记入待办。
+//     ★ 以上是 **ID:14 之前**的形态（2026-10-24 实测记录，保留下来
+//        作为“为什么需要执行期校验”的原始证据）。
+//
+//     ✅ **已完成（ID:14，提交 e70c2b5）**：kernelboot.Run 现在在**每层 Init
+//        之前**先校“本层依赖 ⊆ 此前真跑完的层实际产出的设施”，缺就返回
+//        *DependencyNotReadyError（指名模块名 + 缺哪些设施），**本层一个
+//        Init 都不调**。用真实登记表实测，同一个变异变成可读报错：
+//          · 逆序      ⇒ 第 **0** 层就拒（produced 为空）：
+//                        「模块 agent 缺设施 [docmem knowledge llm …]；
+//                         模块 plugin-host 缺设施 [config docmem …]」
+//          · 跳过第 2 层 ⇒ 第 **2** 层拒：
+//                        「模块 stage-host 缺设施 [knowledge llm textmem]」
+//        **两种都不再是 panic / SIGSEGV**。
+//
+//        ⇒ 下次看到本条，请不要据此认为“Run 不拦 nil 依赖”；它现在拦。
+//        另：该行为的专用回归判据在 internal/kernelmod/all/runtime_dep_test.go
+//        （A 正序不误报 / B 交换两层 / C 删提供者整层）与
+//        internal/kernelboot/runtimedep_test.go（纯逻辑四形状 + 防预填自检）——
+//        那两组比在本节做整机变异快得多，改代码时优先跑它们。
 //
 //  5. 某层不再登记关闭函数（模块忘调 AddCloser / 层边界钩子丢了）
 //     ⇒ 判据 3 红（哨兵数量不符）。与第 7 条同支路，实测由第 7 条覆盖。
