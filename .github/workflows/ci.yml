@@ -138,35 +138,24 @@ jobs:
   # ⇒ 改成 `go list ./...` 全仓枚举（93 包 → 剔除 cmd/gui 后 92 个，
   #    实测 -race 全绿耗时约 72s）。排除必须写理由，见下面的 grep -v。
   #
-  # ## 唯一被 -skip 的用例：webui 的真数据竞争（**待修业务代码**）
+  # ## 已解除 skip：webui 的 gzip 数据竞争（已修）
   #
-  # TestOpenAIStreamIsActuallyStreaming 在 -race 下**稳定报真竞争**（实测
-  # 6/6 次触发，每次 6~8 条 DATA RACE 报告）：
+  # TestOpenAIStreamIsActuallyStreaming 曾因真竞争被排除在本门外，2026-10-24
+  # 已解除 skip：7457b05 改成 w 单写者模型（未给 gzip.go 加锁）修掉该竞争。
+  # 现由主 `go test -race` 门覆盖（排除表里已无该条目）。
   #
-  #   Read  gzipResponseWriter.Write          gzip.go:139   （读 g.mode）
-  #   └─ 调用方：streamOpenAI 的 handler goroutine           handler_openai.go:256
-  #   Write gzipResponseWriter.commit         gzip.go:206   （写 g.mode/g.wroteHeader）
-  #   └─ 调用方：streamOpenAI **写 goroutine**（16ms 批量 flush）handler_openai.go:165
-  #
-  # 根因：`gzipResponseWriter` 的 mode/wroteHeader/buf 无锁，而
-  # handler goroutine（发 finish chunk/[DONE]）与写 goroutine（发增量）
-  # **并发写同一个 http.ResponseWriter**。这是被测逻辑的真缺陷。
-  #
-  # ★ 本次任务授权是"只动 CI 与测试"，**不改业务逻辑** ⇒ 只能用 -skip 挡住，
-  #   并在报告里带原始栈交回。修好后**必须**删掉这里与下一步的名字。
-  # ★ 为什么不选择"让它红着"：长红 ⇒ 所有人学会忽略 ⇒ 整条 race 门失效，
-  #   连带把 kernelboot 等**新纳入**的覆盖一起废掉。
-  #
-  # ## 另有一个偶发失败（**没有** skip，照实记录）
+  # ## 已修复的偶发失败：core 的嵌套压力用例（不是竞争）
   #
   # internal/agent/core: TestStress_NestingReachesStructuralBoundThenUnwindsLIFO
-  #   · 本 job 跑整个包时：实测 13/13 全绿（测试之间互相预热）
-  #   · **单独**用 -run 指它 + -race 时：5/12 失败
-  #     （"第 N 级注入后栈深未达 N：0"）
-  #   · 不带 -race 单独跑：0/12 失败
-  # ⇒ 它是**用例自身的时序假设**（要求 300ms 窗口内恰好把第 N 面压进栈）
-  #   被 -race 插桩放大后错过，**不是数据竞争**（无 DATA RACE 报告）。
-  # 故**不 skip**（skip 会掩盖该用例的回归），但把结论与复现命令记在这里：
+  # 曾经偶发红（单独 -run + -race 时 5/12 失败），根因不是数据竞争（从未有过
+  # DATA RACE 报告），而是**用例自身的固定时间假设**：注入时只等"受害者已在
+  # 运行"，但 a.cancelLLM 是在进入 Chat **之前**才装上的，两者之间存在空档，
+  # 中断落在空档里就取消不生效，受害者跑满延迟自然结束，栈深永远到不了目标值
+  # （"第 N 级注入后栈深未达 N：0"）。
+  # 2026-10-24 已把判据改成「等状态」（ed61a8d）：先等受害者真的进入可取消的
+  # LLM 调用（entered 信号）再注入，注入后轮询等栈深达成；延迟参数未动。
+  # 改后 -race 连跑 10 轮 10/10 PASS，12 路满载下 3/3 PASS。
+  # 回归时用它复查：
   #     go test -race ./internal/agent/core/ \
   #       -run TestStress_NestingReachesStructuralBoundThenUnwindsLIFO -count=1
   race:
