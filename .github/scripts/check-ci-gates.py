@@ -96,18 +96,67 @@ for _n, r in evid:
     check("DATA RACE" in r,
           "取证步骤应显式检查 DATA RACE 报告数（否则取证没意义）")
 
-# ── 3. skip 排除表：每项必须写原因，无原因必须步骤自己失败 ──
+# ── 3. skip 排除表：真跑一次坏输入，要求它必须失败 ──
 #
-# ★ 这里曾经写成 `any("没有写原因" in r ...)` —— 只检查**提示文案还在**。
-#   实测：把 `if [ -z "${reason// /}" ]; then` 改成 `if false; then`
-#   （文案全保留、校验实际失效），该断言仍然绿，而该步骤实跑 EXIT=0
-#   —— 也就是说「无原因必须失败」这条保证彻底破掉，判据却看不见。
-#   这正是本脚本自己在 docstring 里批判的「被文案顶包」，不能自己再犯。
-#   ⇒ 改为剥注释后断言**可执行的判空逻辑**：必须同时出现判空变量与 exit 1。
-race_code = "\n".join(code_lines(r) for _n, r in race)
-check('${reason// /}' in race_code and "exit 1" in race_code,
-      "race job 排除表缺少真校验：剥注释后必须能看到 ${reason// /} 判空 + exit 1，"
-      "只有提示文案不算（把 if 条件改 false 就能骗过纯文案断言）")
+# ★ 这里换过三版，每一版的失效方式都值得记：
+#   v1 `any("没有写原因" in r ...)`        —— 只查提示文案；把 if 条件改 false 仍绿
+#   v2 剥注释后查 `${reason// /}` + `exit 1` —— 两个 token 都在仍可能不成立；
+#      实测 `if [ -z "${reason// /}" ] && false; then` 依然绿
+#   v3 真跑、但拿真实 webui 那一行做坏输入 —— 该排除项修好被删掉时**误报红**
+#   v4（本条）用**合成行**注入 TABLE 再真跑：
+#      · 不依赖任何真实排除项 ⇒ 排除项增删不会引起误报
+#      · 真跑 ⇒ `&& false` 这类「形似而无效」的改动会被抓出来
+#
+# 两条守卫必须**各自**用只违反它的输入来验，否则一条会顶另一条的包
+# （第一版我把 reason 与 ticket 同时清空，ticket 守卫兜住了，reason 守卫死没死看不出来）。
+import subprocess as _sp
+import tempfile as _tf
+
+_tbl = None
+for _n, _r in race:
+    if "计算 -race 排除表并打印" in (_n or ""):
+        _tbl = _r
+if _tbl is None:
+    fails.append("race job 找不到「计算 -race 排除表并打印」步骤 —— 无法自测排除表守卫")
+elif "${{" in _tbl:
+    fails.append("排除表步骤含 GitHub 表达式，本脚本无法本地执行它（需改用别的验证方式）")
+else:
+    import re as _re
+    _m = _re.search(r"read -r -d '' TABLE <<'EOF'[^\n]*\n(.*?)\nEOF\n", _tbl, _re.S)
+    if _m is None:
+        fails.append("排除表步骤里找不到 TABLE heredoc —— 无法注入合成坏行")
+    else:
+        def _run_body(body):
+            fd, tmp_sh = _tf.mkstemp(suffix=".sh")
+            with __import__("os").fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+            out = _tf.mktemp()
+            env = dict(__import__("os").environ)
+            env["GITHUB_OUTPUT"] = out
+            try:
+                return _sp.run(["bash", tmp_sh], capture_output=True, text=True, env=env)
+            finally:
+                __import__("os").unlink(tmp_sh)
+                if __import__("os").path.exists(out):
+                    __import__("os").unlink(out)
+
+        def _inject(line):
+            inner = _m.group(1)
+            new_inner = (line + "\n" + inner) if inner.strip() else line
+            return _tbl[:_m.start(1)] + new_inner + _tbl[_m.end(1):]
+
+        # 正向：原样必须通过
+        if _run_body(_tbl).returncode != 0:
+            fails.append("排除表步骤用当前 ci.yml 实跑不通过（正向基线坏）")
+
+        _probe = "test|internal/probe/synthetic|TestSyntheticProbe"
+        # 只打 reason：reason 空、ticket 有效
+        if _run_body(_inject(_probe + "||PROBE-TICKET")).returncode == 0:
+            fails.append("合成行「reason 空 / ticket 有效」竟通过 ⇒ reason 守卫已失效"
+                         "（形似而无效的改动，例如 if 条件加 && false）")
+        # 只打 ticket：reason 有效、ticket 空
+        if _run_body(_inject(_probe + "|合成探针原因|")).returncode == 0:
+            fails.append("合成行「reason 有效 / ticket 空」竟通过 ⇒ ticket 守卫已失效")
 
 # ── 4. go job：整机启动图判据必须单列一步跑 kernelboot/modules ──
 gojob = step_runs("go")
