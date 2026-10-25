@@ -230,6 +230,36 @@ func diagnoseUnresolvable(pending []Module, declared map[string]bool, owner map[
 	return &UnresolvableError{Missing: missing, Cycle: cycle, Declared: declaredList}
 }
 
+// verifyLayerDependencies 核对本层各模块的依赖是否**已由更早的层实际产出**。
+//
+// 返回 nil 表示全部就绪；否则返回 *DependencyNotReadyError（带模块名与缺失设施名）。
+// 判据形状与 satisfied 一致（Requires ⊆ produced），但数据源是 produced（事实）
+// 而非 Build 里的 ready（声明推演）—— 这正是它能咬住"层顺序被改坏"的原因。
+func verifyLayerDependencies(li int, layer []Module, produced map[string]bool) error {
+	missing := map[string][]string{}
+	for _, m := range layer {
+		var lack []string
+		for _, r := range m.Requires() {
+			if !produced[r] {
+				lack = append(lack, r)
+			}
+		}
+		if len(lack) > 0 {
+			sort.Strings(lack)
+			missing[m.Name()] = lack
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	producedList := make([]string, 0, len(produced))
+	for f := range produced {
+		producedList = append(producedList, f)
+	}
+	sort.Strings(producedList)
+	return &DependencyNotReadyError{Layer: li, Missing: missing, Produced: producedList}
+}
+
 // RunOptions 控制执行。
 type RunOptions struct {
 	// MaxParallel 是**层内**的并发上限（<=0 表示不限制）。
@@ -270,19 +300,84 @@ type RunResult struct {
 	Order []string
 }
 
+// DependencyNotReadyError 是"执行期"依赖校验失败：某模块要开工，但它需要的设施
+// **在已经真正跑完的层里**找不到。
+//
+// ★ 与 Build/diagnoseUnresolvable 的分工（**刻意不重复实现**）：
+//
+//	Build（构建期）      ：看**声明**——Requires 有没有人 Provides、有没有环。
+//	本错误（执行期，Run）：看**事实**——按这份 plan 真的跑完的层里，产出了什么。
+//
+// 两者不可互相替代：声明全对、图也自洽，plan 的**层顺序**仍可能被改坏
+// （手改 Layers / 旧图/新代码混装 / 有人把某层提前）。那时 Build 不会报错，
+// 模块的 Init 拿到 nil 依赖 → 崩在业务代码里。实测形态：把 lua 排到 llm 之后，
+// llm.buildProviderManager 收到 0x0 的 LuaVM，ConfigureConcurrency 里 SIGSEGV。
+//
+// ⇒ 这条判据的判据对象是**实际执行进度**，不是声明，所以它咬得住"顺序被破坏"。
+type DependencyNotReadyError struct {
+	// Layer 是出问题的层号（0 起）。
+	Layer int
+	// Missing 是 模块名 → 它缺的设施名（各自升序）。
+	Missing map[string][]string
+	// Produced 是此前各层**实际产出**的设施名（升序），供对照"哪些还没跑"。
+	Produced []string
+}
+
+func (e *DependencyNotReadyError) Error() string {
+	mods := make([]string, 0, len(e.Missing))
+	for m := range e.Missing {
+		mods = append(mods, m)
+	}
+	sort.Strings(mods)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "kernelboot: 第 %d 层装配前校验失败 —— 依赖未就绪", e.Layer)
+	b.WriteString("（启动计划的层顺序与模块声明不一致，或图与代码漂移）: ")
+	for i, m := range mods {
+		if i > 0 {
+			b.WriteString("；")
+		}
+		fmt.Fprintf(&b, "模块 %s 缺设施 %v", m, e.Missing[m])
+	}
+	fmt.Fprintf(&b, "。此前各层已实际产出的设施: %v", e.Produced)
+	b.WriteString("。\n" +
+		"   为什么必须在这里拦住：依赖没就绪就调 Init，模块拿到的是 nil，" +
+		"崩在业务代码里（实测 lua 排到 llm 之后 ⇒ llm 拿 0x0 LuaVM，SIGSEGV）。\n" +
+		"   修复：让提供者在**更早的层**（检查各模块的 Requires/Provides 是否与图一致，" +
+		"并重新生成依赖图）")
+	return b.String()
+}
+
 // Run 按计划执行：逐层 Init，层内有界并行。
+//
+// ## 执行期依赖校验（每层 Init **之前**）
+//
+// 逐层维护"这一层之前**真的跑完**的模块产出了哪些设施"（produced），
+// 每层开工前先核对本层各模块的 Requires ⊆ produced：
+//
+//	· 缺则**立刻返回** DependencyNotReadyError（指名模块名前、缺哪些设施），
+//	  本层**一个 Init 都不调** —— 宁可什么都不装，也不要装一半再崩
+//	· 这一层全部成功后才把本层 Provides 记入 produced（与 syncbus 的层边界同语义）
+//
+// ★ 为什么不复用 Build 的结论：Build 校验的是**声明**（图能否解开）。
+// 声明全对时层顺序仍可能被改坏，那时 Build 绿、Init 崩。见 DependencyNotReadyError。
 //
 // 失败策略（文档 §2.3.3）：**任何 Init 失败都令整体失败**。
 // 不静默跳过、不"带着半初始化状态继续"——后者正是病 A 的形态。
 //
 // 同层内若**多个**模块失败，返回第一个（按名字序，稳定）；
 // 但**不等同于只跑一个**：同层其余模块仍会被执行完（避免半途中断造成更乱的状态）。
+// （依赖未就绪属于"开工前就发现"，那时本层还没有任何模块动过，故一个都不跑。）
 func Run(plan *Plan, opts RunOptions) (*RunResult, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("kernelboot: 计划为 nil")
 	}
 	res := &RunResult{}
 	var orderMu sync.Mutex
+
+	// produced 是**执行期事实**：只有真的跑完的层才贡献设施。
+	// 它刻意不从 plan 里预填（预填就等于相信声明 ⇒ 变回构建期校验，抓不到顺序被改坏）。
+	produced := map[string]bool{}
 
 	ks := opts.State
 	if ks == nil {
@@ -312,6 +407,14 @@ func Run(plan *Plan, opts RunOptions) (*RunResult, error) {
 		if len(layer) == 0 {
 			continue
 		}
+
+		// ★ 装配前校验：本层每个模块要的设施，必须在**此前真正跑完**的层里产出过。
+		//   放在这里（而不是循环中途逐个模块查）⇒ 本层一个 Init 都不调就拒绝，
+		//   避免"前半层已经装了一半"的脏状态。
+		if err := verifyLayerDependencies(li, layer, produced); err != nil {
+			return res, err
+		}
+
 		limit := opts.MaxParallel
 		if limit <= 0 || limit > len(layer) {
 			limit = len(layer)
@@ -376,6 +479,14 @@ func Run(plan *Plan, opts RunOptions) (*RunResult, error) {
 		}
 
 		res.LayerCount++
+		// ★ 执行期事实：本层全部成功 ⇒ 它提供的设施才"真的存在"。
+		for _, m := range layer {
+			for _, p := range m.Provides() {
+				if p != "" {
+					produced[p] = true
+				}
+			}
+		}
 		// ★ 层边界：把本层贡献的设施标记就绪（设计 §2.6.2）。
 		//   在层内并发**全部完成之后**统一标记 ⇒ 就绪顺序确定、可复现。
 		if opts.Bus != nil {

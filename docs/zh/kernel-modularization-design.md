@@ -736,8 +736,9 @@ loadOne(name):
 
 ### 2.7 声明层已落地（Step 4b 第一步，2026-10-16）
 
-`internal/kernelboot/modules/declarations.go` 把 **main() 里隐含在语句顺序中的
-依赖关系**变成显式声明。实测分层结果：
+`internal/kernelmod/all` 的聚合 import 把**全部模块引入编译**后，各模块在自己
+文件中用 Requires() 把 **main() 里隐含在语句顺序中的依赖关系**变成显式声明。
+实测分层结果（2026-10-24 复核：`go test ./internal/kernelmod/all/ -run TestLayeringYieldsParallelism -v`）：
 
 ```
 6 层 / 17 模块，最宽层 9 个可并行（原来是 17 步严格串行）

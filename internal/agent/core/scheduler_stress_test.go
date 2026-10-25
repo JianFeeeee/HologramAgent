@@ -200,10 +200,71 @@ func TestStress_MixedLevelInterruptsPlusQueuedInputs(t *testing.T) {
 //
 // Phase A 的形状（100+100 混合）里，中断按严格优先级排队，同一时刻通常只有一层
 // 嵌套；真正难的是「中断被中断」逐级下潜。这里按级别**逐级**注入：每一级都等到
-// 上一级正在运行才注入，于是必然层层挂起，直到 L4 之上没有更高级别为止。
+// 上一级真的处在「可被取消的 LLM 调用中」才注入，于是必然层层挂起，直到 L4 之上
+// 没有更高级别为止。
 //
 // 然后再验证恢复是**严格 LIFO**：L3 → L2 → L1 → 排队任务。
 // ---------------------------------------------------------------------------
+
+// gatedProvider 把「受害者正处于一次可取消的 LLM 调用中」变成一个可等待的**状态**：
+// Chat 进入即发 entered token，并阻塞到 ctx 取消或 gate 关闭。
+type gatedProvider struct {
+	entered   chan struct{} // 每次进入 Chat 发一个 token（Chat 是唯一可取消的步骤）
+	gate      chan struct{} // 关闭后允许 Chat 自然返回（只用于排空阶段）
+	cancelled atomic.Int64
+	completed atomic.Int64
+}
+
+func newGatedProvider() *gatedProvider {
+	return &gatedProvider{entered: make(chan struct{}, 64), gate: make(chan struct{})}
+}
+
+func (p *gatedProvider) Name() string { return "gated" }
+
+// Chat 把「受害者正处于一次可取消的 LLM 调用中」变成一个可等待的**状态**。
+//
+// 为什么必须这样（ID:12 的根因）：a.cancelLLM 是在进入 Chat **之前**装好的
+// （task.go: 先 a.cancelLLM = fCancel，再 chatStreamWithFallback → Chat），
+// 所以「收到 entered token」等价于「此刻注入的中断一定能换成一次真正的取消」。
+// 反过来说，只用固定延迟（原实现 300ms）当窗口，注入就可能落在
+// 「任务已被选中运行」与「cancelLLM 已装上」之间的空档：那时 registerInterrupt
+// 已打印 preempt 日志并置位让位信号，但 cancelCurrentLLM() 拿到的 cancel 仍是 nil
+// ⇒ 取消不生效、受害者跑满延迟后以 outcomeDone 结束（runTaskSteps 在 outcomeDone
+// 处直接返回，不再经过安全点）⇒ 栈深永远到不了目标值。实测该空档在高负载/-race
+// 插桩下命中 12/30 轮。
+//
+// 阻塞到 ctx 取消或 gate 关闭：因此不存在「错过窗口」这回事，也不再需要
+// 靠延迟长短来迁就调度速度（延迟参数保持原值不动）。
+func (p *gatedProvider) Chat(ctx context.Context, _ *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+	select {
+	case p.entered <- struct{}{}:
+	default: // 缓冲满：不代表状态缺失，只为避免测试替身把任务卡死
+	}
+	select {
+	case <-p.gate:
+		p.completed.Add(1)
+		return &agentAPI.CompletionResponse{Content: "fixed-reply"}, nil
+	case <-ctx.Done():
+		p.cancelled.Add(1)
+		return nil, ctx.Err()
+	}
+}
+
+func (p *gatedProvider) ChatStream(context.Context, *agentAPI.CompletionRequest) (<-chan agentAPI.StreamChunk, error) {
+	return nil, errors.New("gated provider: 非流式")
+}
+
+func (p *gatedProvider) MaxContextTokens() int { return 8192 }
+
+// waitEntered 等到受害者真的进入一次可取消的 LLM 调用。
+func waitEntered(t *testing.T, p *gatedProvider, wait time.Duration) {
+	t.Helper()
+	select {
+	case <-p.entered:
+	case <-time.After(wait):
+		t.Fatalf("%v 内没有任何任务进入可取消的 LLM 调用", wait)
+	}
+}
 
 func waitForRunning(a *Agent, pred func(*Task) bool, wait time.Duration) *Task {
 	deadline := time.Now().Add(wait)
@@ -216,14 +277,28 @@ func waitForRunning(a *Agent, pred func(*Task) bool, wait time.Duration) *Task {
 	return nil
 }
 
-func TestStress_NestingReachesStructuralBoundThenUnwindsLIFO(t *testing.T) {
-	const llmDelay = 300 * time.Millisecond // 窗口要够宽，让每次 cancel 都来得及生效
+// waitStackDepth 等到中断栈真的达到 want 帧（轮询，不假设固定时间）。
+func waitStackDepth(t *testing.T, a *Agent, want int, wait time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for {
+		n := len(a.DumpScheduler().SuspendStack)
+		if n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待中断栈深达到 %d 超时（%v）：当前 %d", want, wait, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
+func TestStress_NestingReachesStructuralBoundThenUnwindsLIFO(t *testing.T) {
 	plugin.RegisterFactory("stress_nest_builtin", func(string, map[string]interface{}) (sdk.Plugin, error) {
 		return nil, nil
 	})
 
-	sp := &fixedDelayProvider{delay: llmDelay}
+	sp := newGatedProvider()
 	bus := newLevelRecorder()
 	a := New(AgentConfig{
 		ID:              "stress-nest",
@@ -239,7 +314,7 @@ func TestStress_NestingReachesStructuralBoundThenUnwindsLIFO(t *testing.T) {
 
 	// 放一个排队任务（无级别）当栈底。
 	a.io.InjectInput("cli", "text", map[string]interface{}{"content": "nest-base"})
-	if r := waitForRunning(a, func(tk *Task) bool { return tk.Class == TaskQueued }, 5*time.Second); r == nil {
+	if r := waitForRunning(a, func(tk *Task) bool { return tk.Class == TaskQueued }, 10*time.Second); r == nil {
 		t.Fatal("排队任务未开始运行")
 	}
 
@@ -256,32 +331,27 @@ func TestStress_NestingReachesStructuralBoundThenUnwindsLIFO(t *testing.T) {
 		{LevelCritical, "stress_nest_builtin", LevelInteractive}, // 受害者=L3
 	}
 	for i, st := range steps {
+		// ① 等预期的受害者成为运行任务（类别/级别）。
 		if waitForRunning(a, func(tk *Task) bool {
 			if st.lv == LevelBackground {
 				return tk.Class == TaskQueued
 			}
 			return tk.Class == TaskInterrupt && tk.Level == st.run
-		}, 5*time.Second) == nil {
+		}, 10*time.Second) == nil {
 			t.Fatalf("第 %d 级（%v）注入前未等到预期的受害者运行", i+1, st.lv)
 		}
+		// ② 等它真的进入**可取消的** LLM 调用——这是「取消会生效」的充要状态，
+		//    不是时间估计。只有到这里注入，抢占才必然换出一次挂起。
+		waitEntered(t, sp, 10*time.Second)
+
 		a.io.InjectInterruptTextOpts(st.src, "cli", fmt.Sprintf("nest-%d", i+1),
 			agentIO.InjectOptions{Priority: map[Level]string{
 				LevelBackground: "L1", LevelMessage: "L2",
 				LevelInteractive: "L3", LevelCritical: "L4",
 			}[st.lv]})
 
-		// 等这一层真的压进栈（否则下一级的"受害者"条件会被误判）。
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			if len(a.DumpScheduler().SuspendStack) >= i+1 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("第 %d 级注入后栈深未达 %d：%d",
-					i+1, i+1, len(a.DumpScheduler().SuspendStack))
-			}
-			time.Sleep(time.Millisecond)
-		}
+		// ③ 等这一层真的压进栈（否则下一级的"受害者"条件会被误判）。
+		waitStackDepth(t, a, i+1, 10*time.Second)
 	}
 
 	// 结构上限：4 帧 = 排队(L0) + L1 + L2 + L3 挂起，L4 运行中。
@@ -292,7 +362,8 @@ func TestStress_NestingReachesStructuralBoundThenUnwindsLIFO(t *testing.T) {
 		t.Fatal("已到结构上限，L4 之上不该再有下潜余量")
 	}
 
-	// 排空：4 层必须逐层弹回，且顺序严格 LIFO。
+	// 排空：放开闸门，让仍在运行的 L4 自然收尾，4 层再逐层弹回，顺序严格 LIFO。
+	close(sp.gate)
 	snap := waitQuiescent(t, a, 5, 30*time.Second)
 	if n := len(snap.SuspendStack); n != 0 {
 		t.Fatalf("排空后中断栈=%d，期望 0", n)
