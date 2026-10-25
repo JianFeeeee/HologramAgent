@@ -164,7 +164,17 @@ func launchSidecar(dir, name, simDir string) (*sidecarProcess, error) {
 	return launchProcess("node", mainJS, dir, name, simDir)
 }
 
+// launchProcess 以 dir 作为工作目录拉起子进程（绝大多数调用的形态）。
 func launchProcess(bin, arg, dir, name, simDir string) (*sidecarProcess, error) {
+	return launchProcessIn(bin, arg, dir, name, simDir, dir)
+}
+
+// launchProcessIn 与 launchProcess 相同，但工作目录可单独指定。
+//
+// 为什么要单独一个函数而不是给 launchProcess 加参数：那会改动 4 个既有
+// 调用点（含测试），而它们的语义都是"工作目录 = skill 目录"。只有
+// skill_workdir 配置这一处需要另给目录，用变体表达的意图更清楚。
+func launchProcessIn(bin, arg, dir, name, simDir, workDir string) (*sidecarProcess, error) {
 	nodePath := bin
 	if bin == "node" {
 		if p := os.Getenv("NODE_PATH"); p != "" {
@@ -173,7 +183,10 @@ func launchProcess(bin, arg, dir, name, simDir string) (*sidecarProcess, error) 
 	}
 
 	cmd := exec.Command(nodePath, arg, dir)
-	cmd.Dir = dir
+	if workDir == "" {
+		workDir = dir
+	}
+	cmd.Dir = workDir
 	cmd.Stderr = os.Stderr
 
 	// Add openclaw CLI bin dir to PATH so subprocesses can exec 'openclaw' command

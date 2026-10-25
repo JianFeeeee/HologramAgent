@@ -443,6 +443,20 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 		}
 	}
 
+	// ★★ 空中断（kernel/overflow）：不做任何对话处理，只做语义相关性裁剪。
+	//
+	// 这是 contextoverflow 的**原始设计**（2026-10-25 按用户口径修正）：
+	// L4 中断本身不携带消息，唯一用途是把当前任务抢占下来，好在任务边界
+	// 做一次语义相关性裁剪。此前实现把它反过来了（先裁剪、再发一条
+	// 「已裁剪 N 条…」的通知），那等于把调度信号变成了回执。
+	//
+	// 因此这里：裁剪 → 结束本轮，**不进 LLM、不写上下文、不发回复**。
+	// 用 terminalSkipped（不是 terminalError）：这是正常完成，不是故障。
+	if in.airInterrupt {
+		a.pruneForAirInterrupt()
+		return nil, terminalSkipped
+	}
+
 	// 工具提醒/中断（terminal_watch、timer 等）不是用户发言：
 	// 以 system 角色注入 LLM，且不写入用户对话履历。
 	isInterrupt, _ := evt.Payload["interrupt"].(bool)
@@ -706,12 +720,18 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 				if f.Terminal == terminalError {
 					return outcomeFailed // 恢复预算耗尽，f.Err 已写明
 				}
-				// 已裁剪。**必须退回 StepPrepare 重建 f.Msgs**：
-				// f.Msgs 只在 stepPrepare 里由 buildMessages 装配，stepLLM 不重建；
-				// 而挂起帧里那份就是刚刚超限的那份，复用它等于原样再发一次。
-				f.Turn++
-				f.Step = StepPrepare
-				return outcomeContinue
+				// ★ 已发出 L4 空中断，**裁剪尚未发生**（它在空中断任务被调度
+				// 执行时才做）。所以这里不能让本帧原地重跑：
+				//
+				//   · 原地重跑 = 拿同一份超限内容再发一次，必然再次超限
+				//     （这正是 recover budget 会被快速烧光的原因）；
+				//   · 真正的裁剪发生在任务边界，也就是**本任务让位之后**。
+				//
+				// 语义上本帧的职责到此为止：把现场交出去（outcomeSuspended），
+				// 由空中断任务抢占执行、完成裁剪，随后本帧再被恢复。
+				//
+				// 与"用户按停止"不同：那不是让位，是终结。两者不能混。
+				return outcomeSuspended
 			}
 			// 未处理（如轻量内核不裁剪）：落到下面按普通错误处理。
 		}

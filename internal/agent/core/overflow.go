@@ -292,32 +292,20 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 		return 0
 	}
 
+	// ★ 只发空中断，**不在这里裁剪**（2026-10-25 按原始设计修正）。
+	//
+	// 原设计：L4 空中断把当前任务抢占下来 ⇒ 任务边界处做语义相关性裁剪。
+	// 此前这里先 pruneByQuery 再 raise，把中断变成了"裁剪已完成"的回执，
+	// 顺序反了（见 raiseContextOverflow 里记录的偏移经过）。
+	//
+	// 这里返回 0 是如实的：本轮**还没有**裁剪，裁剪会在空中断任务被
+	// 调度执行时发生（pruneForAirInterrupt）。调用方若要判断"有没有腾出
+	// 空间"，必须看下一轮的水位，而不是这个返回值。
 	before := a.context.Len()
-	beforeTokens := a.accumulatedTokens()
-	// pruned 是**写进 docStore 的条数**（Prune 内部计数），不是「少了几条」。
-	// 判据必须看上下文是否真的变小了 —— 因为 docStore == nil 时（轻量内核、
-	// 文档记忆未初始化）pruned 恒为 0，但裁剪其实照常发生了。用 pruned 判会
-	// 把正常裁剪误判成 bug 而终止。
-	pruned := a.pruneByQuery(query)
-	after := a.context.Len()
-	afterTokens := a.accumulatedTokens()
-
-	if after >= before || afterTokens >= beforeTokens {
-		// 超页了却裁不动 ⇒ 判定逻辑有问题（或 topK ≥ 实际条数）。
-		// 按用户口径：保存现场 + 明确终止，**不重试不触发中断**。
-		// 为什么不再试一次：L4 遇 L4 不能抢占（canPreempt 用严格大于），
-		// 第二个 L4 只会排队等，永远等不到能执行的时机。
-		log.Printf("[agent] context overflow aborted: ratio=%.2f no reduction "+
-			"(%d→%d events, %d→%d tokens) — 判定逻辑可能有 bug，保存现场并终止本轮，不重试",
-			ratio, before, after, beforeTokens, afterTokens)
-		a.markOverflowAborted(ratio, before)
-		return 0
-	}
-	pruned = before - after
-	log.Printf("[agent] context overflow: ratio=%.2f pruned=%d (%d→%d events), raising L4",
-		ratio, pruned, before, after)
-	a.raiseContextOverflow(pruned)
-	return pruned
+	log.Printf("[agent] context overflow: ratio=%.2f events=%d — raising L4 air interrupt (prune happens at task boundary)",
+		ratio, before)
+	a.raiseContextOverflow(0)
+	return 0
 }
 
 // markOverflowAborted 记录一次「超页但裁不出东西」的终止，供状态面观测。
@@ -329,35 +317,37 @@ func (a *Agent) markOverflowAborted(ratio float64, events int) {
 	a.overflowStat.Unlock()
 }
 
-// raiseContextOverflow 通过 **L4 唯一入口**上报上下文超页。
+// raiseContextOverflow 通过 **L4 唯一入口**发起一次上下文超页中断。
 //
-// 与 panic / selfip 并列，是 L4 的第三个来源。
+// 与 panic / child_contextfull 并列，是 L4 的第三个来源。
 //
-// 消息内容不是通知而是**必要的认知输入**：L4 任务按调度器设计拿不到被打断
-// 者的上下文（suspend 的 D1=B 注释明确「不把被打断任务的任何内容交给它」），
-// 所以「已裁剪了什么、查不到不等于不存在」必须显式写进去。
+// ★ **它是一次空中断：不带任何消息**（2026-10-25 按原始设计修正）。
 //
-// 这条提示直接对应 v4 实测的一类失败：HA 对查不到的事实给出
-// 「库里根本没有 X，任何数字都是编的」——它不知道有内容被移走，
-// 于是把「没检索到」推断成「不存在」。
+// 用途是把当前任务抢占下来，好在任务边界做一次**语义相关性裁剪**——
+// 中断是触发源，裁剪是它引发的动作，两者不是同一步。
+//
+// ## 此前为什么被写成了"带文本的通知"（记录一下这个偏移，避免再犯）
+//
+// 当时的推理是：L4 任务按调度器设计拿不到被打断者的上下文（suspend 的
+// D1=B），所以"已裁剪了什么、查不到不等于不存在"必须显式写进 payload，
+// 否则模型会把「没检索到」推断成「不存在」（v4 实测过这类回答）。
+//
+// 那个**观察**是真的，但**结论**错了：它把"补偿 L4 看不到上下文"当成了
+// 中断该带正文的理由，于是裁剪被挪到了 raise 之前（先裁完再发一条回执），
+// 中断本身退化成一个通知任务——既晚了一步，又给模型塞了它不需要的说明。
+//
+// 正确的分工是：中断只负责抢占（空），裁剪由任务真正执行时做
+// （见 pruneForAirInterrupt）。模型不需要知道"有内容被移走"这件事本身，
+// 它需要的是**保留下来的内容与当前问题相关**——那由裁剪质量保证。
 func (a *Agent) raiseContextOverflow(pruned int) {
 	a.overflowStat.Lock()
 	a.overflowStat.Triggered++
 	a.overflowStat.LastPruned = pruned
 	a.overflowStat.Unlock()
 
-	a.raiseVector(VectorContextOverflow, vectorArgs{Pruned: pruned})
-}
-
-// overflowNotice 构造超页中断消息。
-//
-// 抽成纯函数是为了可测：这条消息的措辞不是装饰，它是 agent 唯一的认知输入
-// （L4 任务按调度器设计拿不到被打断者的上下文）。「查不到不等于不存在」这句
-// 直接对应 v4 实测的一类真实失败 —— HA 对检索不到的事实回答
-// 「库里根本没有 X，任何数字都是编的」，因为它不知道有内容被移走了。
-func overflowNotice(pruned int) string {
-	return fmt.Sprintf("[内核] 上下文超页：已裁剪 %d 条低相关事件到文档记忆。"+
-		"被裁内容仍可检索，但需显式查询；查不到不等于不存在。", pruned)
+	// 空中断：vectorArgs 不带 Pruned —— 中断不需要知道裁了多少，
+	// 那是裁剪侧自己的统计（overflowStat），不是中断的输入。
+	a.raiseVector(VectorContextOverflow, vectorArgs{})
 }
 
 // isUpstreamContextFull 判定上游错误是否表示「上下文装不下」。
@@ -380,3 +370,67 @@ func (a *Agent) contextLenSafe() int {
 }
 
 // overflowStat 字段定义在 Agent 上（见 agent.go），此处只做访问辅助。
+
+// pruneForAirInterrupt 执行一次因空中断触发的语义相关性裁剪。
+//
+// ## 为什么裁剪放在这里（而不是发中断之前）
+//
+// contextoverflow 的原始设计是：L4 空中断把当前任务抢占下来 ⇒ 任务边界处
+// 做语义相关性裁剪。中断是**触发源**，裁剪是它引发的**动作**。
+//
+// 此前实现顺序反了（先 pruneByQuery 再 raise 带文本的中断），于是那个 L4
+// 退化成一个"通知裁剪已发生"的回执任务——既晚了一步（裁剪早已完成），
+// 又给模型塞了一条它不需要的说明。
+//
+// ## query 取什么
+//
+// 空中断本身没有正文，所以拿不到"当前问题"。这里用上下文里**最后一条真实
+// 用户输入的文本**作为相关性基准：裁剪要保留的正是与"刚才在做的事"相关的
+// 内容。取不到就退化为按时间保留（pruneByQuery 内部对空 query 的处理）。
+func (a *Agent) pruneForAirInterrupt() {
+	if a == nil || a.context == nil || a.isLightKernel() {
+		return
+	}
+	before := a.context.Len()
+	beforeTokens := a.accumulatedTokens()
+
+	a.pruneByQuery(a.lastUserQueryForPrune())
+
+	after := a.context.Len()
+	afterTokens := a.accumulatedTokens()
+	if after >= before && afterTokens >= beforeTokens {
+		// 裁不动：记录下来即可。空中断不承担"必须裁成功"的职责——
+		// 真正的超限判定仍在 enforceContextBudget，那里有终止语义。
+		a.overflowStat.Lock()
+		a.overflowStat.Aborted++
+		a.overflowStat.LastRatio = a.overflowRatioNow()
+		a.overflowStat.LastEvents = before
+		a.overflowStat.Unlock()
+		log.Printf("[agent] air-interrupt prune: no reduction (%d→%d events, %d→%d tokens)",
+			before, after, beforeTokens, afterTokens)
+		return
+	}
+	a.overflowStat.Lock()
+	a.overflowStat.Triggered++
+	a.overflowStat.LastPruned = before - after
+	a.overflowStat.Unlock()
+	log.Printf("[agent] air-interrupt prune: %d→%d events (%d→%d tokens), ratio=%.2f",
+		before, after, beforeTokens, afterTokens, a.overflowRatioNow())
+}
+
+// lastUserQueryForPrune 取最后一条非中断用户输入作为裁剪的相关性基准。
+//
+// 空中断自己没有正文，但它被触发时"刚才在做什么"是有答案的：
+// 上下文里最后一条真实用户输入。取不到返回空串（pruneByQuery 按时间保留）。
+func (a *Agent) lastUserQueryForPrune() string {
+	if a == nil || a.context == nil {
+		return ""
+	}
+	evts := a.context.Recent(0) // 值为 ContextEvent（非指针），Recent 已做深拷贝
+	for i := len(evts) - 1; i >= 0; i-- {
+		if evts[i].Input != "" {
+			return evts[i].Input
+		}
+	}
+	return ""
+}

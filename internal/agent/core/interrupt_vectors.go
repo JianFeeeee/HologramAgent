@@ -57,8 +57,6 @@ type vectorArgs struct {
 	Task *Task
 	// Panic 是 recover() 取到的值（VectorTaskPanic 使用）。
 	Panic any
-	// Pruned 是超页时被裁剪的消息条数（VectorContextOverflow 使用）。
-	Pruned int
 	// ChildID 是驻留子标识（VectorChildContextFull 使用）。
 	ChildID string
 }
@@ -113,7 +111,19 @@ var interruptVectors = map[VectorID]interruptVector{
 		Level:  LevelCritical,
 		Source: func(vectorArgs) string { return "kernel/overflow" },
 		Guard:  func(vectorArgs) bool { return true },
-		Build:  func(a vectorArgs) string { return overflowNotice(a.Pruned) },
+		// ★ 空中断：**不携带任何消息**（2026-10-25 按原始设计修正）。
+		//
+		// 原始设计里这个 L4 的用途是「**触发**语义相关性裁剪」——它本身
+		// 只是一次调度信号，不是一条给模型的通知。此前的实现把它变成了
+		// 「裁剪完事后发一条回执」（先在 raise 之前 pruneByQuery，再让
+		// Build 生成「已裁剪 N 条…」的说明文本），顺序与语义都反了。
+		//
+		// 现在：Build 返回空串 ⇒ payload 里没有 content ⇒ 任务是空中断；
+		// 裁剪由任务真正被调度执行时（rebalanceFrameContextPrefix）触发。
+		//
+		// 为什么必须带空串而不是省略 Build：lookupVector 的契约要求 Build
+		// 存在（否则调用方 nil panic），"没有正文"要显式表达成 ""。
+		Build: func(vectorArgs) string { return "" },
 	},
 
 	VectorChildContextFull: {
