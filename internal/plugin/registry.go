@@ -218,18 +218,66 @@ func NewRegistry() *Registry {
 	}
 }
 
-func (r *Registry) SetIOManager(iom *agentIO.IOManager)                     { r.iom = iom }
-func (r *Registry) SetEventBus(evBus *events.Bus)                           { r.evBus = evBus }
-func (r *Registry) SetMemory(memDB *memory.GraphDB)                         { r.memDB = memDB }
-func (r *Registry) SetTextMemory(tm *text.Memory)                           { r.textMem = tm }
-func (r *Registry) SetDocStore(ds *doc.Store)                               { r.docStore = ds }
-func (r *Registry) SetKnowledge(ks *knowledge.Store)                        { r.ks = ks }
-func (r *Registry) SetProviderManager(mgr *agentAPI.ProviderManager)        { r.mgr = mgr }
-func (r *Registry) SetConfigRegistry(cfgReg *internalConfig.ConfigRegistry) { r.cfgReg = cfgReg }
-func (r *Registry) SetPluginDir(dir string)                                 { r.plgDir = dir }
-func (r *Registry) SetDataDir(dir string)                                   { r.dataDir = dir }
-func (r *Registry) SetLuaVM(vm *luaVM.VM)                                   { r.lua = vm }
-func (r *Registry) SetBaseAPIKey(key string)                                { r.baseKey = key }
+func (r *Registry) SetIOManager(iom *agentIO.IOManager) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.iom = iom
+}
+func (r *Registry) SetEventBus(evBus *events.Bus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evBus = evBus
+}
+func (r *Registry) SetMemory(memDB *memory.GraphDB) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.memDB = memDB
+}
+func (r *Registry) SetTextMemory(tm *text.Memory) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.textMem = tm
+}
+func (r *Registry) SetDocStore(ds *doc.Store) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.docStore = ds
+}
+func (r *Registry) SetKnowledge(ks *knowledge.Store) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ks = ks
+}
+func (r *Registry) SetProviderManager(mgr *agentAPI.ProviderManager) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mgr = mgr
+}
+func (r *Registry) SetConfigRegistry(cfgReg *internalConfig.ConfigRegistry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfgReg = cfgReg
+}
+func (r *Registry) SetPluginDir(dir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.plgDir = dir
+}
+func (r *Registry) SetDataDir(dir string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dataDir = dir
+}
+func (r *Registry) SetLuaVM(vm *luaVM.VM) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lua = vm
+}
+func (r *Registry) SetBaseAPIKey(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.baseKey = key
+}
 
 // kernelControlAllowed 决定某个内置插件能否拿到内核重启/关机通道。
 //
@@ -250,38 +298,95 @@ var kernelControlAllowed = map[string]bool{
 // ★ 为何用 setter 而不是构造参数：internal/plugin 不能 import cmd/homed
 //
 //	（那是反向依赖，且 cmd 包不可被 import）。用接口 + setter 打破方向。
-func (r *Registry) SetKernelControl(k sdk.KernelControlAPI) { r.kernelCtl = k }
+func (r *Registry) SetKernelControl(k sdk.KernelControlAPI) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.kernelCtl = k
+}
 
 // kernelControlFor 按插件名决定是否授予内核控制通道。
 //
 // 未在白名单里的插件拿到 nil —— SDK 侧 KernelControl() 返回 nil，
 // 调用方（插件自己）必须判 nil 并如实告知用户"当前环境不支持"。
 func (r *Registry) kernelControlFor(name string) sdk.KernelControlAPI {
-	if r.kernelCtl == nil || !kernelControlAllowed[name] {
-		return nil
-	}
-	return r.kernelCtl
+	r.mu.RLock()
+	ctl := r.kernelCtl
+	r.mu.RUnlock()
+	return kernelControlForCtl(ctl, name)
 }
 
-func (r *Registry) SetToolRegistrar(fn sdk.ToolRegistrar)   { r.regTool = fn }
-func (r *Registry) SetStageRegistrar(fn sdk.StageRegistrar) { r.regStage = fn }
-func (r *Registry) SetAPIRegistrar(fn sdk.APIRegistrar)     { r.regAPI = fn }
-func (r *Registry) SetToolCleaner(tc PluginToolCleaner)     { r.toolCleaner = tc }
-func (r *Registry) SetStatusProvider(sp sdk.StatusAPI)      { r.status = sp }
-func (r *Registry) SetSupervisor(sup sdk.SupervisorAPI)     { r.sup = sup }
-func (r *Registry) SetTracker(trk *tracker.Tracker)         { r.trk = trk }
-func (r *Registry) SetConfig(cfg *types.Config)             { r.cfg = cfg }
-func (r *Registry) SetStageHost(sh sdk.ToolSource)          { r.stageHost = sh }
+// kernelControlForCtl 是 kernelControlFor 的**无锁内核**：给定已快照的 ctl 决定授权。
+//
+// 拆出来的原因：buildSDK 要在**一次** RLock 里取走整组依赖（见 snapshotDeps），
+// 不能再回头单独取锁 —— RWMutex 不可重入，持锁再 RLock 在写者排队时会自锁。
+func kernelControlForCtl(ctl sdk.KernelControlAPI, name string) sdk.KernelControlAPI {
+	if ctl == nil || !kernelControlAllowed[name] {
+		return nil
+	}
+	return ctl
+}
+
+func (r *Registry) SetToolRegistrar(fn sdk.ToolRegistrar) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.regTool = fn
+}
+func (r *Registry) SetStageRegistrar(fn sdk.StageRegistrar) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.regStage = fn
+}
+func (r *Registry) SetAPIRegistrar(fn sdk.APIRegistrar) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.regAPI = fn
+}
+func (r *Registry) SetToolCleaner(tc PluginToolCleaner) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.toolCleaner = tc
+}
+func (r *Registry) SetStatusProvider(sp sdk.StatusAPI) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status = sp
+}
+func (r *Registry) SetSupervisor(sup sdk.SupervisorAPI) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sup = sup
+}
+func (r *Registry) SetTracker(trk *tracker.Tracker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trk = trk
+}
+func (r *Registry) SetConfig(cfg *types.Config) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = cfg
+}
+func (r *Registry) SetStageHost(sh sdk.ToolSource) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stageHost = sh
+}
 
 // SetDeviceAuthQuery 注入"设备是否已授权"的查询（D4）。
 //
 // 由 bootstrap 在 agent 构造完成后调用。注入后，ToolAPI.CanUse 才会
 // 对未授权设备返回 false —— 此前 ToolAPI 路径**完全不过授权闸**。
 func (r *Registry) SetDeviceAuthQuery(fn func(deviceID string) bool) {
+	r.mu.Lock()
 	r.deviceAuth = fn
+	r.mu.Unlock()
 	sdk.SetDeviceAuthQuery(fn)
 }
-func (r *Registry) SetIndexer(idx *memory.Indexer) { r.idx = idx }
+func (r *Registry) SetIndexer(idx *memory.Indexer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.idx = idx
+}
 
 // SetLoadAllowlist 限制 Load 仅装载指定插件名（failback 受限启动用）。
 // 空/未设置 = 装载全部。违反白名单的插件（含已注册工厂）一律跳过。
@@ -334,45 +439,168 @@ func (d *channelDevice) Execute(tool string, args map[string]interface{}) (inter
 }
 func (d *channelDevice) ChannelDef() agentIO.ChannelDef { return d.chDef }
 
-func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
-	// 插件自己的安装目录：rawfile 资源与可写工作目录都挂在它下面。
-	pluginDir := filepath.Join(r.plgDir, name)
+// sdkDeps 是 buildSDK 所需依赖的**一致性快照**（KERNEL-REGISTRY-SETLOCK）。
+//
+// 为什么要有这层：这批字段由 Set* 在启动图里注入，读侧若逐个裸读
+// （原来的写法），每一处都是独立的竞争点；而且逐个"读一次锁一次"会让
+// 同一次 buildSDK 里拿到**互相不一致**的组合（比如 lua 已是新的、cfg 还是旧的）。
+// 一次 RLock 取齐既消灭竞争，也保证同一次 SDK 装配看到的是同一个状态。
+type sdkDeps struct {
+	plgDir    string
+	dataDir   string
+	cfgReg    *internalConfig.ConfigRegistry
+	iom       *agentIO.IOManager
+	evBus     *events.Bus
+	memDB     *memory.GraphDB
+	textMem   *text.Memory
+	docStore  *doc.Store
+	ks        *knowledge.Store
+	mgr       *agentAPI.ProviderManager
+	lua       *luaVM.VM
+	baseKey   string
+	regTool   sdk.ToolRegistrar
+	regStage  sdk.StageRegistrar
+	regAPI    sdk.APIRegistrar
+	status    sdk.StatusAPI
+	sup       sdk.SupervisorAPI
+	trk       *tracker.Tracker
+	cfg       *types.Config
+	stageHost sdk.ToolSource
+	idx       *memory.Indexer
+	kernelCtl sdk.KernelControlAPI
+}
 
-	sett := sdk.NewSettings(name, r.cfgReg)
+// snapshotDeps 在一次 RLock 内取走 buildSDK 需要的全部依赖。
+func (r *Registry) snapshotDeps() sdkDeps {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return sdkDeps{
+		plgDir:    r.plgDir,
+		dataDir:   r.dataDir,
+		cfgReg:    r.cfgReg,
+		iom:       r.iom,
+		evBus:     r.evBus,
+		memDB:     r.memDB,
+		textMem:   r.textMem,
+		docStore:  r.docStore,
+		ks:        r.ks,
+		mgr:       r.mgr,
+		lua:       r.lua,
+		baseKey:   r.baseKey,
+		regTool:   r.regTool,
+		regStage:  r.regStage,
+		regAPI:    r.regAPI,
+		status:    r.status,
+		sup:       r.sup,
+		trk:       r.trk,
+		cfg:       r.cfg,
+		stageHost: r.stageHost,
+		idx:       r.idx,
+		kernelCtl: r.kernelCtl,
+	}
+}
+
+// ioManagerOrNil 返回当前 IOManager 快照（无则 nil）。
+//
+// 给 buildSDK 里的**闭包**用：闭包在插件 Start 期间才被调用，那时不能持锁
+// （会跨用户代码），所以每次都取一次新快照 —— 语义与原来的 r.iom 裸读一致，
+// 只是变成有序读。
+func (r *Registry) ioManagerOrNil() *agentIO.IOManager {
+	r.mu.RLock()
+	iom := r.iom
+	r.mu.RUnlock()
+	return iom
+}
+
+// pluginDirOrEmpty / cfgRegistryOrNil / toolCleanerOrNil / stageHostOrNil
+// 是其余读点的同款访问器。集中在这里，避免各处自己拼锁走样。
+func (r *Registry) pluginDirOrEmpty() string {
+	r.mu.RLock()
+	dir := r.plgDir
+	r.mu.RUnlock()
+	return dir
+}
+
+func (r *Registry) cfgRegistryOrNil() *internalConfig.ConfigRegistry {
+	r.mu.RLock()
+	cfgReg := r.cfgReg
+	r.mu.RUnlock()
+	return cfgReg
+}
+
+func (r *Registry) toolCleanerOrNil() PluginToolCleaner {
+	r.mu.RLock()
+	tc := r.toolCleaner
+	r.mu.RUnlock()
+	return tc
+}
+
+func (r *Registry) eventBusOrNil() *events.Bus {
+	r.mu.RLock()
+	bus := r.evBus
+	r.mu.RUnlock()
+	return bus
+}
+
+func (r *Registry) stageHostOrNil() sdk.ToolSource {
+	r.mu.RLock()
+	sh := r.stageHost
+	r.mu.RUnlock()
+	return sh
+}
+
+func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
+	// ★ 依赖快照（2026-10-24，KERNEL-REGISTRY-SETLOCK）。
+	//
+	// 为什么必须**一次取齐**而不是用 r.xxx 逐个裸读：
+	// 这批字段由 Set* 在启动图第 4 层注入，而 buildSDK 在插件加载时同理并发执行；
+	// 每个 r.xxx 各自裸读 = 每个都是一处数据竞争（实测 4% 概率报 7 条）。
+	//
+	// 为什么不在整个 buildSDK 外面套一把 RLock：下面的闭包（regOutput 等）
+	// 只在**插件 Start 期间**才被调用，而 Start 本身可能在持锁区外跑很久；
+	// 持着 registry 读锁跨用户代码要冒死锁风险（插件回调进内核注册面）。
+	// 所以取到快照就立刻放锁，闭包里再用访问器晚绑定。
+	deps := r.snapshotDeps()
+
+	// 插件自己的安装目录：rawfile 资源与可写工作目录都挂在它下面。
+	pluginDir := filepath.Join(deps.plgDir, name)
+
+	sett := sdk.NewSettings(name, deps.cfgReg)
 	if sd, ok := sett.(interface{ SetDataDir(string) }); ok {
 		// 插件专属数据目录：<data>/plugin_data/<name>，保证存在
-		dir := filepath.Join(r.dataDir, "plugin_data", name)
+		dir := filepath.Join(deps.dataDir, "plugin_data", name)
 		os.MkdirAll(dir, 0755)
 		sd.SetDataDir(dir)
 	}
 
-	regTool := r.regTool
+	regTool := deps.regTool
 	if regTool == nil {
 		regTool = func(toolName string, def sdk.ToolDef, handler sdk.ToolHandler) error {
 			return nil
 		}
 	}
-	regStage := r.regStage
+	regStage := deps.regStage
 	if regStage == nil {
 		regStage = func(stage sdk.Stage, handler sdk.StageHandler) {}
 	}
 	// stage handler 注册时带上归属插件名，使卸载/崩溃时能成组摘除。
 	// StageHost 实现了 RegisterStageFor；其他实现（测试替身）退回无归属注册。
-	if h, ok := r.stageRegistrarFor(); ok {
+	if h, ok := stageRegistrarForSource(deps.stageHost); ok {
 		regStage = func(stage sdk.Stage, handler sdk.StageHandler) {
 			h(name, stage, handler)
 		}
 	}
-	regAPI := r.regAPI
+	regAPI := deps.regAPI
 	if regAPI == nil {
 		regAPI = func(name string) error { return nil }
 	}
 
 	regOutput := func(chName string, caps int, desc string, def sdk.ChannelDef, handler sdk.ToolHandler) error {
-		if r.iom == nil {
+		iom := r.ioManagerOrNil()
+		if iom == nil {
 			return nil
 		}
-		if err := r.iom.RegisterDevice(&channelDevice{
+		if err := iom.RegisterDevice(&channelDevice{
 			name:    chName,
 			caps:    agentIO.OutputCapability(caps),
 			desc:    desc,
@@ -392,43 +620,45 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		// 按此刻的状态判会对它误报（实测：把 qq 报成"只声明了输出通道"）。
 		// 真正该问的问题是"插件 Start 结束后，这个出站通道有没有对应的入站声明" ——
 		// 那在 load 完成后统一判（见 warnOutputOnlyChannels）。
-		if _, ok := r.iom.LookupInputChannel(chName); !ok {
-			_ = r.iom.RegisterInputChannelFrom(name, chName, agentIO.ChannelDef(def))
+		if _, ok := iom.LookupInputChannel(chName); !ok {
+			_ = iom.RegisterInputChannelFrom(name, chName, agentIO.ChannelDef(def))
 		}
 		r.noteChannel(name, chName, true)
 		return nil
 	}
 
 	regOutputUnreg := func(chName string) error {
-		if r.iom == nil {
+		iom := r.ioManagerOrNil()
+		if iom == nil {
 			return nil
 		}
-		r.iom.UnregisterDevice(chName)
+		iom.UnregisterDevice(chName)
 		r.forgetChannel(name, chName)
 		return nil
 	}
 
 	regInput := func(chName string, def sdk.ChannelDef) error {
-		if r.iom == nil {
+		iom := r.ioManagerOrNil()
+		if iom == nil {
 			return nil
 		}
 		// inputch 是最基本的输入路由单位：登记**归属插件**，便于父 agent 看清
 		// "哪个插件的哪个 inputch 划给了谁"（一个插件可注册多个 inputch）。
-		_ = r.iom.RegisterInputChannelFrom(name, chName, agentIO.ChannelDef(def))
+		_ = iom.RegisterInputChannelFrom(name, chName, agentIO.ChannelDef(def))
 		r.noteChannel(name, chName, false)
 		return nil
 	}
 
 	return sdk.New(name, sdk.SDKConfig{
-		IOManager: r.iom,
-		EventBus:  r.evBus,
+		IOManager: deps.iom,
+		EventBus:  deps.evBus,
 		// 块自带负载（媒体字节在块的 Data），不再需要独立的媒体存储句柄。
 		// 插件名仅用于日志溯源（哪个插件写的块）。
-		Memory:     sdk.NewGraphMemoryWithPlugin(name, r.memDB),
-		TextMemory: sdk.NewTextMemoryWithPlugin(name, r.textMem),
-		DocMemory:  sdk.NewDocMemoryWithPlugin(name, r.docStore),
-		Knowledge:  sdk.NewKnowledge(r.ks),
-		LLM:        sdk.NewLLM(r.mgr, r.cfgReg, r.lua, r.baseKey),
+		Memory:     sdk.NewGraphMemoryWithPlugin(name, deps.memDB),
+		TextMemory: sdk.NewTextMemoryWithPlugin(name, deps.textMem),
+		DocMemory:  sdk.NewDocMemoryWithPlugin(name, deps.docStore),
+		Knowledge:  sdk.NewKnowledge(deps.ks),
+		LLM:        sdk.NewLLM(deps.mgr, deps.cfgReg, deps.lua, deps.baseKey),
 		Settings:   sett,
 		// ★ 变量库：桥接到进程级 security.Global()（**不另建存储**）。
 		// 内核未启用安全模块时它 Available()==false（不是 nil）。
@@ -444,21 +674,21 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		RegOutputUnreg: regOutputUnreg,
 		RegInput:       regInput,
 		PluginMgr:      r,
-		KernelControl:  r.kernelControlFor(name),
+		KernelControl:  kernelControlForCtl(deps.kernelCtl, name),
 
-		Status:     r.status,
-		Supervisor: r.sup,
-		Adapter:    sdk.NewAdapter(r.lua),
-		Tracker:    r.trk,
-		Config:     sdk.NewConfig(r.cfg),
-		Tool:       sdk.NewTool(r.stageHost, r.iom),
-		Indexer:    sdk.NewIndexer(r.idx),
+		Status:     deps.status,
+		Supervisor: deps.sup,
+		Adapter:    sdk.NewAdapter(deps.lua),
+		Tracker:    deps.trk,
+		Config:     sdk.NewConfig(deps.cfg),
+		Tool:       sdk.NewTool(deps.stageHost, deps.iom),
+		Indexer:    sdk.NewIndexer(deps.idx),
 	})
 }
 
 func (r *Registry) Load(dir string) error {
 	if dir == "" {
-		dir = r.plgDir
+		dir = r.pluginDirOrEmpty()
 	}
 	os.MkdirAll(dir, 0755)
 
@@ -549,10 +779,11 @@ func (r *Registry) Load(dir string) error {
 }
 
 func (r *Registry) isDisabled(name string) bool {
-	if r.cfgReg == nil {
+	cfgReg := r.cfgRegistryOrNil()
+	if cfgReg == nil {
 		return false
 	}
-	return r.cfgReg.IsPluginDisabled(name)
+	return cfgReg.IsPluginDisabled(name)
 }
 
 // pluginEntryHash 计算插件入口文件的 SHA256，用于增量重载对比。
@@ -670,10 +901,18 @@ func (r *Registry) runStopHandlers(name string) {
 // 以 sdk.ToolSource 存在 r.stageHost 上。能取到 RegisterStageFor 时就直接用它，
 // 否则退回无归属注册（测试替身、旧集成方）。
 func (r *Registry) stageRegistrarFor() (func(plugin string, stage sdk.Stage, handler sdk.StageHandler), bool) {
-	if r.stageHost == nil {
+	r.mu.RLock()
+	sh := r.stageHost
+	r.mu.RUnlock()
+	return stageRegistrarForSource(sh)
+}
+
+// stageRegistrarForSource 是 stageRegistrarFor 的无锁内核（同样为了快照后复用）。
+func stageRegistrarForSource(sh sdk.ToolSource) (func(plugin string, stage sdk.Stage, handler sdk.StageHandler), bool) {
+	if sh == nil {
 		return nil, false
 	}
-	if h, ok := r.stageHost.(interface {
+	if h, ok := sh.(interface {
 		RegisterStageFor(plugin string, stage sdk.Stage, handler sdk.StageHandler)
 	}); ok {
 		return h.RegisterStageFor, true
@@ -756,16 +995,20 @@ func (r *Registry) releasePluginChannels(plugin string) []string {
 	set := r.pluginChannels[plugin]
 	delete(r.pluginChannels, plugin)
 	r.channelsMu.Unlock()
-	if set == nil || r.iom == nil {
+	if set == nil {
+		return nil
+	}
+	iom := r.ioManagerOrNil()
+	if iom == nil {
 		return nil
 	}
 	var released []string
 	for ch := range set.outputs {
-		r.iom.UnregisterDevice(ch)
+		iom.UnregisterDevice(ch)
 		released = append(released, ch)
 	}
 	for ch := range set.inputs {
-		r.iom.UnregisterInputChannel(ch)
+		iom.UnregisterInputChannel(ch)
 		if !set.outputs[ch] {
 			released = append(released, ch)
 		}
@@ -780,9 +1023,9 @@ func (r *Registry) releasePluginChannels(plugin string) []string {
 // StopAndUnload）只调 UnregisterPluginTools，漏了 stage 与通道两项，
 // 子进程崩溃路径更是三项都没做。
 func (r *Registry) detachPlugin(name string) {
-	if r.toolCleaner != nil {
-		r.toolCleaner.UnregisterPluginTools(name)
-		if sc, ok := r.toolCleaner.(PluginStageCleaner); ok {
+	if tc := r.toolCleanerOrNil(); tc != nil {
+		tc.UnregisterPluginTools(name)
+		if sc, ok := tc.(PluginStageCleaner); ok {
 			if n := sc.UnregisterPluginStages(name); n > 0 {
 				log.Printf("[plugin] %s: 摘除 %d 个 stage handler", name, n)
 			}
@@ -873,7 +1116,7 @@ func (r *Registry) StopAll() {
 
 func (r *Registry) Reload(dir string) (string, error) {
 	if dir == "" {
-		dir = r.plgDir
+		dir = r.pluginDirOrEmpty()
 	}
 	// 增量重载：扫描插件目录，对比入口文件 hash，仅 Stop+重载有变更的插件。
 	// 未变更插件保持运行，避免 plgreload 触发全量 StopAll+Load 导致所有插件重复加载
@@ -949,7 +1192,7 @@ func (r *Registry) LoadOneDir(plgDir, name string) error {
 // 所有插件（含声明了依赖的）立刻加载，调度器就无事可做了。
 func (r *Registry) LoadSkipping(dir string, skip map[string]bool) error {
 	if dir == "" {
-		dir = r.plgDir
+		dir = r.pluginDirOrEmpty()
 	}
 	os.MkdirAll(dir, 0755)
 
@@ -1033,7 +1276,7 @@ func (r *Registry) LoadSkipping(dir string, skip map[string]bool) error {
 }
 
 func (r *Registry) ReloadOne(name string) error {
-	plgDir := filepath.Join(r.plgDir, name)
+	plgDir := filepath.Join(r.pluginDirOrEmpty(), name)
 
 	r.mu.Lock()
 	var removed sdk.Plugin
@@ -1115,13 +1358,13 @@ func (r *Registry) IsDisabled(name string) bool {
 }
 
 func (r *Registry) Enable(name string) error {
-	if r.cfgReg != nil {
-		r.cfgReg.RemoveDisabledPlugin(name)
+	if cfgReg := r.cfgRegistryOrNil(); cfgReg != nil {
+		cfgReg.RemoveDisabledPlugin(name)
 	}
 	r.mu.Lock()
 	delete(r.knownDisabled, name)
 	r.mu.Unlock()
-	plgDir := filepath.Join(r.plgDir, name)
+	plgDir := filepath.Join(r.pluginDirOrEmpty(), name)
 	if r.loadOne(plgDir, name) {
 		log.Printf("[plugin] enabled: %s", name)
 		return nil
@@ -1151,8 +1394,8 @@ func (r *Registry) Disable(name string) error {
 
 	r.detachPlugin(name)
 
-	if r.cfgReg != nil {
-		r.cfgReg.AddDisabledPlugin(name, "system")
+	if cfgReg := r.cfgRegistryOrNil(); cfgReg != nil {
+		cfgReg.AddDisabledPlugin(name, "system")
 	}
 	log.Printf("[plugin] disabled: %s", name)
 	return nil
@@ -1197,8 +1440,8 @@ func (r *Registry) pluginInstalled(name string) bool {
 	if _, ok := globalFactories.Load(name); ok {
 		return true
 	}
-	if r.plgDir != "" {
-		if fi, err := os.Stat(filepath.Join(r.plgDir, name)); err == nil && fi.IsDir() {
+	if dir := r.pluginDirOrEmpty(); dir != "" {
+		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && fi.IsDir() {
 			return true
 		}
 	}
@@ -1208,10 +1451,11 @@ func (r *Registry) pluginInstalled(name string) bool {
 func (r *Registry) ListLoadedPlugins() []string { return r.List() }
 
 func (r *Registry) ListDisabledPlugins() []sdk.DisabledPluginInfo {
-	if r.cfgReg == nil {
+	cfgReg := r.cfgRegistryOrNil()
+	if cfgReg == nil {
 		return nil
 	}
-	list, err := r.cfgReg.ListDisabledPlugins()
+	list, err := cfgReg.ListDisabledPlugins()
 	if err != nil {
 		return nil
 	}
@@ -1238,9 +1482,9 @@ func (r *Registry) DisablePlugin(name, by string) error {
 		return fmt.Errorf("plugin %s not installed", name)
 	}
 	// Check not disabling self if running
-	if r.cfgReg != nil {
+	if cfgReg := r.cfgRegistryOrNil(); cfgReg != nil {
 		// If already disabled, no-op
-		if r.cfgReg.IsPluginDisabled(name) {
+		if cfgReg.IsPluginDisabled(name) {
 			return fmt.Errorf("plugin %s already disabled", name)
 		}
 	}
@@ -1266,8 +1510,8 @@ func (r *Registry) DisablePlugin(name, by string) error {
 
 	r.detachPlugin(name)
 
-	if r.cfgReg != nil {
-		r.cfgReg.AddDisabledPlugin(name, by)
+	if cfgReg := r.cfgRegistryOrNil(); cfgReg != nil {
+		cfgReg.AddDisabledPlugin(name, by)
 	}
 	log.Printf("[plugin] disabled: %s (by %s)", name, by)
 	return nil
@@ -1386,7 +1630,7 @@ func (r *Registry) StartPlugin(name string) error {
 		return nil
 	}
 
-	plgDir := filepath.Join(r.plgDir, name)
+	plgDir := filepath.Join(r.pluginDirOrEmpty(), name)
 	if r.loadOne(plgDir, name) {
 		if wasStopped {
 			log.Printf("[plugin] runtime started: %s（已清运行态关闭）", name)
@@ -1477,16 +1721,16 @@ func (r *Registry) RemovePlugin(name string) error {
 	r.mu.Unlock()
 
 	r.detachPlugin(name)
-	if r.cfgReg != nil {
-		r.cfgReg.RemoveDisabledPlugin(name)
-		r.cfgReg.RemovePlugin(name)
+	if cfgReg := r.cfgRegistryOrNil(); cfgReg != nil {
+		cfgReg.RemoveDisabledPlugin(name)
+		cfgReg.RemovePlugin(name)
 	}
 	r.closeDynamic(removed)
 	log.Printf("[plugin] removed: %s", name)
 	return nil
 }
 
-func (r *Registry) ReloadPlugins() (string, error) { return r.Reload(r.plgDir) }
+func (r *Registry) ReloadPlugins() (string, error) { return r.Reload(r.pluginDirOrEmpty()) }
 
 // PluginRuntime 返回单个插件的运行期状态。
 //
@@ -1508,8 +1752,8 @@ func (r *Registry) PluginRuntime(name string) (sdk.PluginRuntimeInfo, bool) {
 
 	installed := loaded || hasFactory
 	var dirExists bool
-	if r.plgDir != "" {
-		if st, err := os.Stat(filepath.Join(r.plgDir, name)); err == nil && st.IsDir() {
+	if dir := r.pluginDirOrEmpty(); dir != "" {
+		if st, err := os.Stat(filepath.Join(dir, name)); err == nil && st.IsDir() {
 			dirExists = true
 			installed = true
 		}
@@ -1531,7 +1775,7 @@ func (r *Registry) PluginRuntime(name string) (sdk.PluginRuntimeInfo, bool) {
 	// auto_start 以清单为准（plugin.json 显式 false 才是按需）。
 	// 目录不存在（纯内置）时保持缺省 true —— 内置插件本就随内核加载。
 	if dirExists {
-		if m, err := ReadManifest(filepath.Join(r.plgDir, name)); err == nil {
+		if m, err := ReadManifest(filepath.Join(r.pluginDirOrEmpty(), name)); err == nil {
 			info.AutoStart = m.ShouldAutoStart()
 		}
 	}
@@ -1540,7 +1784,7 @@ func (r *Registry) PluginRuntime(name string) (sdk.PluginRuntimeInfo, bool) {
 	case hasFactory:
 		info.Channel = "builtin"
 	case dirExists:
-		info.Channel = detectEntryKind(filepath.Join(r.plgDir, name)).String()
+		info.Channel = detectEntryKind(filepath.Join(r.pluginDirOrEmpty(), name)).String()
 	}
 
 	// 子进程插件报真实 PID 与存活；其余形态与 Loaded 同值（无独立进程）。
@@ -1555,8 +1799,8 @@ func (r *Registry) PluginRuntime(name string) (sdk.PluginRuntimeInfo, bool) {
 		info.Alive = loaded
 	}
 
-	if r.stageHost != nil {
-		for _, def := range r.stageHost.GetToolDefs() {
+	if sh := r.stageHostOrNil(); sh != nil {
+		for _, def := range sh.GetToolDefs() {
 			if def.Plugin == name {
 				info.Tools = append(info.Tools, def.Name)
 			}
@@ -1601,8 +1845,8 @@ func (r *Registry) ListKnown() []string {
 	}
 	r.mu.RUnlock()
 
-	if r.plgDir != "" {
-		entries, _ := os.ReadDir(r.plgDir)
+	if dir := r.pluginDirOrEmpty(); dir != "" {
+		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			if e.IsDir() {
 				known[e.Name()] = true
@@ -1639,7 +1883,7 @@ func (r *Registry) PluginMetas() map[string]sdk.PluginMeta {
 }
 
 func (r *Registry) PluginDir() string {
-	return r.plgDir
+	return r.pluginDirOrEmpty()
 }
 
 func (r *Registry) tryDynamic(plgDir, name string, config map[string]interface{}) (sdk.Plugin, error) {

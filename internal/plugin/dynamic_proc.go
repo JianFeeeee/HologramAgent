@@ -125,8 +125,8 @@ func (r *Registry) ensureProcHost() (*proc.Host, error) {
 	r.procHost = host
 
 	// 事件环适配层：Bus 发布 → 写 EvtRing slot → eventfd 通知子进程
-	if r.evBus != nil {
-		er := NewEventRing(host.EvtRing(), int(host.Evtfd().Fd()), r.evBus)
+	if bus := r.eventBusOrNil(); bus != nil {
+		er := NewEventRing(host.EvtRing(), int(host.Evtfd().Fd()), bus)
 		host.SetEvtSubscriber(er)
 		log.Printf("[plugin] 事件环已创建（Bus → EvtRing → eventfd）")
 	}
@@ -183,8 +183,8 @@ func (r *Registry) onProcCrash(name string, err error) {
 	r.mu.Unlock()
 
 	// 2) 事件通知（webui/诊断插件可订阅）。
-	if r.evBus != nil {
-		r.evBus.Publish(&events.Event{
+	if bus := r.eventBusOrNil(); bus != nil {
+		bus.Publish(&events.Event{
 			Type:   events.EventSystem,
 			Source: "plugin",
 			Payload: map[string]interface{}{

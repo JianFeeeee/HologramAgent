@@ -80,7 +80,10 @@ type MemoryBundle struct {
 //	· 少一层间接 ⇒ 少一处可能出错的地方
 //
 // 顺序正确性由**声明**驱动：`Build()` 校验缺依赖 / 环 / 重名，
-// 判据断言关键顺序（见 internal/kernelboot/modules 的判据）。
+// `Run()` 在执行每一层之前再核一次"实际已产出的设施"是否涵盖本层依赖
+// （声明对、但计划层顺序被改坏时也能拦住，见 DependencyNotReadyError）。
+// 判据断言关键顺序（见 internal/kernelmod/all/bootgraph_test.go 的
+// TestLayerTopologyIsRespected：用真实模块登记表装配整机，逐层断言层间有序）。
 //
 // ## ★ 并发
 //
