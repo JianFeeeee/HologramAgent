@@ -189,8 +189,16 @@ else:
             fails.append("空表反向样本数变了（期望 4，实际 %d）—— 除新增样本，否则说明样本被删"
                          % len(_EMPTY_BAD_CASES))
 
+        _rejected_checked = [0]  # 用 list 当可变计数（闭包内可写）
+
         def _must_reject(idx):
-            """断言第 idx 个空表形态**必须**被保。"""
+            """断言第 idx 个空表形态**必须**被拒。"""
+            _rejected_checked[0] += 1
+            if idx >= len(_EMPTY_BAD_CASES):
+                # 样本被删：不抛 IndexError，给可读报错（崩溃不如可读断言好）。
+                fails.append("空表反向样本集缺第 %d 条（只剩 %d 条）—— 样本被删或容器被改坏"
+                             % (idx, len(_EMPTY_BAD_CASES)))
+                return
             _n, _i = _EMPTY_BAD_CASES[idx]
             if _run_body(_replace_table(_i)).returncode == 0:
                 fails.append(
@@ -201,6 +209,14 @@ else:
         _must_reject(1)  # 只有空行
         _must_reject(2)  # 只有空行+空白
         _must_reject(3)  # 非显式标记的注释
+
+        # ★ 四次调用本身也必须被核对（ID:19 变异 M8d）：
+        #   把上面四行 `_must_reject(...)` 整段删掉/注掉时，前面所有断言代码都还在，
+        #   但**一次都不会跑** —— 自测静默死掉、门禁照绿（实测 exit=0）。
+        #   所以把调用次数当成一份合同：删一行也红，不会默默少检。
+        if _rejected_checked[0] != 4:
+            fails.append("空表反向自测只调用了 %d/4 次 —— 有检查被删/跳过（自测静默失效）"
+                         % _rejected_checked[0])
 
         _probe = "test|internal/probe/synthetic|TestSyntheticProbe"
         # 只打 reason：reason 空、ticket 有效

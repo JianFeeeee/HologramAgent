@@ -272,7 +272,7 @@ jobs:
           #   为何不能允许"什么都没写"：那样"表被删空"与"有意清空"无法区分，
           #   而门脚本（check-ci-gates.py）的正则捕获到空串后，会静默走下面的
           #   "无排除项"分支 —— 排除项漏删/误删都不会有任何人发现（假绿，ID:19）。
-          if [ "$n" -eq 0 ] && false && ! grep -qEi '^[[:space:]]*#[[:space:]]*none[[:space:]]*$' <<< "$TABLE"; then
+          if [ "$n" -eq 0 ] && ! grep -qEi '^[[:space:]]*#[[:space:]]*none[[:space:]]*$' <<< "$TABLE"; then
             echo "::error::-race 排除表为空却没有显式空表标记 —— 请在上面的 heredoc 里保留一行 \`# none\`"
             exit 1
           fi
