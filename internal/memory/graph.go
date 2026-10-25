@@ -408,6 +408,16 @@ func (g *GraphDB) initSchema() error {
 		`CREATE INDEX IF NOT EXISTS idx_relation_type ON relations(relation_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_relation_status ON relations(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_relation_session ON relations(session_id)`,
+		// ★ graph_centroid 必须在这里建（2026-10-25 修缺陷）。
+		//
+		// 此前它只由 SaveCentroid 内部的 ensureCentroidSchema 创建，
+		// 而新建的库在存过第一个中心向量之前**从不**调 SaveCentroid。
+		// 后果：LoadCentroid 每次召回都 `no such table: graph_centroid`，
+		// 于是回退到全量 raw vectors 扫描——日志刷屏，且大库上明显变慢
+		// （实测生产库 3178 块）。
+		//
+		// 复用 centroid_store.go 的同一个常量，避免两处 DDL 漂移。
+		ddlCentroid,
 	}
 
 	for _, s := range schemas {

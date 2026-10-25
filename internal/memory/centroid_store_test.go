@@ -381,3 +381,54 @@ func putRawBlock(t *testing.T, g *GraphDB, fp, id string, v []float64) {
 		t.Fatal(err)
 	}
 }
+
+// ── 2026-10-25：graph_centroid 必须随库创建，不能等第一次 SaveCentroid ──
+//
+// 缺陷现场（WSL2 真机诊断报告问题 5）：新建库上每轮召回都打
+//
+//	`[graph] recall blocks: reading centroid failed, falling back to raw vectors:
+//	 graph: load centroid: no such table: graph_centroid`
+//
+// 417KB 日志里占相当比例，并回退到全量 raw vectors 扫描。
+//
+// 根因：buildSchemas 的 schemas 列表里漏了 graph_centroid，它只在
+// SaveCentroid 内部被 ensureCentroidSchema 创建——而新库在存过第一个
+// 中心向量之前从不调 SaveCentroid。
+//
+// 判据刻意**不先调 SaveCentroid**：只要一存就会建表，那样就盖住了缺陷
+// （变异验证：把 graph.go 里的 ddlCentroid 那行删掉，本判据必须变红）。
+func TestGraphCentroidTableExistsOnNewDB(t *testing.T) {
+	g := newTestGraph(t)
+	defer g.Close()
+
+	var name string
+	err := g.db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='graph_centroid'`).Scan(&name)
+	if err != nil {
+		t.Fatalf("新建库应已有 graph_centroid 表，实际查询失败: %v", err)
+	}
+	if name != "graph_centroid" {
+		t.Fatalf("表名不符: %q", name)
+	}
+}
+
+// 判据二：新建库上直接 LoadCentroid 不得报错。
+//
+// 这条贴着**真实故障路径**（召回时调 LoadCentroid），比只查 sqlite_master
+// 更接近用户看到的现象：查表不存在会以 error 形式冒出来。
+func TestLoadCentroidOnNewDBDoesNotFail(t *testing.T) {
+	g := newTestGraph(t)
+	defer g.Close()
+
+	// 空库查询：应当"查不到"（nil, false）而不是"表不存在"（error）。
+	c, anomalous, err := g.LoadCentroid("any-fingerprint", 512)
+	if err != nil {
+		t.Fatalf("空库 LoadCentroid 不应报错（表必须已存在），实际: %v", err)
+	}
+	if c != nil {
+		t.Fatalf("空库不应返回中心向量，实际: %+v", c)
+	}
+	if anomalous {
+		t.Fatal("空库不应标记 anomalous")
+	}
+}
