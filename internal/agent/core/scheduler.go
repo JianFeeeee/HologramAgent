@@ -1181,7 +1181,17 @@ func newSelfTask(msg selfInputMsg) *Task {
 // 这是 L4 的唯一来源：panic 中断、内核事件中断（selfip）。
 // 插件永远拿不到这个入口——它不经 InjectOptions，也不经 proc 桥。
 func newKernelInterruptTask(evt *agentIO.InputEvent) *Task {
-	return &Task{Class: TaskInterrupt, Kind: TaskKindInput, Level: LevelCritical, Event: evt, EnqueuedAt: time.Now()}
+	return newKernelInterruptTaskAt(evt, LevelCritical)
+}
+
+// newKernelInterruptTaskAt 按指定级别构造内核中断任务。
+//
+// 内核源不夹取级别（与插件源不同）：向量表里登记的级别就是最终级别。
+func newKernelInterruptTaskAt(evt *agentIO.InputEvent, level Level) *Task {
+	if level < LevelBackground || level > LevelCritical {
+		level = LevelCritical
+	}
+	return &Task{Class: TaskInterrupt, Kind: TaskKindInput, Level: level, Event: evt, EnqueuedAt: time.Now()}
 }
 
 // DumpScheduler 返回调度器的原子快照（供状态页/测试断言）。
@@ -1350,8 +1360,20 @@ func (a *Agent) pumpInbox() {
 // 能否抢占由调度器按统一判据决定；若会抢占，则顺手取消可取消的 LLM 流式步骤
 // （与 interceptLoop 对插件中断的处理完全一致）。
 func (a *Agent) raiseKernelInterrupt(source, channel, text string) {
+	a.raiseKernelInterruptAt(source, channel, text, LevelCritical)
+}
+
+// raiseKernelInterruptAt 是 raiseKernelInterrupt 的**带级别**版本。
+//
+// 级别由调用方给出（中断向量表里登记的那个），而不是在这里写死 L4：
+// 向量表的每条都声明了自己的 Level，这条通道必须能表达它，
+// 否则"级别由向量声明"就成了一句空话。
+//
+// 注意：外部插件走的不是这条路（它们经 interruptLevel 解析 + clampPluginLevel
+// 夹取），这里只服务内核自己登记的中断源。
+func (a *Agent) raiseKernelInterruptAt(source, channel, text string, level Level) bool {
 	if a.sched == nil {
-		return
+		return false
 	}
 	evt := &agentIO.InputEvent{
 		Source:        source,
@@ -1365,9 +1387,11 @@ func (a *Agent) raiseKernelInterrupt(source, channel, text string) {
 			"kernel":            true,
 		},
 	}
-	if a.sched.requestKernelPreempt(evt) {
+	armed := a.sched.registerInterrupt(newKernelInterruptTaskAt(evt, level))
+	if armed {
 		a.cancelCurrentLLM()
 	}
+	return armed
 }
 
 // reportTaskPanic 把一个任务 panic 报告成内核 L4 中断。
@@ -1375,11 +1399,9 @@ func (a *Agent) raiseKernelInterrupt(source, channel, text string) {
 // 递归保护是**结构性**的：若 panic 的任务本身就是 L4 内核中断，则不再产生新的
 // L4——否则同一个 panic 会自我放大成中断风暴，与“内核事件”应有的语义相反。
 func (a *Agent) reportTaskPanic(t *Task, r interface{}) {
-	if t.Class == TaskInterrupt && t.Level >= LevelCritical {
-		return
-	}
-	a.raiseKernelInterrupt("kernel", "kernel",
-		fmt.Sprintf("内核事件：任务 #%d 发生 panic：%v（该任务已被丢弃，调度器存活）", t.ID, r))
+	// 递归保护（"L4 panic 不再产生 L4"）已收进向量表的 Guard，
+	// 不再硬编码在这里——新增中断源时不会漏掉这条规则。
+	a.raiseVector(VectorTaskPanic, vectorArgs{Task: t, Panic: r})
 }
 
 func (a *Agent) executeTask(t *Task) {

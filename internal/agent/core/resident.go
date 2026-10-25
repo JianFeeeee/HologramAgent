@@ -603,8 +603,7 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 	rc.mu.Lock()
 	rc.state = "contextfull"
 	rc.mu.Unlock()
-	a.raiseKernelInterrupt("child/"+rc.id, "kernel",
-		fmt.Sprintf("内核事件：驻留子 %s 上下文已满（contextfull）。请【查看】其状态面后决定【压缩】/【回收】/【销毁】。", rc.id))
+	a.raiseVector(VectorChildContextFull, vectorArgs{ChildID: rc.id})
 }
 
 // checkContextFull 判断本 agent 的**积累上下文是否已经装不下窗口**，是则触发一次 contextfull。

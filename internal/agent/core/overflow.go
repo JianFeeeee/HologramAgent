@@ -346,7 +346,7 @@ func (a *Agent) raiseContextOverflow(pruned int) {
 	a.overflowStat.LastPruned = pruned
 	a.overflowStat.Unlock()
 
-	a.raiseKernelInterrupt("kernel/overflow", "kernel", overflowNotice(pruned))
+	a.raiseVector(VectorContextOverflow, vectorArgs{Pruned: pruned})
 }
 
 // overflowNotice 构造超页中断消息。

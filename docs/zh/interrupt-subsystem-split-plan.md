@@ -353,7 +353,7 @@ internal/agent/core/
 | 1.5 切断反向依赖 | ⏳ 部分 | 已建立**中断栈状态钩子**（`stackNotify`）实现单向通告；`maxQueue` 仍约束中断队列（见下） |
 | 2 结构收敛 | ✅ 完成 | 划界落实：机制在 `interrupt.go`，策略在 `scheduler.go` |
 | 3 验证 | ✅ 完成 | 全仓 `go test -p 1 ./...` 通过；`-race` 三关键包绿；变异验证通过 |
-| 中断向量表 | ⏳ 未做 | §7 已设计，按 §7.6 顺序应在拆分完成后单独做 |
+| 中断向量表 | ✅ 完成 | `interrupt_vectors.go`：三个 L4 源改为查表；panic 递归保护收进 `Guard`；两次变异验证均变红 |
 
 ### 最终边界（用户第四次裁定：队列归调度器）
 
@@ -407,6 +407,46 @@ internal/agent/core/
 但**去掉它是行为变更**，按"结构重构不改语义"的原则本次保持不变。
 建议后续单独立项：给中断队列自有常量（如 `maxInterruptQueue`），
 并单独验证背压行为。
+
+---
+
+### 中断向量表落地（2026-10-25，本次拆分的真正目的）
+
+新增 `internal/agent/core/interrupt_vectors.go`：
+
+```go
+type VectorID string
+const (
+    VectorTaskPanic, VectorContextOverflow, VectorChildContextFull
+)
+
+type interruptVector struct {
+    ID     VectorID
+    Level  Level                          // 每条声明自己的级别（内核源 L4）
+    Source func(vectorArgs) string        // 来源标识（child/<id> 这类动态的在闭包里拼）
+    Guard  func(vectorArgs) bool          // 前置判定：panic 的递归保护收在这里
+    Build  func(vectorArgs) string        // 正文（模型唯一可见内容）
+}
+```
+
+三个裸调用点全部改为 `raiseVector(id, args)`：
+
+| 原调用点 | 现在 |
+| --- | --- |
+| `reportTaskPanic` 里硬编码递归保护 + 调 `raiseKernelInterrupt` | `raiseVector(VectorTaskPanic, …)`，保护在 `Guard` |
+| `raiseContextOverflow` | `raiseVector(VectorContextOverflow, …)` |
+| `handleChildContextFull` | `raiseVector(VectorChildContextFull, …)` |
+
+**未登记 ID 会 panic**，不静默降级——否则打错 ID 会变成"中断发了但没人认领"。
+
+判据 `interrupt_vectors_test.go`（7 条）：表结构完整性、未登记被拒、
+递归保护生效、**调用点确实走向量表**（行为验证 source 来自表）。
+后两条都做过变异验证：去掉递归保护 ⇒ 红；调用点绕过表 ⇒ 红
+（`source="kernel-direct"`，期望 `"kernel"`）。
+
+> ⚠️ `ExpectsReply` 字段**未实现**。按 §7.5/§7.6，它属于行为变更
+> （内核提示不再引起模型整轮回复），必须单独提交、单独验证。
+> 本次只完成了"规则集中"这一步，行为零变化。
 
 ---
 
