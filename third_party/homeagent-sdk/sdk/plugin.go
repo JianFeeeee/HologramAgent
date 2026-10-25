@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"sync"
 
 	"github.com/JianFeeeee/hologramagentsdk/meta"
@@ -18,6 +19,39 @@ type Plugin interface {
 
 // ToolHandler is a function that handles a tool call.
 type ToolHandler func(args map[string]interface{}) (interface{}, error)
+
+// ToolHandlerCtx 是**可选**的带取消语义 handler。
+//
+// ## 插件作者**不需要**改代码
+//
+// 内核超时后要让插件停止执行，这件事由**运行时**接住：proc 模板收到
+// call.cancel 就 cancel 对应调用的 ctx。用旧签名的 handler 照旧跑完，
+// 行为与今天完全一致；只有**主动想配合取消**的长任务工具才需要这个类型。
+//
+// ## 什么时候值得用
+//
+// 执行体里有长阻塞（HTTP、等子进程、轮询设备）时，用 Ctx 版可以让取消
+// 立即生效，而不是白跑完再丢结果。纯内存计算（毫秒级）没有必要。
+//
+// ## 约定
+//
+//   - ctx 只在**本次调用**内有效，不要缓存；
+//   - 把 ctx 传给下游阻塞调用（http.NewRequestWithContext / exec.CommandContext）；
+//   - 返回时用 defer 清理；不要假设调用方还在等结果（它可能已经走了）。
+type ToolHandlerCtx func(ctx context.Context, args map[string]interface{}) (interface{}, error)
+
+// AsToolHandler 把带 ctx 的 handler 适配成旧签名（无取消信号）。
+func AsToolHandler(h ToolHandlerCtx) ToolHandler {
+	if h == nil {
+		return nil
+	}
+	return func(args map[string]interface{}) (interface{}, error) {
+		return h(context.Background(), args)
+	}
+}
+
+// ToolRegistrarCtx 是带 ctx 的注册口（由运行时/宿主注入）。
+type ToolRegistrarCtx func(name string, def ToolDef, handler ToolHandlerCtx) error
 
 // StageHandler is a function that handles a pipeline stage event.
 type StageHandler func(ctx *StageContext) error
@@ -512,6 +546,7 @@ const (
 type PluginSDK struct {
 	name           string
 	regTool        ToolRegistrar
+	regToolCtx     ToolRegistrarCtx
 	regStage       StageRegistrar
 	regAPI         APIRegistrar
 	regOutput      OutputChannelRegistrar
@@ -640,6 +675,37 @@ func (s *PluginSDK) Events() EventSubscriber {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()
 	return s.events
+}
+
+// SetToolRegistrarCtx 由**运行时**注入带 ctx 的注册口。
+//
+// 插件业务代码不需要调用它：proc 模板在自己的初始化里注入，
+// 之后插件用 RegisterToolCtx 注册的工具就会进入可取消路径。
+func (s *PluginSDK) SetToolRegistrarCtx(r ToolRegistrarCtx) {
+	s.apiMu.Lock()
+	s.regToolCtx = r
+	s.apiMu.Unlock()
+}
+
+// RegisterToolCtx 注册一个**可取消**的工具（可选，长任务推荐）。
+//
+// 宿主不支持时自动降级到 RegisterTool 并包一层 context.Background()：
+// 功能不丢，只是拿不到取消。插件不必为此写两套代码。
+func (s *PluginSDK) RegisterToolCtx(name string, def ToolDef, handler ToolHandlerCtx) error {
+	if def.Plugin == "" {
+		def.Plugin = s.name
+	}
+	s.apiMu.RLock()
+	regCtx, regLegacy := s.regToolCtx, s.regTool
+	s.apiMu.RUnlock()
+
+	if regCtx != nil {
+		return regCtx(name, def, handler)
+	}
+	if regLegacy != nil {
+		return regLegacy(name, def, AsToolHandler(handler))
+	}
+	return nil
 }
 
 // RegisterTool registers a tool that the LLM can call.
