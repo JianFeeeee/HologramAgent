@@ -21,6 +21,7 @@ package core
 // 否则搬完只能靠"看起来还对"来判断，而这类不变量恰恰是肉眼看不出的。
 
 import (
+	"reflect"
 	"testing"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
@@ -221,6 +222,45 @@ func TestInvariant_SuspendedEqualsResumed(t *testing.T) {
 	}
 	if depth != 0 {
 		t.Fatalf("排空后中断栈应为空，实际 %d 帧", depth)
+	}
+}
+
+// ── I0：边界不变量 —— 队列归调度器，中断管理器只管现场保护 ──
+
+// 用户栽定：「中断管理器只负责进入中断和中断栈的部分」、
+// 「中断队列就该调度器管理」。
+//
+// 这条判据用**结构事实**钉住边界，而不是靠注释：
+// interruptState 里只允许出现现场保护/屏蔽相关字段；
+// 一旦有人把队列或优先级策略塞回来，这里立刻变红。
+func TestInvariant_InterruptManagerHoldsOnlyStackState(t *testing.T) {
+	// 反射枚举 interruptState 的字段名，白名单校验。
+	typ := reflect.TypeOf(interruptState{})
+	allowed := map[string]bool{
+		"suspendStack":       true, // 中断栈
+		"critical":           true, // 中断屏蔽
+		"preemptArmed":       true, // 让位信号
+		"preemptLevel":       true, // 让位信号
+		"maxInterruptFrames": true, // 栈上界
+		"stackNotify":        true, // 栈状态钩子
+	}
+	var bad []string
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if !allowed[name] {
+			bad = append(bad, name)
+		}
+	}
+	if len(bad) > 0 {
+		t.Fatalf("中断管理器不应持有这些字段（队列/优先级归调度器）: %v", bad)
+	}
+
+	// 反向确认：队列确实在 scheduler 上（而不是"两边都没有"的假绿）。
+	st := reflect.TypeOf(scheduler{})
+	for _, want := range []string{"interruptQueues", "immediate"} {
+		if _, ok := st.FieldByName(want); !ok {
+			t.Fatalf("中断队列 %s 应在 scheduler 上（排队是调度职责）", want)
+		}
 	}
 }
 

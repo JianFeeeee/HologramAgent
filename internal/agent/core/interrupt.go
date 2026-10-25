@@ -1,36 +1,34 @@
 package core
 
-// 中断子系统 —— 只做三件事：**按优先级打断、保护被打断者的现场、恢复它**。
+// 中断管理器 —— 只负责"进入中断"这件事本身：**现场保护**与**中断屏蔽**。
 //
-// ## 边界（2026-10-25 用户裁定，OS 语义）
+// ## 边界（2026-10-25 用户多次栽定，OS 语义）
 //
-// 中断类似操作系统中的中断语义，只提供：
+// 用户原话：「中断管理器只负责进入中断和中断栈的部分」、
+// 「中断队列就该调度器管理」。
 //
-//	· 中断优先级 —— 谁打断谁的唯一依据（Level / effectiveLevel / canPreempt）
-//	· 中断队列   —— 待处理中断按优先级分组排队（interruptQueues / immediate）
-//	· 现场保护   —— 被打断任务的现场压栈、以及**恢复决策**（suspendStack）
-//	· 中断屏蔽   —— 不可抢占临界区（critical，对应 CPU 的关中断）
+// 所以本文件**只有两样东西**：
 //
-// **不含**：就绪队列、停止配额、任务 ID 分配、统计、背压、"执行任务"本身。
-// 调度器建立在本子系统之上——它问"中断侧该出谁"，然后执行那个任务。
+//	· 中断栈   —— 被打断任务的现场压栈/弹栈（**唯一操作者**）
+//	· 中断屏蔽 —— 不可抢占临界区（critical，对应 CPU 的关中断）
+//	· 让位信号 —— preemptArmed/preemptLevel 的读写原语
+//	· 栈状态钩子 —— 栈变化时通告调度器
 //
-// ## 职责边界（不要越界）
+// **不含**（全部归调度器）：
 //
-// 本文件**只提供机制，不做决策**：
+//	· 中断队列        —— interruptQueues / immediate（排队是调度职责）
+//	· 优先级语义      —— Level / effectiveLevel / canPreempt / clampPluginLevel
+//	· 该不该打断      —— registerInterrupt（含冷却期/临界区判定）
+//	· 该恢复谁        —— nextInterruptSelection（栈顶 vs 中断队列比较）
+//	· 就绪队列 / 停止配额 / 背压 / 任务 ID / 统计
 //
-//	进中断     —— enqueueInterruptLocked / setImmediateLocked
-//	中断栈     —— suspend（压栈）/ 弹栈原语
-//	中断屏蔽   —— critical
-//	让位信号   —— preemptArmed/preemptLevel 的读写原语
+// ## 依赖方向（单向）
 //
-// 而**策略**住在 scheduler.go：
+//	调度器 ──查询栈状态──> 中断管理器
+//	调度器 <──栈状态钩子── 中断管理器
 //
-//	谁比谁优先     —— effectiveLevel / canPreempt / clampPluginLevel
-//	能不能打断     —— registerInterrupt（含冷却期/临界区判定）
-//	该恢复谁       —— nextInterruptSelection（栈顶 vs 中断队列比较）
-//
-// 换句话说：调度器问"现在恢复谁"，然后调用这里的原语执行。
-// 中断管理器**不自行比较优先级**，也不看就绪队列。
+// 中断管理器**不知道**调度器如何选取、如何比较优先级；它只负责保存与恢复现场。
+// 将来给中断子系统加向量表、换多栈策略，都不必改调度器。
 //
 // ## 核心不变量
 //
@@ -40,14 +38,14 @@ package core
 // L4 之上没有更高级别，链到此为止。超限只可能是内核 bug，因此只做防御性计数，
 // **不降级、不丢弃帧**。
 //
-// 判据见 interrupt_invariant_test.go（I1..I6）。
+// 判据见 interrupt_invariant_test.go。
 
 import (
 	"sync/atomic"
 	"time"
 )
 
-// interruptState 是中断子系统的全部状态。
+// interruptState 是中断管理器的全部状态（只有现场保护与屏蔽，队列不在这里）。
 //
 // 内嵌进 scheduler（字段提升），因此访问写法仍是 s.interruptQueues 等——
 // 这样拆分对既有代码与测试透明，风险最低。
@@ -56,15 +54,6 @@ import (
 // 中断判定需要看"当前运行任务/是否临界区"，与调度状态在同一临界区内被
 // 一起读写。拆锁是并发模型变更，不属于本次重构。
 type interruptState struct {
-	// interruptQueues[level]：四条**中断队列**（level 1..4），同级 FIFO。
-	// 未能立即抢占的中断（级别不足，或运行任务在临界区）按级别入队。
-	interruptQueues [5][]*Task
-
-	// immediate：已判定的最高优先待运行者。抢占必须**立即生效**，
-	// 所以它不经队列，在下一个安全点直接运行。
-	// 这也消除了"抢占者与被抢占者同级"的比较问题——抢占者不需和栈顶比。
-	immediate *Task
-
 	// suspendStack：**中断栈**。被抢占后保存现场的任务压栈（LIFO）。
 	// 只有**栈顶**参与恢复选择，栈内不做优先级重排。
 	suspendStack []*suspendedTask
@@ -117,51 +106,16 @@ const (
 // ── 中断队列操作 ──
 
 // highestInterruptLocked 返回当前最高级非空中断队列的队头及其级别。
-func (s *scheduler) highestInterruptLocked() (*Task, Level) {
-	for lv := LevelCritical; lv >= LevelBackground; lv-- {
-		if q := s.interruptQueues[lv]; len(q) > 0 {
-			return q[0], lv
-		}
-	}
-	return nil, 0
-}
+
 
 // popInterruptLocked 弹出某级别中断队列的队头（调用方已确认非空）。
-func (s *scheduler) popInterruptLocked(lv Level) {
-	s.interruptQueues[lv] = s.interruptQueues[lv][1:]
-}
+
 
 // interruptCountLocked 统计所有待处理中断（含 immediate 槽）。
-func (s *scheduler) interruptCountLocked() int {
-	n := 0
-	for lv := LevelBackground; lv <= LevelCritical; lv++ {
-		n += len(s.interruptQueues[lv])
-	}
-	if s.immediate != nil {
-		n++
-	}
-	return n
-}
+
 
 // enqueueInterruptLocked 把中断按级别入队。
-func (s *scheduler) enqueueInterruptLocked(t *Task) {
-	s.allocateIDLocked(t)
-	if s.interruptCountLocked() >= s.maxQueue {
-		for lv := LevelBackground; lv <= LevelCritical; lv++ {
-			if len(s.interruptQueues[lv]) > 0 {
-				s.popInterruptLocked(lv)
-				s.stats.Rejected++
-				break
-			}
-		}
-	}
-	lv := t.Level
-	if lv < LevelBackground || lv > LevelCritical {
-		lv = DefaultLevel
-	}
-	s.interruptQueues[lv] = append(s.interruptQueues[lv], t)
-	s.stats.Enqueued++
-}
+
 
 // installImmediateLocked 把 t 放进 immediate 槽（**纯机制**，不比较优先级）。
 //
@@ -169,18 +123,7 @@ func (s *scheduler) enqueueInterruptLocked(t *Task) {
 // 这里只做：把现任降级入队 → 新任务占槽。
 //
 // 返回被顶掉的旧持有者（可能为 nil），调用方据此保持不变量的可观测性。
-func (s *scheduler) installImmediateLocked(t *Task) *Task {
-	var demoted *Task
-	if s.immediate != nil {
-		// 被顶掉的抢占者降级入队，**不丢**（不变量 I5）。
-		demoted = s.immediate
-		s.enqueueInterruptLocked(demoted)
-	}
-	s.allocateIDLocked(t)
-	s.stats.Enqueued++
-	s.immediate = t
-	return demoted
-}
+
 
 // ── 中断登记（抢占或入队）──
 

@@ -355,14 +355,24 @@ internal/agent/core/
 | 3 验证 | ✅ 完成 | 全仓 `go test -p 1 ./...` 通过；`-race` 三关键包绿；变异验证通过 |
 | 中断向量表 | ⏳ 未做 | §7 已设计，按 §7.6 顺序应在拆分完成后单独做 |
 
-### 实际划定的边界（比原计划更严格）
+### 最终边界（用户第四次裁定：队列归调度器）
 
-用户三次裁定后确定的最终边界：
+> 「中断队列就该调度器管理啊，中断管理器只负责进入中断的任务」
+
+这条纠正了我第一版的错误：我把中断队列（`interruptQueues` / `immediate`）
+也搬进了中断管理器。**排队是调度职责**——判断该不该打断、打断不了先排队、
+按什么次序再取出来，全是调度策略。
+
+最终边界：
 
 | 归属 | 内容 |
 | --- | --- |
-| **中断子系统**（`interrupt.go`） | 中断队列、immediate 槽、**中断栈（唯一操作者）**、中断屏蔽（critical）、让位信号原语、**栈状态钩子** |
-| **调度器**（`scheduler.go`） | 任务优先级语义（`Level`/`effectiveLevel`/`canPreempt`/`clampPluginLevel`）、**恢复决策**（`nextInterruptSelection`）、就绪队列、停止配额、背压 |
+| **中断管理器**（`interrupt.go`） | **中断栈（唯一操作者）**、中断屏蔽（critical）、让位信号原语、**栈状态钩子** —— 只负责"进入中断"这件事本身 |
+| **调度器**（`scheduler.go`） | **中断队列**（`interruptQueues`/`immediate`）、优先级语义（`Level`/`effectiveLevel`/`canPreempt`/`clampPluginLevel`）、**恢复决策**（`nextInterruptSelection`）、就绪队列、停止配额、背压 |
+
+字段级判据：`TestInvariant_InterruptManagerHoldsOnlyStackState` 用反射白名单
+钉住这一点——`interruptState` 只允许 6 个字段（栈/屏蔽/让位/上界/钩子），
+把队列塞回去立刻变红（已变异验证）。
 
 关键设计：**中断栈只有中断管理器能操作**。调度器通过 `stackTopLocked()`
 **只读查询**栈顶做优先级比较，真正的弹栈由 `restoreTopLocked()` 在中断管理器内完成——

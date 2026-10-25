@@ -215,9 +215,67 @@ func clampPluginLevel(l Level) Level {
 	return l
 }
 
+// ── 中断队列操作（归调度器）──
+
+func (s *scheduler) highestInterruptLocked() (*Task, Level) {
+	for lv := LevelCritical; lv >= LevelBackground; lv-- {
+		if q := s.interruptQueues[lv]; len(q) > 0 {
+			return q[0], lv
+		}
+	}
+	return nil, 0
+}
+
+func (s *scheduler) popInterruptLocked(lv Level) {
+	s.interruptQueues[lv] = s.interruptQueues[lv][1:]
+}
+
+func (s *scheduler) interruptCountLocked() int {
+	n := 0
+	for lv := LevelBackground; lv <= LevelCritical; lv++ {
+		n += len(s.interruptQueues[lv])
+	}
+	if s.immediate != nil {
+		n++
+	}
+	return n
+}
+
+func (s *scheduler) enqueueInterruptLocked(t *Task) {
+	s.allocateIDLocked(t)
+	if s.interruptCountLocked() >= s.maxQueue {
+		for lv := LevelBackground; lv <= LevelCritical; lv++ {
+			if len(s.interruptQueues[lv]) > 0 {
+				s.popInterruptLocked(lv)
+				s.stats.Rejected++
+				break
+			}
+		}
+	}
+	lv := t.Level
+	if lv < LevelBackground || lv > LevelCritical {
+		lv = DefaultLevel
+	}
+	s.interruptQueues[lv] = append(s.interruptQueues[lv], t)
+	s.stats.Enqueued++
+}
+
+func (s *scheduler) installImmediateLocked(t *Task) *Task {
+	var demoted *Task
+	if s.immediate != nil {
+		// 被顶掉的抢占者降级入队，**不丢**（不变量 I5）。
+		demoted = s.immediate
+		s.enqueueInterruptLocked(demoted)
+	}
+	s.allocateIDLocked(t)
+	s.stats.Enqueued++
+	s.immediate = t
+	return demoted
+}
+
 // ── 中断管理器（interrupt.go）──
-// 只提供中断队列/中断栈/immediate 槽/让位信号等原语；
-// 优先级比较由本文件的 canPreempt/effectiveLevel 提供，中断管理器不自行判断。
+// 只负责**进入中断**：现场压栈/弹栈（中断栈）、中断屏蔽、让位信号原语。
+// 中断队列、优先级比较、该不该打断、该恢复谁——全部在本文件（调度器）。
 
 // setImmediateLocked 判断"该不该由 t 占 immediate 槽"，判据是策略，故归调度器。
 //
@@ -236,8 +294,8 @@ func (s *scheduler) setImmediateLocked(t *Task) bool {
 
 // ── 中断登记与恢复决策（调度策略，归调度器）──
 //
-// 这些函数决定"能不能打断、恢复谁"——是**策略**，住在这里。
-// 它们调用的入队/弹栈/压栈是**机制**，住在 interrupt.go。
+// 这些函数决定"能不能打断、排到哪条队列、恢复谁"——全是调度策略。
+// 它们只把"保存现场/恢复现场"这一件事交给 interrupt.go。
 
 func (s *scheduler) registerInterrupt(t *Task) bool {
 	s.mu.Lock()
@@ -494,6 +552,20 @@ type scheduler struct {
 	seq      uint64
 	stats    SchedulerStats
 	maxQueue int
+
+	// ── 中断队列（归调度器）──
+	//
+	// 中断管理器只负责"进入中断"（现场压栈）与中断栈；**排队**是调度职责：
+	// 判断该不该打断、打断不了就先排队、按什么次序再取出来，全是调度策略。
+
+	// interruptQueues[level]：四条**中断队列**（level 1..4），同级 FIFO。
+	// 未能立即抢占的中断（级别不足，或运行任务在临界区）按级别入队。
+	interruptQueues [5][]*Task
+
+	// immediate：已判定的最高优先待运行者。抢占必须**立即生效**，
+	// 所以它不经队列，在下一个安全点直接运行。
+	// 这也消除了"抢占者与被抢占者同级"的比较问题——抢占者不需和栈顶比。
+	immediate *Task
 
 	// interrupt：中断子系统的全部状态（见 interrupt.go）。
 	//
