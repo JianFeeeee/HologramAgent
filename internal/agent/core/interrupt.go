@@ -47,8 +47,9 @@ import (
 
 // interruptState 是中断管理器的全部状态（只有现场保护与屏蔽，队列不在这里）。
 //
-// 内嵌进 scheduler（字段提升），因此访问写法仍是 s.interruptQueues 等——
+// 内嵌进 scheduler（字段提升），因此访问写法仍是 s.suspendStack / s.critical 等——
 // 这样拆分对既有代码与测试透明，风险最低。
+// 注意：中断**队列**（interruptQueues/immediate）在 scheduler 上，不在本结构体内。
 //
 // ⚠️ 这些字段全部由 scheduler.mu 保护，与就绪队列共用同一把锁：
 // 中断判定需要看"当前运行任务/是否临界区"，与调度状态在同一临界区内被
@@ -103,44 +104,6 @@ const (
 	nextSuspended
 )
 
-// ── 中断队列操作 ──
-
-// highestInterruptLocked 返回当前最高级非空中断队列的队头及其级别。
-
-
-// popInterruptLocked 弹出某级别中断队列的队头（调用方已确认非空）。
-
-
-// interruptCountLocked 统计所有待处理中断（含 immediate 槽）。
-
-
-// enqueueInterruptLocked 把中断按级别入队。
-
-
-// installImmediateLocked 把 t 放进 immediate 槽（**纯机制**，不比较优先级）。
-//
-// "该不该由 t 占槽"是策略，由调度器判定（见 scheduler.go 的 setImmediateLocked）。
-// 这里只做：把现任降级入队 → 新任务占槽。
-//
-// 返回被顶掉的旧持有者（可能为 nil），调用方据此保持不变量的可观测性。
-
-
-// ── 中断登记（抢占或入队）──
-
-// registerInterrupt 是登记中断的公共实现（任务已带好 Class/Level）。
-//
-// 返回 true 表示**真的占住了 immediate 槽**（会真抢占），调用方据此决定
-// 是否取消可取消的步骤（如当前 LLM 流式请求）。
-
-
-// requestPreempt 登记一次**外部**（插件/用户）中断请求，级别由来源声明。
-
-
-// requestKernelPreempt 是**内核**中断入口（panic / 内核事件 / 上下文超页）。
-//
-// 级别固定 L4，且**不夹取**——这是 L4 的唯一来源，插件永远够不到。
-
-
 // ── 让位协议 ──
 
 // preemptGrantedFor 报告是否有已判定的让位请求（安全点据此决定是否挂起）。
@@ -160,12 +123,6 @@ func (s *scheduler) clearPreempt() {
 	s.preemptLevel = 0
 	s.mu.Unlock()
 }
-
-// rearmPending 重新武装一个"被拦成入队"的中断。
-//
-// 临界区（或抢占冷却期）内到达的中断会被拦成入队；一旦离开那个窗口，
-// 必须在这里重新求值——否则它只能等当前任务自然结束（设计 §4.3/§5.2）。
-
 
 // ── 现场保护 ──
 
@@ -285,4 +242,3 @@ func (s *scheduler) suspendDepth() int {
 // 返回 ok=false 表示中断侧没有可出的任务，调用方（nextRef）应转去就绪队列。
 //
 // 为什么恢复决策在这里而不是调度器：见文件头「为什么恢复决策在这里」。
-
