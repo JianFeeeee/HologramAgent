@@ -259,10 +259,34 @@ func (p *Plugin) SkillIndex() string {
 		if desc == "" || desc == "---" {
 			desc = "(无描述)"
 		}
-		if len(desc) > 80 {
-			desc = desc[:80] + "..."
-		}
+		// ★ 截断必须按**字符**（rune）而不是字节。
+		//
+		// 原实现 `desc[:80]` 按字节切，而中文占 3 字节 ⇒ 切点常落在
+		// 多字节字符中间，产生**非法 UTF-8**。后果实测：
+		//
+		//   seq-tools v - 把反复出现的同类工具操作编成「序列」存起来，以后一次�
+		//
+		// 模型看到的是乱码尾部，且"什么时候该用"那部分整段丢失 ——
+		// 于是它根本不知道这个 skill 何时适用（e2e 实测：该用 seq 的
+		// 多对象重复场景，模型改去调 file-tools）。
+		//
+		// 本仓 25 个 skill 里有 8 个（32%）踩过这个截断。
+		// 判据见 TestSkillIndexTruncatesByRune。
+		desc = truncateDesc(desc)
 		fmt.Fprintf(&b, "%s v%s - %s\n", e.sk.Name(), e.sk.Version(), desc)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// truncateDesc 把 skill 描述截断到 80 个**字符**（rune），超出加省略号。
+//
+// 必须是字符而不是字节：中文占 3 字节，按字节切会落在多字节字符中间，
+// 产生非法 UTF-8。见 TestSkillIndexTruncatesByRune 的真实缺陷说明。
+func truncateDesc(desc string) string {
+	const maxRunes = 80
+	r := []rune(desc)
+	if len(r) <= maxRunes {
+		return desc
+	}
+	return string(r[:maxRunes]) + "..."
 }

@@ -147,7 +147,7 @@ func buildPluginWithRealTemplate(t *testing.T, businessCode string) string {
 		t.Fatalf("解析 SDK 路径: %v", err)
 	}
 	mustWriteFile(t, filepath.Join(dir, "go.mod"),
-		"module e2eplugin\n\ngo 1.25\n\n"+
+		"module e2eplugin\n\ngo 1.27.1\n\n"+
 			"require github.com/JianFeeeee/hologramagentsdk v0.9.2\n\n"+
 			"replace github.com/JianFeeeee/hologramagentsdk => "+sdkPath+"\n")
 

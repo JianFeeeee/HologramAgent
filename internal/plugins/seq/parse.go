@@ -25,6 +25,20 @@ type Sequence struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description,omitempty"`
 	Groups      []Group `json:"groups"`
+
+	// Boot 标记该序列在**系统就绪时自动执行一次**（每次进程启动一次）。
+	//
+	// 这是序列最核心的用途之一（用户原话："seq 最核心的是定时复用，
+	// 比如开机执行一段序列"）。单次任务里编序列往往不划算 —— 先 create
+	// 再 run 比直接调工具多两步；真正省事的是**同一套流程反复跑**，
+	// 而开机是最典型的周期性触发点。
+	//
+	// 执行时机：订阅 agent_ready 事件（内核在 kernel assembly → 插件调度
+	// → agent.Start() 之后发布），因此执行时工具已全部注册、agent 已能
+	// 接受输入。
+	//
+	// 声明方式：seq_create 传 boot:true，或序列文件里写 "boot": true。
+	Boot bool `json:"boot,omitempty"`
 }
 
 // Group 是一组工具：**组内并行、组间串行**，且拥有独立签名。
@@ -93,6 +107,11 @@ type rawSeq struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
 	Groups      []rawGroup `json:"groups"`
+	// Boot 必须在这里声明，否则 Parse 的 DisallowUnknownFields 会把
+	// "boot": true 当成**拼写错误**拒绝 —— 开机序列根本存不进去。
+	// （这正是 DisallowUnknownFields 的价值：漏声明字段会立刻报错，
+	//   而不是静默忽略后让人纳闷"为什么开机不执行"。）
+	Boot bool `json:"boot"`
 }
 
 // Parse 把序列文本解析为 AST 并完成**全部静态校验**。
@@ -117,7 +136,7 @@ func Parse(data []byte) (*Sequence, error) {
 		return nil, fmt.Errorf("序列 %q 没有任何 group", raw.Name)
 	}
 
-	seq := &Sequence{Name: raw.Name, Description: raw.Description}
+	seq := &Sequence{Name: raw.Name, Description: raw.Description, Boot: raw.Boot}
 	seenGroup := map[string]bool{}
 	for gi, rg := range raw.Groups {
 		g, err := buildGroup(rg)

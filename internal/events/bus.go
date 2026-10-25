@@ -33,6 +33,25 @@ const (
 	// 职责链：发现者（兼容层）→ 移交事件 → 归属者（skillmgr）加载管理。
 	EventSkillDetected EventType = "skill_detected"
 
+	// EventToolsReady 在**全部插件加载完成、工具已注册完毕**之后发布一次。
+	//
+	// 语义边界（关键）：它只保证"工具调用可用"，**不保证 agent 正在运行**。
+	// 订阅者若只是执行一段工具调用序列（如 seq 的开机序列），此刻即可开始；
+	// 它们的返回值进队列，等 agent 起来后再处理即可。
+	//
+	// 为什么不是 AgentReady：seq 自动运行**不依赖 agent** —— 它只是一段
+	// 调用序列。把事件绑在 agent.Start() 上会让时机被人为推后，且把
+	// "何时可跑序列"这个内核判断外包给编排层（main），换个入口就漂移。
+	//
+	// 发布点：kernelmod/pluginhost 在 `ks.PluginsReady = true` 处发布
+	// （那里正是"内置插件也已 LoadSkipping 完成"的时刻）。
+	//
+	// payload 约定：
+	//
+	//	plugins:       []string，已加载插件名
+	//	plugin_count:  int
+	EventToolsReady EventType = "tools_ready"
+
 	// EventMemoryAccess 是**图记忆读写事件**：谁读了/写了哪几个记忆块。
 	//
 	// 为什么需要它（2026-10-08）：星图此前的「跟随 agent 活动」靠**工具名猜节点**

@@ -891,8 +891,9 @@ func (s *Store) buildTreeLocked() *TreeIndex {
 		vec := vecByID[k.Name]
 		preview := []rune(k.Content)
 		previewStr := ""
-		if len(preview) > 200 {
-			previewStr = string(preview[:200]) + "..."
+		// 按**字符**截断：preview 是中文文本，字节切会产生非法 UTF-8。
+		if r := []rune(string(preview)); len(r) > 200 {
+			previewStr = string(r[:200]) + "..."
 		} else {
 			previewStr = string(preview)
 		}

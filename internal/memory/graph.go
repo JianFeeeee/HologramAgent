@@ -671,6 +671,15 @@ func (g *GraphDB) commitLocked(triples []Triple, sessionID string, turnID int, t
 			continue
 		}
 		if !validEntityName(t.Subject) || !validEntityName(t.Object) {
+			// ★ 拒绝必须可见：此前是静默 continue，导致"提交了 N 条但 0 写入"
+			// 完全无从查起（实测：doc->graph 连续 52 次 wrote no blocks，
+			// 而日志只说"被实体名校验拒绝"，看不到到底拒了什么）。
+			//
+			// 只打**被拒的那一侧**与原文，便于直接判断是抽取质量问题
+			// 还是校验过严（validEntityName 只要求 2~50 字符且含中文/字母/数字）。
+			log.Printf("[graph] reject triple: subject=%q(%s) relation=%q object=%q(%s) "+
+				"— failed validEntityName (need 2..50 runes with letter/digit)",
+				t.Subject, t.SubjectType, t.Relation, t.Object, t.ObjectType)
 			continue
 		}
 

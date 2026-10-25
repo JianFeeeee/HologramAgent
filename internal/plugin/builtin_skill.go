@@ -61,6 +61,18 @@ func (r *Registry) skillDirOf(skillName string) string {
 	r.mu.RLock()
 	dataDir := r.dataDir
 	r.mu.RUnlock()
+	return skillDirFrom(dataDir, skillName)
+}
+
+// skillDirFrom 是 skillDirOf 的**不加锁**版本（纯函数）。
+//
+// ★ 为什么必须拆出来：StopAll 持有 r.mu **写锁**时调用 RemoveBuiltinSkill，
+// 而 skillDirOf 要取 RLock ⇒ 自死锁。实测后果：internal/plugins 的
+// TestCapability_RestrictedPluginStillLoads 卡在 cleanup 300s 超时，
+// CI 的 go test ./... 与 -race 双双红（2026-10-25）。
+//
+// 规则：已持锁的调用路径只能用不加锁版本。
+func skillDirFrom(dataDir, skillName string) string {
 	if dataDir == "" {
 		return ""
 	}
@@ -122,12 +134,25 @@ func (r *Registry) InstallBuiltinSkill(pluginName string, p sdk.Plugin) {
 // 而工具已被停用 —— 模型会拿到一连串"工具不存在"的错误，
 // 且它无从知道原因是"插件被关了"。
 func (r *Registry) RemoveBuiltinSkill(pluginName string, p sdk.Plugin) {
+	r.mu.RLock()
+	dataDir := r.dataDir
+	r.mu.RUnlock()
+	r.removeBuiltinSkillLocked(pluginName, p, dataDir)
+}
+
+// removeBuiltinSkillLocked 是 RemoveBuiltinSkill 的**不加锁**版本。
+//
+// 调用方必须已持有 r.mu（且不能再调任何会取锁的方法）。
+// 由 StopAll 使用 —— 那里持写锁，走加锁版会自死锁。
+// 显式传入 dataDir 而不是在里面读 r.dataDir：避免"看起来没取锁、
+// 实际上一改就取锁"的隐患。
+func (r *Registry) removeBuiltinSkillLocked(pluginName string, p sdk.Plugin, dataDir string) {
 	provider, ok := p.(SkillProvider)
 	if !ok {
 		return
 	}
 	for name := range provider.BuiltinSkills() {
-		dir := r.skillDirOf(name)
+		dir := skillDirFrom(dataDir, name)
 		if dir == "" {
 			continue
 		}
@@ -137,7 +162,7 @@ func (r *Registry) RemoveBuiltinSkill(pluginName string, p sdk.Plugin) {
 		}
 		log.Printf("[plugin] %s: removed skill %q (plugin is stopped)", pluginName, name)
 		// 通知 skillmgr 从索引里摘掉（复用同一事件，负载带 removed 标记）。
-		r.announceSkillRemoved(pluginName, dir)
+		r.announceSkillRemovedLocked(pluginName, dir)
 	}
 }
 
@@ -164,10 +189,9 @@ func (r *Registry) announceSkill(pluginName, dir string) {
 	})
 }
 
-func (r *Registry) announceSkillRemoved(pluginName, dir string) {
-	r.mu.RLock()
+// announceSkillRemovedLocked 发布"skill 已移除"（**不加锁**，供持锁路径调用）。
+func (r *Registry) announceSkillRemovedLocked(pluginName, dir string) {
 	bus := r.evBus
-	r.mu.RUnlock()
 	if bus == nil {
 		return
 	}

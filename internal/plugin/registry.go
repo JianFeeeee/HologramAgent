@@ -1084,8 +1084,12 @@ func (r *Registry) StopAll() {
 	}
 	// 关停时摘掉所有随包 skill：进程要退出，留下 skill 会让下次启动
 	// 出现"索引里有、插件却没起"的错位（尤其插件被配置禁用时）。
+	//
+	// ★ 必须用**不加锁**的路径：此处 r.mu 是写锁，而 RemoveBuiltinSkill →
+	// skillDirOf 要取 RLock ⇒ 自死锁（实测 300s 卡死，CI 双红）。
+	// 直接读 r.dataDir（已在锁内）并调纯函数 skillDirFrom。
 	for _, st := range stoppers {
-		r.RemoveBuiltinSkill(st.plugin.Name(), st.plugin)
+		r.removeBuiltinSkillLocked(st.plugin.Name(), st.plugin, r.dataDir)
 	}
 	r.plugins = make(map[string]sdk.Plugin)
 	r.instances = nil
@@ -1575,7 +1579,11 @@ func (r *Registry) StopPlugin(name string) error {
 	}
 	// 先摘 skill 再停插件：停用后模型若仍看到 skill，会照做并拿到
 	// 一连串"工具不存在"，且无从知道原因是插件被关了。
-	r.RemoveBuiltinSkill(name, p)
+	//
+	// ★ 用**不加锁**版：此处 r.mu 是写锁（上面刚 Lock 过），
+	// 而 RemoveBuiltinSkill 会取 RLock ⇒ 自死锁。
+	// 与 StopAll 是同一个坑（实测两处各卡 300s / 90s 超时）。
+	r.removeBuiltinSkillLocked(name, p, r.dataDir)
 
 	r.runStopHandlers(name)
 	stopErr := p.Stop()

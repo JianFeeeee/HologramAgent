@@ -214,8 +214,9 @@ func (e *Extractor) Split(ctx context.Context, record string) ([]memory.Triple, 
 		// ★ **判据能显示 0，是因为它只看得到 0。**
 		//   观测面不够 ⇒ 只能看到失败，看不到原因。
 		raw := resp.Text
-		if len(raw) > 400 {
-			raw = raw[:400] + "…"
+		// 按**字符**截断（raw 是模型输出的中文文本，字节切会切坏多字节字符）。
+		if r := []rune(raw); len(r) > 400 {
+			raw = string(r[:400]) + "…"
 		}
 		if resp.Truncated {
 			// 截断的 JSON 不可救，也不该救 —— 重试比丢弃更划算（模型是随机的）。

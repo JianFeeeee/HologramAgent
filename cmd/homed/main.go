@@ -302,6 +302,7 @@ func main() {
 	stopRuntime := startAgentRuntime(cfgReg, pluginReg, agent, logDir, ctx)
 	defer stopRuntime()
 
+
 	_, closeIPC := startIPCServer(opt.dataDir, opt.boot, agent)
 	defer closeIPC()
 

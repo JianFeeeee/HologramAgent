@@ -63,6 +63,13 @@ func (p *Plugin) seqCreate(args map[string]interface{}) (interface{}, error) {
 	if d := argString(args, "description"); d != "" {
 		seq.Description = d
 	}
+	// boot：系统就绪（agent_ready）时自动执行一次。
+	// 显式传才生效；未传则保留序列文件里可能已写的 boot 标记。
+	if v, ok := args["boot"]; ok {
+		if b, isBool := v.(bool); isBool {
+			seq.Boot = b
+		}
+	}
 	if err := p.store.Save(seq); err != nil {
 		return nil, err
 	}
@@ -71,6 +78,9 @@ func (p *Plugin) seqCreate(args map[string]interface{}) (interface{}, error) {
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "序列 %q 已保存（%s，%d 个 group）", seq.Name, from, len(seq.Groups))
+	if seq.Boot {
+		fmt.Fprintf(&sb, "\n- ⚙ 已标记 boot：**下次系统就绪时自动执行一次**")
+	}
 	for _, g := range seq.Groups {
 		fmt.Fprintf(&sb, "\n- %s", g.Name)
 		if len(g.In) > 0 {

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -188,5 +189,44 @@ func TestBuiltinSkill_AnnouncesRemoved(t *testing.T) {
 	removed, _ := got[1].Payload["removed"].(bool)
 	if !removed {
 		t.Fatal("卸载通告必须带 removed=true（否则 skillmgr 分不清是新增还是移除）")
+	}
+}
+
+// ── 持锁路径不得调用加锁版（防自死锁）──
+//
+// 真实事故（2026-10-25）：StopAll 与 StopPlugin 都在持有 r.mu 写锁时
+// 调 RemoveBuiltinSkill → skillDirOf → r.mu.RLock() ⇒ **自死锁**。
+//
+// 后果不是报错而是**卡死**：internal/plugins 卡 300s、internal/plugin 卡 840s
+// （go test 默认 10m/20m 超时才死），CI 的 go test ./... 与 -race 双双红。
+//
+// 死锁无法用普通断言抓（它不返回），所以这里用**超时**当判据：
+// 正常应毫秒级返回，超过 5 秒即视为死锁。
+func TestStopAllAndStopPluginDoNotDeadlock(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		// ① StopAll 路径
+		r1 := newTestRegistryForSkills(t)
+		p1 := &fakeSkillPlugin{name: "demo", skills: map[string]string{"demo-tools": sampleSkill}}
+		r1.InstallBuiltinSkill("demo", p1)
+		r1.StopAll()
+
+		// ② StopPlugin 路径（需要真的把插件注册进 r.plugins）
+		r2 := newTestRegistryForSkills(t)
+		p2 := &fakeSkillPlugin{name: "demo", skills: map[string]string{"demo-tools": sampleSkill}}
+		r2.InstallBuiltinSkill("demo", p2)
+		r2.mu.Lock()
+		r2.plugins["demo"] = p2
+		r2.mu.Unlock()
+		_ = r2.StopPlugin("demo")
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopAll/StopPlugin 超时 —— 极可能是持锁调用了加锁版 " +
+			"RemoveBuiltinSkill（自死锁）。请改用 removeBuiltinSkillLocked。")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -375,3 +376,42 @@ func TestSkillIndex(t *testing.T) {
 		t.Fatalf("disabled skill should be excluded from index: %q", idx)
 	}
 }
+
+// ── 索引行截断必须按字符，不能按字节 ──
+//
+// 真实缺陷（e2e 实测发现）：原实现 `desc[:80]` 按字节切，
+// 中文占 3 字节 ⇒ 切点落在多字节字符中间 ⇒ 产生非法 UTF-8。
+//
+// 后果不止是"难看"：截断吃掉了"什么时候该用"那部分，
+// 模型只看到半句 + 乱码尾部，于是不知道这个 skill 何时适用。
+// e2e 实证：多对象重复读文件的场景，模型没用 seq，改去调 file-tools。
+//
+// 本仓 25 个 skill 中 8 个（32%）曾被此 bug 破坏。
+func TestSkillIndexTruncatesByRune(t *testing.T) {
+	long := strings.Repeat("序列加速能力说明", 20) // 160 个中文字符，远超 80
+	got := truncateDescForTest(long)
+
+	// ① 必须仍是合法 UTF-8（按字节切会产生非法序列）
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断结果不是合法 UTF-8（模型会看到乱码）：%q", got)
+	}
+	// ② 截断长度按 rune 计，80 字符 + "..."
+	if n := len([]rune(got)); n != 83 {
+		t.Fatalf("应按字符截断到 80+3 个 rune，实际 %d 个", n)
+	}
+	// ③ 不得出现替换字符
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Fatalf("截断结果含替换字符 U+FFFD：%q", got)
+	}
+}
+
+// 短描述不应被截断。
+func TestSkillIndexKeepsShortDescIntact(t *testing.T) {
+	short := "把同类操作编成序列执行"
+	if got := truncateDescForTest(short); got != short {
+		t.Fatalf("短描述不该被改动：期望 %q，实际 %q", short, got)
+	}
+}
+
+// truncateDescForTest 直接调生产实现，避免测试里复制一份逻辑（两处真相会漂移）。
+func truncateDescForTest(desc string) string { return truncateDesc(desc) }

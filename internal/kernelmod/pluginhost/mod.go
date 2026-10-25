@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
@@ -182,6 +183,17 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 			ks.PluginsReady = true
 			log.Printf("[pluginhost] kernel fully initialized -> loaded remaining plugins (%d built-in)",
 				len(noManifest))
+
+			// ★ 发布 tools_ready —— "工具已全部注册完毕"的唯一信号。
+			//
+			// 语义只到"工具可调"，**不涉及 agent 是否在跑**：
+			// 依赖完整内核做事的订阅者（seq 开机序列）此刻即可开始，
+			// 返回值进队列、等 agent 起来后处理即可。
+			//
+			// 位置即语义：放在 PluginsReady=true 之后、与内置插件加载同一次
+			// once 里 —— 早了（如内核装配完成处）还有内置插件未加载，
+			// 那时工具不全；晚了则订阅者错过这次进程唯一的就绪时刻。
+			publishToolsReady(ks)
 		})
 	}
 	// 订阅 + 立即评估一次（若 bus 已 complete，比如非生产路径的退化 bus）
@@ -349,4 +361,30 @@ func loadOne(ks *kernelboot.KernelState, dir, name string) (bool, error) {
 func planCatalog(ks *kernelboot.KernelState) *PluginCatalog {
 	c, _ := ks.PluginCatalog.(*PluginCatalog)
 	return c
+}
+
+// publishToolsReady 广播 tools_ready（全部插件加载完成、工具已注册）。
+//
+// 失败只记日志、不阻断：系统本身仍可正常接受输入，只是依赖本事件的
+// 订阅者（如 seq 的开机序列）不会自动执行。**必须可见** ——
+// 静默失败会让"为什么开机序列没跑"完全无从查起。
+func publishToolsReady(ks *kernelboot.KernelState) {
+	if ks == nil || ks.EventBus == nil {
+		log.Printf("[pluginhost] tools_ready NOT published: EventBus is nil " +
+			"(subscribers such as seq boot sequences will not run)")
+		return
+	}
+	var loaded []string
+	if ks.PluginRegistry != nil {
+		loaded = ks.PluginRegistry.ListLoadedPlugins()
+	}
+	ks.EventBus.Publish(&events.Event{
+		Type:   events.EventToolsReady,
+		Source: "plugin-host",
+		Payload: map[string]interface{}{
+			"plugins":      loaded,
+			"plugin_count": len(loaded),
+		},
+	})
+	log.Printf("[pluginhost] tools_ready published (%d plugins)", len(loaded))
 }

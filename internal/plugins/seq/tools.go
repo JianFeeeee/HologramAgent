@@ -42,6 +42,12 @@ func seqToolDefs() []toolDefInfo {
 						"type":        "string",
 						"description": "序列文件路径（与 groups 二选一）。目录内文件优先用 files 工具查看",
 					},
+					"boot": map[string]interface{}{
+						"type": "boolean",
+						"description": "标记为开机序列：下次系统就绪时自动执行一次。" +
+							"适合「每次启动都要做的那套固定动作」（自检、预热、拉取状态）。" +
+							"注意是**每次进程启动一次**，不是定时任务。",
+					},
 				},
 				"required": []string{"name"},
 			},

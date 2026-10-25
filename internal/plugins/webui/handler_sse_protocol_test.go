@@ -156,6 +156,10 @@ func TestEveryPublishedEventHasAnOutwardPath(t *testing.T) {
 		// 插件间握手事件：clawhubadapter → skillmgr 移交 SKILL 条目，
 		// 属内核内部的职责链，前端无需感知。
 		"skill_detected": "插件间握手（clawhubadapter → skillmgr），非对话流程",
+		// tools_ready：全部插件加载完毕、工具注册齐的信号，供内核侧订阅者
+		// （如 seq 的开机序列）用。它是**内核内部**的就绪信号，
+		// 不是对话流程事件，前端无需感知。
+		"tools_ready": "内核就绪信号（plugin-host → 订阅者），非对话流程",
 		// delta 已由 appendDeltaSub 覆盖（见 sseSubscribedTypes ②）
 		"reasoning_delta": "由 appendDeltaSub 订阅",
 		"content_delta":   "由 appendDeltaSub 订阅",

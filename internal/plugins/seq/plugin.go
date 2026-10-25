@@ -58,6 +58,8 @@ type Plugin struct {
 	sdk   *sdk.PluginSDK
 	// runner 指向内核（由 Start 注入）
 	runner seqRunner
+	// unsubBoot 是 agent_ready 的退订函数（Stop 时调用）
+	unsubBoot func()
 	// 调用栈深度：跨序列/跨 group 嵌套的**结构上界**（maxCallDepth）
 	callDepth int
 }
@@ -82,11 +84,21 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	p.store = NewStore(dir)
 	p.runner = &kernelRunner{tool: s.Tool()}
 	p.registerTools()
+
+	// 订阅 agent_ready：用它的 boot 序列在**系统真正可用**时自动执行。
+	// 不能在这里直接跑 —— 此刻工具所属插件可能还没拉起、agent 循环还没开始。
+	p.unsubBoot = p.subscribeBoot()
 	return nil
 }
 
-// Stop 清理（无订阅需注销）。
-func (p *Plugin) Stop() error { return nil }
+// Stop 清理订阅。
+func (p *Plugin) Stop() error {
+	if p.unsubBoot != nil {
+		p.unsubBoot()
+		p.unsubBoot = nil
+	}
+	return nil
+}
 
 // kernelRunner 把 sdk.ToolAPI 适配成 seqRunner。
 type kernelRunner struct{ tool sdk.ToolAPI }
