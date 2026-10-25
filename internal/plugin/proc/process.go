@@ -47,14 +47,36 @@ type Process struct {
 	// writeMu 串行化 stdin 写入：NDJSON 帧不能交错，否则对端解析错乱。
 	writeMu sync.Mutex
 
-	// pending 表：请求 ID → 应答通道。
-	mu      sync.Mutex
-	nextID  uint64
-	pending map[uint64]chan *Response
-	closed  bool
+	// inflight 记录在途调用：请求 ID → *call。
+	//
+	// 每个 *call 自带状态机（见 callstate.go）。用状态而不是"map 里有没有
+	// 这个键"来表达调用是否还活着——取消后条目**不删**，只是把状态推进到
+	// callCanceled，于是迟到的应答仍能与它的调用对上，从而被**有依据地**处理，
+	// 而不是靠"找不到 id 就丢"这种副作用式正确。
+	mu       sync.Mutex
+	nextID   uint64
+	inflight map[uint64]*call
+	closed   bool
 
 	// handler 处理插件反向发起的调用（51 个 core.* method）。
 	handler RequestHandler
+
+	// onCancelIgnored 在「发出取消后超过 cancelGrace 仍未停手」时回调。
+	//
+	// 语义严格限定为**取消超时**，不包含业务超时：长任务超时是正常的
+	// （时间给少了），而"喊停之后还不停"才是插件失去响应的证据。
+	onCancelIgnored func(callID uint64, grace time.Duration)
+
+	// onCancelHonored 在「已被取消的调用最终仍回了应答」时回调——
+	// 说明插件收到了 cancel 且及时停手了。用于把连续计数清零。
+	onCancelHonored func(callID uint64)
+
+	// reclaimBlocks 强制回收一批扩容块（由 Host 注入）。
+	//
+	// 为什么用回调而不是让 Process 持有 *Host：Host 依赖 Process
+	// （Spawn 时把自己传进来会成环），而且 Process 只在这一处需要 arena 能力。
+	// 注入一个函数把依赖面收到最小。
+	reclaimBlocks func(refs []SharedRef) int
 
 	// exited 在进程被收割后关闭，用于唤醒所有等待者。
 	exited     chan struct{}
@@ -191,7 +213,7 @@ func Spawn(name, bin string, opts Options) (*Process, error) {
 		stdout:      stdoutR,
 		stdinFile:   stdinW,
 		stdoutFile:  stdoutR,
-		pending:     make(map[uint64]chan *Response),
+		inflight:    make(map[uint64]*call),
 		handler:     opts.Handler,
 		exited:      make(chan struct{}),
 		ready:       make(chan struct{}),
@@ -384,15 +406,7 @@ func (p *Process) readLoop() {
 			log.Printf("[proc] %s 应答解析失败: %v", p.name, err)
 			continue
 		}
-		p.mu.Lock()
-		ch, ok := p.pending[resp.ID]
-		delete(p.pending, resp.ID)
-		p.mu.Unlock()
-		if !ok {
-			log.Printf("[proc] %s 收到未知 id=%d 的应答（可能已超时）", p.name, resp.ID)
-			continue
-		}
-		ch <- &resp
+		p.deliverResponse(&resp)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -451,18 +465,23 @@ func (p *Process) markExited() {
 			log.Printf("[proc] %s 正常退出", p.name)
 		}
 
+		// 进程没了：所有在途调用都无法完成。按状态机收敛——
+		// 只有**仍在 pending** 的才需要被唤醒（已取消的调用方早已返回，
+		// 它不等结果；若也去唤醒，会往无人读的通道里塞东西并掩盖真实状态）。
 		p.mu.Lock()
 		p.closed = true
-		waiters := make([]chan *Response, 0, len(p.pending))
-		for id, ch := range p.pending {
-			waiters = append(waiters, ch)
-			delete(p.pending, id)
+		var toWake []*call
+		for id, c := range p.inflight {
+			delete(p.inflight, id)
+			if c.transitionTo(callPending, callFailed) {
+				toWake = append(toWake, c)
+			}
 		}
 		p.mu.Unlock()
 
 		// 唤醒所有在途调用，避免调用方挂死到自己的超时
-		for _, ch := range waiters {
-			ch <- &Response{Error: ErrProcessExited.Error()}
+		for _, c := range toWake {
+			c.ch <- &Response{Error: ErrProcessExited.Error()}
 		}
 
 		// ★ 顺序至关重要：onExit 必须在 safeclose.Safe(&p.exitedOnce, p.exited) **之前**完成。
@@ -563,9 +582,23 @@ func (p *Process) Call(method string, params interface{}) (json.RawMessage, erro
 
 // CallContext 发起 RPC 并等待应答，受 ctx 取消/超时控制。
 //
-// **ctx 取消时调用方立即返回，且 pending 条目被清理**——
-// 对比 cgo 路径：超时只让调用方返回，goroutine 仍永久卡在 C 调用里（§9.3）。
-// 这里子进程若真卡住，上层可 Kill()，OS 回收全部资源。
+// ## ctx 取消时会发生两件事
+//
+//  1. **调用方立即返回**（旧行为，不变）；
+//  2. **向插件进程发一条 call.cancel 通知**，告诉它放弃这个正在跑的 handler。
+//
+// 第 2 条是 2026-10-25 补的：在此之前取消只是把请求从 pending 表里删掉，
+// 插件侧的 handler 毫不知情、继续跑到自己结束，期间占着连接/子进程/文件句柄。
+// 结果被丢弃、成本照付 —— 高频超时的工具会持续后台堆积。
+//
+// ## 为什么不能只靠“把进程杀掉”
+//
+// 一个插件进程承载多个工具与会话；为一个超时的调用杀掉它，会把同进程里
+// 仅存正在正常工作（甚至正在写数据库）的其它调用一起带走。所以必须精确到
+// **单次调用**的取消，而这只能靠插件侧配合。
+//
+// 通知是 fire-and-forget（不等待确认）：
+// 取消路径绝不能再变成同步点，否则内核超时后还要等插件回一句“我收到了”。
 func (p *Process) CallContext(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if params != nil {
@@ -576,38 +609,206 @@ func (p *Process) CallContext(ctx context.Context, method string, params interfa
 		raw = b
 	}
 
-	ch := make(chan *Response, 1)
-
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return nil, fmt.Errorf("proc: %s 调用 %s: %w", p.name, method, ErrProcessExited)
 	}
 	p.nextID++
-	id := p.nextID
-	p.pending[id] = ch
+	c := newCall(p.nextID, method)
+	p.inflight[c.id] = c
 	p.mu.Unlock()
 
-	if err := p.writeFrame(&Request{ID: id, Method: method, Params: raw}); err != nil {
-		p.mu.Lock()
-		delete(p.pending, id)
-		p.mu.Unlock()
+	if err := p.writeFrame(&Request{ID: c.id, Method: method, Params: raw}); err != nil {
+		p.retire(c, callFailed)
 		return nil, fmt.Errorf("proc: %s 发送 %s: %w", p.name, method, err)
 	}
 
 	select {
-	case resp := <-ch:
+	case resp := <-c.ch:
 		if resp.Error != "" {
 			return nil, fmt.Errorf("proc: %s.%s: %s", p.name, method, resp.Error)
 		}
 		return resp.Result, nil
 	case <-ctx.Done():
-		p.mu.Lock()
-		delete(p.pending, id)
-		p.mu.Unlock()
+		// ★ 状态机先落定，再发通知：顺序反过来的话，插件可能在极短时间内
+		// 应答并撞上"仍在 pending"的旧状态，导致这次取消被判成普通完成。
+		p.abandon(c, ctx.Err())
 		return nil, fmt.Errorf("proc: %s 调用 %s: %w", p.name, method, ctx.Err())
 	case <-p.exited:
+		p.retire(c, callFailed)
 		return nil, fmt.Errorf("proc: %s 调用 %s: %w", p.name, method, ErrProcessExited)
+	}
+}
+
+// deliverResponse 按**状态机**处置一条来自插件的应答。
+//
+// 这是唯一的分发实现：readLoop 与单测都走这里，避免"测试替身与真实路径
+// 行为不一致"——第一版我在测试里复制了一份分发逻辑，结果 onCancelHonored
+// 只在真路径里被调用，测试却显示通过（假绿）。
+//
+// 四种情形，各有明确处置：
+//
+//	pending  → done     ：正常完成，把结果交给等待者。
+//	canceled → done     ：调用方早已放弃。应答**有主**（我们知道它属于哪次
+//	                      调用、那次调用为什么被放弃），所以这不是"未知 id"，
+//	                      而是"预期之内的迟到应答"——同时它是一个**正面信号**：
+//	                      插件收到了 cancel 并停手了。
+//	done/failed         ：重复应答（协议错误），记 Warn 并丢弃。
+//	表里没有该 id        ：真正的未知 id，记 Warn。
+func (p *Process) deliverResponse(resp *Response) {
+	p.mu.Lock()
+	c, ok := p.inflight[resp.ID]
+	if ok && c.State() != callPending && c.State() != callCanceled {
+		p.mu.Unlock()
+		log.Printf("[proc] %s 丢弃重复应答 id=%d（该调用已处于 %s）",
+			p.name, resp.ID, c.State())
+		return
+	}
+	if ok {
+		delete(p.inflight, resp.ID)
+	}
+	p.mu.Unlock()
+
+	if !ok {
+		log.Printf("[proc] %s 丢弃未知 id=%d 的应答（不属于任何在途调用）", p.name, resp.ID)
+		return
+	}
+
+	switch {
+	case c.transitionTo(callPending, callDone):
+		c.ch <- resp
+	case c.transitionTo(callCanceled, callDone):
+		// ★ 正面信号：插件收到了 cancel 并且停手了。要把"取消无响应"的
+		// 连续计数清零——判据是"**连续** N 次"而不是"累计 N 次"。
+		if p.onCancelHonored != nil {
+			p.onCancelHonored(c.id)
+		}
+		// 通道容量 1 且此处无读者，不写入（写了会阻塞 readLoop）。
+	default:
+		log.Printf("[proc] %s 丢弃无法归类的应答 id=%d（状态 %s）",
+			p.name, resp.ID, c.State())
+	}
+}
+
+// CallByID 返回某个在途调用的状态句柄（不存在返回 nil）。
+//
+// 用途：插件申请扩容块时带 CallID，内核据此把块登记到**那次调用**名下
+// （见 call.trackBlock）。归属跟着调用本身走，不需要另一张表。
+func (p *Process) CallByID(id uint64) *call {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.inflight[id]
+}
+
+// retire 把调用从在途表里摘掉并把状态推进到 to。
+//
+// 返回"是否由本次调用完成了迁移"——只有赢得迁移的一方才该承担后续动作
+// （唤醒等待者 / 发取消通知），避免重复。
+func (p *Process) retire(c *call, to callState) bool {
+	// ★ 顺序：**先迁移状态，再摘表**。
+	//
+	// 反过来（先摘表后迁移）会留一个窗口：此时状态可能仍是 pending，而
+	// 表里已经没有它——一个同时到达的应答就会走"未知 id"分支，
+	// 而我们本来能说清它属于哪次调用。先迁移则保证：任何时刻
+	// "表里有它" ⇒ 它的状态是可解释的。
+	//
+	// retire 的语义是"调用收尾"：既可能收 pending（正常结束/进程退出），
+	// 也可能收 canceled（宽限期到了，对端仍未回答）。
+	//
+	// ★ 但**不收 done/failed**：那两个是终态，对它们做任何迁移都是协议错误
+	// （重复应答/重复收尾），放行会让状态机失去单向性。这由
+	// legalTransition 兜底——done/failed 的合法目标列表为空，CAS 必然失败。
+	moved := c.transitionTo(callPending, to) || c.transitionTo(callCanceled, to)
+	p.mu.Lock()
+	if p.inflight[c.id] == c {
+		delete(p.inflight, c.id)
+	}
+	p.mu.Unlock()
+	return moved
+}
+
+// abandon 在调用方放弃（超时/取消）时收敛状态，并通知对端停手。
+//
+// 这里体现的就是"取消是一等状态"：条目**不删**、状态改成 callCanceled，
+// 稍后若插件仍然回了一个应答，readLoop 能认出它属于一个**已取消**的调用，
+// 从而有依据地丢弃（而不是靠"找不到 id"这种副作用）。
+func (p *Process) abandon(c *call, cause error) {
+	// pending → canceled：只有赢的一方负责发通知。
+	if c.transitionTo(callPending, callCanceled) {
+		p.cancelCall(c.id, cause)
+	}
+	// ★ **不摘表**。这正是本次改造的关键点：
+	//
+	// 摘了表，插件随后回的应答就成了"未知 id"——我们明明知道它属于哪次
+	// 调用、也知道那次调用是被取消的，却只能当成异常丢弃。
+	// 保留条目后，readLoop 能按状态做明确处置（canceled→done，静默丢弃），
+	// 而且"这条应答为什么被丢"是有依据的，不是靠"找不到 key"这种副作用。
+	//
+	// 条目何时消失？三条路径：
+	//  1. 迟到的应答到达时由 readLoop 摘（正常路径）；
+	//  2. 进程退出时统一清；
+	//  3. ★ **宽限期**到了还没回 → onCancelIgnored（见下）。
+	//     对端若永远不回（卡死/已死但进程还在），条目必须有一个上界，
+	//     而"取消频繁 + 对端从不回答"正是最该防的组合。
+	time.AfterFunc(cancelGrace, func() { p.expireCanceled(c) })
+}
+
+// cancelGrace 是**取消宽限期**：从发出 call.cancel 起，等它停手的时间。
+//
+// 为什么必须有这个超时，以及它和业务超时的区别（这是两个不同的问题）：
+//
+//	业务超时  = 这次任务跑太久   → 正常现象，只说明该换个更小的任务
+//	取消超时  = 喊停之后还不停   → **异常信号**，说明插件卡死/失去响应
+//
+// 只有后者才该被当成"插件不稳定"。business 超时本身不能作为判据：
+// 长任务本来就该超时，那是调用方给的时间不够，不是插件的错。
+//
+// 取 5 秒：取消是软信号，插件可能正在收尾（写盘、断开连接）。
+// 正常模板收到 call.cancel 后 ms 级就退出（取消判据实测 < 100ms），
+// 5 秒足够覆盖任何合理收尾，又远短于业务超时上限（10 分钟）。
+const cancelGrace = 5 * time.Second
+
+// reclaimRefs 调用注入的回收函数（未注入时返回 0，便于独立测试）。
+func (p *Process) reclaimRefs(refs []SharedRef) int {
+	if p.reclaimBlocks == nil || len(refs) == 0 {
+		return 0
+	}
+	return p.reclaimBlocks(refs)
+}
+
+// SetReclaimBlocks 注入扩容块强制回收能力（Host 创建 Process 后调用）。
+func (p *Process) SetReclaimBlocks(fn func(refs []SharedRef) int) { p.reclaimBlocks = fn }
+
+// OnCancelHonored 设置「取消被响应」回调。
+func (p *Process) OnCancelHonored(fn func(callID uint64)) { p.onCancelHonored = fn }
+
+// OnCancelIgnored 设置取消超时回调（Plugin 创建 Process 后调用）。
+func (p *Process) OnCancelIgnored(fn func(callID uint64, grace time.Duration)) {
+	p.onCancelIgnored = fn
+}
+
+// expireCanceled 在取消宽限期到期时收尾一次已被取消的调用。
+//
+// 三件事，缺一不可：
+//
+//	① 强制回收该调用名下的扩容块 —— 插件已静默退出，永远不会归还它们。
+//	   不回收就是"取消了却瞒下内存"：无日志、只涨不落。
+//	② 计数并上报「取消无响应」—— 这是插件不稳定的直接证据。
+//	③ 状态收敛到 failed（不是 done）：这次调用确实没有正常完成。
+func (p *Process) expireCanceled(c *call) {
+	if !p.retire(c, callFailed) {
+		return // 宽限期内已经收到应答/已被回收，无需处理
+	}
+	// ① 回收块：refs 的 owner 是插件，但回收决策来自内核（见 ReclaimRefs）。
+	if n := p.reclaimRefs(c.takeBlocks()); n > 0 {
+		log.Printf("[proc] %s 调用 %d 取消后无响应：已强制回收 %d 个扩容块", p.name, c.id, n)
+	}
+	// ② 上报：由上层判定稳定性并决定是否重启。
+	//    这里只负责"如实汇报事实"，不做重启决策——proc 不知道插件生命周期策略。
+	log.Printf("[proc] %s 调用 %d 在取消后 %v 内未停手（插件失去响应）", p.name, c.id, cancelGrace)
+	if p.onCancelIgnored != nil {
+		p.onCancelIgnored(c.id, cancelGrace)
 	}
 }
 
@@ -631,6 +832,28 @@ func (p *Process) Notify(method string, params interface{}) error {
 		return ErrProcessExited
 	}
 	return p.writeFrame(&Request{Method: method, Params: raw})
+}
+
+// cancelCall 告知插件进程放弃某个仍在执行的调用。
+//
+// 设计要点（值得写在代码里，否则后人很容易把它改成阻塞式）：
+//
+//   - **不等待应答**：用 Notify（ID=0）。取消是 best-effort 通知，
+//     插件若不认识这个方法（旧版模板）会当成未知请求忽略，不影响任何流程；
+//     若回一个“清不了”反而会把取消路径变成新的阻塞点。
+//   - **失败只记日志**：进程已死、管道已满都属于“本来就不用再取消了”。
+//     绝不能把通知失败上升为调用方的错误，否则超时会变成两种不同的错。
+//   - **先清 pending 再发**：反过来的话，插件可能在极短时间内就跑完了并
+//     回了应答，而那条应答会落在一个已废弃的 id 上（虽然会被丢弃，但日志
+//     和 pending 清理会变得难以推理）。
+func (p *Process) cancelCall(id uint64, cause error) {
+	reason := "canceled"
+	if cause != nil {
+		reason = cause.Error()
+	}
+	if err := p.Notify(MethodCallCancel, CallCancelParams{CallID: id, Reason: reason}); err != nil {
+		log.Printf("[proc] %s 发送调用取消失败（id=%d，可能已退出）: %v", p.name, id, err)
+	}
 }
 
 // Stop 优雅停止：发 plugin.stop → 等宽限期 → 超时则 Kill。

@@ -56,6 +56,13 @@ type Plugin struct {
 
 	stopOnce sync.Once
 
+	// cancelIgnored 是「取消后未停手」的**连续**次数（成功响应即清零）。
+	//
+	// 与 onCrash 的分工：onCrash 是进程真的死了；这里是进程活着但
+	// 对取消无响应。两者都指向"该重启"，但成因不同，日志要能区分。
+	cancelIgnoredMu sync.Mutex
+	cancelIgnored   int
+
 	// stopping 标记「本次退出是内核主动发起的」，用于压掉 onCrash。
 	//
 	// 必要性：Stop() 宽限期超时与 Close() 都走 Process.Kill()，
@@ -137,6 +144,15 @@ func (p *Plugin) Start(core CoreSDK) error {
 	// 领一个槽池身份；插件退出时用它回收残留槽。
 	p.ownerID = p.host.NextOwnerID()
 
+	// 新进程 = 新状态：重启后取消无响应的计数必须归零。
+	//
+	// 不归零的后果：插件可能已经换成一个健康的新进程，而计数器还带着
+	// 旧进程的账——下一次偶发的一次取消无响应就会把刚重启好的插件再踢一次，
+	// 形成"越重启越容易被重启"的恶性循环。
+	p.cancelIgnoredMu.Lock()
+	p.cancelIgnored = 0
+	p.cancelIgnoredMu.Unlock()
+
 	p.handler = &coreHandler{
 		sdk:     core,
 		name:    p.name,
@@ -181,6 +197,21 @@ func (p *Plugin) Start(core CoreSDK) error {
 		return err
 	}
 	p.proc = proc
+	// 让 handler 能按 CallID 查在途调用（arena.alloc 需要把块登记到调用名下）。
+	p.handler.process = proc
+	// 取消超时时的两件收尾：强制回收块 + 上报插件失去响应。
+	proc.SetReclaimBlocks(p.host.ReclaimRefs)
+	proc.OnCancelIgnored(func(callID uint64, grace time.Duration) {
+		p.noteCancelIgnored(callID, grace)
+	})
+	proc.OnCancelHonored(func(callID uint64) {
+		// 插件收到取消并停手了：连续计数清零（判据是"连续"而非"累计"）。
+		p.cancelIgnoredMu.Lock()
+		if p.cancelIgnored > 0 {
+			p.cancelIgnored = 0
+		}
+		p.cancelIgnoredMu.Unlock()
+	})
 
 	// plugin.init：构造插件实例
 	if _, err := proc.Call(MethodPluginInit, PluginInitParams{
@@ -265,6 +296,17 @@ func (p *Plugin) handleExit(name string, err error) {
 //
 // 控制面仍是 RPC（请求 ID 关联、ctx 取消、崩溃唤醒都由 Process 承载）。
 func (p *Plugin) invokeTool(name string, args map[string]interface{}) (interface{}, error) {
+	// 从 args 旁路取出内核放进来的执行上下文（见 core.executeCtxArgKey）。
+	// 取不到就是 Background —— 直连调用、单测、非 agent 路径都走这里，行为不变。
+	return p.invokeToolCtx(execCtxFromArgs(args), name, stripExecCtx(args))
+}
+
+// invokeToolCtx 在插件进程内执行工具，并把 ctx 传给 RPC。
+//
+// ctx 取消时 CallContext 会：① 让调用方立即返回，② 向插件发 call.cancel
+// 通知它别再跑了。**插件作者一行不需要改**——handler 签名不变，取消由
+// 模板运行时接住并让阻塞中的 handler 拿到 context.Canceled。
+func (p *Plugin) invokeToolCtx(ctx context.Context, name string, args map[string]interface{}) (interface{}, error) {
 	if p.proc == nil {
 		return nil, ErrProcessExited
 	}
@@ -289,7 +331,7 @@ func (p *Plugin) invokeTool(name string, args map[string]interface{}) (interface
 	}
 	copy(area[:len(argJSON)], argJSON)
 
-	raw, err := p.proc.Call(MethodToolInvoke, ToolInvokeParams{
+	raw, err := p.proc.CallContext(ctx, MethodToolInvoke, ToolInvokeParams{
 		Name:    name,
 		Frame:   frame,
 		ArgsLen: uint32(len(argJSON)),
@@ -305,8 +347,11 @@ func (p *Plugin) invokeTool(name string, args map[string]interface{}) (interface
 		return nil, fmt.Errorf("proc: %s 工具 %s 未返回结果引用", p.name, name)
 	}
 	// 插件申请了扩容块：内核负责归还。
+	// ★ 必须用**插件自己的 ownerID**：块是插件经 arena.alloc 申请的，
+	// 块头 owner 记的是 p.ownerID。传 OwnerHost 会撞上 Free 的归属校验，
+	// 且错误若被 `_ =` 吞掉就是永久泄漏（2026-10-25 线上 4MB arena 被打满的根因）。
 	if res.ResultRef.Flags&sharedRefFlagExpand != 0 {
-		defer func() { _ = arena.Free(OwnerHost, res.ResultRef) }()
+		defer func() { p.freeExpand("tool", name, res.ResultRef) }()
 	}
 	data, err := arena.Read(res.ResultRef, gen)
 	if err != nil {
@@ -336,6 +381,54 @@ func (p *Plugin) invokeCleaner(params CleanerInvokeParams) (CleanerInvokeResult,
 		return CleanerInvokeResult{}, fmt.Errorf("proc: %s %s Cleaner %s 应答解析失败: %w", p.name, params.Scope, params.Name, err)
 	}
 	return res, nil
+}
+
+// cancelIgnoredLimit 是「取消无响应」的容忍次数。
+//
+// 判据的来源（用户 2026-10-25 裁定）：长任务超时是**正常的**（时间给少了），
+// 不能作为插件不稳定的依据；真正说明插件卡死的是**喊停之后还不停**。
+// 因此只对"取消超时"计数，连续超过这个次数才重启。
+//
+// 取 2：一次可能是收尾特别慢（磁盘抖动、大文件落盘），两次就基本可以
+// 断定它不会自己回来了。注意这里是"连续"——成功响应一次取消就清零。
+const cancelIgnoredLimit = 2
+
+// noteCancelIgnored 记录一次"取消后未停手"，达到阈值则重启插件。
+//
+// 为什么重启而不是继续容忍：一个对取消无响应的插件进程会持续占着
+// 连接/子进程/文件句柄，且每次调用都要等满 cancelGrace 才收尾——
+// 后续所有调用都会被拖慢。重启是唯一能真正清掉这些资源的手段。
+func (p *Plugin) noteCancelIgnored(callID uint64, grace time.Duration) {
+	p.cancelIgnoredMu.Lock()
+	p.cancelIgnored++
+	n := p.cancelIgnored
+	p.cancelIgnoredMu.Unlock()
+
+	if n < cancelIgnoredLimit {
+		log.Printf("[proc] %s 取消后未停手（第 %d/%d 次，调用 %d）：暂不重启，继续观察",
+			p.name, n, cancelIgnoredLimit, callID)
+		return
+	}
+
+	log.Printf("[proc] %s 连续 %d 次在取消后 %v 内未停手，判定处于崩溃/不稳定态 —— 主动重启",
+		p.name, n, grace)
+	// 走既有的崩溃重启链（含退避、限流、禁用手工介入检查）：
+	// 不在这里自己 Kill+Reload，否则会绕开那些保护。
+	if p.onCrash != nil {
+		p.onCrash(p.name, fmt.Errorf("取消后连续 %d 次无响应（最后调用 %d，宽限 %v）",
+			n, callID, grace))
+	}
+}
+
+// freeExpand 让内核代为回收插件申请的扩容块，失败时**说出来**。
+//
+// owner 必须是插件自己的 ownerID（见调用点注释）；失败必须留日志——
+// 之前是 `_ = arena.Free(...)`，把原因直接丢弃，线上排查代价极高。
+func (p *Plugin) freeExpand(what, name string, ref SharedRef) {
+	if err := p.host.Arena().Free(p.ownerID, ref); err != nil {
+		log.Printf("[proc] %s %s %s 扩容块归还失败（arena 将缓慢泄漏）: %v",
+			p.name, what, name, err)
+	}
 }
 
 func (p *Plugin) invokeStage(ctx context.Context, stage string, seq uint64) error {
@@ -418,7 +511,7 @@ func (p *Plugin) invokeOutput(channel string, args map[string]interface{}) (inte
 		gen := p.host.Generation()
 		// 插件申请了扩容块：内核负责归还（与 invokeTool 一致）。
 		if outRes.ResultRef.Flags&sharedRefFlagExpand != 0 {
-			defer func() { _ = arena.Free(OwnerHost, outRes.ResultRef) }()
+			defer func() { p.freeExpand("output", channel, outRes.ResultRef) }()
 		}
 		data, err := arena.Read(outRes.ResultRef, gen)
 		if err != nil {

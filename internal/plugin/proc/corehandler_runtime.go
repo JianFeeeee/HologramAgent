@@ -171,7 +171,7 @@ func (h *coreHandler) handleArena(method string, params json.RawMessage) (interf
 		if err := unmarshal(params, &p); err != nil {
 			return nil, err
 		}
-		ref, err := h.arenaAlloc(p.Size)
+		ref, err := h.arenaAlloc(p.Size, p.CallID)
 		if err != nil {
 			return nil, err
 		}

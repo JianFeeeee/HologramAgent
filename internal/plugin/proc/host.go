@@ -400,6 +400,13 @@ func (h *Host) Generation() uint64 { return h.unified.generation() }
 // 从 1 开始（OwnerHost=0 保留给内核），单调递增，不会重复。
 func (h *Host) NextOwnerID() uint32 { return h.nextOwner.Add(1) }
 
+// ReclaimRefs 强制回收指定的一批扩容块（取消超时时由 Process 调用）。
+//
+// 这些块的 owner 是**插件**，回收决策来自内核——内核此刻是全权的
+// （见 arena.go 文件头的所有权模型）。不回收就是"取消了却瞒下内存"：
+// 插件已静默退出，永远不会归还，且全程无日志。
+func (h *Host) ReclaimRefs(refs []SharedRef) int { return h.arena.ReclaimRefs(refs) }
+
 // ReclaimOwner 回收某个 owner 名下所有槽（插件退出时调用）。
 func (h *Host) ReclaimOwner(owner uint32) int { return h.arena.ReclaimOwner(owner) }
 

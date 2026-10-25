@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -31,6 +32,10 @@ type coreHandler struct {
 	// owner 是本插件在共享槽池里的身份。内核用它校验 arena.free 的归属，
 	// 并在插件退出时 ReclaimOwner 回收残留槽。
 	owner uint32
+
+	// process 是本插件的子进程句柄，用于按 CallID 找到对应的在途调用
+	// （插件申请扩容块时要把块登记到那次调用名下。
+	process *Process
 
 	// locks 是 host.locks 的引用，供 stage.lock/unlock 路由。
 	locks *lockRegistry
@@ -410,8 +415,13 @@ func (h *coreHandler) invokeCleanerText(scope, name, text string) (string, error
 	if res.TextRef.IsZero() {
 		return "", fmt.Errorf("%s %s Cleaner 未返回结果引用", scope, name)
 	}
+	// ★ owner 必须是插件自己（h.owner），理由同 plugin.freeExpand。
 	if res.TextRef.Flags&sharedRefFlagExpand != 0 {
-		defer func() { _ = arena.Free(OwnerHost, res.TextRef) }()
+		defer func() {
+			if err := arena.Free(h.owner, res.TextRef); err != nil {
+				log.Printf("[proc] %s %s Cleaner 扩容块归还失败（arena 将缓慢泄漏）: %v", scope, name, err)
+			}
+		}()
 	}
 	data, err := arena.Read(res.TextRef, gen)
 	if err != nil {
@@ -428,8 +438,23 @@ func (h *coreHandler) invokeCleanerText(scope, name, text string) (string, error
 // arenaAlloc 给本插件分配一块共享内存。
 //
 // 用途：结果超出内核标定帧的预算时，插件据此申请扩容块。
-func (h *coreHandler) arenaAlloc(size uint32) (SharedRef, error) {
-	return h.host.Arena().Alloc(h.owner, int(size), h.host.Generation())
+//
+// callID 非 0 时把该块**登记到这次调用名下**，供取消超时时强制回收：
+// 插件被取消后可能静默退出（正确行为），内核就再也看不到那个 ResultRef，
+// 块会永久泄漏。有了归属，内核能在"取消也超时"时自己把账清了。
+func (h *coreHandler) arenaAlloc(size uint32, callID uint64) (SharedRef, error) {
+	ref, err := h.host.Arena().Alloc(h.owner, int(size), h.host.Generation())
+	if err != nil {
+		return SharedRef{}, err
+	}
+	if callID != 0 {
+		// 登记到**那次调用**名下（不是另立一张表）：取消超时时由那次调用
+		// 的收尾逻辑强制回收，见 Process.abandon / call.takeBlocks。
+		if c := h.process.CallByID(callID); c != nil {
+			c.trackBlock(ref)
+		}
+	}
+	return ref, nil
 }
 
 // arenaFree 归还本插件申请的块。

@@ -72,6 +72,27 @@ const (
 	MethodPluginStop = "plugin.stop"
 	// MethodToolInvoke 执行插件工具。
 	MethodToolInvoke = "tool.invoke"
+	// MethodCallCancel 通知插件**放弃**某个仍在执行的调用。
+	//
+	// ## 为什么取消必须跨进程
+	//
+	// 内核超时到点后自己不再等（toolcall.go 用 select + time.After），但
+	// **插件侧的 handler 还在跑**：它不知道没人要这个结果了，会继续占着
+	// 连接/子进程/文件句柄直到自己跑完。旧实现里内核只能把该请求从 pending
+	// 表里删掉——结果被丢弃，成本照付。
+	//
+	// ## 为什么不能让插件作者改签名
+	//
+	// 一个自然的想法是给 ToolHandler 加 context.Context，但那要求**所有**
+	// 插件跟着改（仓内 100 处 + 全部存量插件），而“让内核能停下一个不想停的
+	// 调用”本来就是**内核的**责任，不该把负担转给 100 个作者。
+	//
+	// 所以取消走这里：内核发一条**无 id 的通知帧**（不等于任何请求），
+	// 插件运行时按 CallID 找到正在跑的 handler，把它的 ctx cancel 掉。
+	// handler 签名不变 —— 它在下一次阻塞调用（HTTP/子进程/DB）返回 context.Canceled 时自然退出。
+	//
+	// 参数：CallID 是**被取消 đó 请求的 RPC id**（即 tool.invoke 帧的 id）。
+	MethodCallCancel = "call.cancel"
 	// MethodCleanerInvoke 在插件进程内执行工具或通道声明的 Cleaner。
 	// Cleaner 是函数，不能随注册请求 JSON 序列化；内核保留 RPC 回调闭包，
 	// 需要参与向量化/蒸馏时把原文送回插件执行真正的 Cleaner。
@@ -296,6 +317,18 @@ type ToolInvokeResult struct {
 	Result    interface{} `json:"result,omitempty"` // 仅直连 RPC 调用方使用
 }
 
+// CallCancelParams 是 call.cancel 通知的参数。
+//
+// CallID 是**要取消的那个请求的 RPC id**（tool.invoke / cleaner.invoke 帧的 id）。
+// 插件运行时会按它找到仍在执行的 handler 并 cancel 其 ctx。
+//
+// 注意这是**通知**（ID=0），插件不应回响应：取消路径绝不能变成新的同步点，
+// 否则内核超时时反而被“等插件确认取消”再拖一轮。
+type CallCancelParams struct {
+	CallID uint64 `json:"call_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // CleanerInvokeParams / CleanerInvokeResult：跨进程计算层清洗。
 // Scope 取 tool / input / output，Name 是工具名或通道名。
 //
@@ -362,6 +395,20 @@ type OutputInvokeResult struct {
 // 改成实际 payload 长度再随业务 RPC 回传。
 type ArenaAllocParams struct {
 	Size uint32 `json:"size"`
+
+	// CallID 是**本块归属于哪次调用**（tool.invoke / cleaner.invoke 的 RPC id）。
+	//
+	// ## 为什么必须带它（2026-10-25）
+	//
+	// 扩容块是插件为“把大结果回给内核”而申请的。但调用可能已被内核取消：
+	// 插件静默退出、内核从未看到那个 ResultRef，于是这块**永远不会被归还**——
+	// 内核手上没有任何句柄能指向它。这就是“取消了却瞒下了内存”的真实泄漏形态。
+	//
+	// 带上 CallID 后，内核就能在“取消超时”时把该调用名下的块全部强制回收，
+	// 而不需要信任对端会归还。
+	//
+	// 0 表示未归属（旧模板/直连调用）——此时退回旧行为：只能等插件自己归还。
+	CallID uint64 `json:"call_id,omitempty"`
 }
 
 type ArenaAllocResult struct {

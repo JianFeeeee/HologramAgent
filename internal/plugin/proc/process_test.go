@@ -224,12 +224,24 @@ func TestProcess_KillHungPlugin(t *testing.T) {
 		t.Errorf("应为 DeadlineExceeded，实际 %v", err)
 	}
 
-	// pending 条目必须已清理（不泄漏）
+	// 在途条目必须被推进到**可解释的状态**，且最终会被回收（不泄漏）。
+	//
+	// 判据从"表必须立刻清空"改成了下面两条，因为语义改了：
+	// 取消后条目**刻意保留**一会（cancelRetainFor），以便迟到的应答能被
+	// 认出归属，而不是被当成"未知 id"丢弃。真正要防的泄漏是
+	// "条目永远留着、状态说不清"，而不是"取消后短暂保留"。
 	p.mu.Lock()
-	pendingCount := len(p.pending)
+	residual := make([]*call, 0, len(p.inflight))
+	for _, c := range p.inflight {
+		residual = append(residual, c)
+	}
 	p.mu.Unlock()
-	if pendingCount != 0 {
-		t.Errorf("超时后 pending 表应清空，实际残留 %d 条", pendingCount)
+	for _, c := range residual {
+		// 允许 pending（应答还在路上）或 canceled（已放弃、等迟到应答）；
+		// done/failed 留在表里才是真泄漏（它们终态且不会再有后续）。
+		if st := c.State(); st == callDone || st == callFailed {
+			t.Errorf("终态调用 id=%d 仍留在 inflight 表里（泄漏）", c.id)
+		}
 	}
 
 	// Kill 真正回收资源
@@ -264,12 +276,12 @@ func TestProcess_NotifyDoesNotWait(t *testing.T) {
 		t.Errorf("100 条通知耗时 %v，疑似在等应答（应 post-and-forget）", elapsed)
 	}
 
-	// 通知不占 pending 表
+	// 通知不占在途表
 	p.mu.Lock()
-	pendingCount := len(p.pending)
+	inflightCount := len(p.inflight)
 	p.mu.Unlock()
-	if pendingCount != 0 {
-		t.Errorf("通知不应占用 pending 表，实际 %d 条", pendingCount)
+	if inflightCount != 0 {
+		t.Errorf("通知不应占用 inflight 表，实际 %d 条", inflightCount)
 	}
 }
 

@@ -458,6 +458,40 @@ func (a *arenaRegion) coalesceLocked(off uint32) {
 	}
 }
 
+// ReclaimRefs 强制回收**指定的一批**块（不校验 owner），返回回收块数。
+//
+// 用途：取消超时的强制回收。这些块的 owner 是**插件**，而回收决策来自内核——
+// 内核在此刻是全权的（见文件头的所有权模型），所以这里刻意**不**走
+// Free 的归属校验：那条校验是防"插件伪造 ref 动别人的块"，
+// 而这里要防的是完全相反的事——插件已经不打算/已经不能归还了。
+//
+// 安全边界仍在：每个 ref 都必须真的是一个**已分配块的数据起点**
+// （findBlockByData 走完整块链），伪造/越界的 offset 一律跳过。
+func (a *arenaRegion) ReclaimRefs(refs []SharedRef) int {
+	if len(refs) == 0 {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	n := 0
+	for _, ref := range refs {
+		off, ok := a.findBlockByData(ref.Offset)
+		if !ok {
+			continue
+		}
+		if a.blockState(off) != blockUsed {
+			continue // 已被插件自己归还或已被前面的合并吸收
+		}
+		a.setBlockState(off, blockFree)
+		a.setBlockOwner(off, OwnerHost)
+		a.accountUsed(-int32(align8(ref.Length)))
+		a.coalesceLocked(off)
+		n++
+	}
+	return n
+}
+
 // ReclaimOwner 归还 owner 名下所有块，返回回收块数。
 //
 // 用于插件进程退出：崩溃的插件无法归还自己申请的块，若不管会把 arena

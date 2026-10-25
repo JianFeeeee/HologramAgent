@@ -101,6 +101,13 @@ var methodCapability = map[string]Capability{
 	// 共享槽池申请/归还：内部传输层能力，等同于核心基础能力。
 	MethodArenaAlloc: CapCore,
 	MethodArenaFree:  CapCore,
+	// 调用取消：**内核 → 插件**的单向通知，插件不需要声明任何能力。
+	//
+	// 归 CapCore 的理由：它是传输层的收尾动作（内核放弃某次调用时告知对端），
+	// 不是插件"申请"的能力。若不登记，capabilityOf 会回落 CapCore —— 结果一样，
+	// 但那是**未分类**的默认放行，此后加能力分组时没人会想起它（判据
+	// TestCapability_AllMethodsClassified 就是防这个）。
+	MethodCallCancel: CapCore,
 	// 自身配置读写与元信息属基础能力
 	MethodSettingsGet:         CapCore,
 	MethodSettingsSet:         CapCore,
