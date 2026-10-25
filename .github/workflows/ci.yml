@@ -225,7 +225,7 @@ jobs:
           set -euo pipefail
           # 列名：粒度|目标|原因|修复单号   （用 | 分隔，原因内可含空格）
           read -r -d '' TABLE <<'EOF' || true
-          pkg|internal/kernelmod/all|*（整包）|该包把真实整机装起来（bootgraph_test.go 的整机判据） ⇒ 第 4 层 agent 与 plugin-host 并行 Init 时，双方都无锁直写同一 plugin.Registry 的 7 个 Set*（SetLuaVM/SetBaseAPIKey/SetSupervisor/SetTracker/SetConfig/SetStageHost/SetIndexer，registry.go:231-284）。竞争在**内核装配**里，不在本包代码里；任何装整机的用例都会撞上。★ 目标包随 ID:13 迁到此（原 internal/kernelboot/modules 已删）|KERNEL-REGISTRY-SETLOCK
+          # none
           EOF
 
           tests=""; pkgs=""; n=0
@@ -327,58 +327,6 @@ jobs:
           else
             go test -race $PKGS -count=1 -timeout 25m
           fi
-
-      # ── 证据步骤：把"已知红"变成每次 CI 都可核对的数字 ──
-      #
-      # ★ 这里**不用 continue-on-error 混过去**（那是"假装没红"）。
-      #   做法相反：显式断言这件事成立，不成立 ⇒ 这一步**真红**：
-      #     内核那 7 个 Set* **确实还无锁**（形态仍是单行直写）
-      #   修好之后这条会自然失败，提醒去删排除表 —— 这是**期望的**失败，
-      #   报错信息里直接写了该做什么。
-      #   （webui 那条排除项已于 2026-10-24 撤除：7457b05 改成 w 单写者模型，
-      #     没给 gzip.go 加锁 ⇒ 原静态判据 sync_fields/lock_calls 两值恒为 0，
-      #     判据永不触发，该证据从此只会假绿 ⇒ 故连同排除行一并删除。）
-      #   撤除时本地核对（原文，不作为判据）：该用例在 -race 下单跑 5 次，
-      #     均 0 条 WARNING: DATA RACE 报告；但用例本身未正常退出
-      #     （SIGQUIT: quit / signal arrived during execution，耗时 11~30s，
-      #     退出码非 0），故此数据不能当"已修"的证据。
-      #   ★ 不留"跑 5 次 0 条 DATA RACE"这类替代证据步骤：排除项已删、
-      #     该用例已回到主 go test -race 门里跑，再单独留一次"跑 N 次 0 条"
-      #     等于拿偶发概率充判据——正是本次撤除要清掉的坏判据，换个地方
-      #     再种一遍没有意义。
-      - name: 已知红的可核对证据（修好后本步会红，提醒删排除项）
-        run: |
-          set -uo pipefail
-          fail=0
-
-          echo "=== ② kernel: agent↔plugin-host 无锁直写 plugin.Registry（修复单 KERNEL-REGISTRY-SETLOCK）==="
-          #
-          # ★ 这里**不跑**偶发竞争来当证据 —— 实测该竞争单步跑 6/6 次撞不到
-          #   （它要 92 包并发压满才容易命中），拿它当断言必然假绿。
-          # 改成**静态断言**：直接查那 7 个 Set* 是否仍是"单行无锁直写"形态。
-          #   修好（改成取锁）后形态变化 ⇒ 本条失败 ⇒ 提醒删排除表。因果稳定。
-          SETTERS="SetLuaVM SetBaseAPIKey SetSupervisor SetTracker SetConfig SetStageHost SetIndexer"
-          REG=internal/plugin/registry.go
-          locked=0; total=0
-          for fn in $SETTERS; do
-            total=$((total + 1))
-            if grep -qE "^func \\(r \\*Registry\\) ${fn}\\([^)]*\\)[[:space:]]*\\{[^}]*\\}[[:space:]]*$" "$REG"; then
-              : # 仍是单行直写（未加锁）
-            else
-              echo "    已不再是无锁单行: $fn"
-              locked=$((locked + 1))
-            fi
-          done
-          echo "    仍为无锁直写的 Set*: $((total - locked))/$total"
-          if [ "$locked" -gt 0 ]; then
-            echo "::error title=内核 setter 已加锁::KERNEL-REGISTRY-SETLOCK 可能已被修复（$locked/$total 个 Set* 形态已变）—— 请从 ci.yml 排除表删掉 kernelmod/all 那一行"
-            fail=1
-          fi
-
-          if [ "$fail" -ne 0 ]; then
-            exit 1
-          fi
-          echo "  证据核对完成：排除项对应的缺陷仍在（排除表有效）"
 
   # ── 交叉编译：可在无 cgo 下构建的客户端/工具 ──
   #
