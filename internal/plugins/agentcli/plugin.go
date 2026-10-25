@@ -995,11 +995,19 @@ func (p *Plugin) readLoop(t *TerminalSession, s *sdk.PluginSDK) {
 	defer emitTermState(s, t, false)
 	defer flushTermStream(s, t)
 
-	// 立即发送首次"终端已启动"通知，让 agent 感知存在。
-	// 用 NoMemory：这是状态提示，不是对话内容。不关掉的话每开一个终端都会
-	// 在记忆里留下一条"[终端 X 已启动]"，把真实内容挤掉。
-	s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 已启动]", t.id),
-		sdk.InjectOptions{NoMemory: true})
+	// ★ 不注入「终端已启动」通知（2026-10-25 移除）。
+	//
+	// 理由：terminal_create 的**返回值本身**已经告知 agent 终端已建立，
+	// 且带 id/command/timeout/rows/cols/notify_mode —— 信息完整。
+	// 再用「用户输入」的形式注入一遍，等于同一条信息告知两次，
+	// 而每次注入都会唤醒**一整轮 LLM 推理**。
+	//
+	// 实测代价（WSL2 真机）：开一个终端 → 一轮推理；关一个 →
+	// 又一轮。agent 反复向用户解释"终端怎么又没了"，真正要做的活一件没做。
+	//
+	// 设计依据（本插件自己的 notify 参数）：什么该通知，本来就由 agent
+	// 在创建时通过 notify=exit/interval/buffer 指定。无条件旁路注入
+	// 与本插件自身的设计相矛盾。
 	now := time.Now()
 	t.mu.Lock()
 	t.lastNotify = now
@@ -1023,9 +1031,18 @@ func (p *Plugin) readLoop(t *TerminalSession, s *sdk.PluginSDK) {
 		}
 
 		if t.IsExpired() {
-			log.Printf("[agentcli] terminal %s expired after %v", t.id, t.timeout)
-			s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 已超时关闭（%s）]", t.id, t.timeout),
-				sdk.InjectOptions{NoMemory: true})
+			// ★ 只记日志，**不注入**（2026-10-25 修正）。
+			//
+			// 两条理由：
+			// ① 超时时长已在创建时由 terminal_create 的 timeout 字段告知，
+			//    agent 完全能推导"它 5 分钟后会自己关"——再通知没有新信息。
+			// ② 注入后紧接着 removeSession，agent 去 terminal_list 查必然是
+			//    0 个，于是只能一遍遍排查"终端为什么消失"，而这是插件自己删的。
+			//
+			// 注意与下方 r.err 分支的一致性：那里已经把「超时清理」列为
+			// **必须静默**；同一函数内同一个 IsExpired() 不能一处静默一处注入。
+			log.Printf("[agentcli] terminal %s expired after %v (silent: timeout already reported at create)",
+				t.id, t.timeout)
 			p.removeSession(t.id)
 			return
 		}
@@ -1096,7 +1113,19 @@ func (p *Plugin) readLoop(t *TerminalSession, s *sdk.PluginSDK) {
 				if p.isClosing(t) || t.IsExpired() {
 					return // 主动关闭 / 超时清理：不注入
 				}
-				s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 读取结束: %v]", t.id, r.err),
+				// ★ 不把 r.err 原文灌进 prompt（2026-10-25 修正）。
+				//
+				// 原来注入的是 `[终端 X 读取结束: read /dev/ptmx: input/output error]`。
+				// agent 会把它当成需要排查的技术问题，花好几轮去查
+				// /dev/ptmx 是否存在、devpts 挂载是否正常——虽然结论是对的
+				// （EIO 是 pty 主端关闭后 read 的正常返回），但这根本不该
+				// 成为 agent 的活，而且每一轮查询都在烧上下文。
+				//
+				// 改为：给**结论**（进程已结束）而不是**机制**（什么 errno）。
+				// 原始错误只进日志，需要时人工看得到。
+				log.Printf("[agentcli] terminal %s read ended: %v", t.id, r.err)
+				s.InjectTextOpts("agentcli", "agentcli",
+					fmt.Sprintf("[终端 %s 读取结束]", t.id),
 					sdk.InjectOptions{NoMemory: true})
 				return
 			}
