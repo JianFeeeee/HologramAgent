@@ -20,6 +20,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
+	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/recovery"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
@@ -403,7 +404,21 @@ func parseFlags() options {
 	cliSocket := flag.String("socket", "", "cli unix socket path (default: <data>/cli.sock)")
 	role := flag.String("role", "agent", "process role: guard (父守护) | agent (工作进程)")
 	boot := flag.String("boot", "normal", "agent boot mode: normal | failback (受限启动，仅 failback 插件集)")
+	// --version：打印版本后退出，不启动任何模块。
+	//
+	// ★ 为 OTA 而加：升级前要能**问一个二进制它是什么版本**，否则只能先替换
+	//   再启动看日志——那时旧版本已经被覆盖了。有了它，OTA 可以在临时目录里
+	//   跑 `新homed --version` 做预检，不通过就不碰线上文件。
+	//
+	// 输出保持单行 key=value 形态，便于脚本解析（与 BuildTime/Commit 一起给，
+	// 因为"同一个版本号不同 commit"会让"升级成功但内容没变"难以察觉）。
+	showVersion := flag.Bool("version", false, "打印版本信息后退出（不启动内核）")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("version=%s\ncommit=%s\nbuild_time=%s\nsdk=%s\n",
+			meta.Version, meta.Commit, meta.BuildTime, meta.SDKCompatibleVersion)
+		os.Exit(0)
+	}
 	return options{dataDir: *dataDir, httpAddr: *httpAddr, cliSocket: *cliSocket, role: *role, boot: *boot}
 }
 

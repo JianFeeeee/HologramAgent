@@ -117,6 +117,14 @@ type TaskFrame struct {
 	// 在若干帧后突然失去超页处理能力（而那时恰恰最需要它）。
 	OverflowRecover int
 
+	// EventID 是本帧工具结果落盘时使用的**事件标识**。
+	//
+	// 为什么要挂在帧上：同一帧内可能有多条超长结果，它们都属于同一个
+	// 上下文事件，应当落在同一个事件目录里（tool_0.txt / tool_1.txt）。
+	// 惰性生成（首次落盘时分配），因为绝大多数帧没有任何超长结果——
+	// 全量生成会给每条事件多加一个字段，与 ContextEvent.ID 的取舍一致。
+	EventID string
+
 	// 当前工具批
 	PendingTools  []agentAPI.ToolCall
 	ToolIdx       int
@@ -1173,14 +1181,27 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	}
 	f.Msgs = append(f.Msgs, toolMsg)
 
-	// 工具结果大小统计（方案 B：**只统计不裁剪**）。
+	// 工具结果大小处置：超限则**全文落盘 + 上下文只放预览**。
 	//
 	// 为什么在这里而不是 stepToolExec：那里拿到的 outcome.Text 尚未经
 	// after_toolcall 阶段改写，而模型最终看到的是**这里**的内容。
-	// ⚠️ 刻意不截断 —— 截断会让模型基于残缺数据下结论，且它不知道被截过
-	// （与本仓「静默降级」同族）。处置权交回调度器/上层。
+	//
+	// ★ 刻意**不截断**（截断会让模型拿到残缺信息且不知道被截过，与本仓
+	//   「静默降级」同族）。也刻意**不原样放行**（那正是 36783 token 单条
+	//   结果冲破预算、整轮终止的成因）。
+	//
+	// 走的是第三条路：正文完整保存到事件目录，上下文里换成
+	// 「预览 + 句柄 + 总量」+ toolresult_read 工具按需取区间。
+	// 取哪一段由模型决定，信息不丢（判据要求分段拼回逐字节相同）。
 	if a.checkToolResultSize(tc.Name, toolMsg.Content) {
 		f.noteOversizeTool(tc.Name)
+		if replaced, ok := a.offloadToolResult(f, tc.Name, toolMsg.Content); ok {
+			toolMsg.Content = replaced
+			result = replaced
+			if len(f.ToolResults) > 0 {
+				f.ToolResults[len(f.ToolResults)-1].Output = replaced
+			}
+		}
 	}
 	if mediaMsg != nil {
 		// 延迟到批末（见 batchAttachments 的注释）：当场追加会把后续 tool 消息

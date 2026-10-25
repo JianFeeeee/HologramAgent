@@ -480,6 +480,16 @@ type mockTerm struct {
 	data    chan []byte
 	running bool
 	err     error
+	// reads 记录 Read 被调用次数，供 waitReadLoopReady 判断 readLoop 已起来。
+	// 不用固定 sleep：机器慢时 sleep 不够、快时白等。
+	reads int
+}
+
+// readCalls 返回 Read 被调用次数（并发安全）。
+func (m *mockTerm) readCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reads
 }
 
 func newMockTerm() *mockTerm {
@@ -487,6 +497,9 @@ func newMockTerm() *mockTerm {
 }
 
 func (m *mockTerm) Read(buf []byte) (int, error) {
+	m.mu.Lock()
+	m.reads++
+	m.mu.Unlock()
 	for {
 		m.mu.Lock()
 		err := m.err
@@ -517,6 +530,7 @@ func (m *mockTerm) Running() bool {
 	defer m.mu.Unlock()
 	return m.running
 }
+
 // Kill 模拟真实 PTY 的行为：把一份 **buffer 里的输出 + EIO** 交给 Read。
 //
 // 两点必须还原，否则测不出线上的回声：
@@ -570,6 +584,26 @@ func startReadLoop(p *Plugin, s *sdk.PluginSDK, t *TerminalSession) {
 	go p.readLoop(t, s)
 }
 
+// waitReadLoopReady 等 readLoop 真正进入工作状态。
+//
+// ★ 为什么需要它：原测试用「已启动」注入当同步点（等那条通知出现再继续）。
+// 但 2026-10-25 起该注入已移除（它是"同一条信息告知两次"，每条都会唤醒
+// 一整轮推理）。同步点因此需要换成不依赖注入的方式。
+//
+// 这里用「mockTerm 的 Read 至少被调用过一次」作为信号：readLoop 的第一件事
+// 就是 Read，比固定 sleep 可靠，也不引入对业务通知的依赖。
+func waitReadLoopReady(t *testing.T, term *mockTerm) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if term.readCalls() > 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("readLoop 未在 2s 内进入读取状态")
+}
+
 func waitInjected(c *injectCapture, substr string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -602,9 +636,9 @@ func TestReadLoopNotifyThrottle(t *testing.T) {
 	ts := newTestSession(term)
 	startReadLoop(p, sdkInst, ts)
 
-	if !waitInjected(capture, "已启动", 2*time.Second) {
-		t.Fatal("expected startup notification")
-	}
+	// 等 readLoop 真正起来（不再依赖"已启动"注入：那已被移除，
+	// 理由见 plugin.go 中"不注入终端已启动通知"的说明）
+	waitReadLoopReady(t, term)
 
 	// 持续以 100B/50ms(=2KB/s) 吐进度 3 秒
 	stop := make(chan struct{})
@@ -666,9 +700,9 @@ func TestReadLoopNotifyOnExit(t *testing.T) {
 	ts := newTestSession(term)
 	startReadLoop(p, sdkInst, ts)
 
-	if !waitInjected(capture, "已启动", 2*time.Second) {
-		t.Fatal("expected startup notification")
-	}
+	// 等 readLoop 真正起来（不再依赖"已启动"注入：那已被移除，
+	// 理由见 plugin.go 中"不注入终端已启动通知"的说明）
+	waitReadLoopReady(t, term)
 
 	term.setRunning(false)
 	gotExit := waitInjected(capture, "进程已退出", 2*time.Second)
@@ -698,9 +732,9 @@ func TestReadLoopNotifyOnReadError(t *testing.T) {
 	ts := newTestSession(term)
 	startReadLoop(p, sdkInst, ts)
 
-	if !waitInjected(capture, "已启动", 2*time.Second) {
-		t.Fatal("expected startup notification")
-	}
+	// 等 readLoop 真正起来（不再依赖"已启动"注入：那已被移除，
+	// 理由见 plugin.go 中"不注入终端已启动通知"的说明）
+	waitReadLoopReady(t, term)
 
 	term.setErr(fmt.Errorf("read timeout"))
 	if !waitInjected(capture, "读取结束", 3*time.Second) {
@@ -740,13 +774,13 @@ func TestClose_NoEchoNotificationsAfterClose(t *testing.T) {
 	})
 	sdkInst.SetIOInjector(capture)
 
-	ts := newTestSession(newMockTerm())
+	mterm := newMockTerm()
+	ts := newTestSession(mterm)
 	startReadLoop(p, sdkInst, ts)
 
-	// 等"已启动"到达：这是**正常**通知（终端确实刚创建）。
-	if !waitInjected(capture, "已启动", 2*time.Second) {
-		t.Fatal("expected startup notification")
-	}
+	// 等 readLoop 真正起来（不再依赖"已启动"注入：那已被移除，
+	// 理由见 plugin.go 中"不注入终端已启动通知"的说明）
+	waitReadLoopReady(t, mterm)
 	before := len(capture.snapshot())
 
 	// 主动关闭：模拟 close 工具路径（关 stopCh + 杀进程 + 释放 PTY）。
@@ -794,9 +828,9 @@ func TestProcessExit_StillNotifies(t *testing.T) {
 	ts := newTestSession(term)
 	startReadLoop(p, sdkInst, ts)
 
-	if !waitInjected(capture, "已启动", 2*time.Second) {
-		t.Fatal("expected startup notification")
-	}
+	// 等 readLoop 真正起来（不再依赖"已启动"注入：那已被移除，
+	// 理由见 plugin.go 中"不注入终端已启动通知"的说明）
+	waitReadLoopReady(t, term)
 
 	// 进程自己退出（**不是** Close）：mockTerm 返回 process exited。
 	term.mu.Lock()
@@ -835,9 +869,7 @@ func TestClose_NoEcho_Repeated(t *testing.T) {
 		term := newMockTerm()
 		ts := newTestSession(term)
 		startReadLoop(p, sdkInst, ts)
-		if !waitInjected(capture, "已启动", 2*time.Second) {
-			t.Fatal("expected startup notification")
-		}
+		waitReadLoopReady(t, term)
 		before := len(capture.snapshot())
 
 		// ★ 关键：先在 PTY 缓冲里**留下未读数据**，再关闭。
@@ -891,16 +923,17 @@ func TestClose_RemovesSessionFromTable(t *testing.T) {
 	})
 	sdkInst.SetIOInjector(capture)
 
-	ts := newTestSession(newMockTerm())
+	mterm2 := newMockTerm()
+	ts := newTestSession(mterm2)
 	ts.id = "term_leak"
 	p.mu.Lock()
 	p.sessions = map[string]*TerminalSession{"term_leak": ts}
 	p.mu.Unlock()
 
 	startReadLoop(p, sdkInst, ts)
-	if !waitInjected(capture, "已启动", 2*time.Second) {
-		t.Fatal("expected startup notification")
-	}
+	// 等 readLoop 真正起来（不再依赖"已启动"注入：那已被移除，
+	// 理由见 plugin.go 中"不注入终端已启动通知"的说明）
+	waitReadLoopReady(t, mterm2)
 
 	ts.Close() // 内部会 <-t.done，等 readLoop 走完
 
@@ -951,4 +984,92 @@ func TestCleanup_DoesNotNotifyForClosedTerminal(t *testing.T) {
 		t.Fatalf("已关闭的终端不应被 cleanupLoop 当作「进程已退出」上报：%v", wouldNotify)
 	}
 	_ = capture
+}
+
+// ── 2026-10-25 新增：禁止「自造状态回声」的判据 ──────────────────
+//
+// 背景（真机事故）：agent 通过 terminal_create 建终端后，插件注入
+// 「[终端 X 已启动]」；超时后又注入「[终端 X 已超时关闭]」。
+// 这两条都是**插件自己造成、且 agent 已能从工具返回值推导**的状态，
+// 而每条注入都会唤醒一整轮 LLM 推理。实测后果：agent 反复向用户
+// 解释"终端怎么又没了"，真正要做的活一件没做。
+//
+// 下面两条是**反向判据**：断言这些注入**不再出现**。没有它们，
+// 后人（或我自己）很容易为了"让 agent 感知"把注入加回来，而那时
+// 上面那些 waitReadLoopReady 的测试依然全绿 —— 缺陷会静默复发。
+
+// 判据一：建终端不得产生「已启动」注入（terminal_create 返回值已足够）。
+func TestNoStartupNotificationInjected(t *testing.T) {
+	p := New("agentcli")
+	p.notifyBytes = 1 << 20 // 不触发缓冲通知，隔离变量
+
+	capture := &injectCapture{}
+	sdkInst := sdk.New("agentcli", sdk.SDKConfig{
+		RegTool:  newToolCapture().RegisterTool,
+		RegStage: func(sdk.Stage, sdk.StageHandler) {},
+		RegAPI:   func(string) error { return nil },
+		Settings: sdk.NewSettings("agentcli", nil),
+	})
+	sdkInst.SetIOInjector(capture)
+
+	term := newMockTerm()
+	ts := newTestSession(term)
+	startReadLoop(p, sdkInst, ts)
+	waitReadLoopReady(t, term)
+
+	// 给足时间让任何潜在注入发生
+	time.Sleep(150 * time.Millisecond)
+
+	for _, text := range capture.snapshot() {
+		if strings.Contains(text, "已启动") {
+			t.Fatalf("不得注入「已启动」（terminal_create 返回值已告知）: %q", text)
+		}
+	}
+
+	close(ts.stopCh)
+	<-ts.done
+}
+
+// 判据二：超时关闭不得注入（创建时 timeout 已告知）。
+func TestNoExpiredNotificationInjected(t *testing.T) {
+	p := New("agentcli")
+	p.notifyBytes = 1 << 20
+
+	capture := &injectCapture{}
+	sdkInst := sdk.New("agentcli", sdk.SDKConfig{
+		RegTool:  newToolCapture().RegisterTool,
+		RegStage: func(sdk.Stage, sdk.StageHandler) {},
+		RegAPI:   func(string) error { return nil },
+		Settings: sdk.NewSettings("agentcli", nil),
+	})
+	sdkInst.SetIOInjector(capture)
+
+	term := newMockTerm()
+	ts := newTestSession(term)
+	// 设为已超时：readLoop 下一轮循环就会走 IsExpired 分支
+	ts.mu.Lock()
+	ts.timeout = time.Nanosecond
+	ts.createdAt = time.Now().Add(-time.Hour)
+	ts.mu.Unlock()
+
+	startReadLoop(p, sdkInst, ts)
+	waitReadLoopReady(t, term)
+
+	// 等 removeSession 真的发生（说明走了超时分支）
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		_, still := p.sessions[ts.id]
+		p.mu.Unlock()
+		if !still {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	for _, text := range capture.snapshot() {
+		if strings.Contains(text, "已超时关闭") {
+			t.Fatalf("不得注入「已超时关闭」（创建时 timeout 已告知）: %q", text)
+		}
+	}
 }
