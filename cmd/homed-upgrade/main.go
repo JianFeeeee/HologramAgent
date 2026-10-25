@@ -123,17 +123,18 @@ func main() {
 
 // binVersion 是 homed --version 的输出。
 type binVersion struct {
-	Version   string
-	Commit    string
-	BuildTime string
+	Version    string
+	Commit     string
+	BuildTime  string
 	SDKVersion string
 }
 
 // readBinVersion 跑 `<bin> --version` 并解析。
 //
 // ★ 为什么用"跑它自己"而不是读文件里的字符串：
-//   版本是 ldflags 注入的，从 ELF 里 grep 只能撞运气；而 --version 是内核
-//   自己算出来的，还能一并拿到 commit（"同版本号不同 commit"很难察觉）。
+//
+//	版本是 ldflags 注入的，从 ELF 里 grep 只能撞运气；而 --version 是内核
+//	自己算出来的，还能一并拿到 commit（"同版本号不同 commit"很难察觉）。
 func readBinVersion(bin string) (*binVersion, error) {
 	if _, err := os.Stat(bin); err != nil {
 		return nil, err
