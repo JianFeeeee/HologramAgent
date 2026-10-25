@@ -49,6 +49,12 @@ type Plugin struct {
 	name         string
 	skillsDir    string
 	simulatorDir string
+	// pythonBin 是运行 skill 子进程的解释器（配置 python_bin）。
+	// 留空表示未配置：此时优先用 <skill>/.venv/bin/python，再退回系统 python3。
+	pythonBin string
+	// skillWorkdir 是 skill 子进程的工作目录（配置 skill_workdir）。
+	// 留空表示用 skill 自身目录。
+	skillWorkdir string
 	sidecars     []*sidecarProcess
 	manager      *sidecarProcess
 	mu           sync.Mutex
@@ -92,6 +98,24 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		Key: "simulator_dir", Type: "string", DisplayName: "模拟器工作目录",
 		Description: "OpenClaw 模拟器工作目录路径（留空则使用默认路径）",
 	})
+	// ★ Python 解释器与 skill 工作目录（2026-10-25 新增）。
+	//
+	// 此前是硬编码猜测：先找 /usr/bin/python3，再找 /usr/local/bin/python3。
+	// 后果是 skill 声明的依赖（httpx 等）装在哪个解释器里就决定了它能不能跑，
+	// 而"猜"这件事根本没有正确解 —— 不同部署的 Python 布局完全不同。
+	//
+	// 现在：由配置**显式指定**，与 skills_dir/simulator_dir 同一套风格。
+	// 留空时仍走按 skill 目录探测 .venv 的既有逻辑（向后兼容）。
+	s.Settings().RegisterDef(sdk.ConfigDef{
+		Key: "python_bin", Type: "string", DisplayName: "Python 解释器",
+		Description: "运行 skill 用的 Python 解释器绝对路径，例如 /opt/ha-py/bin/python。" +
+			"留空则优先用 <skill 目录>/.venv/bin/python，再退回系统 python3。",
+	})
+	s.Settings().RegisterDef(sdk.ConfigDef{
+		Key: "skill_workdir", Type: "string", DisplayName: "Skill 工作目录",
+		Description: "skill 子进程的工作目录（留空则用 skill 自身目录）。" +
+			"需要固定相对路径读写时用它；不影响解释器选择。",
+	})
 	p.httpClient = &http.Client{Timeout: 30 * time.Second}
 	if v, _ := s.Settings().Get("skills_dir"); v != nil {
 		if s, ok := v.(string); ok && s != "" {
@@ -101,6 +125,16 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	if v, _ := s.Settings().Get("simulator_dir"); v != nil {
 		if s, ok := v.(string); ok && s != "" {
 			p.simulatorDir = s
+		}
+	}
+	if v, _ := s.Settings().Get("python_bin"); v != nil {
+		if str, ok := v.(string); ok && str != "" {
+			p.pythonBin = str
+		}
+	}
+	if v, _ := s.Settings().Get("skill_workdir"); v != nil {
+		if str, ok := v.(string); ok && str != "" {
+			p.skillWorkdir = str
 		}
 	}
 	// 默认目录：内核 data_dir 下 skills 目录（与配置 core.daemon.data_dir 对齐）
@@ -1154,16 +1188,31 @@ func (p *Plugin) loadPySidecar(s *sdk.PluginSDK, dir, name string) error {
 		return fmt.Errorf("write pysimulator: %w", err)
 	}
 
-	// 查找可用的 Python 解释器
-	pythonBin := "python3"
-	for _, candidate := range []string{"/usr/bin/python3", "/usr/local/bin/python3"} {
-		if _, err := os.Stat(candidate); err == nil {
-			pythonBin = candidate
-			break
-		}
+	// 选择 Python 解释器。优先级（2026-10-25 改为可配置）：
+	//
+	//  ① 插件配置 python_bin —— **显式指定，最高优先**
+	//  ② <skill 目录>/.venv/bin/python —— skill 自带的虚拟环境
+	//  ③ 系统 python3（/usr/bin → /usr/local/bin）
+	//
+	// 为什么 ① 必须在最前：不同部署的 Python 布局完全不同，"猜"没有正确解。
+	// 实测事故：`bilibili-all-in-one` 声明 requirements 含 httpx，而系统
+	// Python 没装 ⇒ 启动即 ModuleNotFoundError。往系统 Python 里装又会污染
+	// 发行版环境（PEP 668 明确禁止，--break-system-packages 会破坏 apt 的
+	// 包一致性）。正确解是让部署方显式指定用哪个解释器/venv。
+	pythonBin, err := resolvePython(name, dir, p.pythonBin)
+	if err != nil {
+		return err
 	}
 
-	sp, err := launchProcess(pythonBin, simPath, dir, name, p.simulatorDir)
+	// 工作目录：配置指定则用它（需创建），否则用 skill 自身目录。
+	workDir := dir
+	if p.skillWorkdir != "" {
+		if err := os.MkdirAll(p.skillWorkdir, 0755); err != nil {
+			return fmt.Errorf("创建 skill_workdir（%s）: %w", p.skillWorkdir, err)
+		}
+		workDir = p.skillWorkdir
+	}
+	sp, err := launchProcessIn(pythonBin, simPath, dir, name, p.simulatorDir, workDir)
 	if err != nil {
 		return fmt.Errorf("launch pysimulator: %w", err)
 	}
@@ -1417,4 +1466,59 @@ func extractTGZ(data []byte, dest string) error {
 		}
 	}
 	return nil
+}
+
+// fileExists 报告路径存在（错误信息不需要，调用方只关心能否用）。
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// resolvePython 决定用哪个 Python 解释器跑 skill，优先级：
+//
+//	① configured（插件配置 python_bin）—— 显式指定，最高优先
+//	② <skill 目录>/.venv/bin/python —— skill 自带虚拟环境
+//	③ 系统 python3（/usr/bin → /usr/local/bin）→ 最后退回 "python3"
+//
+// ## 为什么必须可配置（2026-10-25 真机事故）
+//
+// 此前是硬编码猜：先 /usr/bin/python3，再 /usr/local/bin/python3。
+// `bilibili-all-in-one` 声明 requirements 含 httpx，而系统 Python 没装
+// ⇒ 启动即 ModuleNotFoundError。而"猜"没有正确解：不同部署的 Python
+// 布局完全不同（发行版 Python、pyenv、uv、conda、venv…）。
+//
+// 往系统 Python 里 pip install 是**错的**解法：PEP 668 明确禁止，
+// --break-system-packages 会破坏 apt 管理的包一致性。
+//
+// ## 配错必须响亮
+//
+// 配置了但文件不存在时返回 error，**不静默退回**系统解释器 ——
+// 否则用户以为配好了，实际跑在缺依赖的 Python 上，又是一次静默降级。
+func resolvePython(name, skillDir, configured string) (string, error) {
+	if configured != "" {
+		if _, err := os.Stat(configured); err != nil {
+			return "", fmt.Errorf("配置的 python_bin 不可用（%s）: %w", configured, err)
+		}
+		log.Printf("[clawhub] skill %s: using configured interpreter %s", name, configured)
+		return configured, nil
+	}
+	if venvPy := filepath.Join(skillDir, ".venv", "bin", "python"); fileExists(venvPy) {
+		log.Printf("[clawhub] skill %s: using its venv interpreter %s", name, venvPy)
+		return venvPy, nil
+	}
+	for _, candidate := range []string{"/usr/bin/python3", "/usr/local/bin/python3"} {
+		if fileExists(candidate) {
+			return candidate, nil
+		}
+	}
+	return "python3", nil
+}
+
+// pickPythonFor 是 resolvePython 的便捷包装（测试与旧调用点用）。
+//
+// 忽略错误并返回空串会让"配错"看起来像"没配"，所以调用方应优先用
+// resolvePython；这里只为保持测试可读性。
+func pickPythonFor(name, skillDir, configured string) string {
+	v, _ := resolvePython(name, skillDir, configured)
+	return v
 }

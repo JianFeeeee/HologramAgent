@@ -164,7 +164,17 @@ func launchSidecar(dir, name, simDir string) (*sidecarProcess, error) {
 	return launchProcess("node", mainJS, dir, name, simDir)
 }
 
+// launchProcess 以 dir 作为工作目录拉起子进程（绝大多数调用的形态）。
 func launchProcess(bin, arg, dir, name, simDir string) (*sidecarProcess, error) {
+	return launchProcessIn(bin, arg, dir, name, simDir, dir)
+}
+
+// launchProcessIn 与 launchProcess 相同，但工作目录可单独指定。
+//
+// 为什么要单独一个函数而不是给 launchProcess 加参数：那会改动 4 个既有
+// 调用点（含测试），而它们的语义都是"工作目录 = skill 目录"。只有
+// skill_workdir 配置这一处需要另给目录，用变体表达的意图更清楚。
+func launchProcessIn(bin, arg, dir, name, simDir, workDir string) (*sidecarProcess, error) {
 	nodePath := bin
 	if bin == "node" {
 		if p := os.Getenv("NODE_PATH"); p != "" {
@@ -173,7 +183,10 @@ func launchProcess(bin, arg, dir, name, simDir string) (*sidecarProcess, error) 
 	}
 
 	cmd := exec.Command(nodePath, arg, dir)
-	cmd.Dir = dir
+	if workDir == "" {
+		workDir = dir
+	}
+	cmd.Dir = workDir
 	cmd.Stderr = os.Stderr
 
 	// Add openclaw CLI bin dir to PATH so subprocesses can exec 'openclaw' command
@@ -215,6 +228,23 @@ func launchProcess(bin, arg, dir, name, simDir string) (*sidecarProcess, error) 
 	return sp, nil
 }
 
+// sidecarReadyTimeout 是等 sidecar 回第一个 ping 的上限。
+//
+// ★ 从固定 5s 放宽到 30s（2026-10-25 修 CI 误报）。
+//
+// 原来的 5s 是**按开发机估算**的：node 冷启动 + 模块加载在快盘上空载时
+// 约 0.2s。而 CI 的共享 runner（以及真实部署里的低配机器）上，一次
+// fork+exec+node 引导遇到 CPU 争抢就会到 5s 以上，实测 CI 报
+// `sidecar echoplugin ping timeout` 而本机全绿。
+//
+// 这不是"测试环境太慢所以放宽测试"——它是**产品行为**：sidecar 起不来
+// 等于该 skill 整体不可用。给足时间是正确取舍；判断"真的挂了"应由进程
+// 退出信号负责（readLoop 会感知），而不是由引导耗时猜。
+//
+// 30s 的取法：比 systemd 的 TimeoutStopSec(25s) 宽，比用户可感知的
+// "卡住"阈值(约 30s)持平——再长就该让用户看到明确失败。
+const sidecarReadyTimeout = 30 * time.Second
+
 func (s *sidecarProcess) waitReady() error {
 	done := make(chan error, 1)
 	go func() {
@@ -224,8 +254,9 @@ func (s *sidecarProcess) waitReady() error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("sidecar %s ping timeout", s.name)
+	case <-time.After(sidecarReadyTimeout):
+		return fmt.Errorf("sidecar %s ping timeout（%v 内未响应；慢机器上 node 冷启动可能更久，"+
+			"若持续失败请检查 node 是否可用）", s.name, sidecarReadyTimeout)
 	}
 }
 

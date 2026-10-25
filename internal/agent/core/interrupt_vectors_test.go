@@ -129,19 +129,33 @@ func TestVectors_PanicSourceComesFromTable(t *testing.T) {
 	}
 }
 
-// 超页中断的正文必须来自向量表的 Build（含"内容被移走"这一关键语义）。
-func TestVectors_OverflowBodyComesFromTable(t *testing.T) {
-	v, _ := lookupVector(VectorContextOverflow)
+// ★ 超页中断必须是**空中断**：不携带任何正文（2026-10-25 按原始设计修正）。
+//
+// 这条判据推翻的是更早的一条（原本断言正文非空、含"已裁剪 N 条"、
+// 含"查不到不等于不存在"）。那个写法把 L4 变成了"裁剪已完成"的回执：
+// 裁剪在 raise 之前就做完了，中断只剩下通知作用。
+//
+// 原始设计：L4 空中断把任务抢占下来 ⇒ 任务边界处做语义相关性裁剪。
+// 中断是**触发源**，裁剪是它引发的动作。带正文会让模型误以为那是
+// 一条需要回应的用户消息（进而多跑一整轮推理）。
+//
+// 变异验证：把 Build 改回返回非空文本 ⇒ 本判据必须变红。
+func TestVectors_OverflowIsAirInterrupt(t *testing.T) {
+	v, ok := lookupVector(VectorContextOverflow)
+	if !ok {
+		t.Fatal("超页向量必须已登记")
+	}
 	if v.Build == nil {
-		t.Fatal("超页向量必须有 Build")
+		t.Fatal("超页向量的 Build 不能为 nil（lookupVector 契约要求存在）")
 	}
-	body := v.Build(vectorArgs{Pruned: 7})
-	if strings.TrimSpace(body) == "" {
-		t.Fatal("超页中断正文不能为空（它是模型唯一的认知输入）")
+	body := v.Build(vectorArgs{})
+	if body != "" {
+		t.Fatalf("超页中断必须是空中断（正文为空），实际：%q\n"+
+			"带正文会让它变成一条要模型回应的消息，进而多烧一整轮推理", body)
 	}
-	// 语义要求：必须让模型知道"有内容被移走了"，否则它会把"查不到"推断成"不存在"。
-	if !strings.Contains(body, "7") {
-		t.Fatalf("超页正文应包含被裁剪的条数 7，实际：%q", body)
+	// 级别仍必须是 L4：抢占能力来自级别，与"有没有正文"无关。
+	if v.Level != LevelCritical {
+		t.Fatalf("超页中断必须是 L4，实际 level=%v", v.Level)
 	}
 }
 

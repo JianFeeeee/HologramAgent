@@ -55,11 +55,12 @@ func TestOverflow_T1_积累超125触发(t *testing.T) {
 	if !handled {
 		t.Fatal("超限时 maybeHandleContextOverflow 应返回 handled=true")
 	}
-	if pruned <= 0 {
-		t.Fatal("应裁剪出至少一条")
-	}
-	if after := a.context.Len(); after >= before {
-		t.Fatalf("裁剪后条数未减少：%d → %d", before, after)
+	// ★ 空中断设计：发中断这一步**不裁剪**（pruned 如实为 0），
+	// 裁剪由空中断任务被调度执行时做（pruneForAirInterrupt）。
+	// 这条原来断言 pruned>0，那对应的是"先裁剪再发回执"的旧实现。
+	_ = pruned
+	if after := a.context.Len(); after != before {
+		t.Fatalf("发中断这一步不应改动上下文：%d → %d", before, after)
 	}
 }
 
@@ -95,10 +96,14 @@ func TestOverflow_T2_裁剪后累积下降(t *testing.T) {
 	before := a.accumulatedTokens()
 
 	a.maybeHandleContextOverflow(nil, "退款导出")
-	after := a.accumulatedTokens()
 
+	// ★ 空中断设计：裁剪延后到任务边界（pruneForAirInterrupt）。
+	// 这里直接调它，验证"裁剪确实能降 token"本身仍成立。
+	a.pruneForAirInterrupt()
+
+	after := a.accumulatedTokens()
 	if after >= before {
-		t.Fatalf("裁剪后积累 token 未下降：%d → %d", before, after)
+		t.Fatalf("pruneForAirInterrupt 后积累 token 未下降：%d → %d", before, after)
 	}
 }
 
@@ -130,23 +135,34 @@ func TestOverflow_T4_裁不动则终止不中断(t *testing.T) {
 	}
 }
 
-// ── T6：中断消息必须带「查不到不等于不存在」──
+// ── 超页只发空中断，裁剪留给任务边界 ──
+//
+// 推翻的旧判据：TestOverflow_T6_中断消息含认知提示（断言正文含
+// "查不到不等于不存在"、"文档记忆"）。那段文案连同 overflowNotice 一起删除，
+// 理由见 raiseContextOverflow 的注释（把"补偿 L4 看不到上下文"错当成了
+// 中断该带正文的理由）。
+//
+// 现在钉住的是：**超页时发出的是空中断**，且裁剪**不在发中断这一步发生**。
+func TestOverflow_RaisesAirInterruptWithoutPruning(t *testing.T) {
+	a := newOverflowAgent(2000, 2, 20, 400)
 
-func TestOverflow_T6_中断消息含认知提示(t *testing.T) {
-	got := overflowNotice(17)
-	if got == "" {
-		t.Fatal("超页通知不应为空")
+	before := a.context.Len()
+	a.handleContextOverflow("", 2.0)
+
+	// ① 中断已发出（Triggered 计数 +1）
+	a.overflowStat.Lock()
+	triggered := a.overflowStat.Triggered
+	a.overflowStat.Unlock()
+	if triggered == 0 {
+		t.Fatal("超页必须发出 L4 中断")
 	}
-	if !strings.Contains(got, "查不到不等于不存在") {
-		t.Fatalf("中断消息缺少认知提示，agent 会把「没检索到」误判成「不存在」：%q", got)
-	}
-	if !strings.Contains(got, "文档记忆") {
-		t.Fatalf("中断消息应说明被裁内容去了哪里：%q", got)
-	}
-	// 来源标识在 raiseKernelInterrupt 的参数里（"kernel/overflow"），
-	// 不在消息正文 —— 那部分留给可读性。这里只保证提示词自洽。
-	if strings.Contains(got, "查不到等于存在") {
-		t.Fatalf("提示词语义写反了：%q", got)
+	// ② 裁剪**没有**在这一步发生：上下文条数不变
+	//
+	// 这是空中断设计的核心——裁剪由空中断任务被调度执行时触发
+	// （pruneForAirInterrupt），不是 raise 的副作用。
+	// 变异验证：在 handleContextOverflow 里加回 pruneByQuery ⇒ 本判据变红。
+	if got := a.context.Len(); got != before {
+		t.Fatalf("发中断这一步不应裁剪上下文：之前 %d 条，之后 %d 条", before, got)
 	}
 }
 
@@ -236,10 +252,10 @@ func TestOverflow_T5_恢复预算耗尽则终止(t *testing.T) {
 	a := newOverflowAgent(4000, 30, 20, 800)
 	f := &TaskFrame{}
 
-	// 第一次超页：正常裁剪
-	handled, pruned := a.maybeHandleContextOverflow(f, "退款导出")
-	if !handled || pruned <= 0 {
-		t.Fatalf("首次应正常裁剪：handled=%v pruned=%d", handled, pruned)
+	// 第一次超页：发出空中断（裁剪延后，pruned 如实为 0）
+	handled, _ := a.maybeHandleContextOverflow(f, "退款导出")
+	if !handled {
+		t.Fatalf("首次应处理并发出空中断：handled=%v", handled)
 	}
 	if f.OverflowRecover != 1 {
 		t.Fatalf("首次应记一次恢复，实际 %d", f.OverflowRecover)
@@ -438,10 +454,16 @@ func TestOverflow_大事件时裁剪仍有效(t *testing.T) {
 		})
 	}
 	before := a.context.Len()
-	pruned := a.handleContextOverflow("退款导出", 10.0)
+	// ★ 空中断设计：handleContextOverflow 只发空中断，裁剪在任务边界做。
+	// 这里先发中断（验证它不改上下文），再由 pruneForAirInterrupt 真正裁。
+	a.handleContextOverflow("退款导出", 10.0)
+	if mid := a.context.Len(); mid != before {
+		t.Fatalf("发空中断这一步不应改动上下文：%d → %d", before, mid)
+	}
+	a.pruneForAirInterrupt()
 	after := a.context.Len()
-	if pruned <= 0 && after >= before {
-		t.Fatalf("裁剪无效：%d → %d 条，pruned=%d", before, after, pruned)
+	if after >= before {
+		t.Fatalf("裁剪无效：%d → %d 条", before, after)
 	}
 	// 裁剪后仍应留下 protected 条以上，不能清空
 	if after < a.effectiveProtectedCount() {
@@ -540,11 +562,13 @@ func TestOverflow_自适应后裁剪有效(t *testing.T) {
 	// 由TestOverflow_单条超预算则终止 覆盖。
 	a := newOverflowAgent(4000, 30, 5, 800)
 	before := a.context.Len()
-	pruned := a.handleContextOverflow("退款导出", 1.3)
+	// 空中断设计：先发中断，再由任务边界裁剪。
+	a.handleContextOverflow("退款导出", 1.3)
+	a.pruneForAirInterrupt()
 	after := a.context.Len()
 
 	if after >= before {
-		t.Fatalf("自适应后裁剪应有效：%d → %d（pruned=%d）", before, after, pruned)
+		t.Fatalf("自适应后裁剪应有效：%d → %d", before, after)
 	}
 	if a.effectiveProtectedCount() >= before {
 		t.Fatalf("有效保护数 %d 不应 ≥ 裁剪前条数 %d",
@@ -725,5 +749,63 @@ func TestOverflow_恢复预算对所有入口生效(t *testing.T) {
 	}
 	if f.Terminal != terminalError {
 		t.Fatal("预算耗尽必须置 terminalError，否则会静默重试")
+	}
+}
+
+// ── 空中断端到端：识别 + 裁剪 + 不产生回复 ──────────────────────
+//
+// 这几条钉住 2026-10-25 按原始设计做的修正。此前实现有三个偏移：
+//  ① 中断带正文（"已裁剪 N 条…"）——它变成一条要模型回应的消息
+//  ② 裁剪在 raise 之前就做完——中断沦为回执，晚了一步
+//  ③ 上游 contextfull 后原地重跑——拿同一份超限内容再发一次，烧光恢复预算
+
+// 判据：空中断必须被 resolveInput 认作有效输入。
+//
+// 变异验证：删掉 isAirInterrupt 那一支 ⇒ 它会被当成 empty_input 丢弃，
+// 本判据变红。
+func TestAirInterrupt_ResolvedAsValidInput(t *testing.T) {
+	a := newOverflowAgent(2000, 2, 20, 400)
+	evt := &agentIO.InputEvent{
+		Type:    "interrupt",
+		Source:  "kernel/overflow",
+		Payload: map[string]interface{}{"interrupt": true, "kernel": true, "content": ""},
+	}
+	in, ok := a.resolveInput(evt)
+	if !ok {
+		t.Fatal("空中断必须是有效输入（否则 L4 变成什么也不做的空转任务）")
+	}
+	if !in.airInterrupt {
+		t.Fatal("必须被标记为 airInterrupt")
+	}
+}
+
+// 判据：普通空输入**不能**被误认成空中断。
+//
+// 理由：客户端空包若也走裁剪路径，会变成一次无声的上下文裁剪，行为不可预测。
+func TestAirInterrupt_RejectsOrdinaryEmptyInput(t *testing.T) {
+	a := newOverflowAgent(2000, 2, 20, 400)
+	cases := []struct {
+		name    string
+		payload map[string]interface{}
+	}{
+		{"非内核来源", map[string]interface{}{"interrupt": true, "content": ""}},
+		{"非中断类型", map[string]interface{}{"kernel": true, "content": ""}},
+	}
+	for _, c := range cases {
+		evt := &agentIO.InputEvent{Type: "interrupt", Source: "x", Payload: c.payload}
+		if c.name == "非中断类型" {
+			evt.Type = "text"
+		}
+		if in, ok := a.resolveInput(evt); ok && in.airInterrupt {
+			t.Errorf("%s 不应被认作空中断", c.name)
+		}
+	}
+	// 插件发的带正文中断也不是空中断
+	evt := &agentIO.InputEvent{
+		Type:    "interrupt",
+		Payload: map[string]interface{}{"kernel": true, "content": "设备上线了"},
+	}
+	if in, ok := a.resolveInput(evt); ok && in.airInterrupt {
+		t.Error("带正文的中断不应被认作空中断")
 	}
 }
