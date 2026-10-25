@@ -8,7 +8,7 @@
 //
 // 只处理 homed / depgraph.bin / waiter。**不碰插件** —— 插件有独立通道
 // （plugin_update），且与内核的兼容性由"自动禁用不兼容插件"兜底。
-package kernelupgrade
+package update
 
 import (
 	"archive/tar"
@@ -20,7 +20,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -107,41 +106,8 @@ func CompareVersions(cur, nv *BinVersion) string {
 	}
 }
 
-type Semver struct{ major, minor, patch int }
-
-func ParseSemver(s string) *Semver {
-	// 只认纯 X.Y.Z（1.4.0dev 这类走字符串回退，避免把 dev 当成正式版）
-	if strings.ContainsAny(s, "dev-+") {
-		return nil
-	}
-	// ★ 必须恰好三段。原来只挡 len<2，于是 "1.4" 会漏过去，
-	// 缺失的 patch 被零值填成 1.4.0 —— 这会让「1.4 → 1.4.0」被判定为
-	// 完全相同（进而说"无需升级"），而两者内容未必相同。
-	parts := strings.Split(s, ".")
-	if len(parts) != 3 {
-		return nil
-	}
-	var nums [3]int
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return nil
-		}
-		nums[i] = n
-	}
-	return &Semver{nums[0], nums[1], nums[2]}
-}
-
-func CmpSemver(a, b *Semver) int {
-	switch {
-	case a.major != b.major:
-		return a.major - b.major
-	case a.minor != b.minor:
-		return a.minor - b.minor
-	default:
-		return a.patch - b.patch
-	}
-}
+// Semver / ParseSemver / CmpSemver 已收敛到 semver.go（子系统内唯一一份）。
+// 合并前这里有一份私有实现，与 plugin 侧另写的一份行为不一致 —— 见 semver.go 头注释。
 
 // pluginCompat 是一个与新内核 SDK 主版本不匹配的插件。
 type PluginCompat struct {

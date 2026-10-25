@@ -1,6 +1,6 @@
 // Command homed-upgrade 是**内核**升级闭环的 CLI 入口（默认只探测，不写盘）。
 //
-// 实现全部在 internal/kernelupgrade —— 内核侧的 kernel_update 工具走同一套
+// 实现全部在 internal/update —— 内核侧的 kernel_update 工具走同一套
 // 代码，避免"CLI 能升级、agent 调用却把机器搞坏"这类两份实现的漂移。
 //
 // ## 范围：只面向内核
@@ -34,7 +34,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelupgrade"
+	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
 // fail 打印错误并以非零退出（CLI 专属；库内部一律返回 error）。
@@ -62,45 +62,45 @@ func main() {
 	defer os.RemoveAll(tmp)
 
 	fmt.Printf("== 解包 %s ==\n", *pkgPath)
-	root, err := kernelupgrade.ExtractPkg(*pkgPath, tmp)
+	root, err := update.ExtractPkg(*pkgPath, tmp)
 	if err != nil {
 		fail("解包: %v", err)
 	}
 
 	// ── 1. 当前版本 ──
-	cur, curErr := kernelupgrade.ReadBinVersion(*binPath)
+	cur, curErr := update.ReadBinVersion(*binPath)
 	if curErr != nil {
 		fmt.Printf("⚠️ 读当前内核版本失败: %v\n", curErr)
 		cur = nil
 	} else {
-		fmt.Printf("当前内核: %s (commit %s)\n", cur.Version, kernelupgrade.ShortCommit(cur.Commit))
+		fmt.Printf("当前内核: %s (commit %s)\n", cur.Version, update.ShortCommit(cur.Commit))
 	}
 
 	// ── 2. 新版本 ──
-	newBin := kernelupgrade.FindFile(root, "homed")
+	newBin := update.FindFile(root, "homed")
 	if newBin == "" {
 		fail("包内找不到 homed")
 	}
-	nv, err := kernelupgrade.ReadBinVersion(newBin)
+	nv, err := update.ReadBinVersion(newBin)
 	if err != nil {
 		fail("新内核无法自报版本（可能不是本仓构建的二进制）: %v", err)
 	}
-	fmt.Printf("包内内核: %s (commit %s)\n", nv.Version, kernelupgrade.ShortCommit(nv.Commit))
+	fmt.Printf("包内内核: %s (commit %s)\n", nv.Version, update.ShortCommit(nv.Commit))
 
 	// ── 3. 版本比较 ──
-	verdict := kernelupgrade.CompareVersions(cur, nv)
+	verdict := update.CompareVersions(cur, nv)
 	fmt.Printf("\n== 结论 ==\n%s\n", verdict)
 
 	// ── 4. depgraph 必须与新二进制同批 ──
-	newDG := kernelupgrade.FindFile(root, "depgraph.bin")
+	newDG := update.FindFile(root, "depgraph.bin")
 	if newDG == "" {
 		fmt.Println("⚠️ 包内缺 depgraph.bin —— 内核启动会因依赖图不匹配拒绝启动")
 	} else {
-		fmt.Printf("depgraph.bin: 包内已带（%d 字节），将与 homed 同批替换\n", kernelupgrade.FileSize(newDG))
+		fmt.Printf("depgraph.bin: 包内已带（%d 字节），将与 homed 同批替换\n", update.FileSize(newDG))
 	}
 
 	// ── 5. 插件兼容性预判（OTA 最容易出事的点）──
-	incompat := kernelupgrade.ProbePluginCompat(*pluginsDir, nv.SDKVersion)
+	incompat := update.ProbePluginCompat(*pluginsDir, nv.SDKVersion)
 	if len(incompat) > 0 {
 		fmt.Printf("\n== 插件兼容性警告（%d 个）==\n", len(incompat))
 		fmt.Println("换内核后这些插件会握手失败并被**自动禁用**（写入禁用配置 + 原因）：")
@@ -118,7 +118,7 @@ func main() {
 	}
 
 	// ── 6. 真正升级（备份 → 替换 → 重启 → 后置验证 → 失败回滚）──
-	if err := kernelupgrade.DoUpgrade(root, *binPath, newDG, *pluginsDir); err != nil {
+	if err := update.DoUpgrade(root, *binPath, newDG, *pluginsDir); err != nil {
 		fail("升级失败: %v", err)
 	}
 }

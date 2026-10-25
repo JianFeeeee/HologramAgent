@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/update"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -492,13 +494,253 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 		}
 		return p.pluginInfo(name)
 	})
+
+	s.RegisterTool("kernel_update", sdk.ToolDef{
+		Name: "kernel_update",
+		Description: "检查/升级**内核**（homed 二进制）。两阶段：默认（apply=false）只查 GitHub Release " +
+			"与本地版本比较，不改动任何东西；看过结果后传 apply=true + pkg（本机已存在的安装包路径）" +
+			"真正升级：校验 → 备份 → 原子替换 → 重启 → 版本复核 → 失败自动回滚。" +
+			"升级会让内核重启，连接断开数秒。从 URL 下载新包请用 CLI 的 homed-upgrade。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"apply": map[string]interface{}{
+					"type":        "boolean",
+					"description": "true=执行升级；false/缺省=只检查。默认 false",
+				},
+				"pkg": map[string]interface{}{
+					"type":        "string",
+					"description": "安装包在本机的路径（.tar.gz）。仅 apply=true 时需要",
+				},
+			},
+		},
+		// 检查只读；apply 会替换二进制并重启内核
+		Serial: true,
+	}, func(args map[string]interface{}) (interface{}, error) {
+		apply, _ := args["apply"].(bool)
+		pkgPath, _ := args["pkg"].(string)
+		if apply {
+			return p.kernelUpdateApply(pkgPath)
+		}
+		return p.kernelUpdateCheck()
+	})
+
+	s.RegisterTool("plugin_update", sdk.ToolDef{
+		Name: "plugin_update",
+		Description: "检查/升级插件。两阶段设计：默认（apply=false）只**检查**哪些插件有新版，不改动任何东西；" +
+			"看过清单后传 apply=true + plugins(all 或逗号分隔的名单) 真正升级：从插件仓库拉最新源码 → hmapdev 现场编译 → 安装新版（保留配置）。" +
+			"未声明仓库的插件会明确说明无法自动更新。内置插件不在此列（随内核升级）。",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"apply": map[string]interface{}{
+					"type":        "boolean",
+					"description": "true=真正升级；false/缺省=只检查不改动。默认 false",
+				},
+				"plugins": map[string]interface{}{
+					"type":        "string",
+					"description": "升级范围：all=全部有更新的插件；或逗号分隔的名单如 qq,memo。仅 apply=true 时需要",
+				},
+			},
+		},
+		// 检查是只读；apply 会改磁盘与运行态 —— 按串行处理，避免与 install/remove 并发撞车
+		Serial: true,
+	}, func(args map[string]interface{}) (interface{}, error) {
+		apply, _ := args["apply"].(bool)
+		scope, _ := args["plugins"].(string)
+		return p.pluginUpdate(apply, scope)
+	})
 }
+
+// pluginUpdate 是 plugin_update 工具的实现：两阶段（检查 / 升级）。
+//
+// ## 架构约束：三个入口共享一个底层
+//
+// 本方法与 WebAPI（/plugins/update）都调 internal/update 的
+// Check/Upgrade —— 两份实现必然漂移（"agent 说没有更新、WebUI 却升了级"）。
+// 这里只做**参数解析 + 范围选择 + 调底层 + 呈现**。
+//
+// ## 两阶段（用户口径）
+//
+//	阶段 1（apply=false）：只检查，不改动任何东西
+//	阶段 2（apply=true）： 对 plugins 指定的范围真正升级
+//	  plugins=all     → 升级阶段 1 发现的全部有更新项
+//	  plugins=qq,memo → 只升指定项（不管有没有更新都试）
+//
+// ## 为什么编译副本放在 pluginDir/_src
+//
+// 拉下来的源码副本留在磁盘上（而不是用完就删）：升级失败时它是现场，
+// 用户能直接进目录看 hmapdev 的报错。目录以 _ 开头，不会被内核当成插件
+// 加载（入口判据是 plugin.json，_src 里没有）。
+func (p *Plugin) pluginUpdate(apply bool, scope string) (interface{}, error) {
+	dir := p.pluginDir
+	if dir == "" {
+		return nil, fmt.Errorf("pluginDir 不可用（内核未提供插件目录）")
+	}
+
+	// ── 阶段 1：检查全部已装插件 ──
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("读插件目录 %s: %w", dir, err)
+	}
+
+	type item struct {
+		manifest *plugin.PluginManifest
+		repo     string
+		info     *update.UpdateInfo
+	}
+	var items []item
+	var builtIn []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), "_") || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		pdir := filepath.Join(dir, e.Name())
+		m, err := plugin.ReadManifest(pdir)
+		if err != nil {
+			continue // 不是插件目录
+		}
+		repo := update.RepoFromManifest(pdir)
+		if repo == "" {
+			builtIn = append(builtIn, m.Name)
+			continue
+		}
+		items = append(items, item{manifest: m, repo: repo,
+			info: update.Check(pdir, repo)})
+	}
+
+	// ── 汇总阶段 1 结果 ──
+	type one struct {
+		Name      string `json:"name"`
+		Current   string `json:"current"`
+		Latest    string `json:"latest,omitempty"`
+		Repo      string `json:"repo,omitempty"`
+		HasUpdate bool   `json:"has_update"`
+		Reason    string `json:"reason,omitempty"`
+	}
+	checks := make([]one, 0, len(items))
+	var updatable []string
+	for _, it := range items {
+		checks = append(checks, one{
+			Name: it.manifest.Name, Current: it.manifest.Version,
+			Latest: it.info.Latest, Repo: it.repo,
+			HasUpdate: it.info.HasUpdate, Reason: it.info.Reason,
+		})
+		if it.info.HasUpdate {
+			updatable = append(updatable, it.manifest.Name)
+		}
+	}
+	sort.Strings(builtIn)
+
+	if !apply {
+		return map[string]interface{}{
+			"apply":     false,
+			"checked":   len(checks),
+			"updatable": updatable,
+			"no_repo":   builtIn, // 未声明仓库：无法自动更新（内置/私有）
+			"plugins":   checks,
+			"hint":      "确认清单后传 apply=true, plugins=all（或指定名单）执行升级",
+		}, nil
+	}
+
+	// ── 阶段 2：升级 ──
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return map[string]interface{}{"error": "apply=true 需要 plugins（all 或逗号分隔名单）"}, nil
+	}
+	var targets []string
+	if strings.EqualFold(scope, "all") {
+		targets = updatable
+		if len(targets) == 0 {
+			return map[string]interface{}{
+				"apply": true, "upgraded": []string{},
+				"message": "没有可升级的插件（全部已是最新或未声明仓库）",
+			}, nil
+		}
+	} else {
+		for _, n := range strings.Split(scope, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				targets = append(targets, n)
+			}
+		}
+	}
+
+	// 源码副本目录（见函数头注释：留下当升级失败的现场）
+	workDir := filepath.Join(dir, "_src")
+	os.MkdirAll(workDir, 0755)
+	hmapdev := "hmapdev"
+	if _, err := exec.LookPath(hmapdev); err != nil {
+		return nil, fmt.Errorf("hmapdev 不可用：现场编译插件需要它（PATH 或 sdk store 里找一下）")
+	}
+
+	type result struct {
+		Name   string `json:"name"`
+		From   string `json:"from"`
+		To     string `json:"to"`
+		Status string `json:"status"` // upgraded / up_to_date / failed
+		Error  string `json:"error,omitempty"`
+	}
+	results := make([]result, 0, len(targets))
+	nOK, nFail := 0, 0
+	for _, name := range targets {
+		pdir := filepath.Join(dir, name)
+		if _, err := plugin.ReadManifest(pdir); err != nil {
+			results = append(results, result{Name: name, Status: "failed",
+				Error: "已安装插件里找不到 " + name})
+			nFail++
+			continue
+		}
+		repo := update.RepoFromManifest(pdir)
+		if repo == "" {
+			results = append(results, result{Name: name, Status: "failed",
+				Error: "未声明仓库，无法自动升级"})
+			nFail++
+			continue
+		}
+		from := update.VersionFromManifest(pdir)
+		up, err := update.Upgrade(repo, workDir, hmapdev)
+		if err != nil {
+			if strings.Contains(err.Error(), "已是最新") {
+				results = append(results, result{Name: name, From: from, To: from,
+					Status: "up_to_date"})
+				continue
+			}
+			results = append(results, result{Name: name, From: from, Status: "failed",
+				Error: err.Error()})
+			nFail++
+			continue
+		}
+		// 产物交给既有安装通道（保留配置、原地覆盖）——不在这里重写安装逻辑
+		if _, ierr := p.installFromPath(up.HmapPath, true); ierr != nil {
+			results = append(results, result{Name: name, From: from, To: up.To,
+				Status: "failed", Error: "编译成功但安装失败: " + ierr.Error()})
+			nFail++
+			continue
+		}
+		results = append(results, result{Name: name, From: from, To: up.To,
+			Status: "upgraded"})
+		nOK++
+	}
+
+	return map[string]interface{}{
+		"apply":   true,
+		"scope":   scope,
+		"ok":      nOK,
+		"failed":  nFail,
+		"results": results,
+		"hint":    "升级成功后插件会以新版本重启；若插件未自动重启，调 plugin_restart",
+	}, nil
+}
+
 
 // ======== HTTP API ========
 
 func (p *Plugin) startHTTPServer() {
 	p.mux.HandleFunc("/plugins", p.handlePlugins)
 	p.mux.HandleFunc("/plugins/", p.handlePluginByID)
+	// 插件更新：与 agent 的 plugin_update 工具**同一个底层**
+	// （都走 p.pluginUpdate → internal/update），只差参数来源。
+	p.mux.HandleFunc("/plugins/update", p.handlePluginsUpdate)
 
 	listen, err := net.Listen("tcp", p.httpAddr)
 	if err != nil {
@@ -528,6 +770,42 @@ func (p *Plugin) HTTPURL() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.httpURL
+}
+
+// handlePluginsUpdate 是 /plugins/update 的 WebAPI 入口。
+//
+// GET            → 检查更新（apply=false 的语义，只读）
+// POST {plugins} → 升级（apply=true；plugins=all 或逗号名单）
+//
+// 与 agent 工具共用 p.pluginUpdate —— 本 handler 不含任何业务逻辑，
+// 只做 HTTP 形状的转换。若在这里重写更新逻辑，就会出现
+// "WebUI 查到有更新、agent 查不到"的分裂状态。
+func (p *Plugin) handlePluginsUpdate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		out, err := p.pluginUpdate(false, "")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodPost:
+		var body struct {
+			Plugins string `json:"plugins"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		out, err := p.pluginUpdate(true, body.Plugins)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (p *Plugin) handlePlugins(w http.ResponseWriter, r *http.Request) {
@@ -1097,6 +1375,15 @@ type pluginPackage struct {
 	Version   string   `json:"version"`
 	Entry     string   `json:"entry"`
 	Platforms []string `json:"platforms,omitempty"`
+	// Repository 是插件的源码仓库地址。
+	//
+	// ★ 复用既有字段名（PluginManifest.Repository 早已存在、plugin_install
+	// 也已在输出它），不另立 "repo" —— 同一件事记两处必然漂移。
+	// plugin_update 靠它「拉最新源码 → 现场编译 → 安装新版」。
+	//
+	// 为空表示未声明仓库（私有插件 / 内置插件 / 手工装的产物），
+	// 此时 plugin_update 必须**明确说"未声明仓库"**而不是假装可用。
+	Repository string `json:"repository,omitempty"`
 }
 
 const (
