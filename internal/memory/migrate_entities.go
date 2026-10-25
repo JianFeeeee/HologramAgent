@@ -259,8 +259,8 @@ func (g *GraphDB) MigrateLegacyTextEntities(embed EntityEmbedder) (MigrateResult
 	if err := tx.Commit(); err != nil {
 		return res, err
 	}
-	log.Printf("[graph] 存量实体迁移完成: 句子 %d，块 %d，边 %d"+
-		"（跳过孤儿关系 %d，去重边 %d，无向量 %d）",
+	log.Printf("[graph] legacy entity migration complete: %d sentences, %d blocks, %d edges "+
+		"(skipped orphan relations %d, deduped edges %d, no vector %d)",
 		res.Sentences, res.Blocks, res.Edges,
 		res.SkippedOrphan, res.DedupedEdges, res.SkippedNoVec)
 	return res, nil
@@ -389,7 +389,7 @@ func parseLegacyTime(s string) time.Time {
 			return t.UTC()
 		}
 	}
-	log.Printf("[graph] 旧库时间 %q 格式无法识别，该块将落为当前时间（时序信息丢失）", s)
+	log.Printf("[graph] legacy timestamp %q format unrecognized, block will use current time (temporal ordering lost)", s)
 	return time.Time{}
 }
 

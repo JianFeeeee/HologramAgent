@@ -265,12 +265,12 @@ func (p *Plugin) Close() error {
 func (p *Plugin) handleExit(name string, err error) {
 	if p.host != nil {
 		if p.host.ForceReleaseLock(name) {
-			log.Printf("[proc] %s 退出，内核已释放其持有的 stage 锁", name)
+			log.Printf("[proc] %s exited, kernel released its stage locks", name)
 		}
 		// 回收该插件未归还的共享槽：崩溃的插件无法自己归还，
 		// 不回收会让槽池慢慢耗尽，最终所有共享内存调用退化成内联 RPC。
 		if n := p.host.ReclaimOwner(p.ownerID); n > 0 {
-			log.Printf("[proc] %s 退出，回收 %d 个残留共享槽", name, n)
+			log.Printf("[proc] %s exited, reclaimed %d leftover shared slot(s)", name, n)
 		}
 	}
 	// 内核主动停止（Stop/Close，含宽限期超时后的 Kill）不算崩溃：
@@ -405,17 +405,17 @@ func (p *Plugin) noteCancelIgnored(callID uint64, grace time.Duration) {
 	p.cancelIgnoredMu.Unlock()
 
 	if n < cancelIgnoredLimit {
-		log.Printf("[proc] %s 取消后未停手（第 %d/%d 次，调用 %d）：暂不重启，继续观察",
+		log.Printf("[proc] %s did not stop after cancel (%d/%d, call %d): not restarting yet, still observing",
 			p.name, n, cancelIgnoredLimit, callID)
 		return
 	}
 
-	log.Printf("[proc] %s 连续 %d 次在取消后 %v 内未停手，判定处于崩溃/不稳定态 —— 主动重启",
+	log.Printf("[proc] %s failed to stop within %v after cancel %d times in a row, judged crashed/unstable -- restarting proactively",
 		p.name, n, grace)
 	// 走既有的崩溃重启链（含退避、限流、禁用手工介入检查）：
 	// 不在这里自己 Kill+Reload，否则会绕开那些保护。
 	if p.onCrash != nil {
-		p.onCrash(p.name, fmt.Errorf("取消后连续 %d 次无响应（最后调用 %d，宽限 %v）",
+		p.onCrash(p.name, fmt.Errorf("unresponsive %d times in a row after cancel (last call %d, grace %v)",
 			n, callID, grace))
 	}
 }
@@ -426,7 +426,7 @@ func (p *Plugin) noteCancelIgnored(callID uint64, grace time.Duration) {
 // 之前是 `_ = arena.Free(...)`，把原因直接丢弃，线上排查代价极高。
 func (p *Plugin) freeExpand(what, name string, ref SharedRef) {
 	if err := p.host.Arena().Free(p.ownerID, ref); err != nil {
-		log.Printf("[proc] %s %s %s 扩容块归还失败（arena 将缓慢泄漏）: %v",
+		log.Printf("[proc] %s %s %s expansion block return failed (arena will leak slowly): %v",
 			p.name, what, name, err)
 	}
 }
@@ -449,7 +449,7 @@ func (p *Plugin) invokeStage(ctx context.Context, stage string, seq uint64) erro
 		}
 	}
 	if res.DirtyFields > 0 {
-		log.Printf("[proc] %s stage %s 改写了 %d 个字段", p.name, stage, res.DirtyFields)
+		log.Printf("[proc] %s stage %s modified %d field(s)", p.name, stage, res.DirtyFields)
 	}
 	return nil
 }

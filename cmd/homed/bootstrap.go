@@ -418,7 +418,7 @@ func compactConfigDB(cfgReg *internalConfig.ConfigRegistry) {
 	}
 	done, err := cfgReg.MaybeCompact(1<<20, 0.25)
 	if err != nil {
-		log.Printf("[homed] warning: 配置库压缩失败: %v", err)
+		log.Printf("[homed] warning: config DB compaction failed: %v", err)
 		return
 	}
 	if !done {
@@ -428,5 +428,5 @@ func compactConfigDB(cfgReg *internalConfig.ConfigRegistry) {
 	if st, err := os.Stat(cfgReg.DBPath()); err == nil {
 		after = st.Size()
 	}
-	log.Printf("[homed] 配置库已压缩: %d -> %d 字节", before, after)
+	log.Printf("[homed] config DB compacted: %d -> %d bytes", before, after)
 }

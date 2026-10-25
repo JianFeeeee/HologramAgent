@@ -406,7 +406,7 @@ func (a *Agent) applyResidualEvents(id string, events []*agentIO.InputEvent, pol
 		for _, evt := range events {
 			// 丢弃必须留痕：异步通道（qq/wechat）没有 ResponseCh，
 			// 不记日志的话“这条消息为什么没人回”永远查不出来。
-			log.Printf("[resident] %s 残余任务按父的决定丢弃：source=%s channel=%s request=%s content=%s",
+			log.Printf("[resident] %s residual task discarded per parent decision: source=%s channel=%s request=%s content=%s",
 				id, evt.Source, evt.OutputChannel, evt.RequestID, truncateStr(inputTextOf(evt), 80))
 			a.emitSkippedReply(evt, "residual_dropped_by_parent")
 		}

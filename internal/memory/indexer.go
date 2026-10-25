@@ -160,10 +160,10 @@ func (idx *Indexer) syncIfStale() bool {
 		return false
 	}
 	if err := idx.Sync(); err != nil {
-		log.Printf("[indexer] 增量同步失败（沿用旧索引）: %v", err)
+		log.Printf("[indexer] incremental sync failed (keeping old index): %v", err)
 		return false
 	}
-	log.Printf("[indexer] 实体数 %d→%d，已增量重建实体名向量索引", known, count)
+	log.Printf("[indexer] entity count %d -> %d, incrementally rebuilt entity-name vector index", known, count)
 	return true
 }
 

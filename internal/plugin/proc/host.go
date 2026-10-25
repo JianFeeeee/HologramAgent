@@ -307,7 +307,7 @@ func (h *Host) endStage(coord *stageCoordinator) error {
 	//     · releaseIfLeaked —— 插件异常路径未 unlock 时，锁不会毒化下一轮
 	//     · unbind       —— 下一轮的 stage.lock 不得再打到本轮的旧锁上
 	if h.locks.releaseIfLeaked(coord.lock) {
-		log.Printf("[proc] stage 协调器结束时清理了泄漏的 stage 锁")
+		log.Printf("[proc] stage coordinator cleaned up a leaked stage lock at exit")
 	}
 	h.locks.unbind(coord.lock)
 	return err
@@ -384,7 +384,7 @@ func (c *stageCoordinator) finish(sc *pubsdk.StageContext, written bool) error {
 		return fmt.Errorf("回读共享段: %w", rErr)
 	}
 	if reclaimed := c.seg.Compact(); reclaimed > 0 {
-		log.Printf("[proc] stage 结束，arena 压实回收 %d 字节", reclaimed)
+		log.Printf("[proc] stage ended, arena compaction reclaimed %d bytes", reclaimed)
 	}
 	return nil
 }

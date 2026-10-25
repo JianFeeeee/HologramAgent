@@ -540,11 +540,11 @@ func (b *Bridge) handleMessage(msg map[string]interface{}) {
 				if reason == "" {
 					reason = "bind rejected"
 				}
-				log.Printf("[devicebridge] bind 被拒：%s（令牌不匹配或设备未授权）", reason)
+				log.Printf("[devicebridge] bind rejected: %s (token mismatch or device unauthorized)", reason)
 				b.markUnbound(reason)
 				return
 			}
-			log.Printf("[devicebridge] bind 成功，设备已登记")
+			log.Printf("[devicebridge] bind succeeded, device registered")
 			b.markBound()
 			return
 		}

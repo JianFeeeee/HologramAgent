@@ -74,7 +74,7 @@ func (h *Host) AuditShmMappings(expectedPlugins int) (ShmAudit, bool) {
 	a.ActualMappings, ok = h.countOurShmMappings()
 	a.Delta = a.ActualMappings - a.ExpectedPlugins
 	if ok && a.Delta > 0 {
-		log.Printf("[proc] 共享内存映射审计：期望 %d 实测 %d（+delta=%d）—— 可能有泄漏句柄或未授权挂载",
+		log.Printf("[proc] shared memory mapping audit: expected %d actual %d (+delta=%d) -- possible leaked handles or unauthorized mappings",
 			a.ExpectedPlugins, a.ActualMappings, a.Delta)
 	}
 	return a, ok

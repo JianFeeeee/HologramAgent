@@ -383,7 +383,7 @@ func New(cfg AgentConfig) *Agent {
 			// 媒体文件，无需 mediaGet/mediaPut 接线。
 			built, skipped := cfg.Knowledge.ReindexDense()
 			if built > 0 || skipped > 0 {
-				log.Printf("[knowledge] 多模态稠密索引: 新建 %d 跳过 %d（其余命中缓存）", built, skipped)
+				log.Printf("[knowledge] multimodal dense index: built %d, skipped %d (rest hit cache)", built, skipped)
 			}
 		}
 	}
@@ -492,7 +492,7 @@ func (a *Agent) drainPendingInterrupts(reason string) {
 	for _, evt := range pending {
 		a.emitSkippedReply(evt, reason)
 	}
-	log.Printf("[agent] %s: 停机，%d 条待办任务已补 skipped 终态", a.id, len(pending))
+	log.Printf("[agent] %s: shutting down, filled skipped terminal state for %d pending task(s)", a.id, len(pending))
 }
 
 // graphMemoryOf 决定本 agent 的图记忆共同面实现。

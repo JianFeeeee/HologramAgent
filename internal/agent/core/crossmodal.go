@@ -107,7 +107,7 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 	if a.multimodalSpace != nil && a.multimodalSpace.Loaded() && a.memory != nil {
 		qv, err := a.multimodalSpace.VectorizeDense(query)
 		if err != nil {
-			log.Printf("[crossmodal] 多模态文本编码失败: %v", err)
+			log.Printf("[crossmodal] multimodal text encoding failed: %v", err)
 		} else if hits, err := a.memory.RecallBlocks(memory.BlockRecallQuery{
 			Vector:      qv,
 			Fingerprint: a.multimodalSpace.Fingerprint(),
@@ -123,7 +123,7 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 			// 截断**之前**，否则名额已被文本块占满。
 			ExcludeText: true,
 		}); err != nil {
-			log.Printf("[crossmodal] 媒体块检索失败: %v", err)
+			log.Printf("[crossmodal] media block retrieval failed: %v", err)
 		} else {
 			for _, h := range hits {
 				if h.Block.Modality == memory.BlockText {

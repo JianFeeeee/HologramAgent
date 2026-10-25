@@ -130,7 +130,7 @@ func HardenDataDir(dataDir string) HardenResult {
 	if len(res.Errors) > 0 {
 		// 响亮：权限没收紧意味着"以为受保护其实没有"。
 		for _, e := range res.Errors {
-			log.Printf("[security] ★★ 权限收紧失败（该项仍可能对同机其他用户可读）: %s", e)
+			log.Printf("[security] ** permission hardening failed (this entry may still be readable by other local users): %s", e)
 		}
 	}
 	return res

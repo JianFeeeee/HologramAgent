@@ -280,16 +280,16 @@ func loadPersonality(cfg *types.Config, cfgReg *config.ConfigRegistry) *agentPkg
 		log.Printf("[homed] warning: load personality: %v", err)
 	}
 	if personality != nil && personality.Content != "" {
-		log.Printf("[homed] 人格来源=文件 %s（优先于配置项），%d 字节", personalPath, len(personality.Content))
+		log.Printf("[homed] persona source=file %s (takes precedence over config), %d bytes", personalPath, len(personality.Content))
 		if hints := agentPkg.PersonaStaleHints(personality.Content); len(hints) > 0 {
-			log.Printf("[homed] warning: 人格文件含会腐坏的内容 %v — 建议迁到配置项 core.agent.personal_prompt"+
-				"（默认模板不含版本号，被问版本时以运行时快照为准）", hints)
+			log.Printf("[homed] warning: persona file contains content that will rot %v -- migrate to config entry core.agent.personal_prompt "+
+				"(the default template has no version number; when asked for the version, use the runtime snapshot)", hints)
 		}
 	} else if pv := cfgReg.GetString("core.agent.personal_prompt", config.DefaultPersonaPrompt); strings.TrimSpace(pv) != "" {
 		personality = &agentPkg.Personality{Content: pv, Path: "(core.agent.personal_prompt)"}
-		log.Printf("[homed] 人格来源=配置项 core.agent.personal_prompt，%d 字节", len(pv))
+		log.Printf("[homed] persona source=config entry core.agent.personal_prompt, %d bytes", len(pv))
 	} else {
-		log.Printf("[homed] 人格来源=无（配置项为空且无人格文件）")
+		log.Printf("[homed] persona source=none (config entry empty and no persona file)")
 	}
 	return personality
 }

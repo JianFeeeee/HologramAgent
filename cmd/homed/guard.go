@@ -267,7 +267,7 @@ func runGuard(dataDir string) {
 			//   · 只有 guard 知道防护上下文（unit 名、当前是否 failback 中）
 			//   · 决策集中在一处，不散在两个进程里
 			if c := consumeHeartbeatCmd(hbPath); c.OK && c.Cmd == hbCmdShutdown {
-				log.Printf("[guard] worker 已退出且留下关机指令（%s）—— 执行 systemctl stop，不再拉起",
+				log.Printf("[guard] worker exited and left a shutdown directive (%s) -- running systemctl stop, not restarting",
 					c.Reason)
 				stopOwnUnit(ownUnit)
 				return
@@ -587,11 +587,11 @@ func doLastResort(cfg *guardConfig) {
 //	 故不删除，只在「确实是自指」时改走退出路径，并留下明确日志。
 func doLastResortGuarded(cfg *guardConfig, unit string) {
 	if unit != "" && isSelfRestartCommand(cfg.RestartCommand, unit) {
-		log.Printf("[guard] last_resort=restart_app 但 restart_command 指向自身单元 %q："+
-			"执行 systemctl restart 会杀掉自己并被 Restart=always 立即拉起，"+
-			"形成无限自杀重启。改为**直接退出** —— "+
-			"在 Restart=always 下这与 restart_app 等价且无自杀窗口。"+
-			"（若希望 guard 不被 systemd 管，请改用其它 last_resort 或外部守护器）",
+		log.Printf("[guard] last_resort=restart_app but restart_command points at own unit %q: "+
+			"systemctl restart would kill itself and Restart=always would immediately start it again, "+
+			"creating an infinite suicide-restart loop. Switching to **direct exit** -- "+
+			"under Restart=always this is equivalent to restart_app with no suicide window. "+
+			"(If guard should not be managed by systemd, use another last_resort or an external supervisor)",
 			unit)
 		// 交给 systemd 重新拉起（等价于 restart_app）。
 		// 退出码沿用 workerCleanExit 语义：正常路径下 guard 本就在 worker

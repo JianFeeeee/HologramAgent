@@ -274,7 +274,7 @@ func (a *Agent) sendOneOutput(channel string, item outputItem) (string, bool) {
 		if sc := security.Global(); sc != nil {
 			if filled, n, used := sc.Fill(args["payload"].(string)); n > 0 {
 				args["payload"] = filled
-				log.Printf("[security] 通道 %s 载荷回填 %d 处（别名 %v）", channel, n, used)
+				log.Printf("[security] channel %s payload backfilled %d place(s) (aliases %v)", channel, n, used)
 			}
 		}
 		result, err := dev.Execute("output", args)

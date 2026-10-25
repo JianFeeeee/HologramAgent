@@ -67,7 +67,7 @@ func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{})
 		if d, err := time.ParseDuration(declared); err == nil && d > 0 {
 			base = d
 		} else if err != nil {
-			log.Printf("[agent] tool %s 声明的 Timeout=%q 解析失败（%v），用默认 %v",
+			log.Printf("[agent] tool %s declares Timeout=%q which failed to parse (%v), using default %v",
 				toolName, declared, err, defaultToolTimeout)
 		}
 	}
@@ -77,7 +77,7 @@ func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{})
 		}
 	}
 	if base > maxToolTimeout {
-		log.Printf("[agent] tool %s 超时 %v 超过硬上限，夹到 %v", toolName, base, maxToolTimeout)
+		log.Printf("[agent] tool %s timeout %v exceeds hard cap, clamped to %v", toolName, base, maxToolTimeout)
 		return maxToolTimeout
 	}
 	return base
@@ -94,17 +94,17 @@ func (a *Agent) resolveToolTimeoutDeclared(toolName string) time.Duration {
 	}
 	d, err := time.ParseDuration(strings.TrimSpace(def.Timeout))
 	if err != nil {
-		log.Printf("[agent] tool %s 声明的 Timeout=%q 解析失败（%v），回退默认 %v",
+		log.Printf("[agent] tool %s declares Timeout=%q which failed to parse (%v), falling back to default %v",
 			toolName, def.Timeout, err, defaultToolTimeout)
 		return defaultToolTimeout
 	}
 	if d <= 0 {
-		log.Printf("[agent] tool %s 声明的 Timeout=%q 非正数，回退默认 %v",
+		log.Printf("[agent] tool %s declares Timeout=%q which is not positive, falling back to default %v",
 			toolName, def.Timeout, defaultToolTimeout)
 		return defaultToolTimeout
 	}
 	if d > maxToolTimeout {
-		log.Printf("[agent] tool %s 声明的 Timeout=%v 超过硬上限，夹到 %v",
+		log.Printf("[agent] tool %s declares Timeout=%v exceeding hard cap, clamped to %v",
 			toolName, d, maxToolTimeout)
 		return maxToolTimeout
 	}
@@ -187,7 +187,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, security.Patterns); len(evts) > 0 {
 					out.Text = clean
 					for _, e := range evts {
-						log.Printf("[security] 工具输出 %s 拦截 %s（模式 %s，%d 字节）",
+						log.Printf("[security] tool output %s blocked %s (pattern %s, %d bytes)",
 							tc.Name, e.Alias, e.Kind, e.Len)
 					}
 				}
@@ -234,7 +234,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 	case <-time.After(toolTimeout):
 		// 先 cancel 再返回：这一行就是"让插件停下来"的触发点。
 		cancel()
-		log.Printf("[agent] tool %s timed out after %v（已向执行方发送取消）", tc.Name, toolTimeout)
+		log.Printf("[agent] tool %s timed out after %v (cancel sent to executor)", tc.Name, toolTimeout)
 		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("工具 %s 执行超时（%s）", tc.Name, fmtDuration(toolTimeout)),
 			"该工具本次未在时限内返回。可改用更小的任务，或换用其他工具。")
 		return toolOutcome{Text: te.Error(), Raw: te}
@@ -898,7 +898,7 @@ func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef 
 	for _, r := range refs {
 		b, ok, err := a.memory.BlockByIDPrefix(r)
 		if err != nil || !ok {
-			log.Printf("[knowledge] 媒体块引用 %s 无法唯一解析，跳过", r)
+			log.Printf("[knowledge] media block ref %s could not be resolved uniquely, skipping", r)
 			continue
 		}
 		out = append(out, knowledge.KnowledgeMediaRef{
@@ -1213,7 +1213,7 @@ func (a *Agent) recallByBlocks(query string) string {
 			MinScore: blockRecallMinScore,
 		}, query)
 	if abstain != nil {
-		log.Printf("[memory] abstain: 符号零命中，拒答「%s」", query)
+		log.Printf("[memory] abstain: zero symbol hits, refusing to answer %q", query)
 		return abstain.Notice
 	}
 	if err != nil || len(hits) == 0 {
@@ -1223,7 +1223,7 @@ func (a *Agent) recallByBlocks(query string) string {
 		// 被取代的块不返回给模型，但**记一笔**：旧值被显式作废这件事
 		// 本身有信息（「旧号 4379 停用」解释了为什么现在打不通），
 		// 而完全静默会让「记忆里为什么没有旧号」变成无解之谜。
-		log.Printf("[memory] recall blocks: %d 条被时序仲裁剔除（被更新的值取代）", n)
+		log.Printf("[memory] recall blocks: %d removed by temporal arbitration (superseded by newer values)", n)
 	}
 	// 归因统计：融合到底救回了多少条 —— 这是判断它在起作用的关键读数
 	var bySymbol, byExact int
@@ -1235,7 +1235,7 @@ func (a *Agent) recallByBlocks(query string) string {
 		}
 	}
 	if byExact+bySymbol > 0 {
-		log.Printf("[memory] recall blocks: 符号路补位 %d 条（精确串 %d，词法 %d）",
+		log.Printf("[memory] recall blocks: symbol path backfilled %d (exact string %d, lexical %d)",
 			byExact+bySymbol, byExact, bySymbol)
 	}
 
@@ -1357,7 +1357,7 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 		blocks += len(held)
 	}
 
-	log.Printf("[agent] doc→context: %s 逐条回填 %d 条原始事件（%s → %s），块 %d 个迁回 L1",
+	log.Printf("[agent] doc->context: %s backfilled %d raw events one by one (%s -> %s), %d blocks migrated back to L1",
 		d.ID, n,
 		d.Events[0].Timestamp.Format("01-02 15:04:05"),
 		d.Events[len(d.Events)-1].Timestamp.Format("01-02 15:04:05"), blocks)

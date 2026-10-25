@@ -177,8 +177,8 @@ func AdditionalDecryptKeys(dataDir string, current []byte) [][]byte {
 	}
 	if !sameKey(diskKey, current) {
 		out = append(out, diskKey)
-		log.Printf("[security] 已把 %s 作为**额外解密钥**装入（内嵌钥为当前钥）——"+
-			"旧密文仍可读；请勿删除该文件，直到确认全部密文已重加密", path)
+		log.Printf("[security] loaded %s as an **additional decrypt key** (embedded key is current) -- "+
+			"old ciphertext still readable; do not delete this file until all ciphertext is confirmed re-encrypted", path)
 	}
 	return out
 }

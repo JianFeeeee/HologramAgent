@@ -1004,7 +1004,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 			})
 		}
 		if len(result.Entities) >= maxFullRecallEntities {
-			log.Printf("[graph] full recall 命中实体上限 %d，可能有实体未纳入", maxFullRecallEntities)
+			log.Printf("[graph] full recall hit the entity cap %d, some entities may be excluded", maxFullRecallEntities)
 		}
 
 		relRows, err := g.db.Query(
@@ -1354,7 +1354,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 	if len(result.Entities) > maxRecallEntities {
 		dropped := len(result.Entities) - maxRecallEntities
 		result.Entities = result.Entities[:maxRecallEntities]
-		log.Printf("[graph] recall: 截断 %d 个实体（全局上限 %d）", dropped, maxRecallEntities)
+		log.Printf("[graph] recall: truncated %d entities (global cap %d)", dropped, maxRecallEntities)
 	}
 	sortRecallRelations(result.Relations, mode)
 

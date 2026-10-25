@@ -450,9 +450,9 @@ func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 		}
 	}
 	if turn.Emergent {
-		log.Printf("[agent] 场景涌现/命中: %q（指纹 %v）", turn.Primary, sig.Keys())
+		log.Printf("[agent] scene emerged/hit: %q (fingerprint %v)", turn.Primary, sig.Keys())
 	} else if len(turn.DeclaredCreated) > 0 {
-		log.Printf("[agent] 声明场景成立: %v（指纹 %v）", turn.DeclaredCreated, sig.Keys())
+		log.Printf("[agent] declared scene confirmed: %v (fingerprint %v)", turn.DeclaredCreated, sig.Keys())
 	}
 	if f != nil {
 		f.turnScene = turn

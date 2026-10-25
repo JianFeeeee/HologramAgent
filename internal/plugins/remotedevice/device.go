@@ -792,8 +792,8 @@ const clipboardsueMaxBytes = 2 * 1024 * 1024
 // 能回答：「有没有回传」「是不是合法图片」「多长」「两次是不是同一张」「会不会被截断」。
 func logScreenseePayload(deviceID, dataURL string) {
 	if dataURL == "" {
-		log.Printf("[remotedevice] screensee 回传 device=%s len=0 ★ 空内容：设备端没截到图"+
-			"（锁屏/虚拟桌面/缩略图未就绪？）", deviceID)
+		log.Printf("[remotedevice] screensee returned device=%s len=0 * empty content: device captured no image "+
+			"(lock screen / virtual desktop / thumbnail not ready?)", deviceID)
 		return
 	}
 	raw := dataURL
@@ -803,7 +803,7 @@ func logScreenseePayload(deviceID, dataURL string) {
 	b, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
 		// ★ 解不出来本身就是关键信号：说明回传的不是合法 base64（可能被截断）。
-		log.Printf("[remotedevice] screensee 回传 device=%s len=%d ★ base64 解码失败: %v",
+		log.Printf("[remotedevice] screensee returned device=%s len=%d * base64 decode failed: %v",
 			deviceID, len(raw), err)
 		return
 	}
@@ -813,7 +813,7 @@ func logScreenseePayload(deviceID, dataURL string) {
 		head = head[:24]
 	}
 	w, h := jpegSize(b)
-	log.Printf("[remotedevice] screensee 回传 device=%s bytes=%d magic=%s %dx%d b64head=%q sha=%x",
+	log.Printf("[remotedevice] screensee returned device=%s bytes=%d magic=%s %dx%d b64head=%q sha=%x",
 		deviceID, len(b), magicName(b), w, h, head, sum[:8])
 }
 

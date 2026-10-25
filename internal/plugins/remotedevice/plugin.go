@@ -390,7 +390,7 @@ func (p *Plugin) describeScreen(dataURL string, provider string) (string, error)
 	defer cancel()
 	resp, err := llm.Chat(ctx, req)
 	if err != nil {
-		log.Printf("[remotedevice] screensee 视觉描述失败 source=%s err=%v", usedSource, err)
+		log.Printf("[remotedevice] screensee visual description failed source=%s err=%v", usedSource, err)
 		// ★ 2026-10-05：模型名不被接受时，**就地降级到 AUTO 重试一次**。
 		//
 		// 生产实测（13:51）：agent 传 provider=visionllm，而那个源的
@@ -405,19 +405,19 @@ func (p *Plugin) describeScreen(dataURL string, provider string) (string, error)
 		// ⇒ 显式模型名不可用时回 AUTO，比把错误抛给 agent 让它反复重试好。
 		//   注意**不覆盖原错误**：两者都返回，由上层看到完整信息。
 		if isModelNotAllowed(err) {
-			log.Printf("[remotedevice] screensee: 源 %s 的模型名不被接受，回退 AUTO 重试", usedSource)
+			log.Printf("[remotedevice] screensee: model name for source %s not accepted, retrying with AUTO", usedSource)
 			if e2 := llm.SetSource("AUTO"); e2 == nil {
 				rctx, rcancel := context.WithTimeout(context.Background(), 120*time.Second)
 				defer rcancel()
 				if rresp, e3 := llm.Chat(rctx, req); e3 == nil && rresp != nil &&
 					strings.TrimSpace(rresp.Content) != "" {
-					log.Printf("[remotedevice] screensee AUTO 回退成功 len=%d", len(rresp.Content))
+					log.Printf("[remotedevice] screensee AUTO fallback succeeded len=%d", len(rresp.Content))
 					return rresp.Content, nil
 				} else {
-					log.Printf("[remotedevice] screensee AUTO 回退也失败: %v", e3)
+					log.Printf("[remotedevice] screensee AUTO fallback also failed: %v", e3)
 				}
 			} else {
-				log.Printf("[remotedevice] screensee AUTO 回退无法切源: %v", e2)
+				log.Printf("[remotedevice] screensee AUTO fallback cannot switch source: %v", e2)
 			}
 		}
 		// 保留原始错误文本（那是唯一诊断线索），但以 error 形态上抛。
@@ -427,7 +427,7 @@ func (p *Plugin) describeScreen(dataURL string, provider string) (string, error)
 		// 空内容与「失败」对模型同样难以区分，不能静默当成结果。
 		return "", fmt.Errorf("屏幕截图视觉描述失败（视觉源 %s）: 模型返回空内容", usedSource)
 	}
-	log.Printf("[remotedevice] screensee 视觉描述完成 source=%s len=%d", usedSource, len(resp.Content))
+	log.Printf("[remotedevice] screensee visual description done source=%s len=%d", usedSource, len(resp.Content))
 	return resp.Content, nil
 }
 

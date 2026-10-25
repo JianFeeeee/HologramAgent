@@ -342,7 +342,7 @@ func (a *Agent) emitSkippedReply(evt *agentIO.InputEvent, reason string) {
 	if evt.ResponseCh == nil {
 		// 无可回执的通道：不静默。异步来源本就靠 agent 主动 output_send，
 		// 丢弃后没有任何东西会告诉用户，因此这条日志是唯一的线索。
-		log.Printf("[agent] %s: 丢弃一条无回执通道的输入（source=%s channel=%s request=%s reason=%s）",
+		log.Printf("[agent] %s: dropping input on channel without receipt support (source=%s channel=%s request=%s reason=%s)",
 			a.id, evt.Source, evt.OutputChannel, evt.RequestID, reason)
 		return
 	}
@@ -458,7 +458,7 @@ func (a *Agent) emitResponse(evt *agentIO.InputEvent, response string, turnUsage
 			OutputChannel: ch,
 		}:
 		default:
-			log.Printf("[agent] ResponseCh 已满，终态回执被丢弃（request=%s，可能违反不变量 I5）", evt.RequestID)
+			log.Printf("[agent] ResponseCh full, terminal receipt dropped (request=%s, possible invariant I5 violation)", evt.RequestID)
 		}
 	}
 
@@ -551,7 +551,7 @@ func (a *Agent) cleanInputFor(evt *agentIO.InputEvent, input string) string {
 		if chDef, ok := a.io.GetInputChannelDef(name); ok && chDef.Cleaner != nil {
 			return chDef.Cleaner(input)
 		}
-		log.Printf("[agent] 注入声明了 cleaner_name=%q 但没有注册过该通道的 Cleaner，已回退", name)
+		log.Printf("[agent] injection declared cleaner_name=%q but no Cleaner was registered for that channel, falling back", name)
 	}
 	if chDef, ok := a.io.GetInputChannelDef(evt.Source); ok && chDef.Cleaner != nil {
 		return chDef.Cleaner(input)

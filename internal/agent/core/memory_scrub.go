@@ -129,7 +129,7 @@ func scrubMemoryCandidate(payload map[string]interface{}) {
 
 func logEvtHits(where string, evts []security.Evt) {
 	for _, e := range evts {
-		log.Printf("[security] %s 拦截 %s（模式 %s，%d 字节，合并=%v）",
+		log.Printf("[security] %s blocked %s (pattern %s, %d bytes, merged=%v)",
 			where, e.Alias, e.Kind, e.Len, e.Merged)
 	}
 }

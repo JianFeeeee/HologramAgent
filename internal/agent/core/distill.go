@@ -182,7 +182,7 @@ func (a *Agent) archiveColdDocs() {
 		if n, err := a.memory.DecaySceneRefs(30*24*time.Hour, 0.05); err != nil {
 			log.Printf("[agent] scene decay error: %v", err)
 		} else if n > 0 {
-			log.Printf("[agent] 场景关联衰减：清理 %d 条长期未重现的引用", n)
+			log.Printf("[agent] scene-association decay: pruned %d long-unseen references", n)
 		}
 	}
 
@@ -203,7 +203,7 @@ func (a *Agent) archiveColdDocs() {
 			// 「有没有真的写进图库」只剩块数这一个信号。
 			blocksBefore, err := a.memory.MemoryBlockCount()
 			if err != nil {
-				log.Printf("[agent] doc→graph: %s 读块数失败，保留文档: %v", doc.ID, err)
+				log.Printf("[agent] doc->graph: %s failed to read block count, keeping doc: %v", doc.ID, err)
 				continue
 			}
 
@@ -278,23 +278,23 @@ func (a *Agent) archiveColdDocs() {
 			//
 			blocksAfter, err := a.memory.MemoryBlockCount()
 			if err != nil {
-				log.Printf("[agent] doc→graph: %s 读块数失败，保留文档: %v", doc.ID, err)
+				log.Printf("[agent] doc->graph: %s failed to read block count, keeping doc: %v", doc.ID, err)
 				continue
 			}
 			if blocksAfter == blocksBefore {
-				log.Printf("[agent] doc→graph: %s 未写入任何块，保留文档待下轮重试"+
-					"（三元组 %d 条全被实体名校验拒绝）", doc.ID, len(triples))
+				log.Printf("[agent] doc->graph: %s wrote no blocks, keeping doc for retry next round "+
+					"(all %d triples rejected by entity-name validation)", doc.ID, len(triples))
 				continue
 			}
-			log.Printf("[agent] doc→graph: %s → 新增 %d 块（三元组 %d 条，"+
-				"媒体挂接 %d，旧表计数已停用 ec=%d rc=%d）",
+			log.Printf("[agent] doc->graph: %s -> added %d blocks (%d triples, "+
+				"%d media attachments, legacy table counters disabled ec=%d rc=%d)",
 				doc.ID, blocksAfter-blocksBefore, len(triples), blocks, ec, rc)
 
 			// 文档持有的一等块写入 L3，并以 document --contains--> block 边关联；
 			// 块 ID 原样保留（迁移而非重建）。块迁走后删除文档即完成迁移。
 			if len(doc.Blocks) > 0 {
 				if bound := a.linkBlocksToDocument(doc.ID, doc.Blocks, memory.ChannelScene(doc.Source)); bound != len(doc.Blocks) {
-					log.Printf("[agent] doc→graph: %s 块迁移不完整 (%d/%d)，保留文档待下轮重试",
+					log.Printf("[agent] doc->graph: %s block migration incomplete (%d/%d), keeping doc for retry next round",
 						doc.ID, bound, len(doc.Blocks))
 					continue
 				}
@@ -402,11 +402,11 @@ func (a *Agent) dedupeScenes() {
 	}
 	merged, err := a.memory.DedupeScenes()
 	if err != nil {
-		log.Printf("[agent] 场景去重失败（下轮重试）: %v", err)
+		log.Printf("[agent] scene dedup failed (will retry next round): %v", err)
 		return
 	}
 	if merged > 0 {
-		log.Printf("[agent] 场景去重：合并 %d 组同键场景（同一场面的重复键）", merged)
+		log.Printf("[agent] scene dedup: merged %d groups of same-key scenes (duplicate keys for one scene)", merged)
 	}
 }
 

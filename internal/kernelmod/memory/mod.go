@@ -129,14 +129,14 @@ func initDistillSplitter(cfgReg *config.ConfigRegistry) pipeline.RecordSplitter 
 	}
 	provider, err := generation.Open(providerName, generation.Config{Options: opts})
 	if err != nil {
-		log.Printf("[homed] warning: 蒸馏生成 provider %q 打开失败: %v（蒸馏回退 jieba 路；已注册: %s）",
+		log.Printf("[homed] warning: opening distillation provider %q failed: %v (distillation falls back to jieba; registered: %s)",
 			providerName, err, strings.Join(generation.Names(), ", "))
 		return nil
 	}
 	if !provider.Info().SupportsJSONSchema {
 		// 拆分器的零幻觉完全依赖 schema 约束。不支持 schema 的 provider
 		// 会拿到自由文本，解析必炸 —— 与其让它运行时反复失败，不如现在就拒。
-		log.Printf("[homed] warning: 蒸馏生成 provider %q 不支持 JSON Schema，拆分不可靠（蒸馏回退 jieba 路）",
+		log.Printf("[homed] warning: distillation provider %q does not support JSON Schema, splitting is unreliable (falling back to jieba)",
 			providerName)
 		provider.Close()
 		return nil

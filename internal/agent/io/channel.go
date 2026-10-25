@@ -415,8 +415,8 @@ func applyInjectOpts(payload map[string]interface{}, opts InjectOptions) {
 	// 属于应当被看见的事件（见下方 log）。
 	for k, v := range opts.Payload {
 		if IsReservedPayloadKey(k) {
-			log.Printf("[io] 注入 payload 试图覆盖内核保留键 %q（已忽略）——"+
-				"该键由内核语义决定，插件不可改写", k)
+			log.Printf("[io] injected payload tried to override kernel-reserved key %q (ignored) -- "+
+				"this key is decided by kernel semantics and cannot be rewritten by plugins", k)
 			continue
 		}
 		payload[k] = v

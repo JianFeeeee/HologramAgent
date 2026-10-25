@@ -150,19 +150,19 @@ func TestReembedStaleMedia_LogsFailureReasons(t *testing.T) {
 		a.reembedStaleMedia()
 	})
 
-	if !strings.Contains(logs, "失败原因分类") {
-		t.Fatalf("迁移失败时必须打印失败原因分类，实际日志:\n%s", logs)
+	if !strings.Contains(logs, "failure reasons grouped by") {
+		t.Fatalf("migration failure must log grouped failure reasons, actual log:\n%s", logs)
 	}
 	if !strings.Contains(logs, "image/webp") {
-		t.Fatalf("失败原因里必须出现具体 mime（否则无从定位是哪种格式），实际日志:\n%s", logs)
+		t.Fatalf("failure reasons must contain the concrete mime (otherwise the format cannot be identified), actual log:\n%s", logs)
 	}
 	if !strings.Contains(logs, "模拟解码失败") {
 		t.Fatalf("失败原因里必须带上 provider 返回的错误原文，实际日志:\n%s", logs)
 	}
 	// 计数必须出现（格式 "N 个: ..."）—— 具体数字取决于去重后的块数，
 	// 这里只要求"有计数"，不绑死数字（绑死会让判据随去重策略变化而脆）。
-	if !regexp.MustCompile(`\d+ 个: image/webp`).MatchString(logs) {
-		t.Fatalf("失败原因应带聚合计数（形如「N 个: image/webp | ...」），实际日志:\n%s", logs)
+	if !regexp.MustCompile(`\d+ x: image/webp`).MatchString(logs) {
+		t.Fatalf("failure reasons must include an aggregate count (like \"N x: image/webp | ...\"), actual log:\n%s", logs)
 	}
 }
 
@@ -182,8 +182,8 @@ func TestReembedStaleMedia_SeparatesUnsupportedFromFailed(t *testing.T) {
 		a.reembedStaleMedia()
 	})
 
-	if !strings.Contains(logs, "不支持=1") {
-		t.Fatalf("不受支持的模态应单独计数（不支持=1），实际日志:\n%s", logs)
+	if !strings.Contains(logs, "unsupported=1") {
+		t.Fatalf("unsupported modality must be counted separately (unsupported=1), actual log:\n%s", logs)
 	}
 }
 

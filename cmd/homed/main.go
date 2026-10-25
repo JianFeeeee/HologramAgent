@@ -113,19 +113,19 @@ func main() {
 		//
 		// 失败不 Fatal（权限问题不该让服务不可用），但会逐条响亮记录。
 		if hr := security.HardenDataDir(opt.dataDir); len(hr.Changed) > 0 {
-			log.Printf("[homed] 已收紧 %d 项权限（内嵌密钥场景的必要缓解）: %v",
+			log.Printf("[homed] hardened %d file permissions (necessary mitigation for embedded-key scenario): %v",
 				len(hr.Changed), hr.Changed)
 		}
 		key, keySrc, kerr := security.LoadOrCreateKey(opt.dataDir)
 		if kerr != nil {
-			log.Fatalf("[homed] 安全模块密钥初始化失败（拒绝以降级模式启动）: %v", kerr)
+			log.Fatalf("[homed] security key init failed (refusing to start in degraded mode): %v", kerr)
 		}
 		// E-1：若存在密钥环，装入历史钥（只读旧密文；当前钥仍由
 		// systemd credential/env/security.key 提供）。密钥环损坏或 current 不一致
 		// 必须响亮失败，不能猜一把钥继续启动。
 		oldKeys, rerr := security.LoadKeyring(opt.dataDir, key)
 		if rerr != nil {
-			log.Fatalf("[homed] 安全模块密钥环加载失败（拒绝静默选错钥）: %v", rerr)
+			log.Fatalf("[homed] security keyring load failed (refusing to silently pick wrong key): %v", rerr)
 		}
 		// ★ 内嵌钥上台时，磁盘钥必须继续参与**解密**。
 		//
@@ -138,7 +138,7 @@ func main() {
 			oldKeys = append(oldKeys, extra...)
 		}
 		if len(oldKeys) > 0 {
-			log.Printf("[homed] 安全模块已装入 %d 把历史/额外密钥（E-1 平滑轮换 + 内嵌迁移）", len(oldKeys))
+			log.Printf("[homed] security module loaded %d historical/extra key(s) (E-1 smooth rotation + embedded migration)", len(oldKeys))
 		}
 		if _, serr := security.InitGlobal(security.Options{
 			Path:    filepath.Join(opt.dataDir, "security", "variables.json"),
@@ -146,22 +146,22 @@ func main() {
 			OldKeys: oldKeys,
 			Enabled: true,
 		}); serr != nil {
-			log.Fatalf("[homed] 安全模块变量库加载失败（不静默重建）: %v", serr)
+			log.Fatalf("[homed] security variable store load failed (will not silently rebuild): %v", serr)
 		}
 		// 配置落盘用的子密钥（域隔离：与别名密钥不共用）。
 		// 必须早于 EncryptExistingSecrets，后者依赖它。
 		if _, cerr := security.InitConfigCodecWithOldKeys(key, oldKeys); cerr != nil {
-			log.Fatalf("[homed] 配置加密子密钥派生失败: %v", cerr)
+			log.Fatalf("[homed] config-encryption subkey derivation failed: %v", cerr)
 		}
 		// 把库里仍是明文的敏感项就地加密（幂等；升级路径必须跑）。
 		if n, merr := cfgReg.EncryptExistingSecrets(); merr != nil {
 			// 不 Fatal：库可能是只读/被锁，而“部分为明文”不等于服务不可用。
 			// 但要**响亮告警**：这是用户必须知道的安全事实。
-			log.Printf("[homed] 存量敏感配置加密未完成（部分项仍为明文）: %v", merr)
+			log.Printf("[homed] existing sensitive config encryption incomplete (some entries still plaintext): %v", merr)
 		} else if n > 0 {
-			log.Printf("[homed] 已加密 %d 条存量敏感配置", n)
+			log.Printf("[homed] encrypted %d existing sensitive config entries", n)
 		}
-		log.Printf("[homed] 安全模块已启用（密钥来源 %s，变量 %d 条，配置落盘加密已开启）",
+		log.Printf("[homed] security module enabled (key source %s, %d variables, config-at-rest encryption on)",
 			keySrc, security.Global().Count())
 
 		// ★ E-2：备份跨机器恢复的诊断。
@@ -171,14 +171,14 @@ func main() {
 		// 此前这种状态只在“读某一条配置”时才暴露成“某个功能坏了”，
 		// 用户看到的是症状而不是原因。这里一次性说清事实与修复动作。
 		if okN, badN, aerr := cfgReg.AuditSecrets(); aerr == nil && badN > 0 {
-			log.Printf("[homed] ⚠ 检测到 %d 条密文无法用当前主密钥解开（可解 %d 条）—— "+
-				"最常见原因是：这份 config.db 来自**另一台机器/另一个密钥**。"+
-				"修复：把原机器的密钥一起带过来（systemd credential / %s / "+
-				"%s），或用旧密钥启动一次并执行重加密迁移。",
+			log.Printf("[homed] WARNING: %d ciphertext entries cannot be decrypted with current master key (%d decryptable) — " +
+				"most common cause: this config.db came from **another machine / another key**. " +
+				"Fix: bring the original machine's key over (systemd credential / %s / " +
+				"%s), or start once with the old key and run the re-encryption migration.",
 				badN, okN, security.EnvKeyName, security.KeyringFileName)
 		}
 	} else {
-		log.Printf("[homed] 安全模块被显式关闭（core.security.enabled=false）—— 明文落盘且中转无防护")
+		log.Printf("[homed] security module explicitly disabled (core.security.enabled=false) — data at rest is plaintext and relay is unprotected")
 	}
 
 	// ========================================================================
@@ -222,10 +222,10 @@ func main() {
 	// 是谁改的）。修复由人执行 —— 命令里已内联 sed 替换。
 	if cdir := ks.Cfg.Daemon.DataDir; cdir != "" && cdir != opt.dataDir {
 		st := systemd.State{RuntimeDataDir: opt.dataDir, ConfigDataDir: cdir}
-		log.Printf("[homed] ⚠️ 数据目录不一致（数据会分裂）：")
-		log.Printf("[homed]    -data        = %s（图记忆、插件 Settings.DataDir）", opt.dataDir)
-		log.Printf("[homed]    DB data_dir  = %s（文本/知识/文档）", cdir)
-		log.Printf("[homed]    修复命令（勿手改单元，生产用 drop-in 覆盖 ExecStart）：")
+		log.Printf("[homed] WARNING: data directories mismatch (data will split):")
+		log.Printf("[homed]    -data        = %s (graph memory, plugin Settings.DataDir)", opt.dataDir)
+		log.Printf("[homed]    DB data_dir  = %s (text/knowledge/doc)", cdir)
+		log.Printf("[homed]    fix command (do not hand-edit the unit; use a drop-in to override ExecStart in production):")
 		log.Printf("[homed]    %s", st.SyncCommand(cdir))
 	}
 
@@ -260,7 +260,7 @@ func main() {
 			}
 		},
 	}); err != nil {
-		log.Fatalf("[homed] 内核装配失败: %v", err)
+		log.Fatalf("[homed] kernel assembly failed: %v", err)
 	}
 	defer ks.CloseAll()
 
@@ -289,10 +289,10 @@ func main() {
 	//   ③ 拉起"声明设施已就绪"的插件；挂起"等更晚设施（如 agent）"的
 	//      （挂起项经 syncbus 在 agent 就绪时自动拉起，见 pluginhost/waiter.go）
 	if cat, ok := ks.PluginCatalog.(*pluginhost.PluginCatalog); ok {
-		log.Printf("[homed] 插件调度完成：元数据缓存 %d 个，已加载 %d 个",
+		log.Printf("[homed] plugin scheduling done: %d metadata cached, %d loaded",
 			cat.Size(), len(pluginReg.ListLoadedPlugins()))
 	} else {
-		log.Printf("[homed] 插件调度完成：已加载 %d 个", len(pluginReg.ListLoadedPlugins()))
+		log.Printf("[homed] plugin scheduling done: %d loaded", len(pluginReg.ListLoadedPlugins()))
 	}
 
 	// 插件加载完成后再回收空闲页：大值（如老版聊天记录）可能在这一步被搬走/删除，
@@ -327,7 +327,7 @@ func main() {
 	waitForShutdown(ctx, opt.dataDir, restartCh, stopHeartbeatEarly, pluginReg, trk, cfgReg, sup,
 		func() {
 			if err := ks.CloseAll(); err != nil {
-				log.Printf("[homed] 模块关闭: %v", err)
+				log.Printf("[homed] module shutdown: %v", err)
 			}
 		})
 }

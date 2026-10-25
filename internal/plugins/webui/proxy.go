@@ -251,7 +251,7 @@ func buildProxyTable(decls []proxyDecl, manualText string, settings sdk.Settings
 			prefix = r.Path
 		}
 		r.reverse = newReverseProxy(u, r.Auth, prefix)
-		log.Printf("[webui] 反代: %s.%s → %s (plugin=%s ws=%v auth=%s)",
+		log.Printf("[webui] reverse proxy: %s.%s -> %s (plugin=%s ws=%v auth=%s)",
 			r.Host, base, r.Target, r.Plugin, r.WS, r.Auth)
 	}
 
@@ -342,7 +342,7 @@ func newReverseProxy(u *url.URL, auth, stripPrefix string) *httputil.ReverseProx
 		},
 		FlushInterval: -1, // 立即 flush：SSE/长轮询逐帧下发
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("[webui] 反代 %s 失败: %v", r.Host, err)
+			log.Printf("[webui] reverse proxy %s failed: %v", r.Host, err)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
 			fmt.Fprintf(w, `{"error":"上游不可达: %s"}`, strings.ReplaceAll(err.Error(), `"`, `'`))
@@ -782,7 +782,7 @@ func readPluginProxyDecls(pluginDir string) []proxyDecl {
 	}
 	entries, err := readDirNames(pluginDir)
 	if err != nil {
-		log.Printf("[webui] 读取插件目录失败（反代自动发现跳过）: %v", err)
+		log.Printf("[webui] reading plugin dir failed (reverse-proxy auto-discovery skipped): %v", err)
 		return nil
 	}
 	var out []proxyDecl

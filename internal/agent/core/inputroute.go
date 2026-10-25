@@ -36,7 +36,7 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 		// 归属到一个不存在（或已销毁、登记表尚未归还）的 agent：
 		// **不吞输入** —— 由本内核兜底处理并留痕。吞掉一条输入比多处理一条更糟：
 		// 用户会看到"消息发出去了却没人理"，而日志里什么都没有。
-		log.Printf("[route] inputch %s 归属 %s 无对应 agent，输入由 %s 兜底", evt.OutputChannel, entry.Owner, a.id)
+		log.Printf("[route] inputch %s owner %s has no matching agent, input handled by fallback %s", evt.OutputChannel, entry.Owner, a.id)
 		return false
 	}
 	rc.agent.io.DeliverRouted(evt, isInterrupt)

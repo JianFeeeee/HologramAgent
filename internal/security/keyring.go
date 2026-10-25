@@ -52,8 +52,8 @@ func LoadKeyring(dataDir string, current []byte) ([][]byte, error) {
 		// 为何不能按旧逻辑 Fatal：内嵌的目的就是防丢；一个"有 keyring 的老机器
 		// 升级到内嵌二进制就再也起不来"的行为，恰好造成它要防的那个后果。
 		if !sameKey(k, current) && EmbeddedKeyPresent() {
-			log.Printf("[security] 密钥环 current 与当前（内嵌）钥不同——"+
-				"按**额外解密钥**保留，旧密文仍可读: %s", filepath.Join(dataDir, KeyringFileName))
+			log.Printf("[security] keyring current differs from the current (embedded) key -- "+
+				"kept as an **additional decrypt key**, old ciphertext still readable: %s", filepath.Join(dataDir, KeyringFileName))
 			return appendHistoryKeys(f.History, current, k)
 		}
 		if len(current) != 32 || !sameKey(k, current) {

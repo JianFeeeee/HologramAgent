@@ -18,7 +18,7 @@ func runKnowledgeMigration(root string) {
 	)
 	items, err := knowledge.PlanMigration(root)
 	if err != nil {
-		log.Printf("[homed] 知识库迁移扫描失败（跳过）: %v", err)
+		log.Printf("[homed] knowledge base migration scan failed (skipping): %v", err)
 		return
 	}
 	need, illegal := 0, 0
@@ -33,21 +33,21 @@ func runKnowledgeMigration(root string) {
 		return
 	}
 	if illegal > 0 {
-		log.Printf("[homed] 知识库迁移：%d 条名称非法（含 .. / 点段 / 隐藏段），写入与删除均已拒绝，需人工处理", illegal)
+		log.Printf("[homed] knowledge base migration: %d illegal names (contain .. / dot segments / hidden segments), writes and deletes refused, manual handling required", illegal)
 	}
 	if need == 0 {
 		return
 	}
-	log.Printf("[homed] 知识库迁移：%d/%d 条目录名待规范化（例：%s → %s）", need, len(items),
+	log.Printf("[homed] knowledge base migration: %d/%d directory names need normalization (e.g. %s -> %s)", need, len(items),
 		items[0].OldName, items[0].NewName)
 	if !defaultApply {
-		log.Printf("[homed] 知识库迁移：当前为只报告模式。确认清单后执行：homed-kb-migrate -root %s -apply", root)
+		log.Printf("[homed] knowledge base migration: report-only mode. After reviewing the list run: homed-kb-migrate -root %s -apply", root)
 		return
 	}
 	if need > maxRenamePerRun {
-		log.Printf("[homed] 知识库迁移：需改名 %d 条超过单次上限 %d，本次只处理前 %d 条",
+		log.Printf("[homed] knowledge base migration: %d renames exceed per-run limit %d, processing only the first %d",
 			need, maxRenamePerRun, maxRenamePerRun)
 	}
 	applied, failed := knowledge.ApplyMigration(root, items, maxRenamePerRun)
-	log.Printf("[homed] 知识库迁移完成：成功 %d，失败 %d", applied, failed)
+	log.Printf("[homed] knowledge base migration complete: %d succeeded, %d failed", applied, failed)
 }

@@ -227,13 +227,20 @@ func TestSystemPromptHasNoImplementationJargon(t *testing.T) {
 
 // ⑦ 提示词长度上限（防止技术说明再次淤积）。
 //
-// 当前实测 1723 字（收敛前 2309）。上限取 2000：留有增删余地，
-// 但堵住"又加一大段实现说明"这种回潮。
+// 历史：收敛前 2309 → 收敛后 1723 → 上限取 2000（留 277 字增删余地）。
+//
+// 2026-10-25 上调到 2100：新增【加速序列】115 字（让模型知道何时该用 seq）。
+// 该块属于判据认可的**行为判据**——"模型会据此做什么不同的事"答得上来：
+// 决定用序列还是逐个调工具。因此占用增删余地是正当的。
+//
+// ⚠️ 调整门槛没有放松：**技术说明仍然不许占用这份额度**。
+// 下次若因"又加一大段实现说明"而想再调上限，应该改的是那段说明（下沉到
+// skill 或工具描述），不是这个数字。
 func TestSystemPromptStaysCompact(t *testing.T) {
 	a := newToolTestAgent(t)
 	prompt := a.buildSystemPrompt("", "测试输入")
 
-	const maxRunes = 2000
+	const maxRunes = 2100
 	if n := len([]rune(prompt)); n > maxRunes {
 		t.Errorf("系统提示词 %d 字，超过上限 %d —— \n"+
 			"新加的内容先问：模型会据此做什么不同的事？答不上来就该进 skill 或工具描述",

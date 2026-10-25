@@ -44,7 +44,7 @@ func resolveFailbackAllowlist(cfgReg *internalConfig.ConfigRegistry,
 			names = append(names, s)
 		}
 	}
-	log.Printf("[homed] failback boot: plugin allowlist = %v（装配前解析）", names)
+	log.Printf("[homed] failback boot: plugin allowlist = %v (parsed before assembly)", names)
 	return names
 }
 

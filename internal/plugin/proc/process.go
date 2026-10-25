@@ -307,7 +307,7 @@ func (p *Process) handshake(timeout time.Duration) error {
 		return fmt.Errorf("proc: %s 主版本不匹配（插件 SDK %s，内核 %s）——请用配套 hmapdev 重编",
 			p.name, res.SDKVersion, meta.Version)
 	}
-	log.Printf("[proc] %s 已建链（pid=%d sdk=%s core=%s）",
+	log.Printf("[proc] %s link established (pid=%d sdk=%s core=%s)",
 		p.name, p.PID(), res.SDKVersion, meta.Version)
 	return nil
 }
@@ -383,12 +383,12 @@ func (p *Process) readLoop() {
 			// ⇒ 现在把**内容摘要**与**可能原因 + 修法**一起打出来。
 			// 限长是因为坏帧可能很大（插件打了长文本/二进制），
 			// 截断到 160 字节足以认出"这是哪句日志"。
-			log.Printf("[proc] %s 收到非法 JSON 帧（%d 字节）: %v\n"+
-				"        ↑ 内容摘要: %s\n"+
-				"        可能原因：插件往 **stdout** 打印了日志，而 stdout 是"+
-				"JSON-RPC **协议通道**（stderr 才是日志通道）。\n"+
-				"        修法：把插件里的 fmt.Printf/fmt.Println 改成 log.Printf"+
-				"（脚手架模板 1.4.0 起已修正）。",
+			log.Printf("[proc] %s received malformed JSON frame (%d bytes): %v\n"+
+				"        ^ content excerpt: %s\n"+
+				"        likely cause: the plugin printed logs to **stdout**, but stdout is the "+
+				"JSON-RPC **protocol channel** (stderr is the log channel).\n"+
+				"        fix: change fmt.Printf/fmt.Println in the plugin to log.Printf "+
+				"(fixed in scaffolding template since 1.4.0).",
 				p.name, len(line), err, summarizeFrame(line, 160))
 			continue
 		}
@@ -403,14 +403,14 @@ func (p *Process) readLoop() {
 
 		var resp Response
 		if err := json.Unmarshal(line, &resp); err != nil {
-			log.Printf("[proc] %s 应答解析失败: %v", p.name, err)
+			log.Printf("[proc] %s response parse failed: %v", p.name, err)
 			continue
 		}
 		p.deliverResponse(&resp)
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("[proc] %s 读取 stdout 出错: %v", p.name, err)
+		log.Printf("[proc] %s stdout read error: %v", p.name, err)
 	}
 
 	// stdout 关闭（EOF）通常意味着进程结束——2.5ms 内即可感知（实验 6）。
@@ -460,9 +460,9 @@ func (p *Process) markExited() {
 		if p.waitErr != nil {
 			e := fmt.Errorf("插件进程 %s 异常退出: %w", p.name, p.waitErr)
 			p.exitErr.Store(&e)
-			log.Printf("[proc] %s 退出: %v", p.name, p.waitErr)
+			log.Printf("[proc] %s exited: %v", p.name, p.waitErr)
 		} else {
-			log.Printf("[proc] %s 正常退出", p.name)
+			log.Printf("[proc] %s exited normally", p.name)
 		}
 
 		// 进程没了：所有在途调用都无法完成。按状态机收敛——
@@ -515,7 +515,7 @@ func (p *Process) markExited() {
 func (p *Process) serveRequest(line []byte) {
 	var req Request
 	if err := json.Unmarshal(line, &req); err != nil {
-		log.Printf("[proc] %s 请求解析失败: %v", p.name, err)
+		log.Printf("[proc] %s request parse failed: %v", p.name, err)
 		return
 	}
 
@@ -538,7 +538,7 @@ func (p *Process) serveRequest(line []byte) {
 	// ID==0 是通知，不回应答（§2.4 约束 B：post-and-forget）
 	if req.ID == 0 {
 		if err != nil {
-			log.Printf("[proc] %s 通知 %s 处理失败: %v", p.name, req.Method, err)
+			log.Printf("[proc] %s notification %s handling failed: %v", p.name, req.Method, err)
 		}
 		return
 	}
@@ -554,7 +554,7 @@ func (p *Process) serveRequest(line []byte) {
 		}
 	}
 	if wErr := p.writeFrame(&resp); wErr != nil {
-		log.Printf("[proc] %s 回写应答失败: %v", p.name, wErr)
+		log.Printf("[proc] %s writing response failed: %v", p.name, wErr)
 	}
 }
 
@@ -661,7 +661,7 @@ func (p *Process) deliverResponse(resp *Response) {
 	c, ok := p.inflight[resp.ID]
 	if ok && c.State() != callPending && c.State() != callCanceled {
 		p.mu.Unlock()
-		log.Printf("[proc] %s 丢弃重复应答 id=%d（该调用已处于 %s）",
+		log.Printf("[proc] %s dropping duplicate response id=%d (call already in state %s)",
 			p.name, resp.ID, c.State())
 		return
 	}
@@ -671,7 +671,7 @@ func (p *Process) deliverResponse(resp *Response) {
 	p.mu.Unlock()
 
 	if !ok {
-		log.Printf("[proc] %s 丢弃未知 id=%d 的应答（不属于任何在途调用）", p.name, resp.ID)
+		log.Printf("[proc] %s dropping response with unknown id=%d (not owned by any in-flight call)", p.name, resp.ID)
 		return
 	}
 
@@ -686,7 +686,7 @@ func (p *Process) deliverResponse(resp *Response) {
 		}
 		// 通道容量 1 且此处无读者，不写入（写了会阻塞 readLoop）。
 	default:
-		log.Printf("[proc] %s 丢弃无法归类的应答 id=%d（状态 %s）",
+		log.Printf("[proc] %s dropping unclassifiable response id=%d (state %s)",
 			p.name, resp.ID, c.State())
 	}
 }
@@ -802,11 +802,11 @@ func (p *Process) expireCanceled(c *call) {
 	}
 	// ① 回收块：refs 的 owner 是插件，但回收决策来自内核（见 ReclaimRefs）。
 	if n := p.reclaimRefs(c.takeBlocks()); n > 0 {
-		log.Printf("[proc] %s 调用 %d 取消后无响应：已强制回收 %d 个扩容块", p.name, c.id, n)
+		log.Printf("[proc] %s call %d unresponsive after cancel: forcibly reclaimed %d expansion block(s)", p.name, c.id, n)
 	}
 	// ② 上报：由上层判定稳定性并决定是否重启。
 	//    这里只负责"如实汇报事实"，不做重启决策——proc 不知道插件生命周期策略。
-	log.Printf("[proc] %s 调用 %d 在取消后 %v 内未停手（插件失去响应）", p.name, c.id, cancelGrace)
+	log.Printf("[proc] %s call %d did not stop within %v after cancel (plugin unresponsive)", p.name, c.id, cancelGrace)
 	if p.onCancelIgnored != nil {
 		p.onCancelIgnored(c.id, cancelGrace)
 	}
@@ -852,7 +852,7 @@ func (p *Process) cancelCall(id uint64, cause error) {
 		reason = cause.Error()
 	}
 	if err := p.Notify(MethodCallCancel, CallCancelParams{CallID: id, Reason: reason}); err != nil {
-		log.Printf("[proc] %s 发送调用取消失败（id=%d，可能已退出）: %v", p.name, id, err)
+		log.Printf("[proc] %s failed to send call cancel (id=%d, likely already exited): %v", p.name, id, err)
 	}
 }
 
@@ -872,7 +872,7 @@ func (p *Process) Stop() error {
 	if _, err := p.CallContext(ctx, MethodPluginStop, nil); err != nil {
 		// 停止调用失败不影响后续 Kill——插件可能已经崩了
 		if !errors.Is(err, ErrProcessExited) {
-			log.Printf("[proc] %s plugin.stop 失败（将强制结束）: %v", p.name, err)
+			log.Printf("[proc] %s plugin.stop failed (will force terminate): %v", p.name, err)
 		}
 	}
 
@@ -880,7 +880,7 @@ func (p *Process) Stop() error {
 	case <-p.exited:
 		return nil
 	case <-time.After(stopGracePeriod):
-		log.Printf("[proc] %s 宽限期内未退出，强制结束", p.name)
+		log.Printf("[proc] %s did not exit within grace period, force terminating", p.name)
 		return p.Kill()
 	}
 }
@@ -919,7 +919,7 @@ func (p *Process) Kill() error {
 	case <-time.After(killReapTimeout):
 		// SIGKILL 后仍未收割：进程卡在不可中断的内核态（D 状态，如 NFS I/O）。
 		// 不能无限等，否则重载路径整体挂死；留日志供定位。
-		log.Printf("[proc] %s SIGKILL 后 %v 仍未被收割（进程可能卡在内核态）", p.name, killReapTimeout)
+		log.Printf("[proc] %s still not reaped %v after SIGKILL (process may be stuck in kernel mode)", p.name, killReapTimeout)
 	}
 	// readerWG.Wait 必须有界：孙进程持有 stdout 写端时 readLoop 永不返回，
 	// 无超时就是"任何插件泄漏一个孙进程都能拖死整个关停"。
@@ -934,7 +934,7 @@ func (p *Process) Kill() error {
 	select {
 	case <-readerDone:
 	case <-time.After(killReapTimeout):
-		log.Printf("[proc] %s 的 stdout 读取未在 %v 内结束（孙进程可能仍持有写端），强制关闭读端",
+		log.Printf("[proc] %s stdout read did not finish within %v (grandchild process may still hold the write end), force-closing read end",
 			p.name, killReapTimeout)
 		if p.stdoutFile != nil {
 			_ = p.stdoutFile.Close()
@@ -944,7 +944,7 @@ func (p *Process) Kill() error {
 		case <-time.After(killReapTimeout):
 			// 极端情况：关管道也没能让它退出。不再等 —— 宁可让这次
 			// Stop 少等 2 秒，也不能把关停无限期挂住。
-			log.Printf("[proc] %s 读端关闭后 readLoop 仍未退出，放弃等待", p.name)
+			log.Printf("[proc] %s readLoop still did not exit after read end closed, giving up", p.name)
 		}
 	}
 	if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {

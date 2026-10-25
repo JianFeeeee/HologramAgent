@@ -122,7 +122,7 @@ func sealForStorage(key, value string) (string, bool) {
 		if sealed, err := c.Seal(value); err == nil {
 			return sealed, true
 		} else {
-			log.Printf("[config] 加密 %s 失败（将按明文写入，此项暴露风险）: %v", key, err)
+			log.Printf("[config] encrypting %s failed (will be written as plaintext, this entry is exposed): %v", key, err)
 		}
 	}
 	return value, false
@@ -143,7 +143,7 @@ func openFromStorage(key, stored string) (string, error) {
 	}
 	plain, err := c.Open(stored)
 	if err != nil {
-		log.Printf("[config] 解密 %s 失败: %v", key, err)
+		log.Printf("[config] decrypting %s failed: %v", key, err)
 		return "", err
 	}
 	return plain, nil
@@ -216,18 +216,18 @@ func (r *ConfigRegistry) EncryptExistingSecrets() (int, error) {
 	for _, t := range todo {
 		sealed, err := c.Seal(t.val)
 		if err != nil {
-			log.Printf("[config] 迁移加密 %s.%s 失败: %v", t.table, t.key, err)
+			log.Printf("[config] migration-encrypt %s.%s failed: %v", t.table, t.key, err)
 			continue
 		}
 		if _, err := r.db.Exec(
 			"UPDATE "+t.table+" SET value = ? WHERE key = ?", sealed, t.key); err != nil {
-			log.Printf("[config] 迁移加密 %s.%s 写回失败: %v", t.table, t.key, err)
+			log.Printf("[config] migration-encrypt %s.%s write-back failed: %v", t.table, t.key, err)
 			continue
 		}
 		n++
 	}
 	if n > 0 {
-		log.Printf("[config] 已加密 %d 条存量敏感配置（落盘不再有明文）", n)
+		log.Printf("[config] encrypted %d existing sensitive config entries (no plaintext at rest)", n)
 	}
 	return n, nil
 }
@@ -279,19 +279,19 @@ func (r *ConfigRegistry) RekeySecrets() (int, int, error) {
 			if err != nil {
 				// ★ 解不开不能静默跳：那是“密钥环缺一代”的信号，必须可见。
 				failed++
-				log.Printf("[config] 重加密 %s.%s 失败（旧密钥不在环里？）: %v", table, p.k, err)
+				log.Printf("[config] re-encrypt %s.%s failed (old key not in keyring?): %v", table, p.k, err)
 				continue
 			}
 			if _, err := r.db.Exec("UPDATE "+table+" SET value = ? WHERE key = ?", fresh, p.k); err != nil {
 				failed++
-				log.Printf("[config] 重加密 %s.%s 写回失败: %v", table, p.k, err)
+				log.Printf("[config] re-encrypt %s.%s write-back failed: %v", table, p.k, err)
 				continue
 			}
 			rekeyed++
 		}
 	}
 	if rekeyed > 0 || failed > 0 {
-		log.Printf("[config] 密钥轮换重加密：完成 %d 条，失败 %d 条", rekeyed, failed)
+		log.Printf("[config] key-rotation re-encrypt: %d succeeded, %d failed", rekeyed, failed)
 	}
 	return rekeyed, failed, nil
 }

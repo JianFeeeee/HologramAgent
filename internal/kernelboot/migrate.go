@@ -117,7 +117,7 @@ func (s *KernelState) BeginMigration(pq PluginQuiescer) (*MigrateSession, error)
 				// 停不下来 ⇒ 回滚已停的，别留半关
 				for j := len(sess.stopped) - 1; j >= 0; j-- {
 					if r := pq.StartPluginRuntime(sess.stopped[j]); r != nil {
-						log.Printf("[migrate] 回滚启动插件 %s 失败: %v", sess.stopped[j], r)
+						log.Printf("[migrate] rollback start plugin %s failed: %v", sess.stopped[j], r)
 					}
 				}
 				return nil, fmt.Errorf("运行态停止插件 %s 失败（已回滚 %d 个）: %w",
@@ -125,7 +125,7 @@ func (s *KernelState) BeginMigration(pq PluginQuiescer) (*MigrateSession, error)
 			}
 			sess.stopped = append(sess.stopped, name)
 		}
-		log.Printf("[migrate] 已运行态停止 %d 个插件（不改持久状态，唤醒即恢复）", len(sess.stopped))
+		log.Printf("[migrate] stopped %d plugin(s) at runtime (persistent state unchanged, restored on wake)", len(sess.stopped))
 	}
 
 	// ② 逆序暂停内核写者（distiller/textmem 等后台定时写）
@@ -134,10 +134,10 @@ func (s *KernelState) BeginMigration(pq PluginQuiescer) (*MigrateSession, error)
 		// 失败 ⇒ 把插件拉回去，内核回到正常态
 		for j := len(sess.stopped) - 1; j >= 0; j-- {
 			if r := pq.StartPluginRuntime(sess.stopped[j]); r != nil {
-				log.Printf("[migrate] 回滚启动插件 %s 失败: %v", sess.stopped[j], r)
+				log.Printf("[migrate] rollback start plugin %s failed: %v", sess.stopped[j], r)
 			}
 		}
-		log.Printf("[migrate] 伪关机失败，已回滚: %v", err)
+		log.Printf("[migrate] pseudo-shutdown failed, rolled back: %v", err)
 		return nil, fmt.Errorf("伪关机失败: %w", err)
 	}
 	sess.paused = paused
@@ -151,10 +151,10 @@ func (s *KernelState) BeginMigration(pq PluginQuiescer) (*MigrateSession, error)
 		time.Sleep(50 * time.Millisecond)
 	}
 	if hasInflightTools() {
-		log.Printf("[migrate] warning: 仍有在途工具调用未完成（继续；迁移脚本 stop 服务后天然安全）")
+		log.Printf("[migrate] warning: tool calls still in flight (continuing; safe after migration script stops the service)")
 	}
 
-	log.Printf("[migrate] 伪关机完成（插件 %d 个、内核写者 %d 个）", len(sess.stopped), len(paused))
+	log.Printf("[migrate] pseudo-shutdown complete (%d plugins, %d kernel writers)", len(sess.stopped), len(paused))
 	return sess, nil
 }
 
@@ -165,18 +165,18 @@ func (m *MigrateSession) End() {
 	}
 	// ① 先恢复内核写者（它们是被插件依赖的下层）
 	if err := m.ks.Resume(m.paused); err != nil {
-		log.Printf("[migrate] ★ 唤醒内核写者失败（可能半醒）: %v", err)
+		log.Printf("[migrate] * waking kernel writers failed (may be half-awake): %v", err)
 	}
 	// ② 再拉起插件（按**停止的逆序** = 原启动顺序）
 	if m.plugins != nil {
 		for i := len(m.stopped) - 1; i >= 0; i-- {
 			name := m.stopped[i]
 			if err := m.plugins.StartPluginRuntime(name); err != nil {
-				log.Printf("[migrate] ★ 拉起插件 %s 失败: %v", name, err)
+				log.Printf("[migrate] * starting plugin %s failed: %v", name, err)
 			} else {
-				log.Printf("[migrate] 已拉起插件: %s", name)
+				log.Printf("[migrate] plugin started: %s", name)
 			}
 		}
 	}
-	log.Printf("[migrate] 唤醒完成")
+	log.Printf("[migrate] wake complete")
 }

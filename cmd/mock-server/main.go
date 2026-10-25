@@ -512,10 +512,10 @@ func main() {
 
 	addr := ":9099"
 	log.Printf("=== HologramAgent Mock Server ====")
-	log.Printf("监听地址: http://0.0.0.0%s", addr)
-	log.Printf("API 基础路径: http://0.0.0.0%s/api/v1/", addr)
-	log.Printf("SSE 端点: http://0.0.0.0%s/api/v1/chat/events", addr)
-	log.Printf("设备桥 WS: ws://0.0.0.0%s/api/v1/device/ws", addr)
+	log.Printf("listening on: http://0.0.0.0%s", addr)
+	log.Printf("API base path: http://0.0.0.0%s/api/v1/", addr)
+	log.Printf("SSE endpoint: http://0.0.0.0%s/api/v1/chat/events", addr)
+	log.Printf("device bridge WS: ws://0.0.0.0%s/api/v1/device/ws", addr)
 	log.Printf("==============================")
 	log.Fatal(http.ListenAndServe(addr, server.middleware(mux)))
 }

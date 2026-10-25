@@ -53,7 +53,7 @@ func GetJieba() *gojieba.Jieba {
 		}()
 		d := jiebaDictDir()
 		if d == "" {
-			log.Printf("[jieba] 未找到词库目录（内嵌落盘失败且模块缓存也不存在），jieba disabled")
+			log.Printf("[jieba] dictionary directory not found (embedded extraction failed and no module cache), jieba disabled")
 			return
 		}
 		jiebaInst = gojieba.NewJieba(
@@ -75,7 +75,7 @@ func jiebaDictDir() string {
 	if dir, err := materializeJiebaDict(); err == nil && dir != "" {
 		return dir
 	}
-	log.Printf("[jieba] 内嵌词库落盘失败，回退到模块缓存查找（内嵌失败通常意味着缓存目录不可写）")
+	log.Printf("[jieba] writing embedded dictionary failed, falling back to module cache lookup (embedded failure usually means cache dir is not writable)")
 
 	// 回退：开发机上存在的模块缓存（仅作为兵底，不应依赖它）。
 	//

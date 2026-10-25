@@ -125,10 +125,10 @@ func (h *Handler) handleChatFile(w http.ResponseWriter, r *http.Request) {
 	var mediaBlocks []sdk.ContentBlock
 	if attType == "image" || attType == "audio" {
 		if sz > maxInlineMediaBytes {
-			log.Printf("[webui] %s %s 有 %s，超过 %s 内联上限，退回按路径处理",
+			log.Printf("[webui] %s %s has %s exceeding inline limit %s, falling back to path handling",
 				attType, base, formatBytesGo(sz), formatBytesGo(maxInlineMediaBytes))
 		} else if raw, err := os.ReadFile(savePath); err != nil {
-			log.Printf("[webui] 读回上传的%s失败，退回按路径处理: %v", attType, err)
+			log.Printf("[webui] reading back uploaded %s failed, falling back to path handling: %v", attType, err)
 		} else {
 			dataURL := "data:" + ct + ";base64," + base64.StdEncoding.EncodeToString(raw)
 			if attType == "image" {

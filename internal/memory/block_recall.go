@@ -91,7 +91,7 @@ func (g *GraphDB) RecallBlocks(q BlockRecallQuery) ([]BlockHit, error) {
 		if err != nil {
 			// 中心读取失败不该让召回失败 —— 退回原始向量即可，
 			// 只是少了个校正。记日志以便发现。
-			log.Printf("[graph] recall blocks: 中心向量读取失败，退回原始向量: %v", err)
+			log.Printf("[graph] recall blocks: reading centroid failed, falling back to raw vectors: %v", err)
 		} else if use {
 			centroid = c
 		}
@@ -162,11 +162,11 @@ func (g *GraphDB) RecallBlocks(q BlockRecallQuery) ([]BlockHit, error) {
 	}
 
 	if skippedDim > 0 {
-		log.Printf("[graph] recall blocks: 跳过 %d 个维度不匹配的块（查询 %d 维，共扫 %d）",
+		log.Printf("[graph] recall blocks: skipped %d blocks with mismatched dimension (query %d dims, scanned %d)",
 			skippedDim, dim, scanned)
 	}
 	if skippedFP > 0 {
-		log.Printf("[graph] recall blocks: 跳过 %d 个指纹不匹配的块（查询空间 %s，共扫 %d）",
+		log.Printf("[graph] recall blocks: skipped %d blocks with mismatched fingerprint (query space %s, scanned %d)",
 			skippedFP, shortFP(q.Fingerprint), scanned)
 	}
 

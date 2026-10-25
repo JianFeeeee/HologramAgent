@@ -131,7 +131,7 @@ func (g *GraphDB) SaveCentroid(c *Centroid, fingerprint string) error {
 		string(rawStats), meta.BuiltAt); err != nil {
 		return fmt.Errorf("graph: save centroid: %w", err)
 	}
-	log.Printf("[graph] 中心向量已存: fp=%s dim=%d 样本=%d 均值范数=%.4f anomalous=%v",
+	log.Printf("[graph] centroid stored: fp=%s dim=%d samples=%d mean_norm=%.4f anomalous=%v",
 		shortFP(fingerprint), c.Dim, c.Count, stats.MeanLength, stats.Anomalous)
 	return nil
 }
@@ -178,7 +178,7 @@ func (g *GraphDB) LoadCentroid(fingerprint string, queryDim int) (*Centroid, boo
 	if vecCount <= 0 {
 		// 没有统计过任何向量：这不是一个可用的中心。
 		if curVectored > 0 {
-			log.Printf("[graph] 中心向量不可用: 建中心时样本数为 0，现库内有 %d 个带向量块", curVectored)
+			log.Printf("[graph] centroid unavailable: built from 0 samples, store now has %d vectored blocks", curVectored)
 		}
 		return nil, false, nil
 	}
@@ -187,7 +187,7 @@ func (g *GraphDB) LoadCentroid(fingerprint string, queryDim int) (*Centroid, boo
 		delta = -delta
 	}
 	if delta > centroidRebuildRatio {
-		log.Printf("[graph] 中心向量已失效: 样本 %d → 库内 %d（变化 %.0f%% > %.0f%%）",
+		log.Printf("[graph] centroid invalidated: samples %d -> store %d (change %.0f%% > %.0f%%)",
 			vecCount, curVectored, delta*100, centroidRebuildRatio*100)
 		return nil, false, nil
 	}

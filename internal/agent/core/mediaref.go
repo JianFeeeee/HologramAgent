@@ -98,7 +98,7 @@ func (a *Agent) embedBlockOnIngest(b *memory.MemoryBlock) {
 	}
 	vec, err := a.multimodalSpace.EmbedImageDense(b.Data, b.MIME)
 	if err != nil {
-		log.Printf("[media] 入库嵌入失败 %s: %v", shortID(b.ID), err)
+		log.Printf("[media] ingest embedding failed %s: %v", shortID(b.ID), err)
 		return
 	}
 	b.Vector = vec

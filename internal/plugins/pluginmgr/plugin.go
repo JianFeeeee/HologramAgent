@@ -789,7 +789,7 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 		runningRestored := false
 		if wasLoaded && p.sdk != nil && p.sdk.PluginMgr() != nil {
 			if err := p.sdk.PluginMgr().StartPlugin(pkg.Name); err != nil {
-				log.Printf("[pluginmgr] 升级后恢复运行 %s 失败: %v（插件已安装，可手动 plugin_start）", pkg.Name, err)
+				log.Printf("[pluginmgr] post-upgrade restart of %s failed: %v (plugin is installed, run plugin_start manually)", pkg.Name, err)
 			} else {
 				runningRestored = true
 			}
@@ -1136,7 +1136,7 @@ func parseLimitMB(v interface{}) int64 {
 		}
 		parsed, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
-			log.Printf("[pluginmgr] max_package_mb=%q 不是整数，回退默认 %dMB", s, defaultMaxPackageMB)
+			log.Printf("[pluginmgr] max_package_mb=%q is not an integer, falling back to default %dMB", s, defaultMaxPackageMB)
 			return int64(defaultMaxPackageMB) << 20
 		}
 		mb = parsed
@@ -1147,7 +1147,7 @@ func parseLimitMB(v interface{}) int64 {
 	case float64:
 		mb = int64(n)
 	default:
-		log.Printf("[pluginmgr] max_package_mb 类型意外（%T），回退默认 %dMB", v, defaultMaxPackageMB)
+		log.Printf("[pluginmgr] max_package_mb has unexpected type (%T), falling back to default %dMB", v, defaultMaxPackageMB)
 		return int64(defaultMaxPackageMB) << 20
 	}
 	if mb < 0 {

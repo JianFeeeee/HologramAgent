@@ -320,7 +320,7 @@ func (s *KernelState) CloseAll() error {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("[kernelboot] 关闭函数 panic（已隔离）: %v", r)
+					log.Printf("[kernelboot] shutdown function panicked (isolated): %v", r)
 				}
 			}()
 			fn()

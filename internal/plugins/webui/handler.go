@@ -97,7 +97,7 @@ func init() {
 	} {
 		body, err := dashboardFS.ReadFile(a.file)
 		if err != nil {
-			log.Printf("[webui] 读取前端资产 %s 失败: %v", a.file, err)
+			log.Printf("[webui] reading frontend asset %s failed: %v", a.file, err)
 			continue
 		}
 		// 资产文件末尾的换行由占位符所在行自己的换行承担，避免多出空行。

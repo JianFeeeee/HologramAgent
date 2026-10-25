@@ -262,7 +262,7 @@ func (a *Agent) runTaskSteps(f *TaskFrame) stepOutcome {
 		// f.Turn 只在 stepTurnEnd 递增，所以它等于「已完成的工具批数」；
 		// 因此这里允许 maxToolTurns 批，而不会多跑第 maxToolTurns+1 轮。
 		if f.Step == StepLLM && a.maxToolTurns > 0 && f.Turn >= a.maxToolTurns {
-			log.Printf("[agent] 已达最大工具轮次 %d（turn=%d），强制收尾", a.maxToolTurns, f.Turn)
+			log.Printf("[agent] reached max tool turns %d (turn=%d), forcing wrap-up", a.maxToolTurns, f.Turn)
 			if f.Resp != nil && strings.TrimSpace(f.Resp.Content) != "" {
 				f.Response = f.Resp.Content
 			} else {

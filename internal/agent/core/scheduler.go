@@ -836,6 +836,7 @@ func (s *scheduler) queueSnapshot() []*Task {
 //  2. 中断队列 L4→L1（同级 FIFO）
 //  3. 中断栈顶（与 2 比级别取高者；栈顶是排队任务时视为最低）
 //  4. 排队队列（FIFO）
+//
 // nextRef 选出下一个要执行的任务。
 //
 // ★ 本函数只做**编排**，不实现优先级规则：
@@ -946,7 +947,6 @@ func removeTask(list []*Task, target *Task) []*Task {
 // registerInterrupt 是登记中断的公共实现（任务已带好 Class/Level）。
 
 // preemptGrantedFor 报告运行任务是否应在当前安全点让位。
-
 
 // rearmPending 在**安全点重新求值**中断队列（设计 §4.3 / §5.2）。
 //
@@ -1313,8 +1313,8 @@ func (s *scheduler) waitSchedulerStopped(timeout time.Duration, name string) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	log.Printf("[resident] %s 调度器 %s 内未停止（仍在执行任务），"+
-		"残余任务可能少回收一条（那条会由 Stop 补终态）", name, timeout)
+	log.Printf("[resident] %s did not stop within scheduler timeout %s (still executing tasks), "+
+		"one residual task may be under-reclaimed (Stop will fill in its terminal state)", name, timeout)
 }
 
 // pumpInbox 把 channel 里**已就绪**的输入搬进就绪队列（非阻塞）。

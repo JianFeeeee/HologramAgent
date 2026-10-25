@@ -84,7 +84,7 @@ func (p *Plugin) handOutPluginSkills(pluginDir, pluginName string) (int, []strin
 		// 会被 skillmgr 拒收（它的 loadOne 要求 SKILL.md/skill.json），
 		// 于是每次安装都报一条无意义的失败。在源头过滤更干净。
 		if !looksLikeNativeSkill(path) {
-			log.Printf("[pluginmgr] %s: %s/%s 缺 SKILL.md 或 skill.json，跳过登记",
+			log.Printf("[pluginmgr] %s: %s/%s missing SKILL.md or skill.json, skipping registration",
 				pluginName, SkillDirName, name)
 			failed = append(failed, name+"（缺 SKILL.md 或 skill.json）")
 			continue
@@ -102,7 +102,7 @@ func (p *Plugin) handOutPluginSkills(pluginDir, pluginName string) (int, []strin
 			},
 			Timestamp: time.Now().Unix(),
 		})
-		log.Printf("[pluginmgr] %s: 已移交 skill %s 给 skillmgr", pluginName, name)
+		log.Printf("[pluginmgr] %s: handed off skill %s to skillmgr", pluginName, name)
 		n++
 	}
 	return n, failed
@@ -166,7 +166,7 @@ func (p *Plugin) reHandOutAllPluginSkills() {
 		n += cnt
 	}
 	if n > 0 {
-		log.Printf("[pluginmgr] 启动重扫：已重新移交 %d 个随包 skill（否则重启后会静默丢失）", n)
+		log.Printf("[pluginmgr] startup rescan: re-handed off %d bundled skill(s) (otherwise they would be silently lost after restart)", n)
 	}
 }
 

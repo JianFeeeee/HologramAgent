@@ -242,12 +242,12 @@ func (g *GraphDB) MigrateSceneRefsToBlocks() (int, error) {
 	// ★ 三类异常都要显式报出：「完整迁移」是判据的硬要求，
 	//   静默处理会让 scene 在旧表退场后指向虚无，且没人知道。
 	if entSkipped > 0 || relSkipped > 0 || entDedup > 0 || relDedup > 0 {
-		log.Printf("[scene] 引用迁移：%d 条完成"+
-			"｜★ 无对应对象 entity %d / relation %d"+
-			"｜去重 entity %d / relation %d",
+		log.Printf("[scene] reference migration: %d done"+
+			" | no matching object entity %d / relation %d"+
+			" | deduped entity %d / relation %d",
 			moved, entSkipped, relSkipped, entDedup, relDedup)
 	} else {
-		log.Printf("[scene] 引用迁移：%d 条完成，无跳过无去重", moved)
+		log.Printf("[scene] reference migration: %d done, nothing skipped or deduped", moved)
 	}
 	return moved, nil
 }

@@ -97,11 +97,11 @@ func (r *Registry) loadProc(dir, name string, config map[string]interface{}) (sd
 	if mft := readManifest(dir); mft != nil {
 		caps = mft.Capabilities
 		if len(caps) > 0 {
-			log.Printf("[plugin] %s 声明能力: %v", name, caps)
+			log.Printf("[plugin] %s declares capabilities: %v", name, caps)
 		}
 		hsTimeout = mft.HandshakeTimeout(proc.DefaultHandshakeTimeout)
 		if mft.HandshakeTimeoutSec > 0 {
-			log.Printf("[plugin] %s 声明建链超时 %s（内核默认 %s）",
+			log.Printf("[plugin] %s declares link timeout %s (kernel default %s)",
 				name, hsTimeout, proc.DefaultHandshakeTimeout)
 		}
 	}
@@ -128,10 +128,10 @@ func (r *Registry) ensureProcHost() (*proc.Host, error) {
 	if bus := r.eventBusOrNil(); bus != nil {
 		er := NewEventRing(host.EvtRing(), int(host.Evtfd().Fd()), bus)
 		host.SetEvtSubscriber(er)
-		log.Printf("[plugin] 事件环已创建（Bus → EvtRing → eventfd）")
+		log.Printf("[plugin] event ring created (Bus -> EvtRing -> eventfd)")
 	}
 
-	log.Printf("[plugin] 共享段已创建（全部子进程插件共用一块，%d KB）", host.ShmSize()/1024)
+	log.Printf("[plugin] shared segment created (shared by all child-process plugins, %d KB)", host.ShmSize()/1024)
 	return host, nil
 }
 
@@ -143,7 +143,7 @@ func (r *Registry) closeProcHost() {
 		return
 	}
 	if err := r.procHost.Close(); err != nil {
-		log.Printf("[plugin] 关闭共享段: %v", err)
+		log.Printf("[plugin] closing shared segment: %v", err)
 	}
 	r.procHost = nil
 }
@@ -162,7 +162,7 @@ func (r *Registry) closeProcHost() {
 //
 // 所以崩溃回调必须做三件事：摘注册面、喂健康计数、排一次重启。
 func (r *Registry) onProcCrash(name string, err error) {
-	log.Printf("[plugin] 子进程插件 %s 异常退出: %v（homed 未受影响）", name, err)
+	log.Printf("[plugin] child-process plugin %s exited abnormally: %v (homed unaffected)", name, err)
 
 	// 1) 摘掉工具/stage/通道。**必须先做**：从这一刻起模型就不该再看到这些工具，
 	// 否则在重启完成前的窗口里每次调用都是确定的失败。
@@ -212,13 +212,13 @@ func (r *Registry) scheduleProcRestart(name string, cause error) {
 		return // 内核正在关停，不再拉起
 	}
 	if !r.AutoRestartEnabled(name) {
-		log.Printf("[plugin] %s 声明了不自动重启，保持缺席状态", name)
+		log.Printf("[plugin] %s declared no-auto-restart, staying absent", name)
 		return
 	}
 
 	n := r.noteCrash(name)
 	if n > procMaxRestarts {
-		log.Printf("[plugin] %s 在 %v 内崩溃 %d 次，停止自动重启（需人工介入）",
+		log.Printf("[plugin] %s crashed %d times within %v, stopping auto-restart (manual intervention required)",
 			name, procCrashWindow, n)
 		return
 	}
@@ -235,23 +235,23 @@ func (r *Registry) scheduleProcRestart(name string, cause error) {
 		return
 	}
 	if r.isDisabled(name) {
-		log.Printf("[plugin] %s 已被禁用，取消自动重启", name)
+		log.Printf("[plugin] %s is disabled, cancelling auto-restart", name)
 		return
 	}
 	r.mu.RLock()
 	already := r.plugins[name] != nil
 	r.mu.RUnlock()
 	if already {
-		log.Printf("[plugin] %s 已被其他路径重新加载，取消自动重启", name)
+		log.Printf("[plugin] %s was reloaded via another path, cancelling auto-restart", name)
 		return
 	}
 
-	log.Printf("[plugin] 自动重启 %s（第 %d 次，退避 %v，起因: %v）", name, n, delay, cause)
+	log.Printf("[plugin] auto-restarting %s (attempt %d, backoff %v, cause: %v)", name, n, delay, cause)
 	if err := r.ReloadOne(name); err != nil {
-		log.Printf("[plugin] %s 自动重启失败: %v", name, err)
+		log.Printf("[plugin] %s auto-restart failed: %v", name, err)
 		return
 	}
-	log.Printf("[plugin] %s 自动重启成功", name)
+	log.Printf("[plugin] %s auto-restart succeeded", name)
 }
 
 // noteCrash 记录一次崩溃并返回窗口内的累计次数。

@@ -51,7 +51,7 @@ func (s *Supervisor) track(p *Process) {
 		return
 	}
 	if old, ok := s.procs[p.name]; ok && old != p {
-		log.Printf("[proc] 台账中 %s 已有 pid=%d，被 pid=%d 覆盖", p.name, old.PID(), p.PID())
+		log.Printf("[proc] ledger already has %s with pid=%d, overwritten by pid=%d", p.name, old.PID(), p.PID())
 	}
 	s.procs[p.name] = p
 }
@@ -124,7 +124,7 @@ func (s *Supervisor) StopAll(timeout time.Duration) {
 	if len(procs) == 0 {
 		return
 	}
-	log.Printf("[proc] 关停 %d 个子进程插件", len(procs))
+	log.Printf("[proc] shutting down %d child-process plugin(s)", len(procs))
 
 	var wg sync.WaitGroup
 	for _, p := range procs {
@@ -132,7 +132,7 @@ func (s *Supervisor) StopAll(timeout time.Duration) {
 		go func(pr *Process) {
 			defer wg.Done()
 			if err := pr.Stop(); err != nil {
-				log.Printf("[proc] 停止 %s: %v", pr.Name(), err)
+				log.Printf("[proc] stopping %s: %v", pr.Name(), err)
 			}
 		}(p)
 	}
@@ -169,7 +169,7 @@ func (s *Supervisor) StopAll(timeout time.Duration) {
 			}
 		}
 		if len(stuck) > 0 {
-			log.Printf("[proc] %v 内未优雅退出，强制结束: %v", timeout, stuck)
+			log.Printf("[proc] did not exit gracefully within %v, force terminating: %v", timeout, stuck)
 		}
 		killers.Wait()
 	}

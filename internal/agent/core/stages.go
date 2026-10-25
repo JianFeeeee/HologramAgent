@@ -253,7 +253,7 @@ func (h *StageHost) ExecuteToolCtx(ctx context.Context, name string, args map[st
 	// 而插件需要真凭据。回填是二者之间唯一的通道。
 	if s := security.Global(); s != nil && args != nil {
 		if n, used := s.FillMap(args); n > 0 {
-			log.Printf("[security] 工具 %s 参数回填 %d 处（别名 %v）", name, n, used)
+			log.Printf("[security] tool %s backfilled %d argument(s) (aliases %v)", name, n, used)
 		}
 	}
 	// 把 ctx 放进**执行栈**而不是 handler 签名：proc 桥在自己的 CallContext

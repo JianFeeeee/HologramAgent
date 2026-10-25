@@ -122,7 +122,7 @@ func (d *secureProviderDecorator) scrubRequest(req *CompletionRequest) {
 // logEvts 记录拦截（**只记别名，绝不记明文**）。
 func (d *secureProviderDecorator) logEvts(evts []security.Evt) {
 	for _, e := range evts {
-		log.Printf("[security] 出向拦截 %s ← 模式 %s，%d 字节，合并=%v，位置 %s",
+		log.Printf("[security] outbound block %s <- pattern %s, %d bytes, merged=%v, at %s",
 			e.Alias, e.Kind, e.Len, e.Merged, e.Where)
 	}
 }

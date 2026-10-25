@@ -78,13 +78,13 @@ func (s *KernelState) Quiesce() ([]string, error) {
 			// 已暂停的按**反序**回滚（把它唤醒回去），别留半关状态
 			for j := len(paused) - 1; j >= 0; j-- {
 				if r := s.resumeOne(qs, paused[j]); r != nil {
-					log.Printf("[quiesce] 回滚唤醒 %s 失败: %v", paused[j], r)
+					log.Printf("[quiesce] rollback wake %s failed: %v", paused[j], r)
 				}
 			}
 			return nil, fmt.Errorf("暂停 %s 失败（已回滚 %d 个）: %w", q.Name, len(paused), err)
 		}
 		paused = append(paused, q.Name)
-		log.Printf("[quiesce] 已暂停: %s", q.Name)
+		log.Printf("[quiesce] paused: %s", q.Name)
 	}
 	return paused, nil
 }
@@ -99,12 +99,12 @@ func (s *KernelState) Resume(paused []string) error {
 	var firstErr error
 	for i := len(paused) - 1; i >= 0; i-- {
 		if err := s.resumeOne(qs, paused[i]); err != nil {
-			log.Printf("[quiesce] 唤醒 %s 失败: %v", paused[i], err)
+			log.Printf("[quiesce] wake %s failed: %v", paused[i], err)
 			if firstErr == nil {
 				firstErr = fmt.Errorf("唤醒 %s: %w", paused[i], err)
 			}
 		} else {
-			log.Printf("[quiesce] 已唤醒: %s", paused[i])
+			log.Printf("[quiesce] woken: %s", paused[i])
 		}
 	}
 	return firstErr

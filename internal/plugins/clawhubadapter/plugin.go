@@ -168,8 +168,8 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 					//   变成工具、也没交给 skillmgr，等于半死不活。
 					//   现在：失败即降级为「纯指令技能」移交 skillmgr，让模型仍可
 					//   按 SKILL 文档用命令跑它；日志改成说明而不是错误。
-					log.Printf("[clawhubadapter] pysidecar %s 未就绪（%v）；"+
-						"按 CLI 型技能处理，移交 skillmgr", entry.Name(), err)
+					log.Printf("[clawhubadapter] pysidecar %s not ready (%v); "+
+						"treating as CLI-type skill, handing off to skillmgr", entry.Name(), err)
 					p.publishSkillDetected(s, skillPath)
 				}
 			case hasOCManifest || hasOCPackage:

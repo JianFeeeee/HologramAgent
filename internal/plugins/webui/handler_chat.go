@@ -376,7 +376,7 @@ func (h *Handler) flushChat() {
 	h.chatMu.Unlock()
 
 	if err := h.history.Save(msgs); err != nil {
-		log.Printf("[webui] 写聊天记录 %s 失败（稍后重试）: %v", h.history.Path(), err)
+		log.Printf("[webui] writing chat history %s failed (will retry later): %v", h.history.Path(), err)
 		h.chatMu.Lock()
 		h.chatDirty = true
 		if h.chatDirtySince.IsZero() {

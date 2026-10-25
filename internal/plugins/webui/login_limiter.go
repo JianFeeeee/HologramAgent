@@ -283,11 +283,11 @@ func parseTrustedProxies(raw string) []string {
 		}
 		if strings.Contains(part, "/") {
 			if _, _, err := net.ParseCIDR(part); err != nil {
-				log.Printf("[webui] trusted_proxies: 非法 CIDR %q 已忽略（%v）", part, err)
+				log.Printf("[webui] trusted_proxies: invalid CIDR %q ignored (%v)", part, err)
 				continue
 			}
 		} else if net.ParseIP(part) == nil {
-			log.Printf("[webui] trusted_proxies: 非法 IP %q 已忽略", part)
+			log.Printf("[webui] trusted_proxies: invalid IP %q ignored", part)
 			continue
 		}
 		out = append(out, part)

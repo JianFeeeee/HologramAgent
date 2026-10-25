@@ -125,7 +125,7 @@ func (h *Handler) reverseToUpstream(w http.ResponseWriter, r *http.Request, url,
 		// （实测泄露 "http://127.0.0.1:9890/...: connect: connection refused"）。
 		// 那对用户无用（内网地址他访问不了），却把内部拓扑说给了外人。
 		// 完整原因写日志，对外只给一句话。
-		log.Printf("[webui] 反代上游不可达 url=%s err=%v", url, err)
+		log.Printf("[webui] reverse-proxy upstream unreachable url=%s err=%v", url, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "上游服务不可达",
 		})

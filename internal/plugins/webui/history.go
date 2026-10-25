@@ -46,13 +46,13 @@ func (hs *historyStore) Load() []ChatMsg {
 	b, err := os.ReadFile(hs.path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("[webui] 读取聊天记录 %s 失败: %v", hs.path, err)
+			log.Printf("[webui] reading chat history %s failed: %v", hs.path, err)
 		}
 		return nil
 	}
 	var msgs []ChatMsg
 	if err := json.Unmarshal(b, &msgs); err != nil {
-		log.Printf("[webui] 聊天记录 %s 解析失败（按空历史处理）: %v", hs.path, err)
+		log.Printf("[webui] chat history %s parse failed (treating as empty): %v", hs.path, err)
 		return nil
 	}
 	return msgs
@@ -88,7 +88,7 @@ func (hs *historyStore) LoadWithMigration(settings sdk.SettingsAPI) []ChatMsg {
 		if settings != nil {
 			if v, err := settings.Get("chathistory"); err == nil && v != nil {
 				if err := settings.Remove("chathistory"); err == nil {
-					log.Printf("[webui] 已清理历史遗留的配置项 chathistory（记录现存放于 %s）", hs.path)
+					log.Printf("[webui] removed legacy config entry chathistory (records now stored at %s)", hs.path)
 				}
 			}
 		}
@@ -114,17 +114,17 @@ func migrateLegacyHistory(settings sdk.SettingsAPI, hs *historyStore) []ChatMsg 
 	}
 	var msgs []ChatMsg
 	if err := json.Unmarshal([]byte(raw), &msgs); err != nil {
-		log.Printf("[webui] 历史配置项无法解析，保留原值不迁移: %v", err)
+		log.Printf("[webui] legacy config entry unparseable, keeping original and skipping migration: %v", err)
 		return nil
 	}
 	if err := hs.Save(msgs); err != nil {
-		log.Printf("[webui] 聊天记录迁移到 %s 失败（保留原配置项）: %v", hs.path, err)
+		log.Printf("[webui] migrating chat history to %s failed (keeping legacy config entry): %v", hs.path, err)
 		return nil
 	}
 	if err := settings.Remove("chathistory"); err != nil {
-		log.Printf("[webui] 聊天记录已迁移到 %s，但旧配置项删除失败: %v", hs.path, err)
+		log.Printf("[webui] chat history migrated to %s, but deleting legacy config entry failed: %v", hs.path, err)
 	} else {
-		log.Printf("[webui] 聊天记录已迁移到独立文件 %s（%d 条），并从插件配置表移除", hs.path, len(msgs))
+		log.Printf("[webui] chat history migrated to standalone file %s (%d messages) and removed from plugin config", hs.path, len(msgs))
 	}
 	return msgs
 }

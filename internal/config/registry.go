@@ -538,7 +538,7 @@ func (r *ConfigRegistry) listPrefixLocked(prefix string) map[string]string {
 				out[k] = plain
 			} else {
 				// 解不开就不给值：宁可缺失（可诊断）也不把密文当明文交出去。
-				log.Printf("[config] listPrefix 解密 %s 失败，已跳过: %v", k, oerr)
+				log.Printf("[config] listPrefix decrypt %s failed, skipped: %v", k, oerr)
 			}
 		}
 	}
@@ -563,7 +563,7 @@ func (r *ConfigRegistry) Dump() map[string]interface{} {
 			if plain, oerr := openFromStorage(k, v); oerr == nil {
 				result[k] = plain
 			} else {
-				log.Printf("[config] Dump 解密 %s 失败: %v", k, oerr)
+				log.Printf("[config] Dump decrypt %s failed: %v", k, oerr)
 			}
 		}
 	}

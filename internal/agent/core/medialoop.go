@@ -43,7 +43,7 @@ func (a *Agent) reembedStaleMedia() {
 	fp := a.multimodalSpace.Fingerprint()
 	stale, err := a.memory.StaleBlockVectors(fp)
 	if err != nil {
-		log.Printf("[media] 查询需重算向量的块失败: %v", err)
+		log.Printf("[media] querying blocks needing re-embedding failed: %v", err)
 		return
 	}
 	// 只迁图像：多模态空间当前覆盖 text+image，音频/视频不在其内
@@ -56,7 +56,7 @@ func (a *Agent) reembedStaleMedia() {
 		}
 	}
 	if len(targets) == 0 {
-		log.Printf("[media] 无需迁移向量（所有图像块已与当前空间对齐 fp=%s）", shortFP(fp))
+		log.Printf("[media] no vector migration needed (all image blocks aligned with current space fp=%s)", shortFP(fp))
 		return
 	}
 
@@ -64,7 +64,7 @@ func (a *Agent) reembedStaleMedia() {
 	if len(fp) >= 5 && fp[:5] == "http:" {
 		workers = 8
 	}
-	log.Printf("[media] 启动向量迁移: %d 个图像块 → fp=%s dim=%d workers=%d",
+	log.Printf("[media] starting vector migration: %d image blocks -> fp=%s dim=%d workers=%d",
 		len(targets), shortFP(fp), a.multimodalSpace.Dim(), workers)
 
 	var jobsOnce sync.Once
@@ -111,21 +111,21 @@ func (a *Agent) reembedStaleMedia() {
 	for i, b := range targets {
 		jobs <- b
 		if (i+1)%20 == 0 {
-			log.Printf("[media] 向量迁移进度: %d/%d (done=%d failed=%d)",
+			log.Printf("[media] vector migration progress: %d/%d (done=%d failed=%d)",
 				i+1, len(targets), atomic.LoadInt64(&done), failed)
 		}
 	}
 	safeclose.Safe(&jobsOnce, jobs)
 	wg.Wait()
-	log.Printf("[media] 向量迁移完成: 成功=%d 失败=%d 不支持=%d 总计=%d fp=%s",
+	log.Printf("[media] vector migration complete: ok=%d failed=%d unsupported=%d total=%d fp=%s",
 		done, failed, unsupported, len(targets), shortFP(fp))
 	// 逐类打印失败原因（聚合后通常只有 1~2 类）。
 	// 没有这段，运维只能看到"失败=N"而不知为何 —— 本次 webp 问题的排查成本
 	// 全花在这里。
 	if len(failReasons) > 0 {
-		log.Printf("[media] 失败原因分类（按 mime | error 聚合）:")
+		log.Printf("[media] failure reasons grouped by mime | error:")
 		for reason, n := range failReasons {
-			log.Printf("[media]   %d 个: %s", n, reason)
+			log.Printf("[media]   %d x: %s", n, reason)
 		}
 	}
 }

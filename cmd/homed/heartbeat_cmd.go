@@ -209,7 +209,7 @@ func nextHeartbeatWrite(hbPath string, now int64) string {
 	if pendingWritten {
 		// 检查 guard 是否已消费（guard 消费 = 把文件重写成纯 t= 行）
 		if b, err := os.ReadFile(hbPath); err == nil && !strings.Contains(string(b), "cmd=") {
-			log.Printf("[homed] 控制指令 %s 已被 guard 消费，清除本地待发状态", pendingCmd.Cmd)
+			log.Printf("[homed] control command %s consumed by guard, clearing local pending state", pendingCmd.Cmd)
 			pendingCmd = hbCommand{}
 			pendingWritten = false
 			return ""
@@ -236,10 +236,10 @@ func nextHeartbeatWrite(hbPath string, now int64) string {
 // 那种情况下 guard 退出后进程就真的没了，无需额外动作。
 func stopOwnUnit(unit string) {
 	if unit == "" {
-		log.Printf("[guard] 非 systemd 环境（unit 未知）：guard 退出即可，systemd 不会拉起")
+		log.Printf("[guard] non-systemd environment (unit unknown): guard can just exit, systemd will not restart it")
 		return
 	}
-	log.Printf("[guard] 执行 systemctl stop %s", unit)
+	log.Printf("[guard] running systemctl stop %s", unit)
 	// 同步执行：guard 此时已经没有别的事要做，且必须在**自己退出之前**
 	// 让 systemd 收到停止请求。异步会与 return 竞争 ——
 	// guard 退了、systemctl 还没跑，systemd 可能已经判定 unit 需要重启。
@@ -247,7 +247,7 @@ func stopOwnUnit(unit string) {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Printf("[guard] systemctl stop %s 失败: %v（guard 仍退出；"+
-			"若 unit 是 Restart=always 可能被重新拉起）", unit, err)
+		log.Printf("[guard] systemctl stop %s failed: %v (guard still exits; "+
+			"if the unit is Restart=always it may be started again)", unit, err)
 	}
 }

@@ -29,8 +29,8 @@ func ModelContextWindow(model string) int {
 	if w := modelContextWindowC(model); w != contextWindowUnknown {
 		return w
 	}
-	log.Printf("[provider] 模型 %q 无法推断上下文窗口，回退 %d；"+
-		"若真实窗口更大，请设置 core.llm.sources.<name>.context_window",
+	log.Printf("[provider] cannot infer context window for model %q, falling back to %d; "+
+		"if the real window is larger, set core.llm.sources.<name>.context_window",
 		strings.ToLower(model), defaultInferredContextWindow)
 	return defaultInferredContextWindow
 }

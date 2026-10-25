@@ -180,7 +180,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 		// 拉不起来就把任务**放回队列**，绝不能丢：丢一条输入比多处理一条更糟
 		// （与 routeInputByOwner 的兜底同一条理由）。
 		a.sched.requeueFront(cands)
-		log.Printf("[offload] 无法为 %d 条积压任务准备驻留子，已放回队列: %v", len(cands), err)
+		log.Printf("[offload] cannot prepare resident child for %d backlogged task(s), returned to queue: %v", len(cands), err)
 		return 0
 	}
 
@@ -196,7 +196,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 		if err := a.forwardInputToResident(residentID, c.Event); err != nil {
 			// 某条投不进去：放回原队列，其余继续（部分成功好过全部回滚）。
 			a.sched.requeueFront([]offloadCandidate{c})
-			log.Printf("[offload] 转发任务给驻留子 %s 失败，已放回队列: %v", residentID, err)
+			log.Printf("[offload] forwarding task to resident child %s failed, returned to queue: %v", residentID, err)
 			continue
 		}
 		moved++
@@ -213,7 +213,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 		{Event: a.syntheticEvent(offloadNotice(moved, residentID))},
 	})
 
-	log.Printf("[offload] 主 agent 已忙 %s，把 %d 条积压任务转投给驻留子 %s（队列留 1 条说明）",
+	log.Printf("[offload] primary agent busy for %s, offloading %d backlogged task(s) to resident child %s (leaving 1 note in queue)",
 		busyFor.Truncate(time.Second), moved, residentID)
 	return moved
 }

@@ -817,7 +817,7 @@ func (r *Registry) loadOne(plgDir, name string) bool {
 	// 注意这一条也挡住 loadPlugins 的启动扫描 —— 若插件在启动前就被
 	// 运行态关闭（理论上不会，但保持语义一致），它不该被拉起。
 	if r.isRuntimeStopped(name) {
-		log.Printf("[plugin] %s 处于运行态关闭（runtime stop），跳过加载", name)
+		log.Printf("[plugin] %s is runtime-stopped, skipping load", name)
 		return false
 	}
 
@@ -885,6 +885,10 @@ func (r *Registry) loadOne(plgDir, name string) bool {
 	}
 	r.mu.Unlock()
 	log.Printf("[plugin] loaded: %s", name)
+
+	// 随包 SKILL 与插件同生：加载成功才让它出现在模型可见的 skill 索引里。
+	// 放在 Start() 之后（工具已注册）—— 否则模型会看到 skill 却调不到工具。
+	r.InstallBuiltinSkill(name, plg)
 	return true
 }
 
@@ -940,8 +944,8 @@ func (r *Registry) warnOutputOnlyChannels(plugin string) {
 	r.channelsMu.Unlock()
 	sort.Strings(only)
 	for _, ch := range only {
-		log.Printf("[plugin] %s 只声明了出站通道 %q（未 RegisterInputChannel）；"+
-			"内核已兜底登记 inputch，若这是有意为之可忽略", plugin, ch)
+		log.Printf("[plugin] %s declared only outbound channel %q (no RegisterInputChannel); "+
+			"kernel registered inputch as fallback, ignore if intentional", plugin, ch)
 	}
 }
 
@@ -1027,12 +1031,12 @@ func (r *Registry) detachPlugin(name string) {
 		tc.UnregisterPluginTools(name)
 		if sc, ok := tc.(PluginStageCleaner); ok {
 			if n := sc.UnregisterPluginStages(name); n > 0 {
-				log.Printf("[plugin] %s: 摘除 %d 个 stage handler", name, n)
+				log.Printf("[plugin] %s: removed %d stage handler(s)", name, n)
 			}
 		}
 	}
 	if chans := r.releasePluginChannels(name); len(chans) > 0 {
-		log.Printf("[plugin] %s: 摘除 IO 通道 %v", name, chans)
+		log.Printf("[plugin] %s: removed IO channels %v", name, chans)
 	}
 }
 
@@ -1077,6 +1081,11 @@ func (r *Registry) StopAll() {
 			continue
 		}
 		stoppers = append(stoppers, stopTarget{plugin: p, sdkRef: r.sdkRefs[p.Name()]})
+	}
+	// 关停时摘掉所有随包 skill：进程要退出，留下 skill 会让下次启动
+	// 出现"索引里有、插件却没起"的错位（尤其插件被配置禁用时）。
+	for _, st := range stoppers {
+		r.RemoveBuiltinSkill(st.plugin.Name(), st.plugin)
 	}
 	r.plugins = make(map[string]sdk.Plugin)
 	r.instances = nil
@@ -1564,6 +1573,10 @@ func (r *Registry) StopPlugin(name string) error {
 		r.mu.Unlock()
 		return fmt.Errorf("plugin %s 未在运行（已标记为运行态关闭）", name)
 	}
+	// 先摘 skill 再停插件：停用后模型若仍看到 skill，会照做并拿到
+	// 一连串"工具不存在"，且无从知道原因是插件被关了。
+	r.RemoveBuiltinSkill(name, p)
+
 	r.runStopHandlers(name)
 	stopErr := p.Stop()
 	delete(r.plugins, name)
@@ -1583,9 +1596,9 @@ func (r *Registry) StopPlugin(name string) error {
 	r.detachPlugin(name)
 
 	if stopErr != nil {
-		log.Printf("[plugin] runtime stop %s（Stop 报错）: %v", name, stopErr)
+		log.Printf("[plugin] runtime stop %s (Stop returned error): %v", name, stopErr)
 	}
-	log.Printf("[plugin] runtime stopped: %s（不改持久状态）", name)
+	log.Printf("[plugin] runtime stopped: %s (persistent state unchanged)", name)
 	return nil
 }
 
@@ -1633,7 +1646,7 @@ func (r *Registry) StartPlugin(name string) error {
 	plgDir := filepath.Join(r.pluginDirOrEmpty(), name)
 	if r.loadOne(plgDir, name) {
 		if wasStopped {
-			log.Printf("[plugin] runtime started: %s（已清运行态关闭）", name)
+			log.Printf("[plugin] runtime started: %s (runtime-stop flag cleared)", name)
 		} else {
 			log.Printf("[plugin] runtime started: %s", name)
 		}
@@ -1897,7 +1910,7 @@ func (r *Registry) tryDynamic(plgDir, name string, config map[string]interface{}
 			return nil, err
 		}
 		if plg != nil {
-			log.Printf("[plugin] %s: 经 proc 通道加载（子进程）", name)
+			log.Printf("[plugin] %s: loaded via proc channel (child process)", name)
 			return plg, nil
 		}
 		return nil, fmt.Errorf("plugin %s: entry 声明 %s 但未找到可用二进制", name, binEntry)

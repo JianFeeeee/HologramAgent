@@ -79,7 +79,7 @@ func FillToolArgs(tool string, args map[string]interface{}) (int, []string) {
 	}
 	n, used := s.FillMap(args)
 	if n > 0 {
-		log.Printf("[security] 工具 %s 参数回填 %d 处（别名 %v）", tool, n, used)
+		log.Printf("[security] tool %s backfilled %d argument(s) (aliases %v)", tool, n, used)
 	}
 	return n, used
 }
@@ -95,7 +95,7 @@ func FillPayload(where, text string) string {
 	}
 	out, n, used := s.Fill(text)
 	if n > 0 {
-		log.Printf("[security] %s 载荷回填 %d 处（别名 %v）", where, n, used)
+		log.Printf("[security] %s payload backfilled %d place(s) (aliases %v)", where, n, used)
 	}
 	return out
 }

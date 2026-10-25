@@ -419,7 +419,7 @@ func (h *coreHandler) invokeCleanerText(scope, name, text string) (string, error
 	if res.TextRef.Flags&sharedRefFlagExpand != 0 {
 		defer func() {
 			if err := arena.Free(h.owner, res.TextRef); err != nil {
-				log.Printf("[proc] %s %s Cleaner 扩容块归还失败（arena 将缓慢泄漏）: %v", scope, name, err)
+				log.Printf("[proc] %s %s Cleaner expansion block return failed (arena will leak slowly): %v", scope, name, err)
 			}
 		}()
 	}

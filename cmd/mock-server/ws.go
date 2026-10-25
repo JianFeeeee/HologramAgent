@@ -235,7 +235,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	log.Printf("[ws] 新设备连接")
+	log.Printf("[ws] new device connected")
 
 	// 处理 hello/bind/cmd 协议
 	var device *MockDevice
@@ -303,7 +303,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				"op":   "hello_ack",
 				"code": 0,
 			})
-			log.Printf("[ws] 设备登记: %s (%s) caps=%v", devMeta.DeviceID, devMeta.Name, devMeta.Caps)
+			log.Printf("[ws] device registered: %s (%s) caps=%v", devMeta.DeviceID, devMeta.Name, devMeta.Caps)
 
 		case "bind":
 			if msg.DeviceID == "" || msg.Token == "" {
@@ -327,14 +327,14 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				"op":   "bind_ack",
 				"code": 0,
 			})
-			log.Printf("[ws] 设备授权: %s", msg.DeviceID)
+			log.Printf("[ws] device authorized: %s", msg.DeviceID)
 
 			// 绑定成功后，发送全量能力测试命令序列
 			go func() {
 				time.Sleep(500 * time.Millisecond)
 
 				// 测试 1: screensee 截图
-				log.Printf("[ws] 发命令 1/7: homeagent-screensee")
+				log.Printf("[ws] send command 1/7: homeagent-screensee")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_1_screensee_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -345,7 +345,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 2: clipboardsue 写入剪贴板
-				log.Printf("[ws] 发命令 2/7: homeagent-clipboardsue")
+				log.Printf("[ws] send command 2/7: homeagent-clipboardsue")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_2_clipboardsue_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -356,7 +356,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 3: clipboardsee 读取剪贴板
-				log.Printf("[ws] 发命令 3/7: homeagent-clipboardsee")
+				log.Printf("[ws] send command 3/7: homeagent-clipboardsee")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_3_clipboardsee_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -367,7 +367,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 4: computeruse 鼠标移动（使用非标准 JSON 格式测试兼容性）
-				log.Printf("[ws] 发命令 4/7: homeagent-computeruse move")
+				log.Printf("[ws] send command 4/7: homeagent-computeruse move")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_4_computeruse_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -378,7 +378,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 4b: computeruse 鼠标点击（标准 JSON 格式）
-				log.Printf("[ws] 发命令 4b/7: homeagent-computeruse click")
+				log.Printf("[ws] send command 4b/7: homeagent-computeruse click")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_4b_click_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -389,7 +389,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 5: speakeruse TTS 播报
-				log.Printf("[ws] 发命令 5/7: homeagent-speakeruse")
+				log.Printf("[ws] send command 5/7: homeagent-speakeruse")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_5_speakeruse_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -400,7 +400,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 6: screensue 弹窗显示
-				log.Printf("[ws] 发命令 6/7: homeagent-screensue（HTML）")
+				log.Printf("[ws] send command 6/7: homeagent-screensue (HTML)")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_6_screensue_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -411,7 +411,7 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(800 * time.Millisecond)
 
 				// 测试 7: omniparse 解析当前窗口 UI 元素
-				log.Printf("[ws] 发命令 7/7: homeagent-omniparse")
+				log.Printf("[ws] send command 7/7: homeagent-omniparse")
 				ws.WriteJSON(client.CmdMsg{
 					Op:      "cmd",
 					ReqID:   "test_7_omniparse_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
@@ -421,40 +421,40 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 			}()
 
 		case "cmd_result":
-			log.Printf("[ws] 命令结果: req=%s status=%s", msg.ReqID, msg.Status)
+			log.Printf("[ws] command result: req=%s status=%s", msg.ReqID, msg.Status)
 			if msg.Output != "" {
 				output := msg.Output
 				if len(output) > 100 {
 					output = output[:100] + "..."
 				}
-				log.Printf("[ws] 输出: %s", output)
+				log.Printf("[ws] output: %s", output)
 			}
 			if msg.Error != "" {
-				log.Printf("[ws] 错误: %s", msg.Error)
+				log.Printf("[ws] error: %s", msg.Error)
 			}
 
 		case "data_start":
 			var ds client.DataStart
 			json.Unmarshal(msg.Payload, &ds)
-			log.Printf("[ws] 二进制数据开始: req=%s kind=%s mime=%s total=%d", ds.ReqID, ds.Kind, ds.MIME, ds.Total)
+			log.Printf("[ws] binary data start: req=%s kind=%s mime=%s total=%d", ds.ReqID, ds.Kind, ds.MIME, ds.Total)
 
 		case "data_end":
-			log.Printf("[ws] 二进制数据结束: req=%s status=%s", msg.ReqID, msg.Status)
+			log.Printf("[ws] binary data end: req=%s status=%s", msg.ReqID, msg.Status)
 
 		case "speech_start":
-			log.Printf("[ws] TTS 音频开始: req=%s", msg.ReqID)
+			log.Printf("[ws] TTS audio start: req=%s", msg.ReqID)
 
 		case "speech_end":
-			log.Printf("[ws] TTS 音频结束: req=%s", msg.ReqID)
+			log.Printf("[ws] TTS audio end: req=%s", msg.ReqID)
 
 		case "status":
-			log.Printf("[ws] 状态上报: %s -> %s", msg.DeviceID, msg.Status)
+			log.Printf("[ws] status report: %s -> %s", msg.DeviceID, msg.Status)
 
 		case "event":
-			log.Printf("[ws] 事件上报: %s type=%s", msg.DeviceID, string(msg.Payload))
+			log.Printf("[ws] event report: %s type=%s", msg.DeviceID, string(msg.Payload))
 
 		default:
-			log.Printf("[ws] 未知消息类型: %s", msg.Op)
+			log.Printf("[ws] unknown message type: %s", msg.Op)
 		}
 	}
 
@@ -468,5 +468,5 @@ func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 	}
-	log.Printf("[ws] 设备断开")
+	log.Printf("[ws] device disconnected")
 }

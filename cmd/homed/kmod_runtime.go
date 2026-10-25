@@ -128,7 +128,7 @@ func RunKernelModules(ks *kernelboot.KernelState, hooks kernelAssembleHooks) (*k
 			for _, m := range layer {
 				names = append(names, m.Name())
 			}
-			log.Printf("[homed] 内核装配 第 %d 层完成（%d 个）: %s",
+			log.Printf("[homed] kernel assembly layer %d complete (%d modules): %s",
 				i, len(layer), strings.Join(names, ", "))
 			// ★ 把"某层完成"事件交给 main（用于在 stage-host 就绪时
 			//   立刻接上插件拉起动作，而不是等 agent 层的 35 秒）。
@@ -141,7 +141,7 @@ func RunKernelModules(ks *kernelboot.KernelState, hooks kernelAssembleHooks) (*k
 		return nil, err
 	}
 
-	log.Printf("[homed] 内核装配完成: %d 层 / %d 模块（峰值并发 %d，原为 17 步串行）",
+	log.Printf("[homed] kernel assembly complete: %d layers / %d modules (peak concurrency %d, previously 17 serial steps)",
 		res.LayerCount, len(res.Order), res.MaxConcurrent)
 	return bus, nil
 }
@@ -161,7 +161,7 @@ func loadStartupPlan(mods []kernelboot.Module) (*kernelboot.Plan, error) {
 	if gf == nil {
 		// dev：没有图（也没注入 hash）⇒ 运行期现算。
 		// 这条路径**不是**生产路径；它存在只为让 go test / go run 能用。
-		log.Printf("[homed] 未找到编译期依赖图（dev 构建），回退运行期分层")
+		log.Printf("[homed] compile-time dependency graph not found (dev build), falling back to runtime layering")
 		return kernelboot.Build(mods)
 	}
 
@@ -169,7 +169,7 @@ func loadStartupPlan(mods []kernelboot.Module) (*kernelboot.Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[homed] 启动顺序来自编译期依赖图 %s（digest %s）",
+	log.Printf("[homed] startup order from compile-time dependency graph %s (digest %s)",
 		filepath.Base(graphPath), gf.Digest[:16])
 	return plan, nil
 }

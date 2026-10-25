@@ -211,7 +211,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			// 子 Agent 的工具调用必须自记一行。此前子侧全程静默：父内核日志里
 			// 只有「started / done」两行，子任务失败时无法判断倒在哪一步（是搜不到、
 			// 解析失败，还是被轮上限截断）——只能看到一句「超时」。
-			log.Printf("[child] %s turn %d/%d: %s → %d 字节", taskID, turn+1, maxTurns, ct.Name, len(result))
+			log.Printf("[child] %s turn %d/%d: %s -> %d bytes", taskID, turn+1, maxTurns, ct.Name, len(result))
 			msgs = append(msgs, agentAPI.Message{Role: "assistant", Content: resp.Content, ToolCalls: []agentAPI.ToolCall{ct}})
 			msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: ct.ID, Content: result})
 		}
@@ -228,7 +228,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			// 只能重 spawn（日志里 child_5→6→7 就是同一任务连试三次，每次都
 			// 重烧一整个上下文）。所以先做一次「不带工具的收尾调用」，把已有
 			// 成果落成文本。仅在失败路径上多花一次 LLM 调用。
-			log.Printf("[child] %s 跑满预算 maxTurns=%d，尝试收尾提炼已有成果", taskID, maxTurns)
+			log.Printf("[child] %s exhausted budget maxTurns=%d, attempting wrap-up distillation of results so far", taskID, maxTurns)
 			if summary := a.salvageChildSummary(msgs, maxTurns); summary != "" {
 				finalResult = summary
 			} else {
@@ -325,7 +325,7 @@ func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) strin
 		DisableThinking: !a.thinkingEnabled,
 	})
 	if err != nil {
-		log.Printf("[child] 收尾提炼失败（回退为事实陈述）: %v", err)
+		log.Printf("[child] wrap-up distillation failed (falling back to factual summary): %v", err)
 		return ""
 	}
 	content := strings.TrimSpace(resp.Content)

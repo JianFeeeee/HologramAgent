@@ -44,7 +44,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	// core.agent.onnx_model_path 留空时内核会用**二进制内嵌**的 dep_parser.onnx
 	// （解到 <data>/nlp 后加载）。此前只打配置值，于是出现
 	// "initialized (model: )" —— 看着像 ONNX 没启用，实际内嵌模型一直在跑。
-	log.Printf("[homed] dep parser ready (ONNX，模型: %s)", onnxParser.ModelPath())
+	log.Printf("[homed] dep parser ready (ONNX, model: %s)", onnxParser.ModelPath())
 	return nil
 }
 

@@ -261,6 +261,19 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 		prompt += "\n\n" + a.indexer.BuildToolPrompt()
 	}
 
+	// 【加速序列】—— 与 doc_query 同一类问题：能力存在但模型不知道何时该用。
+	//
+	// seq 有 7 个工具、也有 skill（seq-tools），但 skill 索引只给一行摘要。
+	// 生产观察：agent 极少使用序列加速，因为它不会主动想"这件事我做过、
+	// 该编成序列"或"这套操作要在多个对象上重复，该并行"。
+	//
+	// 这里只留**模型必须据此作决定**的判据（与其余内核块同一风格）：
+	// 什么时候该想起它。格式细节、组语义、常见错误全在 skill 与工具描述里，
+	// 不在这里重复——重复就是两处真相。
+	prompt = appendPromptBlock(prompt, "【加速序列】同一套操作在**多个对象**上重复、或几件**顺序已知**的事连做时，"+
+		"先想编成序列用 `seq_run`（组内并行、组间串行）；以前做过的先用 `seq_list` 找。"+
+		"格式见 `seq-tools` skill。")
+
 	// 技能索引（方案B）：轻量注入已加载技能列表，LLM 匹配到场景时
 	// 主动 skill_info 拉取全文按文档执行
 	if a.skillIndex != nil {

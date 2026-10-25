@@ -53,7 +53,7 @@ func scrubForLog(text, where string) string {
 	// 拦截本身要记一笔（不打印原文，只打印模式与长度）——
 	// 否则运维不知道"这个工具经常吐凭据"，也就不会去修插件。
 	for _, e := range evts {
-		log.Printf("[security] 日志拦截 %s ← %s（%d 字节），原文未落盘",
+		log.Printf("[security] log block %s <- %s (%d bytes), raw content not written to disk",
 			where, e.Kind, e.Len)
 	}
 	return out

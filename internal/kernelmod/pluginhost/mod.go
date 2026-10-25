@@ -72,16 +72,16 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	// 这条日志的价值在于：新增外部插件若忘写 plugin.json，会出现在这里
 	// （那时"无 manifest ⇒ 只能走工厂 ⇒ 找不到 ⇒ 不加载"，可据此发现）。
 	if len(noManifest) > 0 {
-		log.Printf("[pluginhost] %d 个目录无 plugin.json（内置插件属正常：它们由编译期工厂加载）: %v",
+		log.Printf("[pluginhost] %d directories have no plugin.json (normal for built-in plugins, loaded by compile-time factories): %v",
 			len(noManifest), noManifest)
 	}
-	log.Printf("[pluginhost] 外部插件元数据缓存就绪：%d 个（目录 %s）",
+	log.Printf("[pluginhost] external plugin metadata cache ready: %d (dir %s)",
 		catalog.Size(), dir)
 
 	// ── ③ 按**三形态**分流（用户设计要求）──
 	groups := classify(catalog)
-	log.Printf("[pluginhost] 形态分流：自动启动 %d / 声明了依赖 %d / "+
-		"启用但不自动启动 %d / 持久禁用 %d",
+	log.Printf("[pluginhost] form routing: auto-start %d / declared deps %d / "+
+		"enabled-but-not-auto-start %d / persistently disabled %d",
 		len(groups.autoStart), len(groups.declared),
 		len(groups.manual), len(groups.disabled))
 
@@ -119,7 +119,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		// ★★ typed-nil 陷阱：`var nb *SyncBus; var i SyncState = nb`
 		// ⇒ i **非 nil** ⇒ 方法里解引用空指针 panic（实测复现）。
 		// 所以这里必须显式判 `!= nil` 再赋给接口变量。
-		log.Printf("[pluginhost] warning: SyncBus 为空 —— 非生产装配路径，" +
+		log.Printf("[pluginhost] warning: SyncBus is nil -- non-production assembly path, " +
 			"退化为立即加载（依赖未就绪的插件在 Start 时自行处理）")
 		fallback := kernelboot.NewSyncBus()
 		fallback.MarkKernelComplete()
@@ -131,7 +131,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		return ks.PluginRegistry.LoadOneDir(filepath.Join(dir, spec.Name), spec.Name)
 	})
 	sched.SetLaunchErrorHandler(func(spec kernelboot.PluginSpec, err error) {
-		log.Printf("[pluginhost] warning: 拉起 %s 失败: %v", spec.Name, err)
+		log.Printf("[pluginhost] warning: failed to start %s: %v", spec.Name, err)
 	})
 	ks.PluginScheduler = sched
 
@@ -142,7 +142,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	//   · !AutoStart            ⇒ 不进（§2.6.6）
 	// 同时 Submit 会做拼错校验（声明的设施名内核从未注册 ⇒ 立即报错）。
 	for _, n := range sched.Submit(specs) {
-		log.Printf("[pluginhost] 插件已拉起（依赖已就绪，早于装配完成）: %s", n)
+		log.Printf("[pluginhost] plugin started (dependencies ready, before assembly finished): %s", n)
 	}
 
 	// ── ⑤ 加载**内置插件**（编译期工厂，**没有 plugin.json**）──
@@ -177,10 +177,10 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		}
 		loadOnce.Do(func() {
 			if err := ks.PluginRegistry.LoadSkipping(dir, skip); err != nil {
-				log.Printf("[pluginhost] warning: 加载内置/未声明插件: %v", err)
+				log.Printf("[pluginhost] warning: loading built-in/undeclared plugin: %v", err)
 			}
 			ks.PluginsReady = true
-			log.Printf("[pluginhost] 内核完全初始化 → 已加载其余插件（含 %d 个内置）",
+			log.Printf("[pluginhost] kernel fully initialized -> loaded remaining plugins (%d built-in)",
 				len(noManifest))
 		})
 	}
@@ -193,8 +193,8 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	}
 	loadRest(bus)
 
-	log.Printf("[pluginhost] 本阶段：声明了依赖的 %d 个由调度器处理"+
-		"（已就绪的已拉起），未声明的 %d 个 + 内置 %d 个等内核完全初始化",
+	log.Printf("[pluginhost] this stage: %d with declared deps handled by scheduler "+
+		"(those already ready were started), %d undeclared + %d built-in wait for kernel full init",
 		len(groups.declared), len(groups.autoStart)-len(groups.declared), len(noManifest))
 	return nil
 }

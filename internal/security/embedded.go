@@ -75,11 +75,11 @@ func embeddedKey() []byte {
 	}
 	k, err := parseKey(embeddedKeyHex)
 	if err != nil {
-		log.Printf("[security] ★ 内嵌主密钥格式非法（构建时 -ldflags 注入有误），已忽略: %v", err)
+		log.Printf("[security] * embedded master key has invalid format (bad -ldflags injection at build time), ignored: %v", err)
 		return nil
 	}
 	if len(k) != 32 {
-		log.Printf("[security] ★ 内嵌主密钥长度 %d 非法（需 32 字节），已忽略", len(k))
+		log.Printf("[security] * embedded master key has invalid length %d (need 32 bytes), ignored", len(k))
 		return nil
 	}
 	return k
@@ -98,10 +98,10 @@ func loadEmbeddedKey(dataDir string) ([]byte, bool) {
 		if b, err := os.ReadFile(diskPath); err == nil {
 			if dk, err := parseKey(string(trimSpaceBytes(b))); err == nil {
 				if !sameKey(dk, k) {
-					log.Printf("[security] ★★ 内嵌主密钥与 %s **不一致**："+
-						"该机器上存在两套互不可解的密文（内嵌钥能解一部分、磁盘钥能解另一部分）。"+
-						"本次以**内嵌钥为当前钥**，磁盘钥请通过 security.keyring 的 history "+
-						"或 HOMED_SECURITY_KEY 保留，否则旧密文会读不出来", diskPath)
+					log.Printf("[security] ** embedded master key does NOT match %s: "+
+						"this machine holds two mutually undecryptable ciphertext sets (embedded key decrypts some, disk key the rest). "+
+						"Using the **embedded key as current**, keep the disk key via security.keyring history "+
+						"or HOMED_SECURITY_KEY, otherwise old ciphertext will become unreadable", diskPath)
 				}
 			}
 		}

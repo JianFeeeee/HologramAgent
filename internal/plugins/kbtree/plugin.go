@@ -131,16 +131,16 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	}
 	go func() {
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[kbtree] 服务错误: %v", err)
+			log.Printf("[kbtree] server error: %v", err)
 		}
 	}()
 
 	if p.generatedToken {
-		log.Printf("[kbtree] 已启动 http://%s（token 未配置，本次随机生成；重启后失效）", p.addr)
+		log.Printf("[kbtree] started http://%s (no token configured, randomly generated for this run; invalidated on restart)", p.addr)
 	} else {
-		log.Printf("[kbtree] 已启动 http://%s", p.addr)
+		log.Printf("[kbtree] started http://%s", p.addr)
 	}
-	log.Printf("[kbtree] 外部 agent 可用：GET /tree、/categories、/counts、/search?q=&category=")
+	log.Printf("[kbtree] available to external agents: GET /tree, /categories, /counts, /search?q=&category=")
 	return nil
 }
 

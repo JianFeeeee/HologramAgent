@@ -65,7 +65,7 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 				// 静默报错会让线上表现为"工具能调但永远建不出来"（实测就是这样）。
 				if a.memory != nil && a.memory.Path() != "" {
 					anchor = filepath.Dir(filepath.Dir(a.memory.Path()))
-					log.Printf("[resident] data_dir 未接线，回退到主图库目录: %s", anchor)
+					log.Printf("[resident] data_dir not wired, falling back to main graph dir: %s", anchor)
 				}
 			}
 			if anchor == "" {

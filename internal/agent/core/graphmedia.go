@@ -43,11 +43,11 @@ func (a *Agent) migrateLegacyGraphMedia() {
 		return memory.MemoryBlock{}, false
 	})
 	if err != nil {
-		log.Printf("[media] 旧媒体实体迁移失败（下轮重试）: %v", err)
+		log.Printf("[media] legacy media entity migration failed (will retry next round): %v", err)
 		return
 	}
 	if blocks > 0 || entities > 0 {
-		log.Printf("[media] 旧媒体实体迁移完成: 新建 %d 个原生块，删除 %d 个描述式实体", blocks, entities)
+		log.Printf("[media] legacy media entity migration done: created %d native blocks, deleted %d descriptive entities", blocks, entities)
 	}
 }
 
@@ -68,11 +68,11 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 			var err error
 			b, ok, err = a.memory.BlockByIDPrefix(ref)
 			if err != nil {
-				log.Printf("[media] 查块 %s 失败: %v", ref, err)
+				log.Printf("[media] lookup block %s failed: %v", ref, err)
 				continue
 			}
 			if !ok {
-				log.Printf("[media] 块引用 %s 无唯一对应块，跳过", ref)
+				log.Printf("[media] block ref %s has no unique match, skipping", ref)
 				continue
 			}
 		}
@@ -82,11 +82,11 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 			b.Scene = scene
 		}
 		if err := a.memory.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
-			log.Printf("[media] L3 块写入失败 (%s): %v", shortID(b.ID), err)
+			log.Printf("[media] L3 block write failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
 		if err := a.memory.AddMemoryBlockEdge("block", sentenceBlockID, "block", b.ID, "contains"); err != nil {
-			log.Printf("[media] 句子→块边建立失败 (%s): %v", shortID(b.ID), err)
+			log.Printf("[media] sentence->block edge creation failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
 		bound++
@@ -101,14 +101,14 @@ func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 		return 0
 	}
 	if err := a.memory.PutDocumentNode(docID, ""); err != nil {
-		log.Printf("[media] 写入 L3 文档节点失败 (%s): %v", docID, err)
+		log.Printf("[media] L3 doc node write failed (%s): %v", docID, err)
 		return 0
 	}
 	// 文档层与场景模型兼容：文档节点也进场景，好让「这个场面有哪些文档」
 	// 可枚举、可统计（场景贯穿流水线的 doc 层落地）。
 	if scene != "" {
 		if err := a.memory.TagSceneDocument(scene, docID); err != nil {
-			log.Printf("[media] 文档挂场景失败 (%s): %v", docID, err)
+			log.Printf("[media] attaching doc to scene failed (%s): %v", docID, err)
 		}
 	}
 	// 文档层把场景传给块：归档进图库的块属于该文档的来源场面（QQ 归档的图
@@ -119,13 +119,13 @@ func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 		}
 	}
 	if err := a.memory.PutMemoryBlocks(blocks); err != nil {
-		log.Printf("[media] 写入 L3 记忆块失败 (doc %s): %v", docID, err)
+		log.Printf("[media] L3 memory block write failed (doc %s): %v", docID, err)
 		return 0
 	}
 	bound := 0
 	for _, b := range blocks {
 		if err := a.memory.AddMemoryBlockEdge("document", docID, "block", b.ID, "contains"); err != nil {
-			log.Printf("[media] 文档→块边建立失败 (%s): %v", shortID(b.ID), err)
+			log.Printf("[media] doc->block edge creation failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
 		bound++
@@ -196,7 +196,7 @@ func (a *Agent) resolveMediaRefs(refs []string) []string {
 	for _, r := range refs {
 		b, ok, err := a.memory.BlockByIDPrefix(r)
 		if err != nil || !ok {
-			log.Printf("[media] 模型给的块引用 %s 无法唯一解析", r)
+			log.Printf("[media] model-provided block ref %s could not be resolved uniquely", r)
 			continue
 		}
 		if seen[b.ID] {

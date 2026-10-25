@@ -38,12 +38,12 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		provider, err := embedding.Open(mmProvider, embedding.Config{Options: opts})
 		if err != nil {
 			mmErr = err.Error()
-			log.Printf("[homed] warning: 多模态向量 provider %q 打开失败: %v（多模态向量检索已禁用；已注册: %s）",
+			log.Printf("[homed] warning: opening multimodal embedding provider %q failed: %v (multimodal vector retrieval disabled; registered: %s)",
 				mmProvider, err, strings.Join(embedding.Names(), ", "))
 		} else if adapted, err := vector.AdaptProvider(provider); err != nil {
 			provider.Close()
 			mmErr = err.Error()
-			log.Printf("[homed] warning: 多模态向量 provider %q 元数据不合法: %v（多模态向量检索已禁用）", mmProvider, err)
+			log.Printf("[homed] warning: multimodal embedding provider %q has invalid metadata: %v (multimodal vector retrieval disabled)", mmProvider, err)
 		} else {
 			multimodalSpace = adapted
 			closeAdapted = provider.Close

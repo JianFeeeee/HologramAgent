@@ -155,7 +155,7 @@ func (p *Plugin) registerTools() {
 			// ⚠️ 内置插件在 main() 的装配期加载，panic 会直接拖垮内核启动
 			// —— 而"某个工具没注册上"只该让该工具不可用，不该让整个 agent 起不来。
 			// （与 clawhubadapter / mcp 的处理一致：log 后继续。）
-			log.Printf("[seq] 注册工具 %s 失败: %v", def.Name, err)
+			log.Printf("[seq] registering tool %s failed: %v", def.Name, err)
 		}
 	}
 }

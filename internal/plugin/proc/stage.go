@@ -73,7 +73,7 @@ func (r *lockRegistry) releaseIfLeaked(l *stageLock) bool {
 		return false
 	}
 	if l.ForceRelease(owner) {
-		log.Printf("[proc] stage 协调器结束时发现 %s 仍持有 stage 锁（异常路径未 unlock），已代为释放", owner)
+		log.Printf("[proc] stage coordinator found %s still holding stage lock at exit (abnormal path missed unlock), released on its behalf", owner)
 		return true
 	}
 	return false
@@ -130,7 +130,7 @@ func (h *coreHandler) runStage(stage string, sc *pubsdk.StageContext) error {
 	}
 	defer func() {
 		if endErr := h.host.endStage(coord); endErr != nil {
-			log.Printf("[proc] %s stage %s 收尾失败: %v", h.name, stage, endErr)
+			log.Printf("[proc] %s stage %s finalization failed: %v", h.name, stage, endErr)
 		}
 	}()
 
@@ -141,7 +141,7 @@ func (h *coreHandler) runStage(stage string, sc *pubsdk.StageContext) error {
 		// 插件可能在持锁时失败（崩溃/超时）——强制释放，避免后续插件死锁。
 		// 这正是"锁仲裁回内核"的自愈价值（实验 9）：无需 robust mutex。
 		if h.host.ForceReleaseLock(h.name) {
-			log.Printf("[proc] %s stage %s 失败后强制释放其持有的 stage 锁", h.name, stage)
+			log.Printf("[proc] %s stage %s failed, force-releasing its stage lock", h.name, stage)
 		}
 		return err
 	}

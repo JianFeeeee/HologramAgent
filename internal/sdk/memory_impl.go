@@ -179,26 +179,26 @@ func (m *graphMemory) bindSentences(sentenceIDs map[string]string, triples []mem
 			// 媒体块 ID 是内容派生的 blk_media_<hash>，故前缀足以唯一定位。
 			b, ok, err := m.db.BlockByIDPrefix(ref)
 			if err != nil {
-				log.Printf("[sdk media] 插件 %s 查块 %s 失败: %v", m.plugin, ref, err)
+				log.Printf("[sdk media] plugin %s lookup block %s failed: %v", m.plugin, ref, err)
 				continue
 			}
 			if !ok {
-				log.Printf("[sdk media] 插件 %s 的媒体引用 %s 无唯一对应块，跳过", m.plugin, ref)
+				log.Printf("[sdk media] plugin %s media ref %s has no unique match, skipping", m.plugin, ref)
 				continue
 			}
 			if err := m.db.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
-				log.Printf("[sdk media] 插件 %s 写入 L3 记忆块失败: %v", m.plugin, err)
+				log.Printf("[sdk media] plugin %s L3 memory block write failed: %v", m.plugin, err)
 				continue
 			}
 			if err := m.db.AddMemoryBlockEdge("block", sid, "block", b.ID, "contains"); err != nil {
-				log.Printf("[sdk media] 插件 %s 建立句子→块边失败: %v", m.plugin, err)
+				log.Printf("[sdk media] plugin %s sentence->block edge creation failed: %v", m.plugin, err)
 				continue
 			}
 			bound++
 		}
 	}
 	if bound > 0 {
-		log.Printf("[sdk media] 插件 %s 的三元组写入 %d 个 L3 记忆块", m.plugin, bound)
+		log.Printf("[sdk media] plugin %s triples wrote %d L3 memory block(s)", m.plugin, bound)
 	}
 }
 
@@ -307,8 +307,8 @@ func (m *textMemoryImpl) Append(evt TextEvent) error {
 		return nil
 	}
 	if len(evt.Attachments) > 0 {
-		log.Printf("[sdk media] 插件 %s 向文本记忆追加了 %d 份附件，已忽略："+
-			"文本层是字符串日志，不具备块存储；请改用文档/图记忆保存媒体", m.plugin, len(evt.Attachments))
+		log.Printf("[sdk media] plugin %s appended %d attachment(s) to text memory, ignored: "+
+			"the text layer is a string log with no block storage; use doc/graph memory for media", m.plugin, len(evt.Attachments))
 	}
 	return m.tm.Append(text.Event{
 		Timestamp: evt.Timestamp, Source: evt.Role, Input: evt.Content, AgentID: evt.Channel,

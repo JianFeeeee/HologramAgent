@@ -212,7 +212,7 @@ func ensureRelationEdgeUniqueness(tx *sql.Tx) {
 		return // 新表或已升格
 	}
 
-	log.Printf("[graph] 边表升格：重建 memory_block_edges（移除 UNIQUE 以支持同类边并存）")
+	log.Printf("[graph] edge table upgrade: rebuilding memory_block_edges (dropping UNIQUE to allow same-kind edges to coexist)")
 	if _, err := tx.Exec(`CREATE TABLE memory_block_edges_new (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		source_kind TEXT NOT NULL,
@@ -227,7 +227,7 @@ func ensureRelationEdgeUniqueness(tx *sql.Tx) {
 		status TEXT DEFAULT '',
 		merged_into TEXT DEFAULT ''
 	)`); err != nil {
-		log.Printf("[graph] 边表升格失败（保留原约束）: %v", err)
+		log.Printf("[graph] edge table upgrade failed (keeping original constraint): %v", err)
 		return
 	}
 	// 搬数据（只搬旧表已有的 6 列，新列留默认值）
@@ -235,21 +235,21 @@ func ensureRelationEdgeUniqueness(tx *sql.Tx) {
 		(id, source_kind, source_id, target_kind, target_id, edge_type, created_at)
 		SELECT id, source_kind, source_id, target_kind, target_id, edge_type, created_at
 		FROM memory_block_edges`); err != nil {
-		log.Printf("[graph] 边表数据迁移失败，回滚: %v", err)
+		log.Printf("[graph] edge table data migration failed, rolling back: %v", err)
 		if _, derr := tx.Exec(`DROP TABLE memory_block_edges_new`); derr != nil {
-			log.Printf("[graph] 边表升格：回滚临时表失败: %v", derr)
+			log.Printf("[graph] edge table upgrade: rollback of temp table failed: %v", derr)
 		}
 		return
 	}
 	if _, err := tx.Exec(`DROP TABLE memory_block_edges`); err != nil {
-		log.Printf("[graph] 边表删除失败，回滚: %v", err)
+		log.Printf("[graph] edge table drop failed, rolling back: %v", err)
 		if _, derr := tx.Exec(`DROP TABLE memory_block_edges_new`); derr != nil {
-			log.Printf("[graph] 边表升格：回滚临时表失败: %v", derr)
+			log.Printf("[graph] edge table upgrade: rollback of temp table failed: %v", derr)
 		}
 		return
 	}
 	if _, err := tx.Exec(`ALTER TABLE memory_block_edges_new RENAME TO memory_block_edges`); err != nil {
-		log.Printf("[graph] 边表改名失败: %v", err)
+		log.Printf("[graph] edge table rename failed: %v", err)
 		return
 	}
 	// 索引要重建（DROP TABLE 会带走）
@@ -261,7 +261,7 @@ func ensureRelationEdgeUniqueness(tx *sql.Tx) {
 	} {
 		_, _ = tx.Exec(idx)
 	}
-	log.Printf("[graph] 边表升格完成")
+	log.Printf("[graph] edge table upgrade complete")
 }
 
 // BFSBlocks 从 startID 出发，沿**关系边**展开 depth 层，返回全部可达节点。
