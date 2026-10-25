@@ -618,26 +618,21 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 // 它超过窗口阈值就说明下一轮必须丢事件 ⇒ 这就是 contextfull。
 //
 // 只对**驻留子**生效（只有它们设了 onContextFull）。
-func (a *Agent) checkContextFull(f *TaskFrame) {
+func (a *Agent) checkContextFull() {
 	if a.onContextFull == nil || a.ctxFullSignaled {
 		return
-	}
-	max := 0
-	if a.provider != nil {
-		max = a.provider.MaxContextTokens()
-	}
-	if max <= 0 {
-		max = defaultMaxContextTokens
 	}
 	if a.context == nil {
 		return
 	}
-	// 未裁剪的积累上下文规模。
-	acc := 0
-	for _, e := range a.context.Recent(0) {
-		acc += EstimateTokens(e.Input) + EstimateTokens(e.Response)
-	}
-	if float64(acc) < float64(max)*contextFullRatio {
+	// ★ 判据统一走 overflowRatioNow（与容量保护同一个量）：
+	//
+	// 原实现自己手写了一遍 `Input+Response` 的累加，与 overflow.accumulatedTokens
+	// 的差别不只是"重复"——后者用 eventTokens 计入 **ToolResults**，而手写版
+	// 漏了它。工具回灌正是 v4/T10 实测的 prompt 主力（17~40 万 token 几乎全部
+	// 来自工具输出），漏算等于把"已经装不下"误判成"还宽松"，
+	// 驻留子因此永远报不到 contextfull、父也就永远不知道该回收它。
+	if a.overflowRatioNow() < contextFullRatio {
 		return
 	}
 	a.ctxFullSignaled = true

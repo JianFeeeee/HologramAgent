@@ -1150,13 +1150,17 @@ const execCtxArgKey = "\x00kernel.execute_ctx\x00"
 // 但**必须**在真正下发给插件前剥掉，否则严格校验参数的插件会报未知参数。
 // 剥除由各插件自己的入口决定：core 侧统一下发前已剥（见 StageHost），
 // io 侧保持原样，因为设备插件直接读 args、不会做严格白名单校验。
+// ★ 必须**复制**而不是原地写：设备调用在自己的 goroutine 里跑，超时/取消
+// 路径下调用方会在 goroutine 仍存活时继续读同一份 args —— 原地写就是数据竞争
+// （-race 实测复现，见 StageHost 侧 withExecuteCtx 的同类说明）。
 func bindExecCtx(ctx context.Context, args map[string]interface{}) map[string]interface{} {
 	if ctx == nil {
 		return args
 	}
-	if args == nil {
-		args = make(map[string]interface{}, 1)
+	out := make(map[string]interface{}, len(args)+1)
+	for k, v := range args {
+		out[k] = v
 	}
-	args[execCtxArgKey] = ctx
-	return args
+	out[execCtxArgKey] = ctx
+	return out
 }

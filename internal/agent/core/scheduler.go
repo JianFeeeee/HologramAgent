@@ -37,7 +37,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
@@ -76,15 +75,7 @@ const DefaultLevel = LevelBackground
 //
 // L4 是“立即打断”能力（panic / 内核事件 / 内核级插件的终止按钮），
 // 只给内核与编译期内置插件；外部插件声明 L4 会被夹到 L3。
-func clampPluginLevel(l Level) Level {
-	if l < LevelBackground {
-		return DefaultLevel
-	}
-	if l > LevelInteractive {
-		return LevelInteractive
-	}
-	return l
-}
+// （实现已迁至 interrupt.go: clampPluginLevel）
 
 func (l Level) String() string {
 	switch l {
@@ -182,13 +173,12 @@ const preemptPromotionCap = 2
 // 避免高优先级流把同一任务反复打断到永不完结。
 const preemptCooldown = 2 * time.Second
 
-// effectiveLevel 返回任务的**有效**级别。
+// ── 任务优先级语义（归调度器，不属于中断管理器）──
 //
-// 排队输入恒为 0（无级别）：任何中断（≥ L1）都大于它——这正好实现
-// “排队输入可被任何中断打断”。
-//
-// 中断则叠加饥饿防护：被抢占越多的中断越“值钱”，逐步追上抢占它的流；
-// 封顶 L4，因此它永远不会反过来抢占内核紧急中断。
+// 中断管理器只负责"中断这件事本身"（入中断、中断栈、中断屏蔽）；
+// **谁比谁优先、能不能打断**是调度策略，住在这里。这样中断管理器里
+// 没有任何策略代码，它只是被调度器调用。
+
 func effectiveLevel(t *Task) Level {
 	if t.Class != TaskInterrupt {
 		return 0
@@ -204,19 +194,190 @@ func effectiveLevel(t *Task) Level {
 	return l
 }
 
-// canPreempt 是唯一的抢占判据。
-//
-// 由于 effectiveLevel(排队)=0，这一个比较同时覆盖两条规则：
-//   - running 是排队任务 → 任何中断（≥L1）都能抢占；
-//   - running 是中断 Li    → 只有 Lj > Li 的中断能抢占（严格大于）。
 func canPreempt(incoming, running *Task) bool {
 	if incoming == nil || running == nil {
 		return false
 	}
 	if incoming.Class != TaskInterrupt {
-		return false // 排队输入从不抢占
+		return false
 	}
+	// 正在跑的任务若本身不是中断（就绪任务），任何中断都能抢占它。
 	return effectiveLevel(incoming) > effectiveLevel(running)
+}
+
+func clampPluginLevel(l Level) Level {
+	if l > LevelInteractive {
+		return LevelInteractive
+	}
+	if l < LevelBackground {
+		return LevelBackground
+	}
+	return l
+}
+
+// ── 中断管理器（interrupt.go）──
+// 只提供中断队列/中断栈/immediate 槽/让位信号等原语；
+// 优先级比较由本文件的 canPreempt/effectiveLevel 提供，中断管理器不自行判断。
+
+// setImmediateLocked 判断"该不该由 t 占 immediate 槽"，判据是策略，故归调度器。
+//
+// 返回 true：t 已占住 immediate（若原有抢占者被顶掉，它**已被**降级入队）。
+// 返回 false：t 没有进 immediate，且本函数**未动 t** —— 调用方负责按级别入队。
+//
+// 调用方必须用返回值决定是否计入 PreemptsByLevel：那条计数器的语义是
+// 「进入 immediate 的次数」，被降级的中断从未进过 immediate。
+func (s *scheduler) setImmediateLocked(t *Task) bool {
+	if s.immediate != nil && effectiveLevel(t) <= effectiveLevel(s.immediate) {
+		return false
+	}
+	s.installImmediateLocked(t)
+	return true
+}
+
+// ── 中断登记与恢复决策（调度策略，归调度器）──
+//
+// 这些函数决定"能不能打断、恢复谁"——是**策略**，住在这里。
+// 它们调用的入队/弹栈/压栈是**机制**，住在 interrupt.go。
+
+func (s *scheduler) registerInterrupt(t *Task) bool {
+	s.mu.Lock()
+	running := s.running
+	critical := s.critical.Load()
+	s.stats.bumpInterruptLevel(&s.stats.InterruptsByLevel, t.Level)
+	arm := false
+	if !critical && canPreempt(t, running) {
+		if running.LastPreemptAt.IsZero() || time.Since(running.LastPreemptAt) >= preemptCooldown {
+			// 只有**真的占住 immediate 槽**才算一次抢占，才计入 PreemptsByLevel：
+			// immediate 是单槽，若它被另一个更高级的抢占者占着，t 会走上而下的
+			// 「否则入队」分支——那种情况 t 从未进入 immediate（否则同一安全点前
+			// 到达两条同级中断时该计数会高估）。
+			if s.setImmediateLocked(t) {
+				arm = true
+				s.preemptArmed = true
+				s.preemptLevel = t.Level
+				s.stats.bumpInterruptLevel(&s.stats.PreemptsByLevel, t.Level)
+				// 抢占判决点：此刻 running 还是真正的受害者，记下来才能回答
+				// 「我的任务被谁打断了」。放在 executeNewTask 里打是错的——
+				// 那时 nextRef 已把 running 换成抢占者自己，日志会写成
+				// "victim = 入侵者自己"（实测过这个错误输出）。
+				log.Printf("[agent] preempt: %s from %s (L%d) preempts %s (%s)",
+					describeTask(t), sourceOf(t, nil), int(t.Level),
+					describeTask(running), sourceOf(running, nil))
+			}
+		}
+	}
+	if !arm {
+		s.enqueueInterruptLocked(t)
+		// 入队而不是抢占：这也是要能看见的（否则「中断明明到了却没生效」无从解释）。
+		// 两种成因分开写：临界区 vs 级别不够/冷却期。
+		reason := "level insufficient"
+		if critical {
+			reason = "running in critical section"
+		} else if canPreempt(t, running) && running != nil && !running.LastPreemptAt.IsZero() && time.Since(running.LastPreemptAt) < preemptCooldown {
+			reason = "preempt cooldown"
+		}
+		log.Printf("[agent] interrupt queued: %s from %s (L%d) vs %s (%s) — %s; queue=%d",
+			describeTask(t), sourceOf(t, nil), int(t.Level),
+			describeTask(running), sourceOf(running, nil), reason, s.interruptCountLocked())
+	}
+	s.mu.Unlock()
+
+	// 空闲时到达的中断会一直等下一次输入 —— 必须显式唤醒（设计 §5.1 ③）。
+	// 注意是 **!arm**：入队路径（未抢占）同样需要唤醒，否则空闲时到达的
+	// 低级别中断会一直停在队列里等下一次输入。
+	if !arm {
+		s.signalWake()
+	}
+	return arm
+}
+
+func (s *scheduler) requestPreempt(evt *agentIO.InputEvent, level Level) bool {
+	return s.registerInterrupt(newInterruptTask(evt, level))
+}
+
+func (s *scheduler) requestKernelPreempt(evt *agentIO.InputEvent) bool {
+	return s.registerInterrupt(newKernelInterruptTask(evt))
+}
+
+func (s *scheduler) rearmPending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 已有让位信号、或 immediate 槽已被占用：下一个安全点的选择已经在路上，
+	// 不必（也不该）重复武装。
+	if s.preemptArmed || s.immediate != nil || s.running == nil || s.critical.Load() {
+		return
+	}
+	// 冷却期内不武装：与 registerInterrupt 同一判据（抗饥饿）。
+	if !s.running.LastPreemptAt.IsZero() && time.Since(s.running.LastPreemptAt) < preemptCooldown {
+		return
+	}
+	// 中断队列本就按级别组织：从最高级往下找第一条能抢占的队头。
+	// （队列里的任务有效级恒等于基础级，故「第一条能抢」= 最高级可抢占者。）
+	for lv := LevelCritical; lv >= LevelBackground; lv-- {
+		q := s.interruptQueues[lv]
+		if len(q) == 0 {
+			continue
+		}
+		t := q[0]
+		if !canPreempt(t, s.running) {
+			continue
+		}
+		s.popInterruptLocked(lv)
+		if s.setImmediateLocked(t) {
+			s.preemptArmed = true
+			s.preemptLevel = t.Level
+			s.stats.bumpInterruptLevel(&s.stats.PreemptsByLevel, t.Level)
+		} else {
+			// immediate 槽没拿到（理论上进不来，顶部已判 immediate == nil）：放回队列，
+			// 否则任务会凭空消失。
+			s.enqueueInterruptLocked(t)
+		}
+		return
+	}
+}
+
+// nextInterruptSelection 是**恢复决策**：中断侧该出谁。
+//
+// 顺序（"谁先跑"的唯一实现处）：
+//
+//	① immediate —— 刚抢占成功的，必须立即生效
+//	② 最高级待处理中断 vs 中断栈顶，取高者（持平归栈顶，维持 LIFO 与公平）
+//
+// 返回 ok=false 表示中断侧无货，调用方应转去就绪队列。
+func (s *scheduler) nextInterruptSelection() (task *Task, frame *TaskFrame, sel nextSelection, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.immediate != nil {
+		t := s.immediate
+		s.immediate = nil
+		s.running = t
+		return t, nil, nextImmediate, true
+	}
+
+	qTask, qLevel := s.highestInterruptLocked()
+
+	// 中断栈：只比**栈顶**（严格 LIFO）。栈内不做优先级重排——
+	// 嵌套抢占天然使栈自底向上级别递增，且"后被打断的先恢复"才是栈语义。
+	//
+	// ★ 这里只**查询**栈顶做优先级比较（stackTopLocked 是只读快照）；
+	// 真正的弹栈由中断管理器执行（restoreTopLocked）——中断栈的操作者
+	// 只有中断管理器，调度器不碰栈内部。
+	if top := s.stackTopLocked(); top != nil {
+		if qTask == nil || effectiveLevel(top.Task) >= qLevel {
+			// Resumed 由中断管理器在弹栈时计一次（否则会双计，
+			// 使"排空后 Suspended == Resumed"这条不变量失真）。
+			restored := s.restoreTopLocked()
+			return restored.Task, restored.Frame, nextSuspended, true
+		}
+	}
+
+	if qTask != nil {
+		s.popInterruptLocked(qLevel)
+		s.running = qTask
+		return qTask, nil, nextInterrupt, true
+	}
+	return nil, nil, nextNone, false
 }
 
 // SchedulerStats 是调度器的累计计数（可观测性，设计文档 §11 O2）。
@@ -334,36 +495,22 @@ type scheduler struct {
 	stats    SchedulerStats
 	maxQueue int
 
-	// interruptQueues[level]：四条**中断队列**（level 1..4），同级 FIFO。
-	// 未能立即抢占的中断（级别不足，或运行任务在临界区）按级别入队，
-	// nextRef 从 L4 到 L1 依次扫描。
-	interruptQueues [5][]*Task
-	// immediate：刚抢占成功的中断。抢占必须**立即生效**，所以它不经队列，
-	// 在下一个安全点直接运行。这也消除了“抢占者与被抢占者同级”的比较问题——
-	// 抢占者根本不需要和栈顶比。
-	immediate *Task
-	// suspendStack：**中断栈**。被抢占后保存现场的任务压栈（LIFO），
-	// 用于“中断被中断”的嵌套场景：只有**栈顶**参与恢复选择，栈内不做优先级重排。
-	suspendStack []*suspendedTask
-	// preemptArmed/preemptLevel：运行任务的“让位信号”。
-	// interruptLoop 只写这两个字段与 pendingInterrupts；帧永远只由调度器读写。
-	preemptArmed bool
-	preemptLevel Level
-	// critical 报告运行任务是否在不可抢占临界区（如记忆整理）。
-	// 由于 interceptLoop 要读它，必须是原子的：帧仍只由调度器读写。
-	critical atomic.Bool
+	// interrupt：中断子系统的全部状态（见 interrupt.go）。
+	//
+	// **内嵌**而非具名字段：内嵌后字段提升，所有 `s.interruptQueues` /
+	// `s.immediate` / `s.suspendStack` 等访问写法**一字不改**，
+	// 现有代码与测试零改动。这是纯结构搬迁的最低风险形态。
+	//
+	// 为什么共用 s.mu 而不是让中断子系统独立持锁：两者在同一临界区里被
+	// 一起读写（如 registerInterrupt 先看运行任务再决定入队），拆锁属于
+	// **并发模型变更**，不是重构——本次只做"语义集中"，不改并发。
+	interruptState
 	// backpressured 记录「就绪队列满」这一状态的翻转，用于只打一次日志。
 	// 满着的时候 pumpInbox 每轮都会走到，逐轮打日志会把日志刷爆。
 	backpressured bool
 	// wake 用于把空闲的调度器叫醒：pendingInterrupts 不是 channel，
 	// 没有这个信号时“空闲时到达的中断”会一直等下一次输入（设计 §5.1 ③）。
 	wake chan struct{}
-	// maxInterruptFrames：中断栈帧数的**结构上界**，不是配置项。
-	//
-	// 链条 = 排队(L0) ← I(L1) ← I(L2) ← I(L3) ← I(L4 运行中)，
-	// 被挂起 4 帧；L4 之上没有更高级别，链到此为止。超限只可能是内核 bug，
-	// 因此这里只做防御性计数，**不降级、不丢弃帧**。
-	maxInterruptFrames int
 
 	// cancelBudget 是「停止」剩下的短路配额（见 Agent.RequestStop）。
 	//
@@ -376,32 +523,33 @@ type scheduler struct {
 	stopArmed bool
 }
 
-// suspendedTask 是一个被抢占任务的现场。
-type suspendedTask struct {
-	Task  *Task
-	Frame *TaskFrame
-}
-
-// nextSelection 标识 nextRef 从哪个集合取出任务。
-type nextSelection int
-
-const (
-	nextNone nextSelection = iota
-	nextReady
-	nextInterrupt
-	nextImmediate
-	nextSuspended
-)
-
 func newScheduler(maxQueue int) *scheduler {
 	if maxQueue <= 0 {
 		maxQueue = 256
 	}
-	return &scheduler{
-		maxQueue:           maxQueue,
-		maxInterruptFrames: int(LevelCritical), // 结构推论：= 中断级数
-		wake:               make(chan struct{}, 1),
+	s := &scheduler{
+		maxQueue: maxQueue,
+		wake:     make(chan struct{}, 1),
 	}
+	// 中断栈上界是**结构推论**（= 中断级数），不是配置项：
+	// 链条 就绪(L0) ← I(L1) ← I(L2) ← I(L3) ← I(L4)，被挂起 4 帧。
+	// 不能写进结构体字面量：内嵌结构体的字段不支持在字面量里直接赋值（Go 1.25 语言版本）。
+	s.interruptState.maxInterruptFrames = int(LevelCritical)
+
+	// 接上**中断栈状态钩子**：中断管理器在栈变化时通告，调度器据此唤醒
+	// 调度循环重新求值（"现在该跑谁"）。
+	//
+	// 这是两者唯一的直接联系：中断管理器不调用调度器的选取逻辑，
+	// 调度器也不碰中断栈内部。将来改任一侧的选取/恢复策略都不必动对方。
+	s.interruptState.stackNotify = func() {
+		// 钩子在持锁状态下被调用，因此这里**不能**再取 s.mu，
+		// 也不能调用任何会取锁的方法。只做非阻塞唤醒。
+		select {
+		case s.wake <- struct{}{}:
+		default:
+		}
+	}
+	return s
 }
 
 // signalWake 非阻塞地唤醒调度器。
@@ -616,39 +764,23 @@ func (s *scheduler) queueSnapshot() []*Task {
 //  2. 中断队列 L4→L1（同级 FIFO）
 //  3. 中断栈顶（与 2 比级别取高者；栈顶是排队任务时视为最低）
 //  4. 排队队列（FIFO）
+// nextRef 选出下一个要执行的任务。
+//
+// ★ 本函数只做**编排**，不实现优先级规则：
+//
+//	① 先问中断子系统「中断侧该出谁」（immediate / 中断队列 / 中断栈顶的
+//	   比较与弹栈，全部在 interrupt.go 的 nextInterruptSelection 里）；
+//	② 中断侧无货，才取就绪队列。
+//
+// 这样"谁先跑"的优先级规则**只有一处实现**——改中断语义只需改
+// interrupt.go，不会漏掉这里的副本。
 func (s *scheduler) nextRef() (*Task, *TaskFrame, nextSelection) {
+	if t, f, sel, ok := s.nextInterruptSelection(); ok {
+		return t, f, sel
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.immediate != nil {
-		t := s.immediate
-		s.immediate = nil
-		s.running = t
-		return t, nil, nextImmediate
-	}
-
-	qTask, qLevel := s.highestInterruptLocked()
-
-	// 中断栈：只比**栈顶**（严格 LIFO）。栈内不做优先级重排——
-	// 嵌套抢占天然使栈自底向上级别递增，且“后被打断的先恢复”才是栈语义。
-	if n := len(s.suspendStack); n > 0 {
-		top := s.suspendStack[n-1]
-		// 栈顶 vs 最高级待处理中断：取高者（持平归栈顶，维持 LIFO 与公平）。
-		if qTask == nil || effectiveLevel(top.Task) >= qLevel {
-			// 这里只负责“选出”；Resumed 由 resumeTask 计一次（否则会双计，
-			// 使“排空后 Suspended == Resumed”这条不变量失真）。
-			s.suspendStack = s.suspendStack[:n-1]
-			s.running = top.Task
-			return top.Task, top.Frame, nextSuspended
-		}
-	}
-
-	if qTask != nil {
-		s.popInterruptLocked(qLevel)
-		s.running = qTask
-		return qTask, nil, nextInterrupt
-	}
-
 	if len(s.queue) > 0 {
 		t := s.queue[0]
 		s.queue = s.queue[1:]
@@ -656,62 +788,6 @@ func (s *scheduler) nextRef() (*Task, *TaskFrame, nextSelection) {
 		return t, nil, nextReady
 	}
 	return nil, nil, nextNone
-}
-
-// highestInterruptLocked 返回当前最高级非空中断队列的队头及其级别。
-func (s *scheduler) highestInterruptLocked() (*Task, Level) {
-	for lv := LevelCritical; lv >= LevelBackground; lv-- {
-		if q := s.interruptQueues[lv]; len(q) > 0 {
-			return q[0], lv
-		}
-	}
-	return nil, 0
-}
-
-// popInterruptLocked 弹出某级别中断队列的队头（调用方已确认非空）。
-func (s *scheduler) popInterruptLocked(lv Level) {
-	s.interruptQueues[lv] = s.interruptQueues[lv][1:]
-}
-
-// interruptCountLocked 统计所有待处理中断（含 immediate 槽）。
-func (s *scheduler) interruptCountLocked() int {
-	n := 0
-	for lv := LevelBackground; lv <= LevelCritical; lv++ {
-		n += len(s.interruptQueues[lv])
-	}
-	if s.immediate != nil {
-		n++
-	}
-	return n
-}
-
-// setImmediateLocked 登记一个应“立即运行”的抢占者。
-//
-// 槽只有一格：若已有抢占者且新的级别更高，旧的降级入队；否则新的入队。
-// 返回 true 表示 t **确实占住了 immediate 槽**；false 表示它被降级进了自己的
-// 级别队列（immediate 是单槽，这是设计要求的降级分支，见设计 §2「至多一个」）。
-//
-// 调用方必须用返回值决定是否计入 PreemptsByLevel：那条计数器的语义是
-// 「进入 immediate 的次数」，被降级的中断从未进过 immediate。
-// setImmediateLocked 尝试把 t 放进 immediate 槽。
-//
-// 返回 true：t 已占住 immediate（若原有抢占者被顶掉，它**已被**降级入队）。
-// 返回 false：t 没有进 immediate，且本函数**未动 t** —— 调用方负责按级别入队。
-//
-// 把「降级入队」的责任留给调用方，是为了让「到底入队了几次」只有一个出口：
-// 早先由本函数在返回 false 前自行入队，调用方又照着 false 再入一次，
-// 同一任务就会在队列里出现两份（实测：中断任务被执行两次、Executed 虚高）。
-func (s *scheduler) setImmediateLocked(t *Task) bool {
-	if s.immediate != nil && effectiveLevel(t) <= effectiveLevel(s.immediate) {
-		return false
-	}
-	if s.immediate != nil {
-		s.enqueueInterruptLocked(s.immediate)
-	}
-	s.allocateIDLocked(t)
-	s.stats.Enqueued++
-	s.immediate = t
-	return true
 }
 
 // armStop 处理一次「停止」指令：登记短路配额并返回**停止那一刻的排队深度**。
@@ -772,24 +848,6 @@ func removeTask(list []*Task, target *Task) []*Task {
 // enqueueInterruptLocked 把一个未立即抢占的中断按其级别入队（调用方持锁）。
 //
 // 有界：满了丢**最老**的一条并计数（中断是提示性输入，宁可丢旧保新）。
-func (s *scheduler) enqueueInterruptLocked(t *Task) {
-	s.allocateIDLocked(t)
-	if s.interruptCountLocked() >= s.maxQueue {
-		for lv := LevelBackground; lv <= LevelCritical; lv++ {
-			if len(s.interruptQueues[lv]) > 0 {
-				s.popInterruptLocked(lv)
-				s.stats.Rejected++
-				break
-			}
-		}
-	}
-	lv := t.Level
-	if lv < LevelBackground || lv > LevelCritical {
-		lv = DefaultLevel
-	}
-	s.interruptQueues[lv] = append(s.interruptQueues[lv], t)
-	s.stats.Enqueued++
-}
 
 // requestPreempt 登记一次中断请求（class=TaskInterrupt）。
 //
@@ -808,83 +866,15 @@ func (s *scheduler) enqueueInterruptLocked(t *Task) {
 // 生产路径只有 interruptLoop，它用 (*Agent).interruptLevel 得出 level；
 // 内核自身用 requestKernelPreempt（固定 L4）。本函数不再夹取，
 // 否则内核级插件的 L4 会被无辜削掉。
-func (s *scheduler) requestPreempt(evt *agentIO.InputEvent, level Level) bool {
-	return s.registerInterrupt(newInterruptTask(evt, level))
-}
 
 // requestKernelPreempt 是**内核**中断入口（panic / 内核事件 selfip）。
 //
 // 级别固定 L4，且**不夹取**——这是 L4 的唯一来源，插件永远够不到。
-func (s *scheduler) requestKernelPreempt(evt *agentIO.InputEvent) bool {
-	return s.registerInterrupt(newKernelInterruptTask(evt))
-}
 
 // registerInterrupt 是登记中断的公共实现（任务已带好 Class/Level）。
-func (s *scheduler) registerInterrupt(t *Task) bool {
-	s.mu.Lock()
-	running := s.running
-	critical := s.critical.Load()
-	s.stats.bumpInterruptLevel(&s.stats.InterruptsByLevel, t.Level)
-	arm := false
-	if !critical && canPreempt(t, running) {
-		if running.LastPreemptAt.IsZero() || time.Since(running.LastPreemptAt) >= preemptCooldown {
-			// 只有**真的占住 immediate 槽**才算一次抢占，才计入 PreemptsByLevel：
-			// immediate 是单槽，若它被另一个更高级的抢占者占着，t 会走上而下的
-			// 「否则入队」分支——那种情况 t 从未进入 immediate（否则同一安全点前
-			// 到达两条同级中断时该计数会高估）。
-			if s.setImmediateLocked(t) {
-				arm = true
-				s.preemptArmed = true
-				s.preemptLevel = t.Level
-				s.stats.bumpInterruptLevel(&s.stats.PreemptsByLevel, t.Level)
-				// 抢占判决点：此刻 running 还是真正的受害者，记下来才能回答
-				// 「我的任务被谁打断了」。放在 executeNewTask 里打是错的——
-				// 那时 nextRef 已把 running 换成抢占者自己，日志会写成
-				// "victim = 入侵者自己"（实测过这个错误输出）。
-				log.Printf("[agent] preempt: %s from %s (L%d) preempts %s (%s)",
-					describeTask(t), sourceOf(t, nil), int(t.Level),
-					describeTask(running), sourceOf(running, nil))
-			}
-		}
-	}
-	if !arm {
-		s.enqueueInterruptLocked(t)
-		// 入队而不是抢占：这也是要能看见的（否则「中断明明到了却没生效」无从解释）。
-		// 两种成因分开写：临界区 vs 级别不够/冷却期。
-		reason := "level insufficient"
-		if critical {
-			reason = "running in critical section"
-		} else if canPreempt(t, running) && running != nil && !running.LastPreemptAt.IsZero() && time.Since(running.LastPreemptAt) < preemptCooldown {
-			reason = "preempt cooldown"
-		}
-		log.Printf("[agent] interrupt queued: %s from %s (L%d) vs %s (%s) — %s; queue=%d",
-			describeTask(t), sourceOf(t, nil), int(t.Level),
-			describeTask(running), sourceOf(running, nil), reason, s.interruptCountLocked())
-	}
-	s.mu.Unlock()
-
-	if !arm {
-		s.signalWake()
-	}
-	return arm
-}
 
 // preemptGrantedFor 报告运行任务是否应在当前安全点让位。
-func (s *scheduler) preemptGrantedFor() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.preemptArmed || s.running == nil {
-		return false
-	}
-	return s.preemptLevel > effectiveLevel(s.running)
-}
 
-func (s *scheduler) clearPreempt() {
-	s.mu.Lock()
-	s.preemptArmed = false
-	s.preemptLevel = 0
-	s.mu.Unlock()
-}
 
 // rearmPending 在**安全点重新求值**中断队列（设计 §4.3 / §5.2）。
 //
@@ -897,67 +887,11 @@ func (s *scheduler) clearPreempt() {
 //
 // 判据与 registerInterrupt **完全同一套**（canPreempt + 冷却 + 临界区闸门），
 // 因此不会凭空制造设计之外的抢占。
-func (s *scheduler) rearmPending() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// 已有让位信号、或 immediate 槽已被占用：下一个安全点的选择已经在路上，
-	// 不必（也不该）重复武装。
-	if s.preemptArmed || s.immediate != nil || s.running == nil || s.critical.Load() {
-		return
-	}
-	// 冷却期内不武装：与 registerInterrupt 同一判据（抗饥饿）。
-	if !s.running.LastPreemptAt.IsZero() && time.Since(s.running.LastPreemptAt) < preemptCooldown {
-		return
-	}
-	// 中断队列本就按级别组织：从最高级往下找第一条能抢占的队头。
-	// （队列里的任务有效级恒等于基础级，故「第一条能抢」= 最高级可抢占者。）
-	for lv := LevelCritical; lv >= LevelBackground; lv-- {
-		q := s.interruptQueues[lv]
-		if len(q) == 0 {
-			continue
-		}
-		t := q[0]
-		if !canPreempt(t, s.running) {
-			continue
-		}
-		s.popInterruptLocked(lv)
-		if s.setImmediateLocked(t) {
-			s.preemptArmed = true
-			s.preemptLevel = t.Level
-			s.stats.bumpInterruptLevel(&s.stats.PreemptsByLevel, t.Level)
-		} else {
-			// immediate 槽没拿到（理论上进不来，顶部已判 immediate == nil）：放回队列，
-			// 否则任务会凭空消失。
-			s.enqueueInterruptLocked(t)
-		}
-		return
-	}
-}
 
 // suspend 保存现场。
 //
 // 深度上界是**结构推论**（= 中断级数），不是配置项：安全点上的 canSuspend 已提前
 // 拦下超限情况，此处仅在竞态下兜底计数——绝不丢弃帧（帧丢了会丢副作用记录）。
-func (s *scheduler) suspend(t *Task, f *TaskFrame) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.suspendStack) >= s.maxInterruptFrames {
-		s.stats.Rejected++
-	}
-	s.suspendStack = append(s.suspendStack, &suspendedTask{Task: t, Frame: f})
-	s.stats.Suspended++
-	// 饥饿防护：抢占计数 +1（提升有效级）并记录冷却起点。
-	t.PreemptCount++
-	t.LastPreemptAt = time.Now()
-	if s.running == t {
-		s.running = nil
-	}
-
-	// D1=B：中断任务在上一个任务之前的完整状态上开始运行，
-	// 因此这里**不**把被打断任务的任何内容交给它。
-	s.preemptArmed = false
-	s.preemptLevel = 0
-}
 
 // sourceOf 从任务/帧里取一个**可辨识来源**，用于抢占日志与故障定位。
 //
@@ -1000,21 +934,11 @@ func describeTask(t *Task) string {
 }
 
 // canSuspend 报告还有下潜余量（安全点用它决定是否真的让位）。
-func (s *scheduler) canSuspend() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.suspendStack) < s.maxInterruptFrames
-}
 
 // suspendDepth 返回当前中断栈深度（仅用于日志）。
 //
 // 单独一个方法而不是让调用方直接读 s.suspendStack：那个字段只允许在 s.mu 下访问，
 // 而日志点不应该自己摸调度器内部状态（也不应该为了打一行日志多持一次锁的窗口）。
-func (s *scheduler) suspendDepth() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.suspendStack)
-}
 
 // pendingEvents 收集**尚未执行**（排队队列 / 四条中断队列 / immediate）与
 // **已挂起**（中断栈）任务所携带的、且带同步回执通道的输入事件。

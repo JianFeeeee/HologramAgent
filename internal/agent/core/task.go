@@ -635,9 +635,10 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 		}
 	}
 
-	// 上下文占满检测：此刻 f.Msgs 已建好（含 system + timeline + 本轮输入）。
-	// 只有驻留子设了 onContextFull ⇒ 对根 agent 是 no-op。
-	a.checkContextFull(f)
+	// 上下文占满检测：**上报**给上级（驻留子），不在此处裁剪。
+	// 只有驻留子设了 onContextFull ⇒ 对根 agent 是 no-op（根自己走
+	// enforceContextBudget 就地裁，没有上级可报）。
+	a.checkContextFull()
 
 	f.Step = StepLLM
 	return outcomeContinue

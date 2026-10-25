@@ -268,18 +268,28 @@ func (h *StageHost) ExecuteToolCtx(ctx context.Context, name string, args map[st
 
 // withExecuteCtx 把 ctx 绑定到本次调用上，随 goroutine 走。
 //
-// 具体实现见 execctx.go：Go 没有 goroutine-local storage，这里用
-// **参数旁路**（在 args 里放一个不可见的私有键）最省事且无并发歧义——
-// args 是每次调用独立的 map，天然一 goroutine 一份。
+// 实现见 proc/execctx.go：Go 没有 goroutine-local storage，这里用
+// **参数旁路**（在 args 里放一个不可见的私有键）把 ctx 带进执行栈。
+//
+// ★ 必须**复制**而不是原地写：
+//
+//	调用方（executeToolCallInner）收到的是 taskFrame 上那份 tc.Arguments，
+//	而工具执行在自己的 goroutine 里跑。超时/取消路径下，主 goroutine 会在
+//	goroutine 仍存活时继续读同一份 args —— 原地写就是数据竞争。
+//	-race 下实测复现（且 core 包整体被判红，掩盖其它真正的竞争）。
+//
+//	复制后：原 map 只读、新 map 一 goroutine 一份，才真的"天然无并发歧义"。
+//	代价是一次浅拷贝（工具参数本来就在 64KB 预算内，可忽略）。
 func withExecuteCtx(ctx context.Context, args map[string]interface{}) map[string]interface{} {
 	if ctx == nil {
 		return args
 	}
-	if args == nil {
-		args = make(map[string]interface{}, 1)
+	out := make(map[string]interface{}, len(args)+1)
+	for k, v := range args {
+		out[k] = v
 	}
-	args[executeCtxArgKey] = ctx
-	return args
+	out[executeCtxArgKey] = ctx
+	return out
 }
 
 func (h *StageHost) ToolPlugin(name string) string {
