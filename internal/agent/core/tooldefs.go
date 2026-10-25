@@ -577,6 +577,25 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}
 	}
 
+	// 超长工具结果的按范围回读工具。
+	//
+	// ★ 只在**真的存在**落盘结果时才暴露：
+	//   · 绝大多数会话没有超长结果，无条件暴露等于每轮多付一份 schema 开销
+	//     （本仓已有"175 个工具占满上下文"的实测教训）；
+	//   · 没有句柄时这个工具对模型毫无用处，给了只会诱导它乱猜 event_id。
+	if a.hasStoredToolResults() {
+		tools = append(tools, toolDef("toolresult_read",
+			"【工具结果回读】读取某个超大工具结果的指定字节区间。"+
+				"当工具返回内容过大时，上下文里给你的只是预览，会附一个 event_id 句柄和总字节数。"+
+				"用本工具按 offset/limit 取其余部分；单次最多 64KB。"+
+				"结果不会自动过期，但会**随那条上下文事件淘汰**——事件被裁掉后再读会明确告知已淘汰。",
+			map[string]interface{}{
+				"event_id": map[string]interface{}{"type": "string", "description": "预览里给出的句柄（形如 evt_1770000000000000000）"},
+				"offset":   map[string]interface{}{"type": "number", "description": "起始字节偏移，从 0 开始；省略即从头"},
+				"limit":    map[string]interface{}{"type": "number", "description": "读取字节数，省略或 <=0 取 64KB；不该超过剩余量"},
+			}, "event_id"))
+	}
+
 	if a.personaStore != nil {
 		tools = append(tools, toolDef("persona_set", "【首启人格】落地用户的人格选择并记录「已经问过」。仅在用户明确答复后调用：默认用 mode=default；自定义用 mode=custom 并把人格内容放进 content；用户说以后再说用 mode=later。", map[string]interface{}{
 			"mode":    map[string]interface{}{"type": "string", "description": "default | custom | later"},

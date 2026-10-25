@@ -389,6 +389,12 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		return ""
 	}
 	switch tc.Name {
+	case "toolresult_read":
+		txt, err := a.readStoredToolResult(tc.Arguments)
+		if err != nil {
+			return "toolresult_read 失败：" + err.Error()
+		}
+		return txt
 	case "memory_recall":
 		query, _ := tc.Arguments["query_intent"].(string)
 		depth, _ := tc.Arguments["depth"].(float64)

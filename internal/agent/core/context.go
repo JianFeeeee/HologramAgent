@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -35,6 +36,17 @@ type ContextEvent struct {
 	ToolsUsed   []string         `json:"tools_used,omitempty"`
 	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
 
+	// ToolResultStores 是本事件捕获的「超大工具结果」落盘记录。
+	//
+	// ★ 与 Blocks 同一套处置：正文随事件目录持久化，**不维护引用账本**，
+	//   存活期由事件的存活期决定（事件离开 L1 ⇒ 正文目录一并删除）。
+	//   见 toolresult_store.go 的说明。
+	//
+	// 这里只存元信息（工具名、文件名、总字节/行数），正文在
+	// <context.json 同级>/toolresults/<eventID>/tool_N.txt —— 因为
+	// context.json 每 5s 全量重写一次，内联大正文会让每次 flush 都写几 MB。
+	ToolResultStores []ToolResultStore `json:"tool_result_stores,omitempty"`
+
 	// NoMemory 标记这条事件**不参与记忆计算**（不向量化、不提关键词、不蒸馏），
 	// 但**照常参与归档**（离开 L1 时会写回 L2）。
 	//
@@ -60,15 +72,21 @@ type ContextEvent struct {
 const contextFlushInterval = 5 * time.Second
 
 type RelevanceContext struct {
-	mu               sync.Mutex
-	events           []*ContextEvent
-	embedder         *memory.StaticEmbedder
-	denseSpace       vector.MultimodalEmbedder
-	savePath         string
-	saveTimer        *time.Timer
-	dirty            bool
-	toolDefLookup    func(name string) *sdk.ToolDef
-	channelDefLookup func(name string) (sdk.ChannelDef, bool)
+	mu         sync.Mutex
+	events     []*ContextEvent
+	embedder   *memory.StaticEmbedder
+	denseSpace vector.MultimodalEmbedder
+	savePath   string
+	// pendingToolResults 存放"已落盘但事件还没进 L1"的超长工具结果记录。
+	//
+	// 为什么需要：同一帧可能先落盘、后 append 事件（task.go 的顺序）。
+	// 没有它，句柄会在事件进入前悬空，模型读到的就是"未找到"。
+	// 事件 append 后由 claimPendingToolResults 认领并清空。
+	pendingToolResults map[string][]ToolResultStore
+	saveTimer          *time.Timer
+	dirty              bool
+	toolDefLookup      func(name string) *sdk.ToolDef
+	channelDefLookup   func(name string) (sdk.ChannelDef, bool)
 
 	// protectedCount 是裁剪时**无条件保留**的最近事件条数。
 	//
@@ -400,7 +418,27 @@ func (c *RelevanceContext) Append(evt ContextEvent) {
 	c.computeVector(&evt)
 	c.events = append(c.events, &evt)
 
+	// 认领"先落盘、后进 L1"的超长工具结果记录（已在锁内，直接操作）。
+	//
+	// 为什么挂在 Append 而不是各调用点：Append 是事件进入 L1 的唯一咽喉
+	// （task.go 有三处调用），散点调用必然漏一条路径——那一条上的句柄
+	// 就永久悬空（模型拿到 event_id 去读得到"未找到"）。
+	c.claimPendingToolResultsLocked(&evt)
+
 	c.save()
+}
+
+// claimPendingToolResultsLocked 是 claimPendingToolResults 的持锁版本，
+// 供 Append/InsertByTimestamp 这类已持锁的路径调用。
+func (c *RelevanceContext) claimPendingToolResultsLocked(evt *ContextEvent) {
+	if c == nil || evt == nil || evt.ID == "" || len(c.pendingToolResults) == 0 {
+		return
+	}
+	if sts, ok := c.pendingToolResults[evt.ID]; ok {
+		evt.ToolResultStores = append(evt.ToolResultStores, sts...)
+		delete(c.pendingToolResults, evt.ID)
+		c.dirty = true
+	}
 }
 
 func (c *RelevanceContext) InsertByTimestamp(evt ContextEvent) {
@@ -409,6 +447,7 @@ func (c *RelevanceContext) InsertByTimestamp(evt ContextEvent) {
 
 	scrubEventSecrets(&evt) // 同 Append：咽喉处拦截
 	c.computeVector(&evt)
+	c.claimPendingToolResultsLocked(&evt) // 同 Append：认领待登记的落盘记录
 
 	idx := sort.Search(len(c.events), func(i int) bool {
 		return c.events[i].Timestamp.After(evt.Timestamp)
@@ -573,6 +612,17 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 					s.event.Blocks = nil
 				}
 			}
+			// 超长工具结果全文同样**跟随事件**离开 L1，不单独过期。
+			//
+			// 与 Blocks 一致：块迁移到 L2（块本身进 doc），而全文是纯现场
+			// 物料、不进 doc，所以这里直接删目录。删除失败只在日志留痕
+			// （readToolResultBody 会答复"已随事件淘汰"），不会静默成功。
+			for _, s := range archive {
+				if s.event != nil && s.event.ID != "" && len(s.event.ToolResultStores) > 0 {
+					c.purgeToolResultDir(s.event.ID)
+					s.event.ToolResultStores = nil
+				}
+			}
 		}
 	}
 
@@ -665,4 +715,120 @@ func convertToolResults(items []ToolResultItem) []document.ToolResultItem {
 		result[i] = document.ToolResultItem{Name: item.Name, Output: item.Output}
 	}
 	return result
+}
+
+// ── 超长工具结果全文的持久化（记忆面 IO 的合法落点）──────────────────
+//
+// 放这里而不是 toolresult_store.go：本包有架构守卫
+// TestKernelHasNoMediaFileReading，内核除「记忆面持久化」（本文件）外不得
+// 做本地文件读。工具结果全文落盘本质是"记住一份东西"，属同一职责。
+
+// persistToolResult 把正文写入事件目录，返回元信息。
+func (c *RelevanceContext) persistToolResult(evtID, tool, text string) (*ToolResultStore, error) {
+	if c == nil {
+		return nil, fmt.Errorf("toolresult: context 为空")
+	}
+	if evtID == "" {
+		return nil, fmt.Errorf("toolresult: evtID 为空（调用方须先分配事件 ID）")
+	}
+	base := filepath.Join(filepath.Dir(c.savePath), toolResultDirName, evtID)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return nil, fmt.Errorf("toolresult: 建目录 %s: %w", base, err)
+	}
+
+	name := fmt.Sprintf("tool_%d.txt", nextToolResultSeq(base))
+
+	body := text
+	truncated := 0
+	if len(body) > toolResultStoreHardCap {
+		truncated = len(body) - toolResultStoreHardCap
+		body = body[:toolResultStoreHardCap]
+	}
+	if err := os.WriteFile(filepath.Join(base, name), []byte(body), 0644); err != nil {
+		return nil, fmt.Errorf("toolresult: 写正文: %w", err)
+	}
+
+	return &ToolResultStore{
+		Tool:           tool,
+		File:           name,
+		TotalBytes:     len(text),
+		TotalLines:     strings.Count(body, "\n") + 1,
+		TruncatedBytes: truncated,
+	}, nil
+}
+
+// nextToolResultSeq 数出事件目录里已有的 tool_*.txt，返回下一个序号。
+//
+// 不用内存计数器：进程重启后计数器归零会覆盖旧文件。数目录是幂等的。
+func nextToolResultSeq(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		var idx int
+		if _, err := fmt.Sscanf(e.Name(), "tool_%d.txt", &idx); err == nil && idx >= n {
+			n = idx + 1
+		}
+	}
+	return n
+}
+
+// readToolResultBody 按字节区间读取正文。
+//
+// offset 从 0 开始；limit<=0 表示读到结尾。返回内容与「是否已到末尾」。
+func (c *RelevanceContext) readToolResultBody(evtID string, st *ToolResultStore, offset, limit int) (string, bool, error) {
+	if c == nil || st == nil {
+		return "", true, fmt.Errorf("toolresult: 无记录")
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	p := filepath.Join(filepath.Dir(c.savePath), toolResultDirName, evtID, st.File)
+	f, err := os.Open(p)
+	if err != nil {
+		// 事件已被淘汰时走到这里。给**明确**答复而不是静默空串：
+		// 模型应当知道"这份结果已不可读"，而不是以为结果是空的。
+		if os.IsNotExist(err) {
+			return "", true, fmt.Errorf("toolresult: 该结果已随事件淘汰（%s）", st.File)
+		}
+		return "", true, fmt.Errorf("toolresult: 打开正文: %w", err)
+	}
+	defer f.Close()
+
+	if offset > 0 {
+		if _, err := f.Seek(int64(offset), 0); err != nil {
+			return "", true, fmt.Errorf("toolresult: 定位 %d: %w", offset, err)
+		}
+	}
+	if limit <= 0 {
+		limit = st.TotalBytes - offset
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	buf := make([]byte, limit)
+	n, rerr := io.ReadFull(f, buf)
+	if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+		return "", true, fmt.Errorf("toolresult: 读取: %w", rerr)
+	}
+	out := string(buf[:n])
+	atEnd := offset+n >= st.TotalBytes
+	return out, atEnd, nil
+}
+
+// purgeToolResultDir 删除某事件的全文目录。
+//
+// 由 Prune 在事件离开 L1 时调用：全文跟随事件生命周期，不单独过期。
+func (c *RelevanceContext) purgeToolResultDir(evtID string) {
+	if c == nil || c.savePath == "" || evtID == "" {
+		return
+	}
+	p := filepath.Join(filepath.Dir(c.savePath), toolResultDirName, evtID)
+	if err := os.RemoveAll(p); err != nil {
+		// 删不掉不影响正确性（readToolResultBody 会给"已淘汰"），但要留痕，
+		// 否则残留会无声地占满磁盘。
+		log.Printf("[agent] purge toolresult dir %s: %v", p, err)
+	}
 }
