@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"runtime/debug"
@@ -194,9 +195,22 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		}
 	}()
 
+	// ★ 取消必须**真的传到对端**，而不只是让本函数不再等。
+	//
+	// 旧实现只有 time.After：到点后本函数返回，但那个 goroutine 仍在跑，
+	// 阻塞在跨进程 Call 上且**没有任何通道能通知它**——插件侧的 handler
+	// 毫不知情，继续占着连接/子进程/文件句柄直到自己跑完，结果却被丢弃。
+	// 长工具 + 频繁超时 ⇒ 后台持续堆积。
+	//
+	// 现在把 ctx 沿执行链传下去（经 args 旁路，见 StageHost.ExecuteToolCtx），
+	// 由 proc 桥的 CallContext 在取消时向插件发 call.cancel。
+	// **插件作者一行都不用改**：handler 签名不变。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // 正常返回也要放：否则 ctx 内部的 timer/子 goroutine 会泄漏
+
 	done := make(chan toolOutcome, 1)
 	go func() {
-		done <- a.executeToolCallInner(tc, channel, turnScenes)
+		done <- a.executeToolCallInner(ctx, tc, channel, turnScenes)
 	}()
 
 	// ★ 超时：优先用工具**自己声明**的时长，而不是一刀切 60s。
@@ -218,14 +232,16 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 	case result := <-done:
 		return result
 	case <-time.After(toolTimeout):
-		log.Printf("[agent] tool %s timed out after %v", tc.Name, toolTimeout)
+		// 先 cancel 再返回：这一行就是"让插件停下来"的触发点。
+		cancel()
+		log.Printf("[agent] tool %s timed out after %v（已向执行方发送取消）", tc.Name, toolTimeout)
 		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("工具 %s 执行超时（%s）", tc.Name, fmtDuration(toolTimeout)),
 			"该工具本次未在时限内返回。可改用更小的任务，或换用其他工具。")
 		return toolOutcome{Text: te.Error(), Raw: te}
 	}
 }
 
-func (a *Agent) executeToolCallInner(tc agentAPI.ToolCall, channel string, turnScenes []string) toolOutcome {
+func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, channel string, turnScenes []string) toolOutcome {
 	// 参数没法用（被 max_tokens 截断，或 JSON 写坏了）：**不要**拿着空/残缺参数去调工具。
 	// 否则工具会报 “path is required”“command is required” 这类与真因无关的错，
 	// 模型看不出真因、只能原样重试（实测 cmd_run 失败率高达 34%~48%）。
@@ -290,7 +306,7 @@ func (a *Agent) executeToolCallInner(tc agentAPI.ToolCall, channel string, turnS
 	}
 
 	if a.stageHost != nil {
-		if result, err := a.stageHost.ExecuteTool(tc.Name, tc.Arguments); err == nil {
+		if result, err := a.stageHost.ExecuteToolCtx(ctx, tc.Name, tc.Arguments); err == nil {
 			// Raw 必须带上：否则结构化失败（{"error":…} / ToolError）在这一步被抹平成文本，
 			// Success 又会退回恒真——正是阶段 1b 要修的那个洞。
 			return toolOutcome{Text: renderToolResult(tc.Name, result), Raw: result}

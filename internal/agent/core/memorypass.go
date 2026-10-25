@@ -153,6 +153,76 @@ func (a *Agent) pruneByQuery(query string) int {
 	return a.context.PruneWithProtected(query, topK, a.docStore, a.effectiveProtectedCount())
 }
 
+// pruneForResume 是按「指定保护条数」执行的裁剪，供任务恢复入口使用。
+//
+// 与 pruneByQuery 的唯一差别是 protected 的来源：
+//
+//	pruneByQuery    protected = a.effectiveProtectedCount()（全局末尾 N 条）
+//	pruneForResume  protected = 调用方给的条数（该任务帧自己的现场）
+//
+// 为什么恢复要用后者：被挂起任务的现场在 f.Msgs[PrefixLen:] 里，
+// 可能是一整批工具结果。若按全局末尾 N 条保护，那些结果可能落在保护范围外
+// 被归档——恢复后的任务引用的内容已不在上下文里，等于自相矛盾。
+func (a *Agent) pruneForResume(query string, protected int) int {
+	if a == nil || a.context == nil || a.isLightKernel() {
+		return 0
+	}
+	if protected < 0 {
+		protected = 0
+	}
+	// ★ 不能直接复用 contextTopK()：它内部会把 topK 抬到
+	// effectiveProtectedCount()+1（全局末尾保护），而恢复场景的保护范围是
+	// **本帧现场**，两者不是同一个数。直接用会得到「按全局保护算出来的
+	// 下限 ≥ 实际条数」⇒ 裁不动（实测 protected=8、上下文 20 条时
+	// topK 被抬到 20，Prune 空转）。
+	//
+	// 这里按**本帧保护条数**重新推导：先算 token 预算能装几条，
+	// 再保证下限是 protected+1（否则 Prune 会把 protected 之外的裁光）。
+	topK := a.contextTopKForProtected(protected)
+	return a.context.PruneWithProtected(query, topK, a.docStore, protected)
+}
+
+// contextTopKForProtected 是按**指定保护条数**推导保留条数的版本。
+//
+// 与 contextTopK 的唯一差别是下限：后者用 effectiveProtectedCount()（全局末尾
+// 保护），这里用调用方给的 protected。恢复场景必须用后者——保护范围是本帧现场。
+func (a *Agent) contextTopKForProtected(protected int) int {
+	if protected < 0 {
+		protected = 0
+	}
+	hardCap := a.maxContextSize - 1
+	if hardCap < protected+1 {
+		hardCap = protected + 1 // 保护范围本身超过运维上限时，保护优先
+	}
+	if hardCap < 1 {
+		hardCap = 1
+	}
+
+	budget := a.computeTokenBudget()
+	tokens := budget.ContextTokens
+	if tokens <= 0 {
+		return hardCap
+	}
+	avg := 0
+	if a.context != nil {
+		if n := a.context.Len(); n > 0 {
+			avg = a.accumulatedTokens() / n
+		}
+	}
+	if avg <= 0 {
+		avg = defaultAvgEventTokens
+	}
+	topK := tokens / avg
+	if topK < protected+1 {
+		// 预算装不下「保护条数 + 1」⇒ 宁可暂时超页也不破坏现场（同 contextTopK 的取舍）。
+		topK = protected + 1
+	}
+	if topK > hardCap {
+		topK = hardCap
+	}
+	return topK
+}
+
 // contextTopK 推导裁剪后应保留的**条数**。
 //
 // ★ 为什么不能直接用 maxContextSize（2026-10-01 跑分实测出的根因）：

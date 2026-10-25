@@ -155,12 +155,18 @@ func TestOverflow_T6_中断消息含认知提示(t *testing.T) {
 func TestOverflow_上游ErrContextFull走同路径(t *testing.T) {
 	a := newOverflowAgent(2000, 2, 20, 400) // 单条装得下，总量超页
 
-	// 累积不足以下次超页也没关系：上游已经明说装不下了
-	if !a.handleUpstreamContextFull(&agentAPI.ProviderError{
+	// 累积不足以下次超页也没关系：上游已经明说装不下了。
+	// ★ 关键：走的是**同一个** enforceContextBudget（force=true），
+	// 不是另一条独立路径。这正是「contextfull 复用中断裁剪语义」的落点。
+	if !isUpstreamContextFull(&agentAPI.ProviderError{
 		StatusCode: 400,
 		Kind:       agentAPI.ErrContextFull,
 		Message:    "context_length_exceeded",
 	}) {
+		t.Fatal("上游 ErrContextFull 应被识别")
+	}
+	handled, _ := a.enforceContextBudget(nil, "", true)
+	if !handled {
 		t.Fatal("上游 ErrContextFull 应被接住并返回 true（可恢复）")
 	}
 	a.overflowStat.Lock()
@@ -176,9 +182,8 @@ func TestOverflow_上游ErrContextFull走同路径(t *testing.T) {
 
 // 非上下文类错误不得被误接。
 func TestOverflow_上游其他错误不误接(t *testing.T) {
-	a := newOverflowAgent(1000, 2, 20, 400)
 	for _, kind := range []agentAPI.ErrKind{agentAPI.ErrCredential, agentAPI.ErrTransient, agentAPI.ErrUnknown} {
-		if a.handleUpstreamContextFull(&agentAPI.ProviderError{
+		if isUpstreamContextFull(&agentAPI.ProviderError{
 			StatusCode: 500, Kind: kind, Message: "boom",
 		}) {
 			t.Fatalf("kind=%v 不应被当作上下文超限接住", kind)
@@ -570,5 +575,155 @@ func TestOverflow_单条超预算则终止(t *testing.T) {
 	a.overflowStat.Unlock()
 	if aborted == 0 {
 		t.Fatal("应记一次 Aborted")
+	}
+}
+
+// ── 裁剪是**基础设施**：各注入/恢复入口都必须能触发它 ──
+
+// 任务恢复入口（rebaseFramePrefix）必须做容量裁剪。
+//
+// 为什么需要它：中断任务跑完会把它的输入/输出提交进 a.context，
+// 于是恢复时重建出的前缀**可能比被挂起时更大**。不在这里裁，这份更大的
+// 前缀会被原样发出去，下一轮再靠 stepLLM 的闸门补救——那时已经付过
+// 一次超限请求的代价。
+//
+// 变异：删掉 rebaseFramePrefix 末尾的 enforceContextBudget 调用 ⇒ 变红。
+func TestOverflow_任务恢复入口触发裁剪(t *testing.T) {
+	a := newOverflowAgent(2000, 2, 20, 400) // 总量远超窗口
+	f := &TaskFrame{
+		Input:     "恢复后的输入",
+		PrefixLen: 1,
+		Msgs: []agentAPI.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "tail"},
+		},
+	}
+	before := a.context.Len()
+
+	a.rebaseFramePrefix(f)
+
+	after := a.context.Len()
+	if after >= before {
+		t.Fatalf("任务恢复后应触发容量裁剪（上下文 %d → %d 未减少）", before, after)
+	}
+	if f.OverflowRecover == 0 {
+		t.Fatal("恢复入口的裁剪应计入该帧的恢复预算（否则同一帧可无限裁）")
+	}
+}
+
+// 恢复时相关性必须按**本帧最新上下文**算，不能拿旧的 f.Input。
+//
+// 被恢复的任务可能已挂起很久，f.Input 与当前对话早已不同步；
+// 拿旧 Input 当 query，会裁掉"对该任务重要、但字面上不匹配旧输入"的事件，
+// 恢复出来的任务反而失去了自己的现场。
+//
+// 判据：resumeQueryFrom 取的是 Msgs 尾部第一条有内容的消息，
+// 而不是 Input。
+func TestOverflow_恢复用本帧最新上下文作查询(t *testing.T) {
+	f := &TaskFrame{
+		Input:     "很久以前用户说的话",
+		PrefixLen: 1,
+		Msgs: []agentAPI.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "tool", Content: "最新的工具结果：部署已完成"},
+		},
+	}
+	got := resumeQueryFrom(f)
+	if got != "最新的工具结果：部署已完成" {
+		t.Fatalf("恢复查询应取本帧最新有效上下文，实际取到 %q", got)
+	}
+	if got == f.Input {
+		t.Fatal("不得回退到旧的 f.Input —— 那与当前任务已不同步")
+	}
+}
+
+// 尾部全是空消息时必须回退到 Input（不能返回空查询）。
+func TestOverflow_恢复查询回退(t *testing.T) {
+	f := &TaskFrame{
+		Input: "原始输入",
+		Msgs:  []agentAPI.Message{{Role: "assistant", Content: "  "}},
+	}
+	if got := resumeQueryFrom(f); got != "原始输入" {
+		t.Fatalf("全空时应回退到 Input，实际 %q", got)
+	}
+}
+
+// 恢复裁剪必须保护**本帧自己的现场**，而不是全局末尾 N 条。
+//
+// 这是最容易写错的一点：PruneWithProtected 的默认保护是 c.events 末尾 N 条
+// （"最近的对话"），而被挂起任务的现场可能是一整批工具结果，未必在末尾。
+// 保护错了，恢复后的任务引用的内容已被归档，任务自相矛盾。
+//
+// 变异：把 pruneForResume 的 protected 改成 a.effectiveProtectedCount() ⇒ 变红。
+func TestOverflow_恢复裁剪保护本帧现场(t *testing.T) {
+	// 上下文 20 条，帧现场声明 8 条（模拟攒下的工具轮产物）。
+	a := newOverflowAgent(2000, 2, 20, 400)
+	before := a.context.Len()
+
+	frameTail := 8
+	a.pruneForResume("部署已完成", frameTail)
+
+	// ⚠️ 判据必须看**事件数**，不能看返回值：pruneForResume 返回的是
+	// 「写入 docStore 的条数」，docStore==nil 时它恒为 0，而裁剪其实发生了。
+	// （handleContextOverflow 的注释里记过同一个坑。）
+	after := a.context.Len()
+	// 保留条数必须覆盖被保护的部分：裁剪后条数不得少于 protected。
+	if after < frameTail {
+		t.Fatalf("裁剪后仅剩 %d 条，少于本帧保护的 %d 条 —— 现场被破坏", after, frameTail)
+	}
+	if after >= before {
+		t.Fatalf("应减少事件数（%d → %d）", before, after)
+	}
+}
+
+// 上游 ErrContextFull 与本地预判必须走**同一个**处理函数。
+//
+// 这条守的是"复用中断裁剪语义"本身：一旦有人再拆出独立路径，
+// 恢复预算 / 轻量内核判断这些防护就会在其中一条上缺失。
+//
+// 变异：恢复 handleUpstreamContextFull（直调 handleContextOverflow）⇒ 变红。
+func TestOverflow_上游与本地共用同一个处理函数(t *testing.T) {
+	a := newOverflowAgent(2000, 2, 20, 400) // 总量超页，但下面要看 force 的效果
+
+	// force=true 时**必须**进入处理，即使水位判定不成立。
+	// 这正是"上游说满了"的语义：不信本地估算，直接裁。
+	//
+	// 造一个"水位很低但上游报满"的场景：空上下文 ⇒ ratio=0，
+	// 本地判据绝不会触发，只有 force 能让它进入处理分支。
+	empty := &Agent{
+		io:       agentIO.NewIOManager(),
+		provider: &fakeOverflowProvider{window: 100000},
+		context:  NewRelevanceContext("", nil),
+	}
+	empty.context.Append(ContextEvent{Input: "短", Response: "短"})
+	a = empty
+	if a.overflowRatioNow() >= overflowRatio {
+		t.Fatal("前置：水位应低于阈值")
+	}
+	handled, pruned := a.enforceContextBudget(nil, "", true)
+	if !handled {
+		t.Fatal("force=true 应在水位不足时仍然处理（上游已明确报错）")
+	}
+	_ = pruned
+}
+
+// 恢复预算对**所有**入口一致生效——包括上游报错那条。
+//
+// 这条是 T5 的补强。旧实现里 handleUpstreamContextFull 直调内部函数，
+// 绕过了 f.OverflowRecover 检查，于是同一帧可以反复 raise L4；
+// 而文档 §四.1 明确「L4 遇 L4 不能抢占」，反复触发只会排队堆积。
+//
+// 变异：把 force 分支移到预算检查之前 ⇒ 变红。
+func TestOverflow_恢复预算对所有入口生效(t *testing.T) {
+	a := newOverflowAgent(2000, 2, 20, 400)
+	f := &TaskFrame{Input: "x"}
+	f.OverflowRecover = overflowRecoverBudget // 预算已耗尽
+
+	handled, _ := a.enforceContextBudget(f, "", true)
+	if !handled {
+		t.Fatal("预算耗尽也算「已处理」——调用方据此直接终止，不应再重跑")
+	}
+	if f.Terminal != terminalError {
+		t.Fatal("预算耗尽必须置 terminalError，否则会静默重试")
 	}
 }

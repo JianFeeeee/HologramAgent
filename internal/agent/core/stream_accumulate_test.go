@@ -157,7 +157,7 @@ func TestTruncatedToolCallIsShortCircuited(t *testing.T) {
 		},
 	}
 	a := &Agent{}
-	got := a.executeToolCallInner(tc, "webui", nil).Text
+	got := a.executeToolCallInner(context.Background(), tc, "webui", nil).Text
 
 	if strings.Contains(got, "path is required") {
 		t.Errorf("截断后仍走了工具分派（模型会原样重试）：%s", got)

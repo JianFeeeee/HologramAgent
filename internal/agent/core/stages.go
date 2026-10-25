@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"runtime/debug"
@@ -21,6 +22,21 @@ type StageHost struct {
 	tools       map[string]sdk.ToolHandler
 	toolPlugins map[string]string
 	stages      map[sdk.Stage][]stageEntry
+
+	// cancelable 记录本工具的执行体是否**接收取消信号**。
+	//
+	// 为什么需要单独一张表：公开的 ToolHandler 签名 `func(args) (any, error)`
+	// 没有 ctx，而且这个签名**不打算改**——它是插件作者的契约，改它等于强迫
+	// 100 处调用点与全部存量插件跟着改，只为了内核能停下一个自己发起超时的调用。
+	//
+	// 真正需要 ctx 的只有**内核与插件之间的那一层**：proc 桥把 ctx 传到
+	// CallContext，由它向子进程发 call.cancel。插件进程内部的 handler 仍然
+	// 是旧签名，取消由模板运行时接住（让阻塞中的 handler 拿到 context.Canceled）。
+	//
+	// 所以这里只记「这个工具能否安全地走带 ctx 的执行路径」，而 ctx 本身
+	// 由 ExecuteToolCtx 经 context 在当前 goroutine 上传递（见 toolExecCtxKey），
+	// 不进 handler 签名。
+	cancelable map[string]bool
 }
 
 // stageEntry 把 stage handler 与它的归属插件绑定。
@@ -38,6 +54,7 @@ func NewStageHost() *StageHost {
 	return &StageHost{
 		tools:       make(map[string]sdk.ToolHandler),
 		toolPlugins: make(map[string]string),
+		cancelable:  make(map[string]bool),
 		stages:      make(map[sdk.Stage][]stageEntry),
 	}
 }
@@ -53,6 +70,10 @@ func (h *StageHost) RegisterTool(name string, def sdk.ToolDef, handler sdk.ToolH
 	}
 	h.tools[name] = handler
 	h.toolPlugins[name] = def.Plugin
+	// 所有工具都视为可取消：ctx 只在**内核内部**传递（经 goroutine 本地的
+	// executeCtx），handler 签名不变。对不消费 ctx 的执行体而言这只是个
+	// 空操作，不存在"误取消"的风险。
+	h.cancelable[name] = true
 	h.toolDefs = append(h.toolDefs, def)
 	return nil
 }
@@ -142,7 +163,71 @@ func (h *StageHost) findLocked(name string) (sdk.ToolDef, bool) {
 	return sdk.ToolDef{}, false
 }
 
+// executeCtxKey 是**内核内部**传递执行上下文的私有键（放在 args map 里旁路传）。
+//
+// 为什么不把 ctx 加进 ToolHandler 签名（2026-10-25 的架构决定）：
+//
+//	公开签名 `func(args) (any, error)` 是插件作者的契约。为了内核能停下一个
+//	自己超时的调用而改它是本末倒置——要改 100 处调用点 + 全部存量插件，
+//	而受益者本应是插件（它们一行都不用动）。
+//
+//	真正需要 ctx 的只有**内核 ↔ 插件进程**之间那一层：proc 桥要把它传给
+//	CallContext，由后者向子进程发 call.cancel。这一段完全在内核内部，
+//	用 args 上的私有键旁路传递即可，无需污染公开 API。
+//
+// 为什么键是这种形态：args 是 map[string]interface{}，键只能取字符串。
+// 用不可见前缀 + 极不日常的名字，保证它不会被真实工具参数撞上；同时
+// ExecuteTool 在**下发给插件前**会把它剥掉（见 stripExecuteCtx），
+// 所以插件永远看不到它，也不可能因为多出一个键而报参数校验失败。
+const executeCtxArgKey = "\x00kernel.execute_ctx\x00"
+
+// CurrentExecuteCtx 取出本次工具调用的执行上下文（proc 桥用）。
+//
+// 没有绑定时返回 context.Background()，调用方可直接使用、无需判空。
+func CurrentExecuteCtx(args map[string]interface{}) context.Context {
+	if args != nil {
+		if ctx, ok := args[executeCtxArgKey].(context.Context); ok && ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
+}
+
+// stripExecuteCtx 返回去掉执行上下文键的**副本**，供下发给插件/设备用。
+//
+// 为什么必须剥：插件侧可能对参数做严格校验（"未知参数"报错），
+// 而这个键是内核内部约定，不该出现在任何插件眼里。
+func stripExecuteCtx(args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return nil
+	}
+	if _, ok := args[executeCtxArgKey]; !ok {
+		return args
+	}
+	out := make(map[string]interface{}, len(args))
+	for k, v := range args {
+		if k == executeCtxArgKey {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// ExecuteTool 执行工具（无取消语义）。
 func (h *StageHost) ExecuteTool(name string, args map[string]interface{}) (ret interface{}, err error) {
+	return h.ExecuteToolCtx(context.Background(), name, args)
+}
+
+// ExecuteToolCtx 执行工具，并把 ctx 交给**内核侧的执行体**。
+//
+// ctx 沿两条路生效，都不需要插件改代码：
+//   - StageHost 自己的工具（proc 插件桥）：经 goroutine 本地 ctx 传给
+//     CallContext，取消时向插件进程发 call.cancel；
+//   - io 设备工具：同样经 goroutine 本地 ctx 下传（见 ExecuteTool 的调用方）。
+//
+// handler 本身仍是旧签名；它若不消费 ctx，行为与今天逐字一致。
+func (h *StageHost) ExecuteToolCtx(ctx context.Context, name string, args map[string]interface{}) (ret interface{}, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[stage] tool %s handler panic: %v\n%s", name, r, debug.Stack())
@@ -171,7 +256,30 @@ func (h *StageHost) ExecuteTool(name string, args map[string]interface{}) (ret i
 			log.Printf("[security] 工具 %s 参数回填 %d 处（别名 %v）", name, n, used)
 		}
 	}
-	return handler(args)
+	// 把 ctx 放进**执行栈**而不是 handler 签名：proc 桥在自己的 CallContext
+	// 里用 CurrentExecuteCtx 取它。这样取消能力只在内核内部流动，
+	// 插件作者的 handler 签名与源码一行不变。
+	//
+	// 注意：这里不能用「把 ctx 存在 StageHost 字段里」——同一插件可被
+	// 多个调用并发执行，共享字段会互相覆盖（就是 qq 插件花大力气修过的
+	// 那个"全局身份不可靠"问题）。
+	return handler(withExecuteCtx(ctx, args))
+}
+
+// withExecuteCtx 把 ctx 绑定到本次调用上，随 goroutine 走。
+//
+// 具体实现见 execctx.go：Go 没有 goroutine-local storage，这里用
+// **参数旁路**（在 args 里放一个不可见的私有键）最省事且无并发歧义——
+// args 是每次调用独立的 map，天然一 goroutine 一份。
+func withExecuteCtx(ctx context.Context, args map[string]interface{}) map[string]interface{} {
+	if ctx == nil {
+		return args
+	}
+	if args == nil {
+		args = make(map[string]interface{}, 1)
+	}
+	args[executeCtxArgKey] = ctx
+	return args
 }
 
 func (h *StageHost) ToolPlugin(name string) string {

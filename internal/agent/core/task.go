@@ -365,6 +365,17 @@ func (a *Agent) rebaseFramePrefix(f *TaskFrame) {
 
 	f.Msgs = append(prefix, tail...)
 	f.PrefixLen = len(prefix)
+
+	// ★ 恢复也是**新的上下文装配点**：中断任务跑完已把它的输入/输出提交进
+	// a.context（见上面注释），于是重建出的前缀可能比被挂起时更大。
+	// 不在这里裁，这份"更大的前缀"会被原样发出去，下一轮再靠 stepLLM 的
+	// 闸门补救——而那时已经付过一次超限请求的代价。
+	//
+	// 用的是**恢复专用**入口：相关性按本帧最新上下文算、保护范围是本帧自己的
+	// 现场（f.Msgs[PrefixLen:]），而不是全局末尾 N 条。见 enforceResumeContextBudget。
+	if handled, _ := a.enforceResumeContextBudget(f); handled && f.Terminal == terminalError {
+		return // 预算耗尽：f.Err 已写明，调用方据此终止
+	}
 }
 
 // prepareInputTask 执行 processInput 的前半段（去重、通道解析、阶段、裁剪、
@@ -676,14 +687,24 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	if llmErr != nil {
 		// ★ 上下文超页（上游 ErrContextFull）必须在 provider fallback **之前**处理：
 		//   fallback 会换 provider 重发**同一个**超限请求，换谁都一样超。
-		//   与本地预判（maybeHandleContextOverflow）走同一条裁剪路径。
-		if a.handleUpstreamContextFull(llmErr) {
-			// 已裁剪。**必须退回 StepPrepare 重建 f.Msgs**：
-			// f.Msgs 只在 stepPrepare 里由 buildMessages 装配，stepLLM 不重建；
-			// 而挂起帧里那份就是刚刚超限的那份，复用它等于原样再发一次。
-			f.Turn++
-			f.Step = StepPrepare
-			return outcomeContinue
+		//
+		// 这里**不另立路径**：上游报错只是「判定已被短路」的一种（force=true），
+		// 之后的恢复预算 / 裁剪 / raise L4 与本地预判完全相同，共用同一个函数。
+		// 区别仅在于：本地预判在发请求**之前**判，这里在**收到错误之后**判。
+		if isUpstreamContextFull(llmErr) {
+			handled, _ := a.enforceContextBudget(f, "", true)
+			if handled {
+				if f.Terminal == terminalError {
+					return outcomeFailed // 恢复预算耗尽，f.Err 已写明
+				}
+				// 已裁剪。**必须退回 StepPrepare 重建 f.Msgs**：
+				// f.Msgs 只在 stepPrepare 里由 buildMessages 装配，stepLLM 不重建；
+				// 而挂起帧里那份就是刚刚超限的那份，复用它等于原样再发一次。
+				f.Turn++
+				f.Step = StepPrepare
+				return outcomeContinue
+			}
+			// 未处理（如轻量内核不裁剪）：落到下面按普通错误处理。
 		}
 		if errors.Is(llmErr, context.Canceled) && a.ctx.Err() == nil {
 			if f.OutputChannel == channelConsolidation {

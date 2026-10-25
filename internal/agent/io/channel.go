@@ -1,6 +1,7 @@
 package io
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -738,7 +739,17 @@ func (m *IOManager) DeviceOfTool(name string) (string, bool) {
 	return "", false
 }
 
+// ExecuteTool 执行设备工具（无取消语义）。
 func (m *IOManager) ExecuteTool(name string, args map[string]interface{}) (ret interface{}, err error) {
+	return m.ExecuteToolCtx(context.Background(), name, args)
+}
+
+// ExecuteToolCtx 执行设备工具，并把 ctx 传给设备。
+//
+// ctx 同样不进 Device.Execute 的签名（那是插件作者的契约），而是**旁路**
+// 放进 args（键与 core.executeCtxArgKey 一致）。内置插件若要消费它，
+// 在自己的 handler 里取一次即可；不取就与今天完全一致。
+func (m *IOManager) ExecuteToolCtx(ctx context.Context, name string, args map[string]interface{}) (ret interface{}, err error) {
 	m.mu.RLock()
 	type nameDevice struct {
 		name string
@@ -765,7 +776,7 @@ func (m *IOManager) ExecuteTool(name string, args map[string]interface{}) (ret i
 		parent := m.parent
 		m.mu.RUnlock()
 		if parent != nil {
-			ret, err := parent.ExecuteTool(name, args)
+			ret, err := parent.ExecuteToolCtx(ctx, name, args)
 			if err == nil {
 				return ret, nil
 			}
@@ -781,7 +792,7 @@ func (m *IOManager) ExecuteTool(name string, args map[string]interface{}) (ret i
 			err = fmt.Errorf("tool %s execute panic: %v", name, r)
 		}
 	}()
-	return candidates[0].dev.Execute(name, args)
+	return candidates[0].dev.Execute(name, bindExecCtx(ctx, args))
 }
 
 func (m *IOManager) ListDevices() []Device {
@@ -1124,4 +1135,28 @@ func (m *IOManager) ClearToolBlocks(callID string) {
 	m.toolBlocksMu.Lock()
 	delete(m.toolPendingBlocks, callID)
 	m.toolBlocksMu.Unlock()
+}
+
+// execCtxArgKey 是内核内部传递执行上下文的旁路键。
+//
+// ⚠️ 必须与 core.executeCtxArgKey 逐字一致（理由见 proc/execctx.go：
+// 复制常量是为了避免 core ↔ io 的导入环，不一致的表现只是"取消不生效"）。
+const execCtxArgKey = "\x00kernel.execute_ctx\x00"
+
+// bindExecCtx 把 ctx 放到 args 里随调用下传。
+//
+// 为什么不改 Device.Execute 签名：那会让全部内置插件跟着改（同一个理由
+// 见 StageHost.ExecuteToolCtx 的注释）。旁路键对不消费它的插件完全不可见——
+// 但**必须**在真正下发给插件前剥掉，否则严格校验参数的插件会报未知参数。
+// 剥除由各插件自己的入口决定：core 侧统一下发前已剥（见 StageHost），
+// io 侧保持原样，因为设备插件直接读 args、不会做严格白名单校验。
+func bindExecCtx(ctx context.Context, args map[string]interface{}) map[string]interface{} {
+	if ctx == nil {
+		return args
+	}
+	if args == nil {
+		args = make(map[string]interface{}, 1)
+	}
+	args[execCtxArgKey] = ctx
+	return args
 }
