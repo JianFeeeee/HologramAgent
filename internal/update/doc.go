@@ -34,7 +34,9 @@
 // ## 与既有升级通道的关系
 //
 // 不新造安装逻辑：
-//   · 插件产物交给 pluginmgr.installFromPath（保留配置、原地覆盖）
-//   · 内核重启走 sdk.KernelControlAPI（guard 重拉，不经 systemd）
+//
+//	· 插件产物交给 pluginmgr.installFromPath（保留配置、原地覆盖）
+//	· 内核重启走 sdk.KernelControlAPI（guard 重拉，不经 systemd）
+//
 // 本包只管到"产物就绪"为止。
 package update

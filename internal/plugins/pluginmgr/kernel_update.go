@@ -91,7 +91,7 @@ func (p *Plugin) kernelUpdateApply(pkgPath string) (interface{}, error) {
 		_ = kc.RequestKernelRestart("kernel_update apply")
 	}
 	go func() {
-		if err := update.DoUpgrade(root, kernelBinPath(p), newDG, p.pluginDir); err != nil {
+		if err := update.DoUpgrade(root, kernelBinPath(p), newDG, p.pluginDir, kernelDataDir(p)); err != nil {
 			// DoUpgrade 内部失败已自行回滚；这里只留一条诊断日志
 			fmt.Fprintf(os.Stderr, "[pluginmgr] kernel_update upgrade failed (rolled back): %v\n", err)
 		}
@@ -100,6 +100,17 @@ func (p *Plugin) kernelUpdateApply(pkgPath string) (interface{}, error) {
 		"accepted": true,
 		"message":  "升级已受理：正在替换二进制并重启。完成后用 kernel_update（apply=false）确认新版本。",
 	}, nil
+}
+
+// kernelDataDir 推导数据目录（升级确认标记的落点）。
+//
+// 从 pluginDir 反推：<dataDir>/plugins ⇒ 上一级即 dataDir。
+// 与内核 --data 的值一致，update 模块（第 0 层）才能读到同一个标记。
+func kernelDataDir(p *Plugin) string {
+	if p.pluginDir != "" {
+		return filepath.Dir(filepath.Dir(p.pluginDir))
+	}
+	return "/home/newqqagent"
 }
 
 // currentKernelVersion 读本机 homed 自报版本（尽力而为）。

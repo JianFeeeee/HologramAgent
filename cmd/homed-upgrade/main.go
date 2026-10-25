@@ -33,11 +33,27 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
 // fail 打印错误并以非零退出（CLI 专属；库内部一律返回 error）。
+// upgradeDataDir 推导数据目录（升级确认标记的落点）。
+//
+// 与生产一致：内核按 `--data <dir>` 运行，标记必须落在同一个 dataDir 下，
+// 否则 update 模块读不到它。推导规则：
+//   ① 环境变量 HOMEAGENT_DATA_DIR（部署方显式指定）
+//   ② 二进制同级的 ../newqqagent（/usr/local/bin/homed → /home/newqqagent）
+//      —— 太脆弱，改为最常见的部署形态：/usr/local/bin/homed → /home/newqqagent
+//   ③ 退回 /home/newqqagent（本仓默认部署路径）
+func upgradeDataDir(binPath string) string {
+	if d := strings.TrimSpace(os.Getenv("HOMEAGENT_DATA_DIR")); d != "" {
+		return d
+	}
+	return "/home/newqqagent"
+}
+
 func fail(format string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, format+"\n", a...)
 	os.Exit(1)
@@ -118,7 +134,7 @@ func main() {
 	}
 
 	// ── 6. 真正升级（备份 → 替换 → 重启 → 后置验证 → 失败回滚）──
-	if err := update.DoUpgrade(root, *binPath, newDG, *pluginsDir); err != nil {
+	if err := update.DoUpgrade(root, *binPath, newDG, *pluginsDir, upgradeDataDir(*binPath)); err != nil {
 		fail("升级失败: %v", err)
 	}
 }

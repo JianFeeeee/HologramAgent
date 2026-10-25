@@ -247,7 +247,7 @@ func FileSize(p string) int64 {
 //
 // 每一步失败都往回退，且**回滚后必须能正常启动**——这是本函数的核心承诺：
 // 宁可升级失败，不可让机器起不来。
-func DoUpgrade(root, binPath, newDG, pluginsDir string) error {
+func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
 	newBin := FindFile(root, "homed")
 	if newBin == "" {
 		return fmt.Errorf("包内无 homed")
@@ -277,8 +277,39 @@ func DoUpgrade(root, binPath, newDG, pluginsDir string) error {
 	}
 	fmt.Printf("已备份 %d 个文件 → %s\n", len(targets), backup)
 
+	// ── 写待确认升级标记（在替换**之前**）──
+	//
+	// 顺序很关键：先写标记再替换。若反过来（替换后才写），"替换成功但
+	// 没来得及写标记就崩了"会丢标记 ⇒ 下次启动不知道该回滚。
+	//
+	// 标记由 update 模块（第 0 层）在下次启动时读；读到就说明上次升级
+	// 留下的版本没能活到清除标记 ⇒ 回滚（见 internal/update/rollback.go）。
+	curVer := &BinVersion{}
+	if v, verr := ReadBinVersion(binPath); verr == nil {
+		curVer = v
+	}
+	if dataDir != "" {
+		if perr := MarkPendingUpgrade(dataDir, PendingRecord{
+			FromVer:    curVer.Version,
+			FromCommit: curVer.Commit,
+			ToVer:      nv.Version,
+			ToCommit:   nv.Commit,
+			BackupDir:  backup,
+		}); perr != nil {
+			// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力，
+			// 而不带回滚的升级等于赌运气。
+			return fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
+		}
+		fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
+	}
+
 	rollback := func(cause error) error {
 		fmt.Printf("\n❌ %v\n== 开始回滚 ==\n", cause)
+		if dataDir != "" {
+			if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
+				fmt.Printf("  ⚠️ 清除升级确认标记失败: %v\n", cerr)
+			}
+		}
 		for _, t := range targets {
 			src := filepath.Join(backup, filepath.Base(t))
 			if err := CopyFile(src, t); err != nil {

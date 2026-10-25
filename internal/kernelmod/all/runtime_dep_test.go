@@ -175,9 +175,24 @@ func TestRunRejectsLayerOrderViolation(t *testing.T) {
 		}
 	}
 
-	// ③ 违规发生在装配之前：只跑完了 L0（config / kernel-api）。
-	if strings.Join(dnr.Produced, ",") != kernelmod.FacConfig+","+kernelmod.FacKernelIO {
-		t.Errorf("★ 守卫失败时\"已产出事实\"应为 L0 的两个设施，实际 %v", dnr.Produced)
+	// ③ 违规发生在装配之前：只跑完了 L0。
+	//
+	// ★ L0 现在是三个：config / kernel-api / update。update 模块 Requires
+	//   为空（它肩负"启动失败回滚上一次升级"，必须早于所有模块），所以
+	//   天然落在 L0。这里断言**集合**而非顺序 —— 注册表本就是乱序的。
+	got := dnr.Produced
+	wantL0 := map[string]bool{
+		kernelmod.FacConfig:   true,
+		kernelmod.FacKernelIO: true,
+		kernelmod.FacVersion:  true,
+	}
+	if len(got) != len(wantL0) {
+		t.Errorf("★ 守卫失败时 L0 应产出 %d 个设施，实际 %v", len(wantL0), dnr.Produced)
+	}
+	for _, f := range got {
+		if !wantL0[f] {
+			t.Errorf("★ L0 出现了意外的设施 %q（实际产出 %v）", f, dnr.Produced)
+		}
 	}
 	if ks.LuaVM != nil {
 		t.Error("★ 守卫失败后 ks.LuaVM 非 nil —— 说明 lua 模块被跑过了，与\"装配前校验\"矛盾")

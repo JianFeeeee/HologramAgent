@@ -43,4 +43,14 @@ const (
 
 	// FacMigrated 标记"知识库目录迁移已完成"（用于让 store 排在迁移之后）。
 	FacMigrated = "knowledge-migrated"
+
+	// FacVersion 标记"内核版本自检与升级回滚判定已完成"（update 模块提供）。
+	//
+	// 语义：读到它时，ks.Update 里的版本已经是**回滚后的最终版本**。
+	// 需要按版本行事的模块（healthcheck 上报版本、pluginhost 判插件兼容性）
+	// 应 Requires 它，否则可能读到升级前那个已被回滚的版本。
+	//
+	// 为什么在内部标记段：它是内核自用的启动时序事实，不是插件可选的
+	// 外部契约（插件声明它只会立刻满足，没有意义）。
+	FacVersion = "kernel.version"
 )

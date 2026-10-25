@@ -40,4 +40,5 @@ import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/supervisor"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/textmem"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/tracker"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/update"
 )

@@ -96,11 +96,11 @@ func TestNewer(t *testing.T) {
 // 判据 3b：TrimTag 的归一语义。
 func TestTrimTag(t *testing.T) {
 	for in, want := range map[string]string{
-		"v1.4.4":    "1.4.4",
-		"1.4.4":     "1.4.4",
-		"1.4.0dev":  "1.4.0",
+		"v1.4.4":     "1.4.4",
+		"1.4.4":      "1.4.4",
+		"1.4.0dev":   "1.4.0",
 		"1.4.0dev.1": "1.4.0",
-		"release1":  "release1", // 非纯版本原样返回，交给 ParseSemver 判不可比
+		"release1":   "release1", // 非纯版本原样返回，交给 ParseSemver 判不可比
 	} {
 		if got := TrimTag(in); got != want {
 			t.Errorf("TrimTag(%q) = %q，期望 %q", in, got, want)

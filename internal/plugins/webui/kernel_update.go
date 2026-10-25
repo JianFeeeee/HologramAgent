@@ -107,5 +107,5 @@ func runKernelUpgrade(pkgPath string) {
 	if newBin == "" {
 		return
 	}
-	_ = update.DoUpgrade(root, "/usr/local/bin/homed", newDG, "/home/newqqagent/plugins")
+	_ = update.DoUpgrade(root, "/usr/local/bin/homed", newDG, "/home/newqqagent/plugins", "/home/newqqagent")
 }

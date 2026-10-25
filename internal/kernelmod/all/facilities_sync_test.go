@@ -39,6 +39,9 @@ import (
 // knowledge-migrated）。反向也要防：有人误把内部标记放进 SDK 当对外契约。
 var internalOnlyFacilities = map[string]bool{
 	"knowledge-migrated": true,
+	// kernel.version 同理：它是 update 模块的启动时序事实（"版本自检与
+	// 升级回滚判定已完成"），消费者是内核模块，不是插件契约。
+	"kernel.version": true,
 }
 
 // extractFacilities 从 Go 源码里提取 `FacilityXxx = "值"` 形式的常量。
