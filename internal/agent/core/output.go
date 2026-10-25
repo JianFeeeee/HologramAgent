@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -143,13 +144,54 @@ func stringOrArray(v interface{}) []string {
 	case []interface{}:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
-			if s, ok := e.(string); ok {
-				out = append(out, s)
-			}
+			out = append(out, coerceToString(e))
 		}
 		return out
 	}
+	// ★ 模型把结构化值直接传成对象/数字（而非 JSON 字符串）时必须**序列化保留**，
+	// 不能返回 nil。
+	//
+	// 实测代价（2026-10-23 起，QQ 发送失败率 1.3% → 34%，132 次/天）：
+	// 模型对 meta 的传参形态不稳定 —— 有时传 `"{\"user_id\":123}"`（字符串），
+	// 有时直接传 `{"user_id":123}`（对象）。后者在此返回 nil，而
+	// parseOutputItems 对 len(metas)==0 的处理是**静默填空数组**：
+	//
+	//	if len(metas) == 0 { metas = make([]string, len(payloads)) }
+	//
+	// ⇒ 插件收到 meta="" ⇒ 报 "meta 中需要 group_id 或 user_id 字段"。
+	// 症状是"agent 答应了却没发到"，而它完全不知道参数被吞了。
+	if t, ok := marshalToJSONString(v); ok {
+		return []string{t}
+	}
 	return nil
+}
+
+// coerceToString 把数组元素统一成字符串；结构化元素序列化为 JSON。
+//
+// 不做的话 `payload: [{"text":"a"}]` 之类会被静默丢弃（元素类型不是 string
+// 就不 append），调用方只看到"少了几条"，无从知道原因。
+func coerceToString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if t, ok := marshalToJSONString(v); ok {
+		return t
+	}
+	return ""
+}
+
+// marshalToJSONString 把非字符串值序列化成 JSON 字符串。
+//
+// 返回 ok=false 表示 nil（即"确实没提供"），由调用方按缺失处理。
+func marshalToJSONString(v interface{}) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {

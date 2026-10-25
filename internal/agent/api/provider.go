@@ -609,12 +609,24 @@ func parseOpenAICompatibleSSEBody(raw []byte) (*CompletionResponse, bool) {
 		found = true
 		contentBuf.WriteString(ck.Content)
 		reasoningBuf.WriteString(ck.ReasoningContent)
-		for i, tc := range ck.ToolCalls {
-			acc := accs[i]
+		for _, tc := range ck.ToolCalls {
+			// ★ 必须用**上游的 index**（StreamIndex），不能用切片下标。
+			//
+			// 流式协议里每个分片带 index 表明它属于第几个 tool_call。
+			// 并行多工具时上游会**分成多个 chunk**下发：每个 chunk 的
+			// ToolCalls 切片长度可能都是 1（下标恒为 0），若用切片下标累积，
+			// 12 个并行调用的参数分片会**全部拼进 accs[0]**，其余 11 个
+			// 拿到空串 ⇒ 被 argsLookDropped 判为"丢参数"。
+			//
+			// 线上实证（2026-10-25）：2 小时内 74 次 "has empty arguments"，
+			// 每次恰好 12 条（= 同一响应的 12 个并行 tool_call 全部报空），
+			// 模型侧表现为"工具拿不到参数"，用户侧表现为"agent 忘了刚说要做什么"。
+			idx := tc.StreamIndex
+			acc := accs[idx]
 			if acc == nil {
 				acc = &sseAcc{}
-				accs[i] = acc
-				toolOrder = append(toolOrder, i)
+				accs[idx] = acc
+				toolOrder = append(toolOrder, idx)
 			}
 			if tc.ID != "" {
 				acc.id = tc.ID
