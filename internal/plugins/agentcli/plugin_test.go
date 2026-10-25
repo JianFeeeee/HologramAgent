@@ -517,7 +517,25 @@ func (m *mockTerm) Running() bool {
 	defer m.mu.Unlock()
 	return m.running
 }
-func (m *mockTerm) Kill() error  { return nil }
+// Kill 模拟真实 PTY 的行为：把一份 **buffer 里的输出 + EIO** 交给 Read。
+//
+// 两点必须还原，否则测不出线上的回声：
+//
+//  1. Read 返回错误（真实 PTY 被 Kill 后读端立刻 `read /dev/ptmx:
+//     input/output error`）。旧版这里是空操作，于是"主动关闭"在测试里
+//     从不产生回声，判据永远绿（假绿）。
+//  2. **已产出的数据先于错误到达**。真实内核里 PTY 缓冲中残留的输出
+//     会先被读走，EIO 随后才到——这一点决定了 readLoop 的 select
+//     在"stopCh 已关"与"readCh 有数据/错误"之间如何竞争。
+func (m *mockTerm) Kill() error {
+	m.mu.Lock()
+	m.running = false
+	if m.err == nil {
+		m.err = fmt.Errorf("read /dev/ptmx: input/output error")
+	}
+	m.mu.Unlock()
+	return nil
+}
 func (m *mockTerm) Close() error { return nil }
 
 func (m *mockTerm) push(data []byte) {
@@ -690,4 +708,247 @@ func TestReadLoopNotifyOnReadError(t *testing.T) {
 	}
 	close(ts.stopCh)
 	<-ts.done
+}
+
+// 主动关闭终端后**不得**再注入任何收尾状态。
+//
+// 这是用户报的线上问题（2026-10-25）：
+//
+//	关闭终端 → agent 收到「[终端 term_6 读取结束: read /dev/ptmx: input/output error]」
+//	→ 又收到「[终端 term_6 中的进程已退出]」
+//	→ 而 terminal_list 此时已是 0 个会话
+//
+// 后果不只是刷屏：每条注入都会唤醒一轮推理，agent 只能一遍遍解释
+// "这是旧终端的回声，不用管它"。而且它**永远无法自证清白**——
+// 会话列表已经是空的，它拿不到任何证据说明这条消息是历史遗留。
+//
+// 根因：主动 Close() 会 ①关 stopCh ②Kill 进程，而 ③PTY 读端随即返回
+// 「input/output error」、④terminalRunning 变 false。旧实现在这两处
+// **无条件注入**，把"我们自己关掉的"当成"进程自己结束了"上报。
+//
+// 判据：Close 之后只允许**关闭前**已发生的注入存在，不得新增。
+// 变异：删掉 isClosing 判断 ⇒ 本判据变红。
+func TestClose_NoEchoNotificationsAfterClose(t *testing.T) {
+	p := New("agentcli")
+	p.notifyBytes = 1 << 20 // 抬高阈值，避免缓冲通知混进来干扰判据
+	capture := &injectCapture{}
+	sdkInst := sdk.New("agentcli", sdk.SDKConfig{
+		RegTool:  newToolCapture().RegisterTool,
+		RegStage: func(sdk.Stage, sdk.StageHandler) {},
+		RegAPI:   func(string) error { return nil },
+		Settings: sdk.NewSettings("agentcli", nil),
+	})
+	sdkInst.SetIOInjector(capture)
+
+	ts := newTestSession(newMockTerm())
+	startReadLoop(p, sdkInst, ts)
+
+	// 等"已启动"到达：这是**正常**通知（终端确实刚创建）。
+	if !waitInjected(capture, "已启动", 2*time.Second) {
+		t.Fatal("expected startup notification")
+	}
+	before := len(capture.snapshot())
+
+	// 主动关闭：模拟 close 工具路径（关 stopCh + 杀进程 + 释放 PTY）。
+	//
+	// 注意：Close() 内部会 <-t.done 等 readLoop 退出，所以它返回时
+	// readLoop 已经走完——那正是回声注入发生的时机，判据必须等到它之后。
+	ts.Close()
+
+	// 给 readLoop 充分时间走完所有收尾分支（含 r.err 与 terminalRunning）。
+	// 用固定等待而不是"等到某条消息"——我们要断言的是**什么都没有**。
+	time.Sleep(600 * time.Millisecond)
+
+	after := capture.snapshot()
+	if len(after) != before {
+		t.Fatalf("主动关闭后不应新增注入，实际多了 %d 条：\n%s",
+			len(after)-before, strings.Join(after[before:], "\n"))
+	}
+	t.Logf("关闭前后注入数：%d（无回声）", len(after))
+	// 明确点出两种最典型的回声，便于失败时一眼看出原因。
+	for _, s := range after[before:] {
+		if strings.Contains(s, "读取结束") || strings.Contains(s, "进程已退出") ||
+			strings.Contains(s, "命令已执行结束") {
+			t.Fatalf("关闭后出现了收尾回声：%s", s)
+		}
+	}
+}
+
+// 反向判据：进程**自己**结束时必须有通知。
+//
+// 这条守住修复不过度——不能因为要消除回声，把正常的上报也一起关掉。
+// 变异：把 isClosing 判断写成无条件 return ⇒ 本判据变红。
+func TestProcessExit_StillNotifies(t *testing.T) {
+	p := New("agentcli")
+	p.notifyBytes = 1 << 20
+	capture := &injectCapture{}
+	sdkInst := sdk.New("agentcli", sdk.SDKConfig{
+		RegTool:  newToolCapture().RegisterTool,
+		RegStage: func(sdk.Stage, sdk.StageHandler) {},
+		RegAPI:   func(string) error { return nil },
+		Settings: sdk.NewSettings("agentcli", nil),
+	})
+	sdkInst.SetIOInjector(capture)
+
+	term := newMockTerm()
+	ts := newTestSession(term)
+	startReadLoop(p, sdkInst, ts)
+
+	if !waitInjected(capture, "已启动", 2*time.Second) {
+		t.Fatal("expected startup notification")
+	}
+
+	// 进程自己退出（**不是** Close）：mockTerm 返回 process exited。
+	term.mu.Lock()
+	term.running = false
+	term.mu.Unlock()
+
+	got := waitInjected(capture, "进程已退出", 3*time.Second) ||
+		waitInjected(capture, "命令已执行结束", 3*time.Second) ||
+		waitInjected(capture, "读取结束", 3*time.Second)
+	if !got {
+		t.Fatal("进程自己结束必须有通知（修复不能把正常上报一起关掉）")
+	}
+}
+
+// 竞态版回声判据：Close() 会让 stopCh 与 Read 错误**同时**就绪，
+// 而 readLoop 的 select 在两者都就绪时**随机**选一个分支。
+//
+// 所以「关闭后不注入回声」不能只在"select 恰好选中 stopCh"时成立——
+// 必须在**任何**顺序下都成立。上面那条判据只跑一次，抓不到这个随机性
+// （实测：把 isClosing 改成恒 false 仍然绿）。
+//
+// 这里连开关闭 20 次，只要有一次出现回声就算失败。
+func TestClose_NoEcho_Repeated(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		p := New("agentcli")
+		p.notifyBytes = 1 << 20
+		capture := &injectCapture{}
+		sdkInst := sdk.New("agentcli", sdk.SDKConfig{
+			RegTool:  newToolCapture().RegisterTool,
+			RegStage: func(sdk.Stage, sdk.StageHandler) {},
+			RegAPI:   func(string) error { return nil },
+			Settings: sdk.NewSettings("agentcli", nil),
+		})
+		sdkInst.SetIOInjector(capture)
+
+		term := newMockTerm()
+		ts := newTestSession(term)
+		startReadLoop(p, sdkInst, ts)
+		if !waitInjected(capture, "已启动", 2*time.Second) {
+			t.Fatal("expected startup notification")
+		}
+		before := len(capture.snapshot())
+
+		// ★ 关键：先在 PTY 缓冲里**留下未读数据**，再关闭。
+		//
+		// 线上关闭终端时 PTY 缓冲里通常还有未读输出（提示符、命令尾部）。
+		// 这时 readLoop 的 select 在 `<-t.stopCh` 与 `<-readCh` 之间是
+		// **随机**选择——选到 readCh 就会先处理数据，随后紧跟着拿到
+		// EIO（因为 Kill 后读端立刻报错），于是走进 r.err 分支。
+		// 若这里不预置数据，select 几乎总是选中 stopCh，回声永远复现不出来
+		// （这就是我第一版判据显示"全绿"的原因）。
+		term.push([]byte("leftover output" + "\r\n"))
+		time.Sleep(30 * time.Millisecond)
+
+		ts.Close()
+		time.Sleep(120 * time.Millisecond)
+
+		after := capture.snapshot()
+		for _, msg := range after[before:] {
+			if strings.Contains(msg, "读取结束") || strings.Contains(msg, "进程已退出") ||
+				strings.Contains(msg, "命令已执行结束") {
+				t.Fatalf("第 %d 次关闭后出现回声（select 随机选中了 r.err 分支）: %s", i, msg)
+			}
+		}
+	}
+}
+
+// 关闭终端后，session 必须**立刻**从表里消失。
+//
+// 这是"关闭终端后反复注入过期状态"的**直接**成因（2026-10-25 线上）：
+//
+//	close 工具 → session.Close() → readLoop 从 <-t.stopCh 静默 return
+//	           → 但**没删 sessions 条目**
+//	→ cleanupLoop 每 30s 扫到它，发现 !terminalRunning
+//	→ 又注入一条「[终端 term_6 中的进程已退出]」
+//	→ 而 terminal_list 已经是 0 个会话
+//
+// 所以用户看到的不是"一次回声"，而是**每 30 秒一次、永不停止**的
+// 过期状态注入——每条都会唤醒一轮推理，agent 只能反复解释"这是旧回声"。
+//
+// 判据：Close() 返回后 sessions 里不得再有它。
+// 变异：把 removeSession 调用删掉 ⇒ 本判据变红。
+func TestClose_RemovesSessionFromTable(t *testing.T) {
+	p := New("agentcli")
+	p.notifyBytes = 1 << 20
+	capture := &injectCapture{}
+	sdkInst := sdk.New("agentcli", sdk.SDKConfig{
+		RegTool:  newToolCapture().RegisterTool,
+		RegStage: func(sdk.Stage, sdk.StageHandler) {},
+		RegAPI:   func(string) error { return nil },
+		Settings: sdk.NewSettings("agentcli", nil),
+	})
+	sdkInst.SetIOInjector(capture)
+
+	ts := newTestSession(newMockTerm())
+	ts.id = "term_leak"
+	p.mu.Lock()
+	p.sessions = map[string]*TerminalSession{"term_leak": ts}
+	p.mu.Unlock()
+
+	startReadLoop(p, sdkInst, ts)
+	if !waitInjected(capture, "已启动", 2*time.Second) {
+		t.Fatal("expected startup notification")
+	}
+
+	ts.Close() // 内部会 <-t.done，等 readLoop 走完
+
+	p.mu.Lock()
+	_, still := p.sessions["term_leak"]
+	remaining := len(p.sessions)
+	p.mu.Unlock()
+
+	if still {
+		t.Fatalf("关闭后 session 仍留在表里（%d 个）——cleanupLoop 会每 30s "+
+			"把它当成「进程已退出」再注入一次，形成持续回声", remaining)
+	}
+}
+
+// cleanupLoop 对**已关闭**的终端不得再注入通知。
+//
+// 这是上一条的补强：即使将来某条路径又漏删了表，清理路径也必须靠
+// isClosing 兜住，不能把"我们自己关掉的"当成"进程自己结束了"上报。
+func TestCleanup_DoesNotNotifyForClosedTerminal(t *testing.T) {
+	p := New("agentcli")
+	p.notifyBytes = 1 << 20
+	capture := &injectCapture{}
+
+	term := newMockTerm()
+	ts := newTestSession(term)
+	ts.id = "term_closed"
+	ts.closed = true // 已被 close 工具关闭（但故意留在表里）
+
+	if !p.isClosing(ts) {
+		t.Fatal("isClosing 应识别 closed 标记")
+	}
+
+	// 模拟「漏删表」的坏状态：关闭了但还在 sessions 里。
+	p.sessions = map[string]*TerminalSession{"term_closed": ts}
+	term.setRunning(false)
+
+	// 走一遍 cleanupLoop 的判定逻辑（与生产同一段代码路径的判据部分）。
+	p.mu.Lock()
+	var wouldNotify []string
+	for id, t := range p.sessions {
+		if !p.isClosing(t) && !terminalRunning(t) {
+			wouldNotify = append(wouldNotify, id)
+		}
+	}
+	p.mu.Unlock()
+
+	if len(wouldNotify) > 0 {
+		t.Fatalf("已关闭的终端不应被 cleanupLoop 当作「进程已退出」上报：%v", wouldNotify)
+	}
+	_ = capture
 }

@@ -154,6 +154,42 @@ func (t *TerminalSession) appendOutput(data []byte) {
 	t.stream.Write(data)
 }
 
+// isClosing 报告该终端是否**已经被主动关闭**（close 工具 / 超时清理 / 停机）。
+//
+// 存在的理由：所有"终端结束"的通知都必须区分两种成因——
+//
+//	进程自己结束 → 是新闻，要告诉 agent
+//	我们主动关掉   → 是回声，绝不能再注入
+//
+// 旧实现只看 r.err / terminalRunning，而主动关闭恰好也会让两者成立
+// （Close 会 Kill 进程），于是 agent 在关闭终端后仍会收到
+// 「读取结束: read /dev/ptmx: input/output error」「进程已退出」，
+// 而此时 terminal_list 已是 0 个会话——这就是用户看到的
+// "关闭终端后反复注入过期状态"。
+// removeSession 从 sessions 表里摘掉一个终端（幂等）。
+//
+// 为什么单独成方法：readLoop 有三条退出路径（主动关闭 / 进程自己结束 /
+// 超时），三条都必须清表。散落着写 delete 容易漏——实测漏的就是
+// 「主动关闭」那条，后果是 cleanupLoop 每 30 秒把同一终端当成
+// "进程已退出"再上报一次，形成持续回声。
+func (p *Plugin) removeSession(id string) {
+	p.mu.Lock()
+	delete(p.sessions, id)
+	p.mu.Unlock()
+}
+
+func (p *Plugin) isClosing(t *TerminalSession) bool {
+	select {
+	case <-t.stopCh:
+		return true // Close() 已发出关闭信号
+	default:
+	}
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+	return closed
+}
+
 func (t *TerminalSession) IsExpired() bool {
 	return time.Since(t.createdAt) >= t.timeout
 }
@@ -990,23 +1026,24 @@ func (p *Plugin) readLoop(t *TerminalSession, s *sdk.PluginSDK) {
 			log.Printf("[agentcli] terminal %s expired after %v", t.id, t.timeout)
 			s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 已超时关闭（%s）]", t.id, t.timeout),
 				sdk.InjectOptions{NoMemory: true})
-			p.mu.Lock()
-			delete(p.sessions, t.id)
-			p.mu.Unlock()
+			p.removeSession(t.id)
 			return
 		}
 
 		if !terminalRunning(t) {
-			if t.watch.onExit {
-				s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 中的命令已执行结束]", t.id),
-					sdk.InjectOptions{NoMemory: true})
-			} else {
-				s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 中的进程已退出]", t.id),
-					sdk.InjectOptions{NoMemory: true})
+			// 与 r.err 分支同理：主动关闭时进程是被我们 Kill 掉的，
+			// "进程已退出"是**我们造成的**结果，不是需要告诉 agent 的新事件。
+			// 不判这一下，关闭终端会立刻收到一条"进程已退出"回声。
+			if !p.isClosing(t) {
+				if t.watch.onExit {
+					s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 中的命令已执行结束]", t.id),
+						sdk.InjectOptions{NoMemory: true})
+				} else {
+					s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 中的进程已退出]", t.id),
+						sdk.InjectOptions{NoMemory: true})
+				}
 			}
-			p.mu.Lock()
-			delete(p.sessions, t.id)
-			p.mu.Unlock()
+			p.removeSession(t.id)
 			return
 		}
 
@@ -1029,13 +1066,36 @@ func (p *Plugin) readLoop(t *TerminalSession, s *sdk.PluginSDK) {
 
 		select {
 		case <-t.stopCh:
+			// ★ 主动关闭：静默退出，且**必须清掉 sessions 条目**。
+			//
+			// 旧实现只 return 不删表。于是已关闭的终端仍留在 sessions 里，
+			// cleanupLoop 每 30s 扫到它时发现 !terminalRunning，
+			// 又注入一条「[终端 X 中的进程已退出]」——而 agent 早已
+			// 从 close 工具得到"已关闭"，terminal_list 也显示 0 个。
+			// 这就是"关闭终端后反复注入过期状态"的直接成因：
+			// 不是一次回声，而是**每 30 秒一次**的持续性回声。
+			p.removeSession(t.id)
 			return
 		case <-flushTicker.C:
 			// 批量推送终端实时画面增量（独立 ticker，避免被高密度数据饿死）
 			flushTermStream(s, t)
 		case r := <-readCh:
 			if r.err != nil {
-				// 读取错误/EOF → 立即通知（进程可能已结束）
+				// 读取错误/EOF：只在**进程自己结束**时通知。
+				//
+				// ★ 主动关闭（close 工具 / 超时清理 / 插件停机）必须静默：
+				// 那条路径先关 stopCh → Kill 进程 → PTY 读端立刻返
+				// 「read /dev/ptmx: input/output error」。若这里照样注入，
+				// agent 会收到一条"读取结束"的**回声**——它对应的终端早已
+				// 从 sessions 里删掉，terminal_list 显示 0 个，但这条消息
+				// 仍会被当成新事件唤醒一轮推理（用户看到的就是
+				// "关闭终端后反复注入过期状态"）。
+				//
+				// 判据用 closed/stopCh 而不是 r.err 的文本：错误文案随平台
+				// 与内核版本变化，靠匹配字符串判断"是不是正常关闭"必然腐烂。
+				if p.isClosing(t) || t.IsExpired() {
+					return // 主动关闭 / 超时清理：不注入
+				}
 				s.InjectTextOpts("agentcli", "agentcli", fmt.Sprintf("[终端 %s 读取结束: %v]", t.id, r.err),
 					sdk.InjectOptions{NoMemory: true})
 				return
