@@ -83,6 +83,11 @@ type DisabledPluginInfo struct {
 	Name       string `json:"name"`
 	DisabledAt string `json:"disabled_at"`
 	DisabledBy string `json:"disabled_by"`
+	// Reason 是禁用原因（可空）。
+	//
+	// 人工禁用通常为空；**内核自动禁用**必须填（如与内核版本不兼容），
+	// 让用户在界面上直接看到"为什么没了"，而不是去翻日志。
+	Reason string `json:"reason,omitempty"`
 }
 
 // PluginMeta is the display-name metadata for a plugin (from plg.json / RegisterPluginMeta).

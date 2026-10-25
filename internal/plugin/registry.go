@@ -801,6 +801,63 @@ func pluginEntryHash(plgDir string) string {
 	return ""
 }
 
+// maybeAutoDisableIncompatible 在内核/插件版本不兼容时**持久禁用**该插件。
+//
+// ## 为什么需要它（OTA 场景）
+//
+// 内核升级只换二进制（不重编插件）。换完之后，用旧 SDK 编的插件会在握手
+// 时被判主版本不匹配而启动失败。若只是 `log.Printf` 后返回 false：
+//   · 每次重启都重试一遍、失败一遍，日志反复刷；
+//   · 用户在界面上只看到"插件不见了"，必须翻日志才知道为什么；
+//   · 没有任何地方告诉用户"该重编还是该卸载"。
+//
+// 所以这里把它**持久禁用**并**写下原因**，让展示层能直接说清楚。
+//
+// ## 为什么只认"版本不兼容"这一类
+//
+// 其它启动失败（端口被占、配置缺失、插件崩溃）都是**可能自愈**的临时或
+// 环境问题。把它们也自动禁用，等于把一个可修复的故障变成"永不加载"——
+// 那比反复重试糟糕得多。判据只认握手阶段那条带版本信息的错误。
+//
+// 返回 true 表示已写入持久禁用。
+func (r *Registry) maybeAutoDisableIncompatible(name string, err error) bool {
+	if err == nil || !isVersionIncompatibleErr(err) {
+		return false
+	}
+	cfgReg := r.cfgRegistryOrNil()
+	if cfgReg == nil {
+		return false
+	}
+	reason := formatIncompatibleReason(err)
+	if e := cfgReg.AddDisabledPluginWithReason(name, "kernel", reason); e != nil {
+		log.Printf("[plugin] auto-disable %s failed: %v", name, e)
+		return false
+	}
+	r.mu.Lock()
+	r.knownDisabled[name] = true
+	r.mu.Unlock()
+	// 用 Info 而不是 Printf：这是**状态变更**，不是过程日志。
+	log.Printf("[plugin] AUTO-DISABLED %s: %s（已写入禁用配置，跨重启保留；重编插件或手动启用即可恢复）",
+		name, reason)
+	return true
+}
+
+// isVersionIncompatibleErr 判定错误是否为"主版本不匹配"。
+//
+// 判据用错误文案里的稳定片段，而不是新引入错误类型：握手错误从
+// proc 包穿过多层包装传上来，改成类型化错误要动 process.go 的返回契约，
+// 而那些错误同时被别的调用方消费。这里只做**窄**判定——认不出就不自动禁用，
+// 保持"反复重试但可自愈"的既有行为。
+func isVersionIncompatibleErr(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "主版本不匹配")
+}
+
+// formatIncompatibleReason 把握手错误压成一句可展示的原因。
+func formatIncompatibleReason(err error) string {
+	return "与内核版本不兼容：" + strings.TrimSpace(err.Error())
+}
+
 func (r *Registry) loadOne(plgDir, name string) bool {
 	if r.isDisabled(name) {
 		log.Printf("[plugin] %s is disabled, skipping", name)
@@ -869,6 +926,7 @@ func (r *Registry) loadOne(plgDir, name string) bool {
 	plgSDK := r.buildSDK(name)
 	if err := plg.Start(plgSDK); err != nil {
 		log.Printf("[plugin] start %s: %v", name, err)
+		r.maybeAutoDisableIncompatible(name, err)
 		return false
 	}
 

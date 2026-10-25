@@ -88,14 +88,29 @@ func (r *ConfigRegistry) initCoreTable() {
 	r.db.Exec(`CREATE TABLE IF NOT EXISTS disabled_plugins (
 		name       TEXT PRIMARY KEY,
 		disabled_at TEXT NOT NULL,
-		disabled_by TEXT NOT NULL DEFAULT ''
+		disabled_by TEXT NOT NULL DEFAULT '',
+		reason     TEXT NOT NULL DEFAULT ''
 	)`)
+	// 迁移：旧库没有 reason 列（已有表时 CREATE TABLE IF NOT EXISTS 不补列）。
+	//
+	// 为什么需要 reason：内核 OTA 换版本后，与旧 SDK 编的插件会握手失败。
+	// 自动禁用它们时必须**说明原因**，否则用户看到"已禁用"却不知为何，
+	// 只能去翻日志（而日志可能已轮转）。
+	r.db.Exec(`ALTER TABLE disabled_plugins ADD COLUMN reason TEXT NOT NULL DEFAULT ''`)
 }
 
 func (r *ConfigRegistry) AddDisabledPlugin(name, by string) error {
+	return r.AddDisabledPluginWithReason(name, by, "")
+}
+
+// AddDisabledPluginWithReason 同 AddDisabledPlugin，并记录**为什么**被禁用。
+//
+// reason 供展示层直接呈现（如"与内核 1.4.0 不兼容：插件 SDK 1.0.0"），
+// 让用户不必翻日志就能判断该重编还是该卸载。
+func (r *ConfigRegistry) AddDisabledPluginWithReason(name, by, reason string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, err := r.db.Exec(`INSERT OR REPLACE INTO disabled_plugins (name, disabled_at, disabled_by) VALUES (?, datetime('now'), ?)`, name, by)
+	_, err := r.db.Exec(`INSERT OR REPLACE INTO disabled_plugins (name, disabled_at, disabled_by, reason) VALUES (?, datetime('now'), ?, ?)`, name, by, reason)
 	return err
 }
 
@@ -131,12 +146,17 @@ type DisabledPluginInfo struct {
 	Name       string `json:"name"`
 	DisabledAt string `json:"disabled_at"`
 	DisabledBy string `json:"disabled_by"`
+	// Reason 是禁用原因（可空）。
+	//
+	// 人工禁用通常没有原因；**内核自动禁用**必须填（如版本不兼容），
+	// 否则用户看到"已禁用"却不知为何，只能翻日志。
+	Reason string `json:"reason,omitempty"`
 }
 
 func (r *ConfigRegistry) ListDisabledPlugins() ([]DisabledPluginInfo, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	rows, err := r.db.Query(`SELECT name, disabled_at, disabled_by FROM disabled_plugins ORDER BY name`)
+	rows, err := r.db.Query(`SELECT name, disabled_at, disabled_by, COALESCE(reason,'') FROM disabled_plugins ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +164,7 @@ func (r *ConfigRegistry) ListDisabledPlugins() ([]DisabledPluginInfo, error) {
 	var list []DisabledPluginInfo
 	for rows.Next() {
 		var info DisabledPluginInfo
-		if err := rows.Scan(&info.Name, &info.DisabledAt, &info.DisabledBy); err != nil {
+		if err := rows.Scan(&info.Name, &info.DisabledAt, &info.DisabledBy, &info.Reason); err != nil {
 			return nil, err
 		}
 		list = append(list, info)
