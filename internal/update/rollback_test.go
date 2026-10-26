@@ -3,6 +3,7 @@ package update
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -242,4 +243,87 @@ func TestPendingMarker_TimestampSet(t *testing.T) {
 	if got.At.Before(before) {
 		t.Errorf("At 应接近当前时间，实际 %v", got.At)
 	}
+}
+
+// ★★★ 判据：升级后的**第一次启动**必须确认，不能回滚。
+//
+// 真机实测（2026-10-26）踩到的缺陷：标记在替换**之前**写，所以升级后第一次
+// 启动必然看到它。原实现"见标记就回滚"⇒ 每次升级都被立刻撤销：
+//
+//	-apply 报"✅ 升级完成"
+//	重启后日志：ROLLED BACK kernel 1.4.0dev → 1.4.0dev（上一次升级未能确认启动）
+//
+// 升级因此永远不可能生效。正确语义是比对版本：
+// 当前跑的 == 标记里的 To ⇒ 升级已生效 ⇒ 确认并清标记。
+func TestRollback_ConfirmsWhenRunningTargetVersion(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeVersionScript(t, dir, "homed", "1.4.1", "newcommit")
+
+	backupDir := filepath.Join(dir, "backup")
+	os.MkdirAll(backupDir, 0755)
+	os.WriteFile(filepath.Join(backupDir, "homed"), []byte("OLD-GOOD"), 0755)
+
+	MarkPendingUpgrade(dir, PendingRecord{
+		FromVer: "1.4.0", FromCommit: "old",
+		ToVer: "1.4.1", ToCommit: "newcommit",
+		BackupDir: backupDir,
+	})
+
+	rolled, _, _, err := RollbackIfUnconfirmed(dir, bin)
+	if err != nil {
+		t.Fatalf("确认不应失败: %v", err)
+	}
+	if rolled {
+		t.Fatal("★★★ 已在跑升级后的版本，却被回滚了 —— 升级永远无法生效")
+	}
+	// 标记必须被清掉，否则下次启动又判一次
+	if reced, _ := ReadPendingUpgrade(dir); reced != nil {
+		t.Error("确认成功后应清除 pending 标记")
+	}
+	// 二进制不能被改动
+	if b, _ := os.ReadFile(bin); !strings.Contains(string(b), "1.4.1") {
+		t.Error("确认路径不应改写二进制")
+	}
+}
+
+// ★★★ 判据：当前版本**不是**升级目标 ⇒ 必须回滚（升级没生效/被回退）。
+func TestRollback_RollsBackWhenRunningOldVersion(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeVersionScript(t, dir, "homed", "1.4.0", "oldcommit")
+
+	backupDir := filepath.Join(dir, "backup")
+	os.MkdirAll(backupDir, 0755)
+	os.WriteFile(filepath.Join(backupDir, "homed"), []byte("OLD-GOOD"), 0755)
+
+	MarkPendingUpgrade(dir, PendingRecord{
+		FromVer: "1.4.0", FromCommit: "oldcommit",
+		ToVer: "1.4.1", ToCommit: "newcommit",
+		BackupDir: backupDir,
+	})
+
+	rolled, from, to, err := RollbackIfUnconfirmed(dir, bin)
+	if err != nil {
+		t.Fatalf("回滚不应失败: %v", err)
+	}
+	if !rolled {
+		t.Fatal("跑的还是旧版本，说明升级没生效，必须回滚")
+	}
+	if from != "1.4.0" || to != "1.4.1" {
+		t.Errorf("版本轨迹不对: %s → %s", from, to)
+	}
+}
+
+// writeVersionScript 造一个能被 ReadBinVersion 读出版本的假二进制。
+//
+// 为什么用脚本而不是随便写字节：ReadBinVersion 靠**执行** `<bin> --version`
+// 取版本，写死字节的假文件根本跑不起来（现有用例走的就是"读不到 ⇒ 回滚"
+// 分支，所以那些用例测不到"确认"这条路径）。
+func writeVersionScript(t *testing.T, dir, name, ver, commit string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	body := "#!/bin/sh\nprintf 'version=" + ver + "\\ncommit=" + commit + "\\n'\n"
+	if err := os.WriteFile(p, []byte(body), 0755); err != nil {
+		t.Fatalf("写假二进制: %v", err)
+	}
+	return p
 }

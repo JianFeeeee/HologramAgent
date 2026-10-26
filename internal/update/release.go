@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,34 @@ func ghRepo() string {
 	return "JianFeeeee/HologramAgent"
 }
 
+// kernelHTTPClient 用于**查询**（JSON 元数据，小、快）。
+//
+// 20s 总超时在这里是合适的：查不到就该快速失败，让用户看到"查不了"，
+// 而不是挂着一个"正在检查更新"的界面。
 var kernelHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
+// downloadHTTPClient 用于**下载安装包**。
+//
+// ★ 为什么不能复用上面那个客户端（实测踩到）：发行包约 880MB，
+// 而 Client.Timeout 是**整条请求**的上限（含读完 body）—— 20s 下必然
+// `context deadline exceeded (Client.Timeout ... while reading body)`。
+// 那会让"从 Release 自动更新"永远失败，而错误看起来像网络问题。
+//
+// ⇒ 下载客户端**不设总超时**，改用分层超时：
+//
+//	· 建连/TLS 握手/等响应头 —— 有界，卡住就失败
+//	· 读 body —— 不限总时长（大文件），靠连接空闲超时 + 传输层兜底
+var downloadHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ForceAttemptHTTP2:     true,
+	},
+}
 
 // ReleaseInfo 是一次「内核检查更新」的结果。
 type ReleaseInfo struct {
@@ -144,7 +172,7 @@ func DownloadLatestRelease(dst string) (*ReleaseInfo, error) {
 }
 
 func downloadFile(url, dst string) error {
-	resp, err := kernelHTTPClient.Get(url)
+	resp, err := downloadHTTPClient.Get(url)
 	if err != nil {
 		return err
 	}

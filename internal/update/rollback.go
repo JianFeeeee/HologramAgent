@@ -127,6 +127,35 @@ func RollbackIfUnconfirmed(dataDir, binPath string) (bool, string, string, error
 		return false, "", "", nil
 	}
 
+	// ★★★ 先判"这次启动跑的是不是升级后的那个版本"。
+	//
+	// 这一步是必须的，而且顺序不能反（2026-10-26 真机实测踩到）：
+	// 标记是在**替换之前**写的，所以升级后的**第一次启动**必然看到它。
+	// 若不比对版本就直接回滚，那么每次升级都会在第一次启动时被立刻撤销 ——
+	// 实测表现：`-apply` 报"升级完成"，重启后日志却是
+	// "ROLLED BACK kernel 1.4.0dev → 1.4.0dev（上一次升级未能确认启动）"，
+	// 也就是升级永远不可能生效。
+	//
+	// 语义区分（这才是两段式确认的本意）：
+	//
+	//	当前版本 == 标记里的 To  ⇒ 新版本**已经跑起来了** ⇒ 确认，清标记，继续启动
+	//	当前版本 != To（或读不到）⇒ 新版本没能成为运行版本（exec 失败、被 guard 回退等）
+	//	                          ⇒ 回滚到备份
+	confirmed := false
+	if cur, cerr := ReadBinVersion(binPath); cerr == nil {
+		sameVer := cur.Version == rec.ToVer
+		sameCommit := rec.ToCommit == "" || cur.Commit == rec.ToCommit
+		confirmed = sameVer && sameCommit
+	}
+	if confirmed {
+		if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
+			log.Printf("[update] %s 已生效，但清除标记失败: %v", rec.ToVer, cerr)
+		} else {
+			log.Printf("[update] upgrade to %s confirmed (running binary matches), marker cleared", rec.ToVer)
+		}
+		return false, "", "", nil
+	}
+
 	log.Printf("[update] found unconfirmed upgrade: %s → %s（上次升级后内核未能启动成功）",
 		ShortCommit(rec.FromCommit), ShortCommit(rec.ToCommit))
 

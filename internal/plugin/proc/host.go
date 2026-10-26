@@ -393,7 +393,18 @@ func (c *stageCoordinator) finish(sc *pubsdk.StageContext, written bool) error {
 func (h *Host) Arena() *arenaRegion { return h.arena }
 
 // Generation 返回统一区域当前 generation（SharedRef 校验用）。
-func (h *Host) Generation() uint64 { return h.unified.generation() }
+//
+// ★ 必须判空（2026-10-26 真机实测）：关机/重启时 unified 段会先被拆掉，
+// 而此时仍有在途的工具调用（stage handler、cleaner）走到这里 ——
+// 直接解引用会 panic（每次 OTA 重启必现两条：
+// `[stage] tool xxx handler panic: invalid memory address`）。
+// panic 虽被 recover 住，但会污染日志、并把"正常关闭"伪装成故障。
+func (h *Host) Generation() uint64 {
+	if h == nil || h.unified == nil {
+		return 0
+	}
+	return h.unified.generation()
+}
 
 // NextOwnerID 分配一个插件专用的槽 owner ID。
 //
