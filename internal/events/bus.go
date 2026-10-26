@@ -109,6 +109,25 @@ const (
 	//	detail: 该步的人读说明
 	EventUpdateProgress EventType = "update_progress"
 
+	// EventUpdateRequest 是**其他插件请求更新**的入口。
+	//
+	// ## 为什么用事件而不是让各插件直接 import internal/update
+	//
+	// 请求方只需说"我要更新"，不必知道怎么拉源码、怎么编译、怎么替换、
+	// 怎么回滚。那些是本子系统的事。用事件解耦后：
+	//
+	//	· 请求方连 import 都不需要（外置插件更不可能 import 内核内部包）
+	//	· 请求与进度都在总线上，WebUI 能显示"谁请求 → 到哪一步 → 结果如何"
+	//	· 多个插件同时请求时天然按到达顺序处理，不会两个 git clone 抢同一工作目录
+	//
+	// payload 约定：
+	//
+	//	scope:  "kernel" | "plugin"
+	//	name:   插件名（scope=plugin 时必填）
+	//	pkg:    本机安装包路径（可选）
+	//	release: bool，从仓库最新 Release 自动取包（可选）
+	EventUpdateRequest EventType = "update_request"
+
 	// EventUpdateResult 发布升级的最终结果（成功或失败，含回滚轨迹）。
 	//
 	// payload 约定：

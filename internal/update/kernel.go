@@ -246,31 +246,36 @@ func FileSize(p string) int64 {
 	return 0
 }
 
-// doUpgrade 执行真实升级：备份 → 预检 → 原子替换 → 重启 → 后置验证 → 失败回滚。
+// Apply 执行真实升级：预检 → 备份 → 写 pending → 原子替换。
 //
-// 每一步失败都往回退，且**回滚后必须能正常启动**——这是本函数的核心承诺：
-// 宁可升级失败，不可让机器起不来。
-func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
-	return DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir, nil)
-}
-
-// DoUpgradeBus 同 DoUpgrade，但把每个步骤发布到事件总线。
+// ## ★ 本函数**不重启**内核
 //
-// ★ 为什么必须"先发事件再动作"：升级的最后几步会让进程消失
-// （replace → restart）。顺序一反，最后几步的事件永远发不出去 ——
-// 而那时用户最需要知道"升级到哪一步了/失败了/已回滚"。
+// 重启必须由**调用方**通过内核控制通道发起，理由见
+// cmd/homed/kernel_control.go 的说明：worker 是被守护方，只有 guard
+// 知道这次退出该不该重拉（exit 42 → 重拉且不计失败轮次）。
 //
-// bus 为 nil 时退化成纯 printf（CLI 场景没有总线）。
-func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.Bus) error {
+// 本包若自己调 `systemctl restart`，会带来三个问题：
+//
+//	· 杀掉整个 cgroup（含 guard）—— 把监督者一起杀掉
+//	· 丢失 exit 42 语义：guard 的 failures/failbackRound 状态全丢
+//	· 发命令的进程正是被重启杀掉的进程 ⇒ 返回值不可靠，
+//	  一次成功的升级会被误判成失败而触发回滚
+//
+// 所以这里只承诺到"磁盘上的产物已就绪，pending 标记已写"。
+// 后续重启 → 新内核启动 → update 模块（第 0 层）确认或回滚。
+//
+// 每一步失败都往回退：替换中途失败 ⇒ 立即用备份还原并清标记
+// （此时尚未重启，回滚在本进程内完成，机器始终可启动）。
+func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, error) {
 	newBin := FindFile(root, "homed")
 	if newBin == "" {
-		return fmt.Errorf("包内无 homed")
+		return nil, fmt.Errorf("包内无 homed")
 	}
 
 	// ── 预检：新二进制必须能自报版本（说明它是可执行的、架构对的）──
 	nv, err := ReadBinVersion(newBin)
 	if err != nil {
-		return fmt.Errorf("预检失败，新二进制不可执行: %w", err)
+		return nil, fmt.Errorf("预检失败，新二进制不可执行: %w", err)
 	}
 	publishProgress(bus, "kernel", "", "verify", "新内核可执行，版本 "+nv.Version)
 	fmt.Printf("\n== 预检通过 ==\n新内核 %s 可执行\n", nv.Version)
@@ -279,7 +284,7 @@ func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.
 	ts := NowStamp()
 	backup := filepath.Join("/root", "homed-upgrade-backup-"+ts)
 	if err := os.MkdirAll(backup, 0755); err != nil {
-		return fmt.Errorf("建备份目录: %w", err)
+		return nil, fmt.Errorf("建备份目录: %w", err)
 	}
 	targets := []string{binPath}
 	if dg := filepath.Join(filepath.Dir(binPath), "depgraph.bin"); FileExists(dg) {
@@ -287,7 +292,7 @@ func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.
 	}
 	for _, t := range targets {
 		if err := CopyFile(t, filepath.Join(backup, filepath.Base(t))); err != nil {
-			return fmt.Errorf("备份 %s: %w", t, err)
+			return nil, fmt.Errorf("备份 %s: %w", t, err)
 		}
 	}
 	publishProgress(bus, "kernel", "", "backup", fmt.Sprintf("已备份 %d 个文件", len(targets)))
@@ -297,9 +302,6 @@ func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.
 	//
 	// 顺序很关键：先写标记再替换。若反过来（替换后才写），"替换成功但
 	// 没来得及写标记就崩了"会丢标记 ⇒ 下次启动不知道该回滚。
-	//
-	// 标记由 update 模块（第 0 层）在下次启动时读；读到就说明上次升级
-	// 留下的版本没能活到清除标记 ⇒ 回滚（见 internal/update/rollback.go）。
 	curVer := &BinVersion{}
 	if v, verr := ReadBinVersion(binPath); verr == nil {
 		curVer = v
@@ -314,14 +316,15 @@ func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.
 		}); perr != nil {
 			// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力，
 			// 而不带回滚的升级等于赌运气。
-			return fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
+			return nil, fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
 		}
 		fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
 	}
 
-	rollback := func(cause error) error {
+	// restore 在替换失败时把已动的文件还原（尚未重启，机器仍可启动）。
+	restore := func(cause error) (*Outcome, error) {
 		publishProgress(bus, "kernel", "", "rollback", cause.Error())
-		fmt.Printf("\n❌ %v\n== 开始回滚 ==\n", cause)
+		fmt.Printf("\n❌ %v\n== 就地还原（尚未重启，机器仍可启动）==\n", cause)
 		if dataDir != "" {
 			if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
 				fmt.Printf("  ⚠️ 清除升级确认标记失败: %v\n", cerr)
@@ -330,74 +333,41 @@ func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.
 		for _, t := range targets {
 			src := filepath.Join(backup, filepath.Base(t))
 			if err := CopyFile(src, t); err != nil {
-				fmt.Printf("  ⚠️ 回滚 %s 失败: %v（需人工处理）\n", t, err)
+				fmt.Printf("  ⚠️ 还原 %s 失败: %v（需人工处理）\n", t, err)
 				continue
 			}
 			fmt.Printf("  已恢复 %s\n", t)
 		}
-		if err := restartService(); err != nil {
-			fmt.Printf("  ⚠️ 重启失败: %v（需人工处理）\n", err)
-		} else if !WaitHealthy(60) {
-			fmt.Println("  ⚠️ 回滚后仍不健康，需人工介入")
-		} else {
-			fmt.Println("  ✅ 已回滚并恢复正常运行")
-		}
-		return fmt.Errorf("升级失败已回滚: %w", cause)
+		publishResult(bus, "kernel", "", false, curVer.Version, nv.Version, true, cause.Error())
+		return nil, fmt.Errorf("替换失败已还原（未重启）: %w", cause)
 	}
 
 	// ── 替换（depgraph 必须与 homed 同批，顺序无关但都要成）──
 	if newDG != "" {
 		dst := filepath.Join(filepath.Dir(binPath), "depgraph.bin")
 		if err := CopyFile(newDG, dst); err != nil {
-			return rollback(fmt.Errorf("替换 depgraph.bin: %w", err))
+			return restore(fmt.Errorf("替换 depgraph.bin: %w", err))
 		}
 		fmt.Println("已替换 depgraph.bin")
 	}
 	if err := CopyFile(newBin, binPath); err != nil {
-		return rollback(fmt.Errorf("替换 homed: %w", err))
+		return restore(fmt.Errorf("替换 homed: %w", err))
 	}
 	fmt.Println("已替换 homed")
+	publishProgress(bus, "kernel", "", "ready", "新内核已就位，等待重启")
 
-	// ── 重启 + 后置验证 ──
-	if err := restartService(); err != nil {
-		return rollback(fmt.Errorf("重启: %w", err))
-	}
-	if !WaitHealthy(90) {
-		return rollback(fmt.Errorf("新版本未在超时内达到健康状态"))
-	}
-
-	// 版本复核：确认跑起来的**确实**是新版本（而不是重启失败后旧的还在）
-	got, err := ReadBinVersion(binPath)
-	if err != nil || got.Version != nv.Version || got.Commit != nv.Commit {
-		return rollback(fmt.Errorf("版本复核不符：期望 %s/%s，实际 %v", nv.Version, ShortCommit(nv.Commit), got))
-	}
-	publishResult(bus, "kernel", "", true, curVer.Version, got.Version, false, "")
-	fmt.Printf("\n✅ 升级完成：%s (commit %s)\n", got.Version, ShortCommit(got.Commit))
-	fmt.Printf("   备份保留在 %s（确认稳定后可删）\n", backup)
-	return nil
+	return &Outcome{
+		From:      curVer,
+		To:        nv,
+		BackupDir: backup,
+	}, nil
 }
 
-// waitHealthy 轮询 systemd 的 active 状态。
-func WaitHealthy(seconds int) bool {
-	for i := 0; i < seconds; i++ {
-		out, err := exec.Command("systemctl", "is-active", "homeagent").Output()
-		if err == nil && strings.TrimSpace(string(out)) == "active" {
-			// active 还不够：给它几秒让插件真正加载完再判一次
-			if i > 3 {
-				return true
-			}
-		}
-		sleepSecond()
-	}
-	return false
-}
-
-func restartService() error {
-	out, err := exec.Command("systemctl", "restart", "homeagent").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+// Outcome 是一次替换的结果（**不含重启**，重启由调用方走内核控制通道）。
+type Outcome struct {
+	From      *BinVersion // 升级前版本（回滚目标）
+	To        *BinVersion // 已就位的新版本
+	BackupDir string      // 备份目录（确认稳定后可删）
 }
 
 func CopyFile(src, dst string) error {
@@ -436,9 +406,6 @@ func FileExists(p string) bool {
 func NowStamp() string {
 	return time.Now().Format("20060102-150405")
 }
-
-// sleepSecond 隔一秒（抽出来便于将来换成可注入的等待，测试不必真睡）。
-func sleepSecond() { time.Sleep(time.Second) }
 
 // inferVersionFromRunning 在老内核不支持 --version 时，尽力推断当前版本。
 //

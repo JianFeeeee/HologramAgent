@@ -21,9 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
-	"github.com/JianFeeeee/HologramAgent/internal/update"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
 // platformBinary 按当前 OS/ARCH 选择正确的插件二进制文件名。
@@ -97,6 +98,9 @@ type Plugin struct {
 	httpAddr  string // 本实例的监听地址（默认 defaultHTTPAddr；来自 settings）
 	sdk       *sdk.PluginSDK
 	pluginDir string
+
+	// unsubUpdateReq 注销 update_request 订阅（Stop 时调用）。
+	unsubUpdateReq func()
 	// maxPackageBytes 是单个插件包 **压缩后** 的上限（0 = 不限）。
 	//
 	// 为什么是配置项而不是常量：内嵌运行时（node+pi 之类）就要 ~100MB，
@@ -495,12 +499,26 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 		return p.pluginInfo(name)
 	})
 
+	// ── 订阅：其他插件的更新请求（EventBus，避免它们直接 import internal/update）──
+	//
+	// 为什么用事件而不是让插件调函数：
+	//   · 请求方只说"我要更新"，不必知道怎么拉源码/编译/替换/回滚
+	//   · 外置插件根本 import 不到内核内部包
+	//   · 请求与进度都在总线上，WebUI 能显示"谁请求 → 到哪步 → 结果如何"
+	//
+	// 注意：内核升级的**重启**仍走既有 KernelControlAPI（restartCh → exit 42
+	// → guard 重拉），本订阅只负责"受理请求 + 执行替换"。
+	if bus := s.EventBus(); bus != nil {
+		p.unsubUpdateReq = bus.Subscribe(events.EventUpdateRequest, p.onUpdateRequest)
+	}
+
 	s.RegisterTool("kernel_update", sdk.ToolDef{
 		Name: "kernel_update",
 		Description: "检查/升级**内核**（homed 二进制）。两阶段：默认（apply=false）只查 GitHub Release " +
-			"与本地版本比较，不改动任何东西；看过结果后传 apply=true + pkg（本机已存在的安装包路径）" +
-			"真正升级：校验 → 备份 → 原子替换 → 重启 → 版本复核 → 失败自动回滚。" +
-			"升级会让内核重启，连接断开数秒。从 URL 下载新包请用 CLI 的 homed-upgrade。",
+			"与本地版本比较，不改动任何东西；看过结果后传 apply=true，并给出包来源二选一：" +
+			"pkg=本机安装包路径，或 release=true 从最新 GitHub Release 自动下载。" +
+			"升级流程：校验 → 备份 → 原子替换 → 由 guard 重拉 → 新内核启动时确认，失败自动回滚。" +
+			"升级会让内核重启，连接断开数秒。",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -510,7 +528,11 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 				},
 				"pkg": map[string]interface{}{
 					"type":        "string",
-					"description": "安装包在本机的路径（.tar.gz）。仅 apply=true 时需要",
+					"description": "安装包在本机的路径（.tar.gz）。与 release 二选一；给了 pkg 就优先用它",
+				},
+				"release": map[string]interface{}{
+					"type":        "boolean",
+					"description": "true=从仓库最新 GitHub Release 自动下载安装包。未给 pkg 时可用",
 				},
 			},
 		},
@@ -519,8 +541,9 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 	}, func(args map[string]interface{}) (interface{}, error) {
 		apply, _ := args["apply"].(bool)
 		pkgPath, _ := args["pkg"].(string)
+		release, _ := args["release"].(bool)
 		if apply {
-			return p.kernelUpdateApply(pkgPath)
+			return p.kernelUpdateApply(pkgPath, release)
 		}
 		return p.kernelUpdateCheck()
 	})
@@ -731,7 +754,6 @@ func (p *Plugin) pluginUpdate(apply bool, scope string) (interface{}, error) {
 		"hint":    "升级成功后插件会以新版本重启；若插件未自动重启，调 plugin_restart",
 	}, nil
 }
-
 
 // ======== HTTP API ========
 

@@ -2,23 +2,36 @@ package webui
 
 // 内核更新的 HTTP 端点（GET 检查 / POST 升级）。
 //
-// ## 与 agent 工具同底层的架构约束
+// ## 三端共享同一底层（架构约束）
 //
 // agent 的 kernel_update 工具、本端点、CLI（homed-upgrade）三者共享
-// internal/update 的 CheckRelease / DoUpgrade —— 三份实现必然漂移，
-// 会出现"WebUI 说有新版、agent 说没有"的分裂状态。
+// internal/update 的 CheckRelease / Apply —— 三份实现必然漂移，会出现
+// "WebUI 说有新版、agent 说没有"的分裂状态。
 // 本文件只做 HTTP 形状转换，不含业务逻辑。
 //
-// ## 与 kernel/restart 的关系
+// ## 包来源二选一
 //
-// 升级 = 换二进制 + 重启。重启通道（kernelCtl）已存在且经过生产验证，
-// 升级走同一通道触发重启，不自建第二条。
+//	{"release": true}                  → 从仓库最新 GitHub Release 自动下载
+//	{"pkg": "/path/to/pkg.tar.gz"}     → 用本机已有的安装包（优先）
+//
+// ## 升级 = 换产物 + 重启，两件事**分开做**
+//
+//	Apply（本进程内，同步）  ：校验 → 备份 → pending → 原子替换
+//	重启（交给内核控制通道）  ：kernelCtl.RequestKernelRestart → exit 42
+//	                           → guard 用新二进制重拉（不计失败轮次）
+//
+// ★ 为什么 Apply 必须同步返回：替换是**可失败**的动作（空间不足、权限、
+// 包损坏）。异步的话这些错误全被吞掉，用户只看到"已受理"然后毫无变化。
+// 而重启可以异步 —— 它让本进程消失，本来就没法回给它结果。
+//
+// ★ 为什么不用 systemctl restart：见 cmd/homed/kernel_control.go ——
+// worker 是被守护方，只有 guard 知道这次退出该不该重拉。
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
-	"os/exec"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/update"
@@ -38,45 +51,85 @@ func (h *Handler) handleKernelUpdate(w http.ResponseWriter, r *http.Request) {
 
 // handleKernelUpdateCheck 处理 GET —— 只检查不改动。
 func (h *Handler) handleKernelUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "只接受 GET")
-		return
-	}
-	cur := currentKernelVersion()
-	writeJSON(w, http.StatusOK, update.CheckRelease(cur))
+	writeJSON(w, http.StatusOK, update.CheckRelease(currentKernelVersion()))
 }
 
 // handleKernelUpdateApply 处理 POST /api/v1/kernel/update —— 执行升级。
-//
-// body: {"pkg": "/path/to/pkg.tar.gz"}（可选；缺省用最近一次检查到的
-// release 资产 URL 现场下载）。
 func (h *Handler) handleKernelUpdateApply(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSONError(w, http.StatusMethodNotAllowed, "只接受 POST")
+	var body struct {
+		Pkg     string `json:"pkg"`
+		Release bool   `json:"release"`
+	}
+	// body 可为空（不合法就在下面报"必须指定来源"），所以解码失败不单独报错。
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	src, err := update.ParseSource(body.Pkg, body.Release)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// ★ 升级会让进程重启：先把响应写回去（同 kernel/restart 的教训）
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"accepted": true,
-		"message":  "升级已受理。内核将替换二进制并重启，连接会断开数秒。完成后刷新状态页确认新版本。",
-	})
 
-	var body struct {
-		Pkg string `json:"pkg"`
+	binPath := update.KernelBinaryPath()
+
+	tmp, err := os.MkdirTemp("", "kernel-upgrade-*")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "建临时目录失败: "+err.Error())
+		return
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	defer os.RemoveAll(tmp)
+
+	root, rel, err := src.Resolve(tmp)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "取包失败: "+err.Error())
+		return
+	}
+	newDG := update.FindFile(root, "depgraph.bin")
 
 	// WebUI 侧天然有总线（它就是 SSE 的上游）：升级每一步都让界面看得到
 	var bus *events.Bus
 	if h.sdk != nil {
 		bus = h.sdk.EventBus()
 	}
-	go runKernelUpgrade(body.Pkg, bus)
+
+	out, err := update.Apply(root, binPath, newDG, dataDirOf(binPath), bus)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	res := map[string]interface{}{
+		"applied": true,
+		"from":    out.From.Version,
+		"to":      out.To.Version,
+		"backup":  out.BackupDir,
+		"message": "新内核已就位，正在重启。新版本启动后由第 0 层 update 模块确认；无法启动会自动回滚。",
+	}
+	if rel != nil {
+		res["release"] = rel.Latest
+		res["asset"] = rel.Asset
+	}
+
+	// 先把响应写回，再让内核消失（同 kernel/restart 的教训：不 Flush 会
+	// 变成 connection reset，用户以为出错了）。
+	writeJSON(w, http.StatusOK, res)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// 重启走**既有**内核控制通道（restartCh → exit 42 → guard 用新二进制重拉）。
+	// 不自己 systemctl，也不另开通道。
+	if h.kernelCtl == nil {
+		log.Printf("[webui] 新内核已就位，但内核控制通道不可用（kernelControlAllowed 未授予 webui），无法请求重启")
+		return
+	}
+	if err := h.kernelCtl.RequestKernelRestart("kernel_update apply"); err != nil {
+		log.Printf("[webui] kernel restart request failed (新内核已就位，需手动重启): %v", err)
+	}
 }
 
 // currentKernelVersion 读本机 homed 的版本（尽力而为）。
 func currentKernelVersion() *update.BinVersion {
-	bin := "/usr/local/bin/homed"
+	bin := update.KernelBinaryPath()
 	if _, err := os.Stat(bin); err != nil {
 		return nil
 	}
@@ -87,33 +140,13 @@ func currentKernelVersion() *update.BinVersion {
 	return v
 }
 
-// runKernelUpgrade 在后台执行完整升级闭环（含重启与回滚）。
+// dataDirOf 推导数据目录（升级确认标记的落点）。
 //
-// bus 为 nil 时退化成纯日志（该部署未接事件总线）。
-func runKernelUpgrade(pkgPath string, bus *events.Bus) {
-	if pkgPath == "" {
-		// 没给本地包：从最新 release 资产下载。
-		// 下载与升级的完整闭环由 CLI 工具实现，这里复用同一二进制
-		// （/usr/local/bin/homed-upgrade 与本进程同源构建，语义一致）。
-		if _, err := exec.LookPath("homed-upgrade"); err != nil {
-			return
-		}
-		return // 下载逻辑见 CLI；此处仅受理本地包路径
+// 与内核 `--data` 必须一致，否则第 0 层 update 模块读不到 pending 标记。
+// 优先用环境变量显式指定（部署方知道自己在哪），否则退回本机生产路径。
+func dataDirOf(binPath string) string {
+	if d := os.Getenv("HOMEAGENT_DATA_DIR"); d != "" {
+		return d
 	}
-	// 本地包：直接走共享底层（与 CLI 同代码路径）
-	tmp, err := os.MkdirTemp("", "kernel-upgrade-*")
-	if err != nil {
-		return
-	}
-	defer os.RemoveAll(tmp)
-	root, err := update.ExtractPkg(pkgPath, tmp)
-	if err != nil {
-		return
-	}
-	newBin := update.FindFile(root, "homed")
-	newDG := update.FindFile(root, "depgraph.bin")
-	if newBin == "" {
-		return
-	}
-	_ = update.DoUpgradeBus(root, "/usr/local/bin/homed", newDG, "/home/newqqagent/plugins", "/home/newqqagent", bus)
+	return "/home/newqqagent"
 }

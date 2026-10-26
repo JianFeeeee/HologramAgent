@@ -70,27 +70,31 @@ func TestKernelUpdate_CheckShape(t *testing.T) {
 	}
 }
 
-// 判据 4：kernel_update apply 缺 pkg ⇒ 明确报错并指向 CLI。
-func TestKernelUpdate_ApplyRequiresPkg(t *testing.T) {
+// 判据 4：kernel_update apply 没给来源 ⇒ 明确报错（不许"猜一个默认动作"）。
+//
+// 旧判据要求错误里出现 homed-upgrade —— 那是"agent 不该在推理中发起长下载"
+// 时期的限制。现在支持 release=true 自动取包（下载放在内核侧统一实现），
+// 所以判据改为：必须说清"两种来源二选一"。
+func TestKernelUpdate_ApplyRequiresSource(t *testing.T) {
 	p := &Plugin{pluginDir: t.TempDir()}
-	out, err := p.kernelUpdateApply("")
+	out, err := p.kernelUpdateApply("", false)
 	if err != nil {
 		t.Fatalf("应返回可呈现的错误: %v", err)
 	}
 	m := out.(map[string]interface{})
-	if !strings.Contains(fmtSprint(m["error"]), "pkg") {
-		t.Errorf("错误应说明需要 pkg，实际: %v", m["error"])
+	msg := fmtSprint(m["error"])
+	if !strings.Contains(msg, "pkg") {
+		t.Errorf("错误应说明需要 pkg，实际: %v", msg)
 	}
-	// 并应提示下载走 CLI（agent 不该在推理中发起长下载）
-	if !strings.Contains(fmtSprint(m["error"]), "homed-upgrade") {
-		t.Errorf("错误应指向 homed-upgrade，实际: %v", m["error"])
+	if !strings.Contains(msg, "Release") && !strings.Contains(msg, "release") {
+		t.Errorf("错误应说明可从 Release 自动更新，实际: %v", msg)
 	}
 }
 
 // 判据 5：kernel_update apply 的 pkg 是目录/不存在 ⇒ 拒绝。
 func TestKernelUpdate_ApplyRejectsBadPkg(t *testing.T) {
 	p := &Plugin{pluginDir: t.TempDir()}
-	out, _ := p.kernelUpdateApply(t.TempDir()) // 目录不是包
+	out, _ := p.kernelUpdateApply(t.TempDir(), false) // 目录不是包
 	m := out.(map[string]interface{})
 	if _, hasErr := m["error"]; !hasErr {
 		t.Errorf("目录不应被当作安装包，实际: %v", m)

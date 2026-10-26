@@ -293,6 +293,36 @@ var kernelControlAllowed = map[string]bool{
 	"webui": true,
 }
 
+// kernelRestartAllowed 是**仅重启**授权（不含关机）。
+//
+// ## 为什么必须把这两件事分开
+//
+// 完整通道的两个动作危险程度差一个量级：
+//
+//	RequestKernelRestart   guard 用磁盘上的二进制重拉 ⇒ 几秒后自己回来，**可恢复**
+//	RequestKernelShutdown  压制 Restart=always ⇒ 服务停住，**不会自己回来**
+//
+// 而 kernel_update 的收尾只需要"重拉"：新二进制已经换好了，不重启等于升级
+// 永远不生效 —— 更糟的是 pending 标记会在下次启动时被判"未确认"并**回滚**。
+//
+// ⇒ 给 pluginmgr 一个**去掉关机**的通道。攻击面因此限于"能让服务重启"，
+//
+//	而不是"能让服务消失"。
+var kernelRestartAllowed = map[string]bool{
+	"pluginmgr": true,
+}
+
+// restartOnly 是去掉关机能力的控制通道包装。
+type restartOnly struct{ full sdk.KernelControlAPI }
+
+func (r restartOnly) RequestKernelRestart(reason string) error {
+	return r.full.RequestKernelRestart(reason)
+}
+
+func (r restartOnly) RequestKernelShutdown(reason string) error {
+	return fmt.Errorf("该插件只被授予\"重启\"能力，未被授予关机能力（kernelRestartAllowed）")
+}
+
 // SetKernelControl 注入内核重启/关机通道（由 cmd/homed 装配时调用）。
 //
 // ★ 为何用 setter 而不是构造参数：internal/plugin 不能 import cmd/homed
@@ -320,10 +350,16 @@ func (r *Registry) kernelControlFor(name string) sdk.KernelControlAPI {
 // 拆出来的原因：buildSDK 要在**一次** RLock 里取走整组依赖（见 snapshotDeps），
 // 不能再回头单独取锁 —— RWMutex 不可重入，持锁再 RLock 在写者排队时会自锁。
 func kernelControlForCtl(ctl sdk.KernelControlAPI, name string) sdk.KernelControlAPI {
-	if ctl == nil || !kernelControlAllowed[name] {
+	if ctl == nil {
 		return nil
 	}
-	return ctl
+	if kernelControlAllowed[name] {
+		return ctl
+	}
+	if kernelRestartAllowed[name] {
+		return restartOnly{full: ctl}
+	}
+	return nil
 }
 
 func (r *Registry) SetToolRegistrar(fn sdk.ToolRegistrar) {

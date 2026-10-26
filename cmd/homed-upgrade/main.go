@@ -33,8 +33,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
@@ -67,6 +69,7 @@ func main() {
 	binPath := flag.String("bin", "/usr/local/bin/homed", "当前运行的内核二进制路径")
 	pluginsDir := flag.String("plugins", "/home/newqqagent/plugins", "外部插件目录（探测兼容性用）")
 	apply := flag.Bool("apply", false, "真正执行升级（默认只探测+预检）")
+	unit := flag.String("unit", "homeagent", "重启用的 systemd 单元名（仅 -apply 时使用）")
 	flag.Parse()
 
 	if *pkgPath == "" && !*release {
@@ -146,8 +149,50 @@ func main() {
 		return
 	}
 
-	// ── 6. 真正升级（备份 → 替换 → 重启 → 后置验证 → 失败回滚）──
-	if err := update.DoUpgrade(root, *binPath, newDG, *pluginsDir, upgradeDataDir(*binPath)); err != nil {
+	// ── 6. 真正升级：预检 → 备份 → pending → 原子替换（**不含重启**）──
+	out, err := update.Apply(root, *binPath, newDG, upgradeDataDir(*binPath), nil)
+	if err != nil {
 		fail("升级失败: %v", err)
 	}
+	fmt.Printf("\n新内核已就位：%s → %s\n备份保留在 %s\n", out.From.Version, out.To.Version, out.BackupDir)
+
+	// ── 7. 重启服务并核对版本 ──
+	//
+	// ★ 为什么 CLI 可以停下服务：它**不在**被守护的 cgroup 里，是外部管理命令，
+	// 与"worker 自己 systemctl restart 自杀"是两件事。
+	// 服务在跑时优先让它走既有重启通道（guard 重拉、不计失败轮次）——
+	// 那需要 WebAPI 的 api_key，这里只做最朴素的外部重启，并如实报告结果。
+	fmt.Printf("\n== 重启服务（unit %s）==\n", *unit)
+	if rerr := restartUnit(*unit); rerr != nil {
+		fmt.Printf("⚠️ 重启失败: %v\n", rerr)
+		fmt.Printf("   新内核已在磁盘上就位，pending 标记也已写入：\n")
+		fmt.Printf("   · 服务下次启动时会自动确认新版本；若新版本起不来，第 0 层 update 模块会自动回滚\n")
+		fail("需要手动重启服务才能生效")
+	}
+
+	// 版本复核：等二进制自报版本变成期望值（最多 60s）。
+	// 用版本而不是进程状态：只有版本能证明"跑起来的确实是新的"。
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, verr := update.ReadBinVersion(*binPath); verr == nil &&
+			v.Version == nv.Version && v.Commit == nv.Commit {
+			fmt.Printf("\n✅ 升级完成：%s (commit %s)\n", v.Version, update.ShortCommit(v.Commit))
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	if v, verr := update.ReadBinVersion(*binPath); verr == nil {
+		fmt.Printf("⚠️ 版本复核未通过：期望 %s/%s，实际 %s/%s\n",
+			nv.Version, update.ShortCommit(nv.Commit), v.Version, update.ShortCommit(v.Commit))
+	}
+	fail("重启后未能确认新版本已生效（若服务起不来，下次启动会自动回滚）")
+}
+
+// restartUnit 重启 systemd 单元（外部管理动作）。
+func restartUnit(unit string) error {
+	out, err := exec.Command("systemctl", "restart", unit).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

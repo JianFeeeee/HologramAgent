@@ -156,6 +156,13 @@ func TestEveryPublishedEventHasAnOutwardPath(t *testing.T) {
 		// 插件间握手事件：clawhubadapter → skillmgr 移交 SKILL 条目，
 		// 属内核内部的职责链，前端无需感知。
 		"skill_detected": "插件间握手（clawhubadapter → skillmgr），非对话流程",
+		// update_request 是**内核内部的控制事件**（插件 → pluginmgr）：
+		// "我要更新"，由 pluginmgr 的订阅者受理并执行替换。
+		//
+		// 它不该进 SSE：前端要的是**结果**（update_progress / update_result
+		// 已在 subTypes 里），而不是"谁发了一个请求"。把它推给浏览器只会
+		// 让界面多出一条没有下文的消息。
+		"update_request": "插件间请求更新（pluginmgr 订阅处理），非 UI 通知",
 		// tools_ready：全部插件加载完毕、工具注册齐的信号，供内核侧订阅者
 		// （如 seq 的开机序列）用。它是**内核内部**的就绪信号，
 		// 不是对话流程事件，前端无需感知。

@@ -173,6 +173,16 @@ type KernelState struct {
 	MultimodalProviderName string
 	MultimodalErr          string
 
+	// Update 是更新子系统的公共数据（update 模块产出）。
+	//
+	// 用接口而不是具体类型：kernelboot 不能 import internal/update
+	// （那会形成 kernelboot → update → kernelboot 的循环）。
+	// 模块在 Init 里赋 *update.State，读取方用类型断言取回。
+	//
+	// ★ 它在依赖图第 0 层（update 模块 Requires 为空），所以任何模块
+	//   读它时都已就绪 —— 包括"启动失败回滚"的判定结果。
+	Update UpdateStateProvider
+
 	// StageHost 是阶段管道（stage-host 模块产出）。
 	StageHost *agentCore.StageHost
 
@@ -327,4 +337,13 @@ func (s *KernelState) CloseAll() error {
 		}()
 	}
 	return nil
+}
+
+// UpdateStateProvider 是更新子系统暴露给内核的最小接口。
+//
+// 定义在 kernelboot 而不是 internal/update：避免 kernelboot → update 的
+// import 循环（update 的模块实现要 import kernelboot）。
+type UpdateStateProvider interface {
+	// Summary 返回给 healthcheck / 状态面的版本摘要。
+	Summary() map[string]interface{}
 }

@@ -20,8 +20,12 @@
 // ## 两阶段（用户口径）
 //
 //	apply=false（默认）→ 只查 GitHub Release 与本地版本比较，不改动任何东西
-//	apply=true          → 下载/解包 → 校验 → 备份 → 原子替换 → 重启 → 版本复核
-//	                     → 失败自动回滚（DoUpgrade 内部完成）
+//	apply=true          → 解包 → 校验 → 备份 → 原子替换（**不重启**）
+//	                     → 请求 guard 重拉 → 新内核启动时由 update 模块确认或回滚
+//
+// ★ 重启为什么不在 internal/update 里做：worker 是被守护方，只有 guard 知道
+// 这次退出该不该重拉（exit 42 → 重拉且不计失败轮次）。详见
+// cmd/homed/kernel_control.go。
 
 package pluginmgr
 
@@ -39,33 +43,37 @@ func (p *Plugin) kernelUpdateCheck() (interface{}, error) {
 	cur := currentKernelVersion(p)
 	info := update.CheckRelease(cur)
 	return map[string]interface{}{
-		"apply":     false,
-		"current":   info.Current,
-		"latest":    info.Latest,
+		"apply":      false,
+		"current":    info.Current,
+		"latest":     info.Latest,
 		"has_update": info.HasUpdate,
-		"asset":     info.Asset,
-		"release":   info.LatestURL,
-		"reason":    info.Reason,
-		"hint":      "确认后传 apply=true 执行升级（会替换二进制并重启内核，连接断开数秒）",
+		"asset":      info.Asset,
+		"release":    info.LatestURL,
+		"reason":     info.Reason,
+		"hint":       "确认后传 apply=true 执行升级（会替换二进制并重启内核，连接断开数秒）",
 	}, nil
 }
 
 // kernelUpdateApply 是 kernel_update 的执行半边（apply=true）。
 //
-// 只接受**本机已有的包**（pkg 参数）：从 URL 现场下载需要处理
-// 校验/断点/重试，那是 CLI 的职责（homed-upgrade），agent 不应在
-// 推理过程中发起长下载（会占满工具调用超时）。
-func (p *Plugin) kernelUpdateApply(pkgPath string) (interface{}, error) {
-	if pkgPath == "" {
-		return map[string]interface{}{
-			"error": "apply=true 需要 pkg（本机已存在的安装包路径；下载请跑 homed-upgrade -pkg <url>）",
-		}, nil
-	}
-	st, err := os.Stat(pkgPath)
-	if err != nil || st.IsDir() {
-		return map[string]interface{}{
-			"error": fmt.Sprintf("pkg 无效：%s", pkgPath),
-		}, nil
+// 来源二选一（update.ParseSource）：
+//
+//	· pkg 非空        → 用本机已有的安装包
+//	· release=true    → 从仓库最新 GitHub Release 自动下载
+//
+// ★ 顺序（此前是反的，会出真事故）：
+//
+//	先 Apply（备份→pending→替换），**再**请求重启。
+//	反过来（先请求重启）会在新二进制还没就位时就重拉，
+//	或重启恰好发生在替换中途 ⇒ 跑起来的是半新半旧的文件。
+//
+// ★ 重启走既有的 p.sdk.KernelControl()（restartCh → exit 42 → guard 重拉）。
+// 它依赖 kernelControlAllowed 白名单 —— pluginmgr 已加入（否则该接口恒为 nil，
+// 以前写在那里等于静默不重启）。
+func (p *Plugin) kernelUpdateApply(pkgPath string, release bool) (interface{}, error) {
+	src, err := update.ParseSource(pkgPath, release)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}, nil
 	}
 
 	tmp, err := os.MkdirTemp("", "kernel-upgrade-*")
@@ -74,39 +82,62 @@ func (p *Plugin) kernelUpdateApply(pkgPath string) (interface{}, error) {
 	}
 	defer os.RemoveAll(tmp)
 
-	root, err := update.ExtractPkg(pkgPath, tmp)
+	root, rel, err := src.Resolve(tmp)
 	if err != nil {
-		return nil, fmt.Errorf("解包: %w", err)
+		return map[string]interface{}{"error": "取包失败: " + err.Error()}, nil
 	}
 	newBin := update.FindFile(root, "homed")
 	newDG := update.FindFile(root, "depgraph.bin")
 	if newBin == "" {
-		return nil, fmt.Errorf("包内找不到 homed")
+		return map[string]interface{}{"error": "包内找不到 homed"}, nil
 	}
 
-	// ★ 升级会让本进程消失：先把"已受理"回给模型，再执行替换。
-	//
-	// 否则模型看到的是工具调用超时/断线，无法区分"升级成功"和"工具坏了"。
-	// 返回后由本 goroutine 继续跑 DoUpgrade（替换+重启+回滚）。
-	if kc := p.sdk.KernelControl(); kc != nil {
-		_ = kc.RequestKernelRestart("kernel_update apply")
+	// 走事件总线：升级的每一步都让 WebUI 看得到。
+	var bus *events.Bus
+	if p.sdk != nil {
+		bus = p.sdk.EventBus()
 	}
-	go func() {
-		// 走事件总线：升级的每一步（含重启前的最后几步）都让 WebUI 看得到。
-		// 顺序上 publish 紧贴动作之前 —— 进程消失后事件就发不出去了。
-		bus := (*events.Bus)(nil)
-		if p.sdk != nil {
-			bus = p.sdk.EventBus()
+
+	out, err := update.Apply(root, kernelBinPath(p), newDG, kernelDataDir(p), bus)
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}, nil
+	}
+
+	// 产物已就位 ⇒ 走**既有**重启通道（KernelControlAPI → restartCh → exit 42
+	// → guard 用新二进制重拉）。不自己 systemctl，也不另开通道。
+	//
+	// ★ 顺序关键：Apply 完成**之后**才请求重启。反过来会在新二进制还没
+	// 就位时重拉，或重启恰好落在替换中途。
+	if kc := p.sdk.KernelControl(); kc != nil {
+		if rerr := kc.RequestKernelRestart("kernel_update apply"); rerr != nil {
+			return map[string]interface{}{
+				"applied": true,
+				"error":   "新内核已就位，但请求重启失败: " + rerr.Error(),
+				"hint":    "手动重启服务即可；pending 标记会让首次启动自动确认或回滚",
+			}, nil
 		}
-		if err := update.DoUpgradeBus(root, kernelBinPath(p), newDG, p.pluginDir, kernelDataDir(p), bus); err != nil {
-			// DoUpgrade 内部失败已自行回滚；这里只留一条诊断日志
-			fmt.Fprintf(os.Stderr, "[pluginmgr] kernel_update upgrade failed (rolled back): %v\n", err)
-		}
-	}()
-	return map[string]interface{}{
-		"accepted": true,
-		"message":  "升级已受理：正在替换二进制并重启。完成后用 kernel_update（apply=false）确认新版本。",
-	}, nil
+	} else {
+		// 拿不到通道时**如实报告**，不要静默当成功：否则用户以为已升级，
+		// 而进程还在跑旧镜像；pending 标记会在下次重启时被判"未确认"→ 回滚。
+		return map[string]interface{}{
+			"applied": true,
+			"error":   "新内核已就位，但本插件没有被授予内核控制通道（kernelControlAllowed），无法请求重启",
+			"hint":    "手动重启服务完成升级；或改用 WebUI 的 /api/v1/kernel/update",
+		}, nil
+	}
+
+	res := map[string]interface{}{
+		"applied": true,
+		"from":    out.From.Version,
+		"to":      out.To.Version,
+		"backup":  out.BackupDir,
+		"message": "新内核已就位，正在由 guard 重拉。重启后若新版本无法启动，第 0 层 update 模块会自动回滚。",
+	}
+	if rel != nil {
+		res["release"] = rel.Latest
+		res["asset"] = rel.Asset
+	}
+	return res, nil
 }
 
 // kernelDataDir 推导数据目录（升级确认标记的落点）。
@@ -114,8 +145,14 @@ func (p *Plugin) kernelUpdateApply(pkgPath string) (interface{}, error) {
 // 从 pluginDir 反推：<dataDir>/plugins ⇒ 上一级即 dataDir。
 // 与内核 --data 的值一致，update 模块（第 0 层）才能读到同一个标记。
 func kernelDataDir(p *Plugin) string {
+	// <dataDir>/plugins ⇒ 上一级即 dataDir。
+	//
+	// ★ 只 Dir 一次。此前写成 Dir(Dir(...))，把 /home/newqqagent/plugins
+	// 算成 /home —— pending 标记落到 /home/kernel-upgrade-pending.json，
+	// 而第 0 层 update 模块从 ks.DataDir 读 ⇒ **永远读不到标记** ⇒
+	// agent 发起的升级一旦启动失败就**不会回滚**（静默失效）。
 	if p.pluginDir != "" {
-		return filepath.Dir(filepath.Dir(p.pluginDir))
+		return filepath.Dir(p.pluginDir)
 	}
 	return "/home/newqqagent"
 }
@@ -141,4 +178,48 @@ func kernelBinPath(p *Plugin) string {
 		return "/usr/local/bin/homed"
 	}
 	return "homed"
+}
+
+// onUpdateRequest 处理来自其他插件的更新请求（EventBus）。
+//
+// 请求方不必知道"怎么更新"，只需发一个事件：
+//
+//	scope:   "kernel" | "plugin"
+//	name:    插件名（scope=plugin 时必填）
+//	pkg:     本机安装包路径（可选）
+//	release: bool，从仓库最新 Release 自动取包（可选）
+//
+// 为什么必须**异步**：升级会替换二进制并（对内核）请求重启，
+// 本进程随后消失。事件处理器是同步投递的（见 events.Bus.Publish），
+// 在处理器里同步做完会让发布方卡住直到进程被杀。
+func (p *Plugin) onUpdateRequest(evt *events.Event) {
+	if evt == nil || evt.Payload == nil {
+		return
+	}
+	scope, _ := evt.Payload["scope"].(string)
+	name, _ := evt.Payload["name"].(string)
+	pkgPath, _ := evt.Payload["pkg"].(string)
+	release, _ := evt.Payload["release"].(bool)
+
+	go func() {
+		var err error
+		switch scope {
+		case "kernel":
+			_, err = p.kernelUpdateApply(pkgPath, release)
+		case "plugin":
+			if name == "" {
+				err = fmt.Errorf("plugin 更新请求缺 name")
+				break
+			}
+			// 复用既有 plugin_update 的 apply 通路（范围即该插件名）
+			_, err = p.pluginUpdate(true, name)
+		default:
+			err = fmt.Errorf("未知更新范围 %q（来源 %s）", scope, evt.Source)
+		}
+		if err != nil {
+			// 事件是单向的，没有返回值可取 ⇒ 失败必须留日志，
+			// 否则请求方看到的就是"发了、没反应"。
+			fmt.Fprintf(os.Stderr, "[pluginmgr] update_request (%s/%s) failed: %v\n", scope, name, err)
+		}
+	}()
 }

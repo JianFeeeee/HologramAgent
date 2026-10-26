@@ -44,12 +44,35 @@ func TestKernelControlOnlyForAllowlistedPlugins(t *testing.T) {
 	if got := r.kernelControlFor("webui"); got == nil {
 		t.Fatal("★ webui 应拿到内核控制通道（它是有鉴权的管理界面）")
 	}
-	// 典型的内置插件都不该拿到
-	for _, name := range []string{"cmd", "files", "memo", "healthcheck", "pluginmgr", "timer"} {
+	// 典型的内置插件都不该拿到**完整**通道（能关机）
+	for _, name := range []string{"cmd", "files", "memo", "healthcheck", "timer"} {
 		if got := r.kernelControlFor(name); got != nil {
 			t.Fatalf("★ 内置插件 %q 拿到了内核控制通道 —— "+
 				"任何插件都能关机整个服务，攻击面失控", name)
 		}
+	}
+
+	// ★★★ pluginmgr 只拿到**仅重启**通道（kernelRestartAllowed）：
+	//
+	//	为什么需要它：kernel_update 已经把新二进制换好，不重启等于升级
+	//	永远不生效，而 pending 标记会在下次启动时被判"未确认"并回滚。
+	//	为什么不能给完整通道：关机后服务不会自己回来（压制 Restart=always），
+	//	而重启几秒后 guard 会自己拉回来 —— 两者危险程度差一个量级。
+	pm := r.kernelControlFor("pluginmgr")
+	if pm == nil {
+		t.Fatal("★ pluginmgr 应拿到**仅重启**通道（否则 kernel_update 换完二进制却不重启）")
+	}
+	if err := pm.RequestKernelShutdown("t"); err == nil {
+		t.Fatal("★★★ pluginmgr 竟然能关机整个服务 —— 攻击面失控（只该授予重启）")
+	}
+	if fake.shutdownCalls != 0 {
+		t.Fatalf("★ 关机请求被转发到底层通道（%d 次）—— 包装没有拦住", fake.shutdownCalls)
+	}
+	if err := pm.RequestKernelRestart("t"); err != nil {
+		t.Fatalf("pluginmgr 应能重启: %v", err)
+	}
+	if fake.restartCalls != 1 {
+		t.Fatalf("重启请求未到达底层通道（%d）", fake.restartCalls)
 	}
 	// 未知/外部插件名
 	if got := r.kernelControlFor("some_third_party"); got != nil {
