@@ -243,8 +243,20 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 	})
 
 	s.RegisterTool("plugin_list", sdk.ToolDef{
-		Name:        "plugin_list",
-		Description: "列出已安装的所有外部插件及其版本。同时返回运行状态（loaded/alive/pid/崩溃次数），子进程插件死了在此体现为 alive=false。",
+		Name: "plugin_list",
+		Description: "List every installed plugin with its version and runtime state.\n\n" +
+			"**Read the lifecycle flags correctly — they are not the same thing:**\n" +
+			"- `auto_start`: whether the plugin boots with the kernel. **false = on-demand**, " +
+			"i.e. installed and available but deliberately NOT running until someone needs it.\n" +
+			"- `loaded` / `alive`: whether it is running **right now**. " +
+			"`alive=false` on an `auto_start=false` plugin is the **normal idle state**, not an error.\n" +
+			"- `disabled`: persisted switch turned off. Only this one means \"not allowed\".\n" +
+			"- `crash_count` / `runtime_stopped`: it was running and died.\n\n" +
+			"**So: never conclude \"this capability does not exist\" from alive=false.** " +
+			"An on-demand plugin's tools appear only after it starts — call `plugin_start` " +
+			"(start now, keeps auto_start setting) or `plugin_enable` (start now AND enable at boot) " +
+			"and its tools become callable. Use `get_plugin_tools(\"<name>\")` first to see what it offers.\n\n" +
+			"`plugin_stop` stops without changing the boot setting; `plugin_disable` is the persistent off switch.",
 		Parameters: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},

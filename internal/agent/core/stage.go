@@ -79,17 +79,17 @@ func (a *Agent) injectSourceContext(stageCtx *sdk.StageContext, evt *agentIO.Inp
 	if channel == "" {
 		channel = source
 	}
-	content := fmt.Sprintf("当前输入来源: %s；默认输出通道: %s。", source, channel)
+	content := fmt.Sprintf("Current input source: %s; default output channel: %s.", source, channel)
 	// 来源含设备身份（webui/{device_id}）时补充设备名，便于 agent 区分多设备输入
 	if devID, _ := evt.Payload["device_id"].(string); devID != "" {
 		devName, _ := evt.Payload["device_name"].(string)
 		if devName == "" {
 			devName = devID
 		}
-		content = fmt.Sprintf("当前输入来自设备[%s]（%s）；默认输出通道: %s。", devName, devID, channel)
+		content = fmt.Sprintf("Current input comes from device [%s] (%s); default output channel: %s.", devName, devID, channel)
 	}
 	if flag, _ := evt.Payload["interrupt"].(bool); flag {
-		content = fmt.Sprintf("这是一条打断输入。来源: %s；默认输出通道: %s。", source, channel)
+		content = fmt.Sprintf("This is an interrupt input. Source: %s; default output channel: %s.", source, channel)
 	}
 	stageCtx.ContextMsgs = append(stageCtx.ContextMsgs, map[string]interface{}{
 		"role":    "system",

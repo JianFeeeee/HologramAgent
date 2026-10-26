@@ -16,6 +16,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/toolroute"
 )
 
 // 工具执行超时的默认值与硬上限。
@@ -117,9 +118,9 @@ func (a *Agent) resolveToolTimeoutDeclared(toolName string) time.Duration {
 // 模型读得懂，但用户看错误提示时"1m0s"不如"1 分钟"直观。
 func fmtDuration(d time.Duration) string {
 	if d%time.Minute == 0 && d >= time.Minute {
-		return fmt.Sprintf("%d 分钟", int(d/time.Minute))
+		return fmt.Sprintf("%d min", int(d/time.Minute))
 	}
-	return fmt.Sprintf("%d 秒", int(d/time.Second))
+	return fmt.Sprintf("%d s", int(d/time.Second))
 }
 
 // toolOutcome 是一次工具执行的完整结果：**文本**（给模型）与
@@ -152,8 +153,8 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 				}
 			}
 
-			te := newToolError("panic", "", fmt.Sprintf("工具 %s 执行崩溃: %v", tc.Name, r),
-				"这是工具自身故障（不是你的参数问题），请勿原样重试；可换用其他工具或告知用户。")
+			te := newToolError("panic", "", fmt.Sprintf("Tool %s panicked: %v", tc.Name, r),
+				"This is a tool-side fault, not an argument problem. Do not retry with the same input; pick another tool or tell the user.")
 			out = toolOutcome{Text: te.Error(), Raw: te}
 		}
 		// ★★ 出向脱敏（2026-10-18 补）：工具返回值在交给模型**之前**必须清洗。
@@ -235,8 +236,8 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		// 先 cancel 再返回：这一行就是"让插件停下来"的触发点。
 		cancel()
 		log.Printf("[agent] tool %s timed out after %v (cancel sent to executor)", tc.Name, toolTimeout)
-		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("工具 %s 执行超时（%s）", tc.Name, fmtDuration(toolTimeout)),
-			"该工具本次未在时限内返回。可改用更小的任务，或换用其他工具。")
+		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("Tool %s timed out (%s)", tc.Name, fmtDuration(toolTimeout)),
+			"The tool did not return within its time limit. Split into a smaller task or use another tool.")
 		return toolOutcome{Text: te.Error(), Raw: te}
 	}
 }
@@ -258,6 +259,20 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	if ve := a.validateArgsAgainstSchema(tc); ve != nil {
 		log.Printf("[agent] tool %s rejected by schema validation: field=%s reason=%s", tc.Name, ve.Field, ve.Reason)
 		return toolOutcome{Text: renderToolError(tc.Name, ve), Raw: ve}
+	}
+
+	// ★ 内置工具的路由交给 device 模块（`kernelmod/device.Dispatch`）。
+	//
+	// 为什么要搬：这张"前缀 → 族处理器"的表曾是工具面的**第二份事实来源**
+	//（第一份是 tooldefs 的定义）。两处不同步就是"模型看得到、路由找不到"
+	// 或反之。现在路由只有一处，device 模块拥有它。
+	//
+	// 未挂载 device 时（独立工具、单测、特殊装配）退化为下面的本地 switch，
+	// 行为不变 —— 两条路径的一致性由 device_dispatch_test.go 钉住。
+	if a.builtinHandlers != nil {
+		if text, handled := toolroute.Dispatch(a.builtinHandlers, tc, turnScenes); handled {
+			return toolOutcome{Text: text}
+		}
 	}
 
 	switch {
@@ -312,7 +327,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 			return toolOutcome{Text: renderToolResult(tc.Name, result), Raw: result}
 		} else if !agentIO.IsToolNotFound(err) {
 			// 非「不存在」= 真的执行失败，如实上报（可被 on_error/retry 处置）。
-			return toolOutcome{Text: fmt.Sprintf("工具 %s 执行失败: %v", tc.Name, err)}
+			return toolOutcome{Text: fmt.Sprintf("Tool %s failed: %v", tc.Name, err)}
 		}
 		// 是「不存在」：继续往下走 io / 设备路径，两处都没有才报缺工具。
 	}
@@ -325,7 +340,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	// 这里按目标设备的通道名 device/<id> 查同一道闸：父授权了哪台设备，才允许指挥哪台。
 	if _, isDeviceTool := a.io.DeviceOfTool(tc.Name); isDeviceTool {
 		if id, _ := tc.Arguments["device_id"].(string); id != "" && !a.IsOutputAllowed("device/"+id) {
-			return toolOutcome{Text: fmt.Sprintf("设备 [%s] 未授权给本 agent（可用设备见 output_list_channels 的 device/<id> 通道，或 devicedetect）", id)}
+			return toolOutcome{Text: fmt.Sprintf("Device [%s] is not authorized for this agent (see output_list_channels for available device/<id> channels, or use devicedetect)", id)}
 		}
 	}
 
@@ -352,14 +367,14 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 			// 此前这里只提 get_plugin_tools / output_list_channels，
 			// 一个字没提 skill —— 模型调用了、失败了，提示却不告诉它去
 			// 看说明书，于是只能盲目试工具名。
-			return toolOutcome{Text: fmt.Sprintf("工具 %s 不存在或未注册（它可能属于未加载的插件）。按这个顺序处理：\n"+
-				"1. 先看【可用技能】里有没有相关的：有就先 skill_info(\"技能名\") 读全文 —— "+
-				"skill 里写着该插件的正确用法、已知坑，以及需要先启动哪个插件；\n"+
-				"2. 没有相关 skill 就调 get_plugin_tools(\"\") 查当前可用的插件与工具；\n"+
-				"3. 通道相关的不确定时用 output_list_channels 看有哪些通道。\n"+
-				"确认之后再调用，不要反复重试同一个名字。", tc.Name)}
+			return toolOutcome{Text: fmt.Sprintf("Tool %s does not exist or is not registered (it may belong to a plugin that is not loaded). Handle it in this order:\n"+
+				"1. Check [Available skills] for a related one: if present, read it in full with skill_info(\"skill-name\") - "+
+				"the skill documents the plugin's correct usage, known pitfalls, and which plugin must be started first;\n"+
+				"2. If no skill matches, call get_plugin_tools(\"\") to list the currently available plugins and tools;\n"+
+				"3. For channel questions, use output_list_channels to see which channels exist.\n"+
+				"Only call again once you have confirmed, and do not keep retrying the same name.", tc.Name)}
 		}
-		return toolOutcome{Text: fmt.Sprintf("工具 %s 执行失败: %v", tc.Name, err)}
+		return toolOutcome{Text: fmt.Sprintf("Tool %s failed: %v", tc.Name, err)}
 	}
 	// Raw 必须带上：否则结构化失败（{"error":…} / ToolError）在这一步被抹平成文本，
 	// Success 又会退回恒真——正是阶段 1b 要修的那个洞。
@@ -378,13 +393,13 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if tc.Name == "memory_document_query" {
 			return a.executeDocTool(tc)
 		}
-		return "图记忆系统不可用"
+		return "stable memory is unavailable"
 	}
 	// 整理类工具需要**完整内核**的记忆整理面（块/媒体/结构操作）。
 	// 轻量内核（驻留子）只有图记忆共同面 ⇒ 这些操作明确不可用，不静默降级。
 	requireFull := func() string {
 		if a.memory == nil {
-			return "本 agent 是轻量内核：只能读写图记忆，记忆整理（合并/删除/清理/编辑/统计）不可用"
+			return "this agent is a lightweight kernel: it can read and write stable memory, but maintenance (merge/delete/purge/edit/stats) is unavailable"
 		}
 		return ""
 	}
@@ -392,7 +407,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 	case "toolresult_read":
 		txt, err := a.readStoredToolResult(tc.Arguments)
 		if err != nil {
-			return "toolresult_read 失败：" + err.Error()
+			return "toolresult_read failed: " + err.Error()
 		}
 		return txt
 	case "memory_recall":
@@ -402,7 +417,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			depth = 2
 		}
 		if query == "" {
-			return "请输入查询关键词"
+			return "query is required"
 		}
 		// 关键词提取：支持逗号分隔和自然语言
 		keywords := strings.Split(query, ",")
@@ -436,10 +451,10 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		// （判据 TestMemoryRecall_指纹不匹配的块被跳过）。
 		result, err := g.RecallSorted(keywords, nil, int(depth), "", a.currentFingerprint(), sortMode)
 		if err != nil {
-			return fmt.Sprintf("记忆检索失败: %v", err)
+			return fmt.Sprintf("memory recall failed: %v", err)
 		}
 		if len(result.Entities) == 0 && len(result.Relations) == 0 {
-			return "未找到相关记忆"
+			return "no relevant memory found"
 		}
 		if a.indexer != nil {
 			names := make([]string, len(result.Entities))
@@ -449,7 +464,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			a.indexer.MarkRecalled(names...)
 		}
 		var parts []string
-		parts = append(parts, fmt.Sprintf("找到 %d 个相关实体（按%s排序）:", len(result.Entities), sortLabel(sortMode)))
+		parts = append(parts, fmt.Sprintf("Found %d related entities (sorted by %s):", len(result.Entities), sortLabel(sortMode)))
 		for _, e := range result.Entities {
 			// ★ 带出匹配层级：此前输出是同格式平铺，模型无从判断该信哪条。
 			//
@@ -463,9 +478,9 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			case e.MatchRank == 1:
 				tag = ", 前缀匹配"
 			}
-			parts = append(parts, fmt.Sprintf("- %s (提及%d次, 类型:%s%s)", e.Name, e.MentionCount, e.Type, tag))
+			parts = append(parts, fmt.Sprintf("- %s (mentioned %d times, type:%s%s)", e.Name, e.MentionCount, e.Type, tag))
 		}
-		parts = append(parts, fmt.Sprintf("找到 %d 条关系:", len(result.Relations)))
+		parts = append(parts, fmt.Sprintf("Found %d relations:", len(result.Relations)))
 		parts = append(parts, formatRecallRelations(result.Relations, 10)...)
 		// 命中的关系若挂着媒体块，把媒体说明附在结果末尾。
 		//
@@ -485,7 +500,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		entityB, _ := tc.Arguments["entity_b"].(string)
 		rounds, _ := tc.Arguments["rounds"].(float64)
 		if entityA == "" || entityB == "" || rounds <= 0 {
-			return "entity_a、entity_b 和 rounds 不能为空"
+			return "entity_a, entity_b and rounds are required"
 		}
 		if entityA > entityB {
 			entityA, entityB = entityB, entityA
@@ -494,12 +509,12 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		a.noMergeMu.Lock()
 		a.noMergeMarkers[key] = int(rounds)
 		a.noMergeMu.Unlock()
-		return fmt.Sprintf("已标记「%s」与「%s」在 %d 轮内不合并", entityA, entityB, int(rounds))
+		return fmt.Sprintf("Marked \"%s\" and \"%s\" as not-mergeable for %d rounds", entityA, entityB, int(rounds))
 
 	case "memory_commit":
 		triplesData, ok := tc.Arguments["triples"].([]interface{})
 		if !ok {
-			return "参数格式错误，需要 triples 数组"
+			return "invalid arguments: triples must be an array"
 		}
 		// 场景键：模型可以在三元组里逐条给（scene 字段），也可以在工具参数
 		// 顶层给一次（scene 参数），后者作为本批次的默认场景。
@@ -548,7 +563,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			}
 		}
 		if len(triples) == 0 {
-			return "没有有效的三元组"
+			return "no valid triples"
 		}
 		// remember 工具是用户/模型显式写入，不涉及归档删除，
 		// 因此不需要 mediaBound——没有旧引用要释放。
@@ -558,11 +573,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		// 拿它们判断「有没有写进去」会**永远判成没写进去**。
 		blocksBefore, err := a.memory.MemoryBlockCount()
 		if err != nil {
-			return fmt.Sprintf("记忆写入失败: %v", err)
+			return fmt.Sprintf("memory commit failed: %v", err)
 		}
 		edgesBefore, err := a.memory.MemoryEdgeCount()
 		if err != nil {
-			return fmt.Sprintf("记忆写入失败: %v", err)
+			return fmt.Sprintf("memory commit failed: %v", err)
 		}
 
 		// ★ ec/rc 丢弃（2026-10-05）：它们恒为 0（graph.go 里
@@ -571,15 +586,15 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//   唯一可信信号是下面实测的 newBlocks / newEdges。
 		_, _, mb, err := a.commitTriplesWithMedia(triples, string(a.id), 0, nil)
 		if err != nil {
-			return fmt.Sprintf("记忆写入失败: %v", err)
+			return fmt.Sprintf("memory commit failed: %v", err)
 		}
 		blocksAfter, err := a.memory.MemoryBlockCount()
 		if err != nil {
-			return fmt.Sprintf("记忆写入失败: %v", err)
+			return fmt.Sprintf("memory commit failed: %v", err)
 		}
 		edgesAfter, err := a.memory.MemoryEdgeCount()
 		if err != nil {
-			return fmt.Sprintf("记忆写入失败: %v", err)
+			return fmt.Sprintf("memory commit failed: %v", err)
 		}
 		newBlocks := blocksAfter - blocksBefore
 		newEdges := edgesAfter - edgesBefore
@@ -599,7 +614,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//
 		//	⇒ 「报假失败」比「报假成功」危险：前者会诱发破坏性动作。
 		if newBlocks == 0 && mb == 0 {
-			return fmt.Sprintf("提交了 %d 条三元组但全部被拒（未写入）。常见原因：实体名为空、过长（>50 字）、或不含字母/汉字/数字。请检查主语/宾语的写法后重试。", len(triples))
+			return fmt.Sprintf("Submitted %d triples but all were rejected (nothing written). Common causes: empty entity name, longer than 50 chars, or no letters/digits. Check subject/object spelling and retry.", len(triples))
 		}
 		// ★★★ 成功分支也**不能用 ec/rc**（2026-10-05）
 		//
@@ -618,10 +633,10 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//	唯一可信的信号是 newBlocks（块总量差值）——
 		//	它直接量「库里多了几个块」，不依赖任何旧表口径。
 		if mb > 0 {
-			return fmt.Sprintf("已写入 %d 个记忆块、%d 条关系边，关联 %d 份媒体",
+			return fmt.Sprintf("Wrote %d memory blocks and %d relation edges, linked %d media items",
 				newBlocks, newEdges, mb)
 		}
-		return fmt.Sprintf("已写入 %d 个记忆块、%d 条关系边", newBlocks, newEdges)
+		return fmt.Sprintf("Wrote %d memory blocks and %d relation edges", newBlocks, newEdges)
 
 	case "memory_introspect":
 		if msg := requireFull(); msg != "" {
@@ -629,9 +644,9 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		stats, err := a.memory.Introspect()
 		if err != nil {
-			return fmt.Sprintf("查询失败: %v", err)
+			return fmt.Sprintf("query failed: %v", err)
 		}
-		return fmt.Sprintf("记忆统计: %v", stats)
+		return fmt.Sprintf("memory stats: %v", stats)
 
 	case "memory_document_query":
 		return a.executeDocTool(tc)
@@ -643,13 +658,13 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		source, _ := tc.Arguments["source"].(string)
 		target, _ := tc.Arguments["target"].(string)
 		if source == "" || target == "" {
-			return "source 和 target 不能为空"
+			return "source and target are required"
 		}
 		count, err := a.memory.MergeEntities(source, target)
 		if err != nil {
-			return fmt.Sprintf("合并失败: %v", err)
+			return fmt.Sprintf("merge failed: %v", err)
 		}
-		return fmt.Sprintf("已将「%s」合并到「%s」，source 已彻底删除，%d 条关系已重定向", source, target, count)
+		return fmt.Sprintf("Merged \"%s\" into \"%s\": source deleted, %d relations redirected", source, target, count)
 
 	case "memory_delete_entity":
 		if msg := requireFull(); msg != "" {
@@ -657,11 +672,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		name, _ := tc.Arguments["name"].(string)
 		if name == "" {
-			return "name 不能为空"
+			return "name is required"
 		}
 		res, err := a.memory.DeleteEntity(name)
 		if err != nil {
-			return fmt.Sprintf("删除失败: %v", err)
+			return fmt.Sprintf("delete failed: %v", err)
 		}
 		// ★ 如实报告实际删掉多少，不说「已彻底删除…及其所有关联关系」。
 		//
@@ -669,9 +684,9 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//   模型据此认为内容已消失（不再提及或重新写入），
 		//   而关联边还在、召回继续命中 —— 谎报会让模型的行为跟着错。
 		if res.Blocks == 0 {
-			return fmt.Sprintf("未找到名为「%s」的块，未删除任何内容", name)
+			return fmt.Sprintf("No block named \"%s\"; nothing deleted", name)
 		}
-		return fmt.Sprintf("已删除块「%s」及其 %d 条关联关系（块 %d 个）",
+		return fmt.Sprintf("Deleted block \"%s\" and its %d relations (%d blocks)",
 			name, res.Edges, res.Blocks)
 
 	case "memory_purge":
@@ -694,7 +709,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		n, err := a.memory.Purge(criteria, mode)
 		if err != nil {
-			return fmt.Sprintf("删除图记忆失败: %v", err)
+			return fmt.Sprintf("stable memory delete failed: %v", err)
 		}
 
 		textRemoved := 0
@@ -705,9 +720,9 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 				})
 			}
 		}
-		parts := []string{fmt.Sprintf("已%s删除 %d 条图记忆关系", mode, n)}
+		parts := []string{fmt.Sprintf("%s %d stable-memory relations", mode, n)}
 		if textRemoved > 0 {
-			parts = append(parts, fmt.Sprintf("清理 %d 条文本记忆日志", textRemoved))
+			parts = append(parts, fmt.Sprintf("purged %d text memory log entries", textRemoved))
 		}
 		return strings.Join(parts, "，")
 
@@ -719,13 +734,13 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		oldRelation, _ := tc.Arguments["old_relation"].(string)
 		oldObject, _ := tc.Arguments["old_object"].(string)
 		if oldSubject == "" || oldRelation == "" || oldObject == "" {
-			return "old_subject、old_relation、old_object 不能为空"
+			return "old_subject, old_relation and old_object are required"
 		}
 		newSubject, _ := tc.Arguments["new_subject"].(string)
 		newRelation, _ := tc.Arguments["new_relation"].(string)
 		newObject, _ := tc.Arguments["new_object"].(string)
 		if newSubject == "" && newRelation == "" && newObject == "" {
-			return "至少提供一个新值（new_subject / new_relation / new_object）"
+			return "provide at least one new value (new_subject / new_relation / new_object)"
 		}
 		if newSubject == "" {
 			newSubject = oldSubject
@@ -756,7 +771,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			"target_contains":  oldObject,
 		}, "hard")
 		if err != nil {
-			return fmt.Sprintf("编辑图记忆失败（删除旧记录）: %v", err)
+			return fmt.Sprintf("stable memory edit failed (deleting old record): %v", err)
 		}
 		triples := []memory.Triple{{
 			Subject:      newSubject,
@@ -768,7 +783,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}}
 		ec, rc, err := a.memory.Commit(triples, string(a.id), 0)
 		if err != nil {
-			return fmt.Sprintf("编辑图记忆失败（写入新记录）: %v", err)
+			return fmt.Sprintf("stable memory edit failed (writing new record): %v", err)
 		}
 
 		textReplaced := 0
@@ -784,33 +799,33 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 				},
 			)
 		}
-		result := fmt.Sprintf("已编辑记忆：删除 %d 条旧关系，写入 %d 个实体 + %d 条新关系", n, ec, rc)
+		result := fmt.Sprintf("Memory edited: %d old relations removed, %d entities and %d new relations written", n, ec, rc)
 		if textReplaced > 0 {
-			result += fmt.Sprintf("，更新 %d 条文本记忆日志", textReplaced)
+			result += fmt.Sprintf(", %d text memory log entries updated", textReplaced)
 		}
 		return result
 
 	default:
-		return fmt.Sprintf("未知的记忆工具: %s", tc.Name)
+		return fmt.Sprintf("unknown memory tool: %s", tc.Name)
 	}
 }
 
 func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 	if a.social == nil {
-		return "人物关系网不可用（social store 未初始化）"
+		return "social graph is unavailable (social store not initialized)"
 	}
 	switch tc.Name {
 	case "person_query":
 		name, _ := tc.Arguments["name"].(string)
 		if name == "" {
-			return "请输入人物名称"
+			return "person name is required"
 		}
 		profile, err := a.social.GetPerson(name)
 		if err != nil {
-			return fmt.Sprintf("查询人物失败: %v", err)
+			return fmt.Sprintf("person lookup failed: %v", err)
 		}
 		var parts []string
-		parts = append(parts, fmt.Sprintf("▎%s 的档案", name))
+		parts = append(parts, fmt.Sprintf("▎Profile of %s", name))
 		if len(profile.Traits) > 0 {
 			parts = append(parts, "【特质】")
 			for k, v := range profile.Traits {
@@ -833,24 +848,24 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 		trait, _ := tc.Arguments["trait"].(string)
 		value, _ := tc.Arguments["value"].(string)
 		if name == "" || trait == "" || value == "" {
-			return "name、trait、value 都不能为空"
+			return "name, trait and value are required"
 		}
 		if err := a.social.SetTrait(name, trait, value); err != nil {
-			return fmt.Sprintf("设置特质失败: %v", err)
+			return fmt.Sprintf("setting trait failed: %v", err)
 		}
-		return fmt.Sprintf("已记录：%s 的 %s = %s", name, trait, value)
+		return fmt.Sprintf("Recorded: %s %s = %s", name, trait, value)
 
 	case "person_relate":
 		personA, _ := tc.Arguments["person_a"].(string)
 		relation, _ := tc.Arguments["relation"].(string)
 		personB, _ := tc.Arguments["person_b"].(string)
 		if personA == "" || relation == "" || personB == "" {
-			return "person_a、relation、person_b 都不能为空"
+			return "person_a, relation and person_b are required"
 		}
 		if err := a.social.AddRelation(personA, relation, personB); err != nil {
-			return fmt.Sprintf("建立关系失败: %v", err)
+			return fmt.Sprintf("creating relation failed: %v", err)
 		}
-		return fmt.Sprintf("已记录：%s —(%s)—→ %s", personA, relation, personB)
+		return fmt.Sprintf("Recorded: %s —(%s)—→ %s", personA, relation, personB)
 
 	case "person_network":
 		name, _ := tc.Arguments["name"].(string)
@@ -859,17 +874,17 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 			depth = 2
 		}
 		if name == "" {
-			return "请输入人物名称"
+			return "person name is required"
 		}
 		profiles, err := a.social.GetNetwork(name, depth)
 		if err != nil {
-			return fmt.Sprintf("查询社交网络失败: %v", err)
+			return fmt.Sprintf("social network query failed: %v", err)
 		}
 		if len(profiles) == 0 {
-			return fmt.Sprintf("未找到 %s 的社交网络", name)
+			return fmt.Sprintf("No social network found for %s", name)
 		}
 		var parts []string
-		parts = append(parts, fmt.Sprintf("▎%s 的社交网络（%d 度）", name, depth))
+		parts = append(parts, fmt.Sprintf("▎Social network of %s (%d hops)", name, depth))
 		for _, p := range profiles {
 			if p.Name == name {
 				continue
@@ -887,13 +902,13 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 		return strings.Join(parts, "\n")
 
 	default:
-		return fmt.Sprintf("未知的人物工具: %s", tc.Name)
+		return fmt.Sprintf("unknown person tool: %s", tc.Name)
 	}
 }
 
 // knowledgeMediaRefs 把模型给的块引用（ID 或其唯一前缀）解析成知识条目的媒体引用。
 //
-// 复用 doc_commit 的既有约定：引用可传前缀，解析不了的跳过而不是报错——
+// Reuses the coldcontext_commit convention: references may be prefixes; unresolved ones are skipped.
 // 模型偶尔会把 ID 记错，不该让整次写入失败。MIME 从块回读，嵌入时需要
 // （EmbedImageDense 靠它判定模态）。字节随条目落盘（writeMediaFiles）。
 func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef {
@@ -919,7 +934,7 @@ func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef 
 
 func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 	if a.knowledge == nil {
-		return "知识库不可用"
+		return "knowledge base is unavailable"
 	}
 	switch tc.Name {
 	case "knowledge_search":
@@ -929,14 +944,14 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 			topK = 5
 		}
 		if query == "" {
-			return "请输入查询关键词"
+			return "query is required"
 		}
 		// 可选分类限定：把召回限制在某棵分类子树内（前缀匹配，见
 		// knowledge.Store.SearchIn）。不传 = 全库。
 		category, _ := tc.Arguments["category"].(string)
 		results := a.knowledge.SearchIn(query, category, topK)
 		if len(results) == 0 {
-			return "未找到相关知识"
+			return "no relevant knowledge found"
 		}
 		var parts []string
 		for i, k := range results {
@@ -953,19 +968,19 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 		name, _ := tc.Arguments["name"].(string)
 		content, _ := tc.Arguments["content"].(string)
 		if name == "" || content == "" {
-			return "name 和 content 不能为空"
+			return "name and content are required"
 		}
-		// 模型可显式关联已入库的媒体（与 doc_commit 的 media_digests 同形）。
+		// The model may attach stored media explicitly (same media_digests shape as coldcontext_commit).
 		// 这些媒体成为知识条目的一等节点：其向量会与正文向量融合，
 		// 使该条目能按图本身被召回，而不依赖任何生成的描述文本。
 		media := a.knowledgeMediaRefs(getStringSlice(tc.Arguments, "media_digests"))
 		if err := a.knowledge.AddWithMedia(name, content, media); err != nil {
-			return fmt.Sprintf("知识创建失败: %v", err)
+			return fmt.Sprintf("knowledge create failed: %v", err)
 		}
 		if len(media) > 0 {
-			return fmt.Sprintf("知识「%s」已创建并向量化索引（%d 字符，%d 个媒体参与跨模态召回）", name, len(content), len(media))
+			return fmt.Sprintf("Knowledge \"%s\" created and indexed (%d chars, %d media items linked for cross-modal recall)", name, len(content), len(media))
 		}
-		return fmt.Sprintf("知识「%s」已创建并向量化索引（%d 字符）", name, len(content))
+		return fmt.Sprintf("Knowledge \"%s\" created and indexed (%d chars)", name, len(content))
 
 	case "knowledge_list":
 		tree := a.knowledge.BuildTree()
@@ -992,7 +1007,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 			MaxItems:     int(getFloat(tc.Arguments, "max_items")),
 		})
 		if err != nil {
-			return fmt.Sprintf("知识导入失败: %v", err)
+			return fmt.Sprintf("knowledge import failed: %v", err)
 		}
 		var b strings.Builder
 		verb := "已导入"
@@ -1034,46 +1049,46 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 	case "knowledge_delete":
 		name, _ := tc.Arguments["name"].(string)
 		if name == "" {
-			return "name 不能为空"
+			return "name is required"
 		}
 		if err := a.knowledge.Remove(name); err != nil {
-			return fmt.Sprintf("知识删除失败: %v", err)
+			return fmt.Sprintf("knowledge delete failed: %v", err)
 		}
-		return fmt.Sprintf("知识「%s」已删除", name)
+		return fmt.Sprintf("Knowledge \"%s\" deleted", name)
 
 	default:
-		return fmt.Sprintf("未知的知识工具: %s", tc.Name)
+		return fmt.Sprintf("unknown knowledge tool: %s", tc.Name)
 	}
 }
 
 func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 	if a.docStore == nil {
-		return "文档记忆不可用"
+		return "cold context is unavailable"
 	}
 	switch tc.Name {
-	case "doc_query":
+	case "coldcontext_query":
 		query, _ := tc.Arguments["query"].(string)
 		topK := int(getFloat(tc.Arguments, "top_k"))
 		if topK <= 0 {
 			topK = 3
 		}
 		if query == "" {
-			return "请输入查询内容"
+			return "query is required"
 		}
 		docs := a.docStore.Consume(query, topK)
 		if len(docs) == 0 {
-			return "未找到相关文档记忆"
+			return "no relevant cold context found"
 		}
 
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("已召回 %d 篇历史记忆，原文已按各自**原始时间戳**插回对话时序（不是当前对话）：\n", len(docs)))
+		b.WriteString(fmt.Sprintf("Recalled %d cold-context documents; their original text is re-inserted into your timeline at its own original timestamps (not the current turn):\n", len(docs)))
 
 		totalEvents := 0
 		for i, d := range docs {
 			// 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件。
 			//
 			// ARCHITECTURE「记忆流转」② Document 层：
-			//   doc_query → Consume(读取并删除)
+			//   coldcontext_query → Consume(读取并删除)
 			//             → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
 			n := a.restoreDocEvents(d)
 			if n == 0 {
@@ -1086,7 +1101,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 				a.context.InsertByTimestamp(ContextEvent{
 					Timestamp: d.CreatedAt,
 					Source:    "cold_storage",
-					Input:     fmt.Sprintf("加载文档记忆: %s", query),
+					Input:     fmt.Sprintf("load cold context: %s", query),
 					Response:  content,
 					NoMemory:  true, // 同上：回填不产生新记忆
 				})
@@ -1107,14 +1122,14 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			}
 		}
 
-		b.WriteString(fmt.Sprintf("\n共回填 %d 条事件。要引用其中的细节，直接看对话时序里对应时间点即可。", totalEvents))
+		b.WriteString(fmt.Sprintf("\n%d events backfilled in total. To quote details, read the timeline at those timestamps.", totalEvents))
 		return b.String()
 
-	case "doc_commit":
+	case "coldcontext_commit":
 		content, _ := tc.Arguments["content"].(string)
 		summary, _ := tc.Arguments["summary"].(string)
 		if content == "" {
-			return "content 不能为空"
+			return "content is required"
 		}
 		if summary == "" {
 			summary = truncateStr(content, 100)
@@ -1136,22 +1151,22 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		}
 
 		if err := a.docStore.Insert(doc); err != nil {
-			return fmt.Sprintf("文档写入失败: %v", err)
+			return fmt.Sprintf("cold context write failed: %v", err)
 		}
 		if n := len(doc.Blocks); n > 0 {
-			return fmt.Sprintf("文档已提交 (id: %s, 摘要: %s, 关联 %d 份媒体)", doc.ID, summary, n)
+			return fmt.Sprintf("Cold context committed (id: %s, summary: %s, %d media linked)", doc.ID, summary, n)
 		}
-		return fmt.Sprintf("文档已提交 (id: %s, 摘要: %s)", doc.ID, summary)
+		return fmt.Sprintf("Cold context committed (id: %s, summary: %s)", doc.ID, summary)
 
 	default:
-		return fmt.Sprintf("未知的文档工具: %s", tc.Name)
+		return fmt.Sprintf("unknown cold-context tool: %s", tc.Name)
 	}
 }
 
 // sortLabel 把排序模式翻成给模型看的中文标签。
 func sortLabel(m memory.SortMode) string {
 	if m == memory.SortRecent {
-		return "时间倒序，最新在前"
+		return "newest first"
 	}
 	return "相关性"
 }
@@ -1246,7 +1261,7 @@ func (a *Agent) recallByBlocks(query string) string {
 	}
 
 	var parts []string
-	parts = append(parts, fmt.Sprintf("找到 %d 条相关记忆片段:", len(hits)))
+	parts = append(parts, fmt.Sprintf("Found %d relevant memory fragments:", len(hits)))
 	for _, h := range hits {
 		text := strings.TrimSpace(h.Text)
 		if text == "" {
@@ -1315,7 +1330,7 @@ func (a *Agent) currentFingerprint() string {
 //
 // ARCHITECTURE「记忆流转」② Document 层的读取分支：
 //
-//	doc_query → Consume(读取并删除)
+//	coldcontext_query → Consume(读取并删除)
 //	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
 //	          → 文档以原始时间戳写入 context 时间线, 从 docStore 删除
 //
@@ -1374,7 +1389,7 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 //
 // 为什么不用 Doc.Summary：那是 jieba 词袋（"来自 N 个来源的 M 条对话 涉及: ok"），
 // 零信息量。模型看到它无法判断这笔召回有没有用 —— 这正是 agent 几乎不用
-// doc_query 的直接原因之一。
+// coldcontext_query 的直接原因之一。
 func docRecallHeadline(d *document.Doc, eventCount int) string {
 	if d == nil {
 		return ""
@@ -1410,7 +1425,7 @@ func docRecallHeadline(d *document.Doc, eventCount int) string {
 			parts = append(parts, d.Source)
 		}
 	}
-	parts = append(parts, fmt.Sprintf("%d 条事件", eventCount))
+	parts = append(parts, fmt.Sprintf("%d events", eventCount))
 	if n := len(d.Blocks); n > 0 {
 		media := 0
 		for i := range d.Blocks {
@@ -1419,7 +1434,7 @@ func docRecallHeadline(d *document.Doc, eventCount int) string {
 			}
 		}
 		if media > 0 {
-			parts = append(parts, fmt.Sprintf("含 %d 份媒体", media))
+			parts = append(parts, fmt.Sprintf("with %d media items", media))
 		}
 	}
 	return strings.Join(parts, " · ")

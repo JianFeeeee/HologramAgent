@@ -124,7 +124,7 @@ func (a *Agent) modalFallbackPrompt(kind string) string {
 		if s := strings.TrimSpace(a.inputCfg.Image.DescribePrompt); s != "" {
 			return s
 		}
-		return "请详细描述这张图片的内容，包括其中的文字、物体、人物、场景等信息。"
+		return "Describe this image in detail: text, objects, people and scene."
 	case "audio":
 		if s := strings.TrimSpace(a.inputCfg.Audio.DescribePrompt); s != "" {
 			return s
@@ -191,20 +191,19 @@ func (a *Agent) transcribeBlocksForFallback(blocks []agentAPI.ContentBlock) moda
 	if len(imgURLs) > 0 {
 		p, srcName := a.resolveModalFallback("image")
 		if p == nil {
-			notices = append(notices, "当前模型不支持图片，且没有可用的视觉回退源"+
-				"（配置 core.input_processing.image.fallback_provider，"+
-				"并在该源上设置 core.llm.sources.<name>.vision=true）")
+			notices = append(notices, "The current model does not support images and no vision fallback source is available "+
+				"(set core.input_processing.image.fallback_provider and core.llm.sources.<name>.vision=true on that source)")
 		} else if text, err := a.chatModalFallbackBatch(p, "image", imgURLs, imgDetails); err != nil {
 			// 转写失败必须说出来。静默跳过会让模型以为「图里没内容」，
 			// 而事实是没人看过这些图。
-			notices = append(notices, fmt.Sprintf("图片转写失败（源 %s）: %v", srcName, err))
+			notices = append(notices, fmt.Sprintf("image transcription failed (source %s): %v", srcName, err))
 			log.Printf("[agent] modal fallback image(%d) via %s failed: %v", len(imgURLs), srcName, err)
 		} else {
-			label := "图片内容"
+			label := "image content"
 			if len(imgURLs) > 1 {
-				label = fmt.Sprintf("%d 张图片/视频帧内容", len(imgURLs))
+				label = fmt.Sprintf("%d images/video frames", len(imgURLs))
 			}
-			converted = append(converted, fmt.Sprintf("[%s · 由 %s 转写，非当前模型直接感知]\n%s", label, srcName, text))
+			converted = append(converted, fmt.Sprintf("[%s · transcribed by %s, not directly perceived by the current model]\n%s", label, srcName, text))
 			res.Converted += len(imgURLs)
 		}
 	}
@@ -213,11 +212,10 @@ func (a *Agent) transcribeBlocksForFallback(blocks []agentAPI.ContentBlock) moda
 	if len(audURLs) > 0 {
 		p, srcName := a.resolveModalFallback("audio")
 		if p == nil {
-			notices = append(notices, "当前模型不支持音频，且没有可用的音频回退源"+
-				"（配置 core.input_processing.audio.fallback_provider，"+
-				"并在该源上设置 core.llm.sources.<name>.audio=true）")
+			notices = append(notices, "The current model does not support audio and no audio fallback source is available "+
+				"(set core.input_processing.audio.fallback_provider and core.llm.sources.<name>.audio=true on that source)")
 		} else if text, err := a.chatModalFallbackBatch(p, "audio", audURLs, nil); err != nil {
-			notices = append(notices, fmt.Sprintf("音频转写失败（源 %s）: %v", srcName, err))
+			notices = append(notices, fmt.Sprintf("audio transcription failed (source %s): %v", srcName, err))
 			log.Printf("[agent] modal fallback audio(%d) via %s failed: %v", len(audURLs), srcName, err)
 		} else {
 			converted = append(converted, fmt.Sprintf("[音频内容 · 由 %s 转写，非当前模型直接感知]\n%s", srcName, text))
@@ -356,7 +354,7 @@ func (a *Agent) chatModalFallbackBatch(p agentAPI.Provider, kind string, urls, d
 	if out == "" {
 		// 空回复不能当成功。上游剥掉媒体块后模型往往回一句「我没看到图片」
 		// 或干脆空串——两种都说明这条回退链也没真看到。
-		return "", fmt.Errorf("回退源返回空内容（该源可能同样不支持此模态）")
+		return "", fmt.Errorf("fallback source returned empty content (it may not support this modality either)")
 	}
 	return out, nil
 }

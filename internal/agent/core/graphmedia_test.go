@@ -399,7 +399,7 @@ func TestBuildMemoryContext_IncludesMediaSection(t *testing.T) {
 	if out == "" {
 		t.Skip("图库召回未命中（indexer 检索策略所致），无法验证媒体段注入")
 	}
-	if !contains(out, "【关联媒体】") {
+	if !contains(out, "[Related media]") {
 		t.Errorf("自动注入的记忆上下文缺少媒体段: %q", out)
 	}
 	if !contains(out, shortID("blk_auto_1")) {

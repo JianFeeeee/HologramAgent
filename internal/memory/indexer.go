@@ -291,40 +291,42 @@ func (idx *Indexer) vectorSearchEntities(query string) []Entity {
 }
 
 func (idx *Indexer) BuildToolPrompt() string {
-	return `## 图记忆工具
+	return `## Stable memory tools
 
-你有以下工具可以操作长期图记忆系统：
+You have these tools for the long-term stable memory:
 
 ### memory_recall
-检索与关键词相关的实体和关系。
-参数:
-- query_intent: 查询关键词，逗号分隔
-- depth: 遍历深度（默认2）
-- sort: 排序方式。relevance=相关性（默认）；recent=时间倒序最新在前
-  （问"最近/最新/现在是什么"时必须用 —— 答案常是新值覆盖旧值）
+Retrieve entities and relations related to keywords.
+Parameters:
+- query_intent: keywords, comma separated
+- depth: traversal depth (default 2)
+- sort: relevance (default) or recent (newest first).
+  Use recent when asked "latest / current value" - the answer is usually the newest value
+  superseding an older one.
 
 ### memory_commit
-将三元组写入图记忆。
-参数:
-- triples: [{"subject": "实体名", "relation": "关系类型", "object": "目标实体",
-            "sentence_text": "原始句子（可选）", "media_digests": ["图片digest（可选）"],
-            "scene": "场景键（可选）"}]
-  填了 media_digests，日后从这条记忆就能取回当时那张图/那段音频。
-  填了 scene，这条记忆就挂在那个**场面**上：场面重现时（如又来一条 QQ 消息）
-  不靠字面命中也会被召回。「在什么场合该怎么做」这类约定/规则都该填，
-  例如回 QQ 消息的格式约定 → scene="chan:qq"。
-- scene: 本批次默认场景键（可选，逐条 triples 里的 scene 优先）。
+Write triples into stable memory.
+Parameters:
+- triples: [{"subject": "entity", "relation": "type", "object": "target entity",
+            "sentence_text": "original sentence (optional)",
+            "media_digests": ["media digest (optional)"],
+            "scene": "scene key (optional)"}]
+  With media_digests, the image/audio can be retrieved from this memory later.
+  With scene, the memory hangs on that **scene**: when the scene recurs (e.g. another QQ
+  message arrives) it is recalled without a literal match. Put conventions and rules here,
+  e.g. the QQ reply format -> scene="chan:qq".
+- scene: default scene key for this batch (optional; per-triple scene wins).
 
 ### memory_introspect
-查看记忆统计信息。
+Show memory statistics.
 
 ### memory_purge
-删除或修正记忆。
-参数:
+Delete or fix memories.
+Parameters:
 - criteria: {"subject_contains": "...", "relation_type": "..."}
 - mode: "soft" | "supersede"
 
-使用方法：在推理过程中调用对应的 tool，系统会自动执行并返回结果。`
+Usage: call the tool during reasoning; the kernel executes it and returns the result.`
 }
 
 func (idx *Indexer) FormatContext(ctx *InjectedContext) string {

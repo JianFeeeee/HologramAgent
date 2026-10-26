@@ -51,7 +51,7 @@ func TestToolAPIPathRespectsDeviceGrant(t *testing.T) {
 
 	// ① 内核路径（现状已有）
 	gotInner := a.executeToolCall(tc, "cli")
-	if !strings.Contains(gotInner, "未授权") {
+	if !strings.Contains(gotInner, "not authorized") {
 		t.Fatalf("内核路径应拒绝未授权设备，实际: %s", gotInner)
 	}
 
@@ -129,7 +129,7 @@ func TestCanUseAgreesWithInnerPath(t *testing.T) {
 			ID: "c1", Name: "device_ctl_cmdrun",
 			Arguments: map[string]interface{}{"device_id": c.deviceID, "command": "ls"},
 		}
-		innerOK := !strings.Contains(a.executeToolCall(tc, "cli"), "未授权")
+		innerOK := !strings.Contains(a.executeToolCall(tc, "cli"), "not authorized")
 		apiOK := toolAPIOf(t, a).CanUse(tc.Name, tc.Arguments)
 		if innerOK != apiOK {
 			t.Errorf("device=%s allowed=%v：内核路径=%v 而 ToolAPI 路径=%v —— 两条路径判定不一致",
@@ -151,7 +151,7 @@ func TestCanUseMatchesInnerFailOpenOnMissingDeviceID(t *testing.T) {
 		ID: "c1", Name: "device_ctl_cmdrun",
 		Arguments: map[string]interface{}{"command": "ls"}, // 无 device_id
 	}
-	innerOK := !strings.Contains(a.executeToolCall(tc, "cli"), "未授权")
+	innerOK := !strings.Contains(a.executeToolCall(tc, "cli"), "not authorized")
 	apiOK := toolAPIOf(t, a).CanUse(tc.Name, tc.Arguments)
 	if innerOK != apiOK {
 		t.Errorf("缺 device_id 时两条路径不一致：内核=%v ToolAPI=%v", innerOK, apiOK)
@@ -213,7 +213,7 @@ func TestBuiltinParallelDeclaredWhereDefined(t *testing.T) {
 	}
 	for _, n := range []string{
 		"knowledge_search", "knowledge_list", "person_query", "person_network",
-		"input_channels", "get_plugin_tools", "doc_query",
+		"input_channels", "get_plugin_tools", "coldcontext_query",
 		"llm_list_sources", "output_list_channels",
 	} {
 		i := strings.Index(body[declStart:], `toolDefWith("`+n+`"`)
@@ -239,7 +239,7 @@ func TestBuiltinParallelDeclaredWhereDefined(t *testing.T) {
 	seen := 0
 	for _, n := range []string{
 		"knowledge_search", "knowledge_list", "person_query", "person_network",
-		"input_channels", "get_plugin_tools", "doc_query",
+		"input_channels", "get_plugin_tools", "coldcontext_query",
 		"llm_list_sources", "output_list_channels",
 	} {
 		if concurrencySafeOf(n) {
@@ -255,7 +255,7 @@ func TestBuiltinParallelDeclaredWhereDefined(t *testing.T) {
 
 	// 写类工具绝不能出现在聚合表的可并发集合里
 	for _, n := range []string{
-		"memory_merge", "memory_delete_entity", "knowledge_create", "doc_commit",
+		"memory_merge", "memory_delete_entity", "knowledge_create", "coldcontext_commit",
 		"persona_set", "person_set_trait", "llm_set_source", "spawn_child",
 	} {
 		if concurrencySafeOf(n) {

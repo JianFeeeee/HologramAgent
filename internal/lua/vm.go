@@ -621,6 +621,29 @@ var bundledAdapterNames = []string{
 //
 //	（没有历史清单可比）。从第二次升级起自动生效。要立刻生效就删掉
 //	DataDir/adapters 让内核重新解包。
+//
+// adapterVersion 从适配器源码里取 `adapter.version = "x"`（取不到返回 "?"）。
+//
+// 用途只有一个：让漂移告警能说清"盘上是哪一版、内置是哪一版"，
+// 而不是只让运维看两个 sha。判据不依赖它。
+func adapterVersion(src string) string {
+	const key = "adapter.version"
+	i := strings.Index(src, key)
+	if i < 0 {
+		return "?"
+	}
+	rest := src[i+len(key):]
+	if j := strings.Index(rest, "\""); j < 0 {
+		return "?"
+	} else {
+		rest = rest[j+1:]
+	}
+	if k := strings.Index(rest, "\""); k >= 0 {
+		return rest[:k]
+	}
+	return "?"
+}
+
 func (v *VM) writeBundledAdapters() error {
 	prev := v.readBundledManifest()
 	cur := map[string]string{}
@@ -639,7 +662,20 @@ func (v *VM) writeBundledAdapters() error {
 			prevHash, known := prev[name]
 			switch {
 			case !known:
-				// 无历史清单：无法判断是否被用户改过 ⇒ 不动（与旧行为一致）
+				// 无历史清单：无法判断是否被用户改过 ⇒ 不动（与旧行为一致）。
+				//
+				// ★ 但这种"不动"必须**说出来**（2026-10-26 生产故障）：
+				// 盘上是一份**早于本次功能修复**的适配器时，内核一声不响地继续用它。
+				// 现场：deepseek.lua 的 transform_stream_chunk 缺 tool_calls 处理
+				// ⇒ 流式模式下模型调不动任何工具、且零报错，症状看起来像"模型不听话"。
+				// 仓库里的内置版本已修好，且 deepseek_stream_test.go 一直是绿的 ——
+				// 因为判据测的是**内置**文件，而运行时用的是**盘上**这份。
+				if onDisk != sum {
+					fmt.Printf("[lua] WARNING: adapter %s on disk (v%s) differs from bundled (v%s) and has no recorded baseline; "+
+						"NOT overwriting (user edits are preserved). If tool calls or streaming misbehave, this drift is the first suspect — "+
+						"back up and delete %s to adopt the bundled version.\n",
+						name+".lua", adapterVersion(string(old)), adapterVersion(string(data)), name+".lua")
+				}
 			case onDisk == sum:
 				// 已是当前版本，无需写
 			case onDisk != prevHash:

@@ -62,8 +62,8 @@ func TestDeviceToolAuth_NarrowedGrantRefusesOtherDevice(t *testing.T) {
 	got := a.executeToolCall(deviceToolCall("device_ctl_cmdrun", map[string]interface{}{
 		"device_id": "other-2", "command": "rm -rf /",
 	}), "cli")
-	if !strings.Contains(got, "未授权") {
-		t.Fatalf("未授权设备应被拒，实际: %s", got)
+	if !strings.Contains(got, "not authorized") {
+		t.Fatalf("unauthorized device should be rejected, got: %s", got)
 	}
 	if len(called) != 0 {
 		t.Fatalf("被拒的调用不得落到设备，实际执行了 %v", called)

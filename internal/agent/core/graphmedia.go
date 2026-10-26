@@ -280,7 +280,7 @@ func (a *Agent) mediaContextForInjectedEntities(injected *memory.InjectedContext
 	return a.mediaContextForRelations(res.Relations)
 }
 
-// blockLabelsForDoc 渲染文档持有块的标签（MIME + 短块 ID），供 doc_query 展示。
+// blockLabelsForDoc 渲染文档持有块的标签（MIME + 短块 ID），供 coldcontext_query 展示。
 func (a *Agent) blockLabelsForDoc(d *document.Doc) string {
 	if d == nil || len(d.Blocks) == 0 {
 		return ""

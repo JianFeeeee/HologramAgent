@@ -4,7 +4,7 @@ package core
 //
 // 依据（assets/docs/zh/ARCHITECTURE.md「记忆流转」② Document 层的读取分支）：
 //
-//	doc_query → Consume(读取并删除)
+//	coldcontext_query → Consume(读取并删除)
 //	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
 //	          → 文档以原始时间戳写入 context 时间线, 从 docStore 删除
 //
@@ -78,11 +78,11 @@ func TestRecallByDoc_RestoresEachEventAtOriginalTimestamp(t *testing.T) {
 	}
 
 	out := a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "紫蓝红配色方案", "top_k": float64(5)},
 	})
 	if strings.Contains(out, "未找到") {
-		t.Fatalf("doc_query 未召回：%s", out)
+		t.Fatalf("coldcontext_query 未召回：%s", out)
 	}
 
 	seen := map[time.Time]string{}
@@ -135,7 +135,7 @@ func TestRecallByDoc_MigratesBlocksBackToContext(t *testing.T) {
 	}
 
 	a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "紫蓝红三色带 配色参考", "top_k": float64(3)},
 	})
 
@@ -178,7 +178,7 @@ func TestRecallByDoc_TextIsNotTruncatedOnTheWayBack(t *testing.T) {
 	}})
 
 	a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "长报告", "top_k": float64(3)},
 	})
 
@@ -215,7 +215,7 @@ func TestRecallByDoc_LegacyDocDegrades(t *testing.T) {
 	}
 
 	out := a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "紫蓝红三色带 旧格式", "top_k": float64(3)},
 	})
 	if strings.Contains(out, "未找到") {
@@ -269,7 +269,7 @@ func TestRecallByDoc_StressManyEvents(t *testing.T) {
 		t.Fatalf("归档后仍有 %d 条", got)
 	}
 	a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "压力输入 内容", "top_k": float64(5)},
 	})
 	elapsed := time.Since(start)
@@ -285,7 +285,7 @@ func TestRecallByDoc_StressManyEvents(t *testing.T) {
 	t.Logf("回填 %d 条耗时 %v", got, elapsed)
 }
 
-// ⑥ doc_query 的返回值必须**带真实内容**，不能只有统计描述。
+// ⑥ coldcontext_query 的返回值必须**带真实内容**，不能只有统计描述。
 //
 // 断点史（生产日志实测）：旧返回值是
 //
@@ -309,12 +309,12 @@ func TestRecallByDoc_ReturnValueCarriesRealContent(t *testing.T) {
 	}})
 
 	out := a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "配色方案 紫蓝红", "top_k": float64(3)},
 	})
 
 	// 1) 必须说明原文去了时序
-	if !strings.Contains(out, "时序") {
+	if !strings.Contains(out, "timeline") {
 		t.Errorf("返回值没说原文去了哪里：\n%s", out)
 	}
 	// 2) 必须有时间（年月日或月-日）
@@ -347,7 +347,7 @@ func TestRecallByDoc_LegacyReturnAlsoCarriesContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "旧格式文档 真实正文", "top_k": float64(3)},
 	})
 	if !strings.Contains(out, "真实正文在这里") {

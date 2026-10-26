@@ -293,7 +293,7 @@ func TestResolveMediaRefs(t *testing.T) {
 // ---------- 文档持有的一等记忆块 ----------
 
 func TestDocCommit_StoresBlocks(t *testing.T) {
-	// doc_commit 带媒体时，媒体应作为一等块直接存在文档上，
+	// coldcontext_commit with media stores blocks directly in cold context,
 	// 并随 doc 一起持久化（块自带字节，不靠外部引用保活）。
 	dir := t.TempDir()
 	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
@@ -323,7 +323,7 @@ func TestDocCommit_StoresBlocks(t *testing.T) {
 	}
 }
 
-// ---------- 文档持有块标签（doc_query 展示用） ----------
+// ---------- 文档持有块标签（coldcontext_query 展示用） ----------
 
 func TestBlockLabelsForDoc(t *testing.T) {
 	a := newInputTestAgent(t)
@@ -363,7 +363,7 @@ func TestBlockLabel(t *testing.T) {
 	}
 }
 
-// ---------- 模型工具端到端：memory_commit / doc_commit / doc_query ----------
+// ---------- model tool end-to-end: memory_commit / coldcontext_commit / coldcontext_query ----------
 
 func newToolTestAgent(t *testing.T) *Agent {
 	t.Helper()
@@ -412,7 +412,7 @@ func TestToolMemoryCommit_BindsMedia(t *testing.T) {
 			},
 		},
 	}, nil)
-	if !strings.Contains(out, "关联") {
+	if !strings.Contains(out, "linked") && !strings.Contains(out, "media") {
 		t.Errorf("返回值应告知模型媒体已关联: %q", out)
 	}
 
@@ -485,7 +485,7 @@ func TestToolMemoryCommit_CarriesSentenceText(t *testing.T) {
 	}
 }
 
-// doc_commit 带 media_refs：媒体成为文档直接持有的一等块；正文保持原样。
+// coldcontext_commit with media_refs: media becomes a first-class block held by cold context;
 func TestToolDocCommit_BindsMedia(t *testing.T) {
 	a := newToolTestAgent(t)
 	b := mediaBlock("image/png", []byte("doc-commit-bytes"))
@@ -494,14 +494,14 @@ func TestToolDocCommit_BindsMedia(t *testing.T) {
 	}
 
 	out := a.executeDocTool(agentAPI.ToolCall{
-		Name: "doc_commit",
+		Name: "coldcontext_commit",
 		Arguments: map[string]interface{}{
 			"content":       "这是一篇带图的笔记正文。",
 			"summary":       "带图笔记",
 			"media_digests": []interface{}{b.ID[:12]},
 		},
 	})
-	if !strings.Contains(out, "关联") {
+	if !strings.Contains(out, "linked") && !strings.Contains(out, "media") {
 		t.Errorf("返回值应告知模型媒体已关联: %q", out)
 	}
 
@@ -524,7 +524,7 @@ func TestToolDocCommit_BindsMedia(t *testing.T) {
 	}
 }
 
-// doc_query 必须把媒体说明附在返回值里，否则模型检索到带图文档也不知道有图。
+// coldcontext_query 必须把媒体说明附在返回值里，否则模型检索到带图文档也不知道有图。
 func TestToolDocQuery_ShowsMedia(t *testing.T) {
 	a := newToolTestAgent(t)
 	b := mediaBlock("image/png", []byte("query-bytes"))
@@ -533,7 +533,7 @@ func TestToolDocQuery_ShowsMedia(t *testing.T) {
 	}
 
 	a.executeDocTool(agentAPI.ToolCall{
-		Name: "doc_commit",
+		Name: "coldcontext_commit",
 		Arguments: map[string]interface{}{
 			"content":       "紫蓝红三色带配色说明正文",
 			"summary":       "紫蓝红三色带",
@@ -542,7 +542,7 @@ func TestToolDocQuery_ShowsMedia(t *testing.T) {
 	})
 
 	a.executeDocTool(agentAPI.ToolCall{
-		Name:      "doc_query",
+		Name:      "coldcontext_query",
 		Arguments: map[string]interface{}{"query": "紫蓝红三色带 配色说明", "top_k": float64(3)},
 	})
 
@@ -554,7 +554,7 @@ func TestToolDocQuery_ShowsMedia(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("doc_query 未把媒体说明带进上下文 —— 模型不知道这篇文档带过图")
+		t.Error("coldcontext_query 未把媒体说明带进上下文 —— 模型不知道这篇文档带过图")
 	}
 }
 
@@ -578,7 +578,7 @@ func TestTools_UnknownRefDegrades(t *testing.T) {
 	}
 
 	out = a.executeDocTool(agentAPI.ToolCall{
-		Name: "doc_commit",
+		Name: "coldcontext_commit",
 		Arguments: map[string]interface{}{
 			"content":       "引用未知块的文档",
 			"media_digests": []interface{}{"aabbccddeeff"},

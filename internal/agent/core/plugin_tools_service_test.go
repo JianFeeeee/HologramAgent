@@ -42,7 +42,7 @@ func TestResolveToolPlugin_NoPhantomPlugins(t *testing.T) {
 	// 这些内置工具的名字都含下划线，按旧规则会被截成假插件名。
 	for _, name := range []string{
 		"ocr_image", "describe_image", "transcribe_audio",
-		"memory_commit", "memory_recall", "doc_query",
+		"memory_commit", "memory_recall", "coldcontext_query",
 		"knowledge_search", "person_set_trait", "spawn_child",
 	} {
 		got := a.resolveToolPlugin(name)

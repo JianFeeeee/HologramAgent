@@ -141,13 +141,13 @@ func TestMemoryCommitRejectsStillSaysRejected(t *testing.T) {
 	//	  ② 实体名校验层：回「提交了 N 条三元组但全部被拒（未写入）」
 	//	两条都是如实的失败报告，措辞不同而已。
 	//	钉死字面会让 ① 路径下这条判据假红。
-	if !strings.Contains(out, "被拒") &&
-		!strings.Contains(out, "未写入") &&
-		!strings.Contains(out, "没有有效") {
+	if !strings.Contains(out, "rejected") &&
+		!strings.Contains(out, "nothing written") &&
+		!strings.Contains(out, "no valid triples") {
 		t.Errorf("0 写入时必须明说没写进去（否则模型当成成功而不重试），实际 %q", out)
 	}
 	// ★ 尤其不能出现「已写入」这种成功措辞。
-	if strings.Contains(out, "已写入") {
+	if strings.Contains(out, "Wrote") || strings.Contains(out, "written") && !strings.Contains(out, "nothing written") {
 		t.Errorf("0 写入却回「已写入」：%q", out)
 	}
 }

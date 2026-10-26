@@ -125,7 +125,7 @@ func TestPrepareToolBlocks_TextOnlyProviderFallsBackToTranscription(t *testing.T
 		t.Fatalf("回退文字应含转写内容，得到 %q", fallbackText)
 	}
 	// 关键：模型必须知道这是二手转写而非自己直接看到的
-	if !strings.Contains(fallbackText, "非当前模型直接感知") {
+	if !strings.Contains(fallbackText, "not directly perceived by the current model") {
 		t.Fatalf("回退文字必须标注来源，得到 %q", fallbackText)
 	}
 	if vis.calls != 1 {
@@ -149,7 +149,7 @@ func TestPrepareToolBlocks_NoFallbackSourceReportsHonestly(t *testing.T) {
 	}
 	// 这是本次修复的核心：没有能力也没有回退源时必须明说，
 	// 而不是静默丢弃让模型以为自己看过图了。
-	if !strings.Contains(fallbackText, "不支持图片") {
+	if !strings.Contains(fallbackText, "does not support images") {
 		t.Fatalf("必须如实说明看不到图，得到 %q", fallbackText)
 	}
 	if !strings.Contains(fallbackText, "fallback_provider") {
@@ -232,7 +232,7 @@ func TestTranscribeBlocks_EmptyReplyCountsAsFailure(t *testing.T) {
 	if res.Converted != 0 {
 		t.Fatalf("空回复不应计入成功转写，得到 Converted=%d", res.Converted)
 	}
-	if !strings.Contains(res.Notice, "转写失败") {
+	if !strings.Contains(res.Notice, "transcription failed") {
 		t.Fatalf("应报告转写失败，得到 Notice=%q", res.Notice)
 	}
 }

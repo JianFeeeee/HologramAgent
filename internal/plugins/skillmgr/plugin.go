@@ -86,6 +86,10 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 			}
 		}
 	}
+	// 内核自带 skill 先落盘（不覆盖用户版本），再由下面的扫描统一加载。
+	// 机制类内容住在 skill 里，系统提示词只引用、不复述（见 builtin.go 注释）。
+	materializeBuiltinSkills(p.skillsDir)
+
 	if err := os.MkdirAll(p.skillsDir, 0755); err != nil {
 		return fmt.Errorf("mkdir skills dir: %w", err)
 	}
@@ -257,32 +261,44 @@ func (p *Plugin) SkillIndex() string {
 		}
 		desc := e.sk.Description()
 		if desc == "" || desc == "---" {
-			desc = "(无描述)"
+			desc = "(no description)"
 		}
-		// ★ 截断必须按**字符**（rune）而不是字节。
-		//
-		// 原实现 `desc[:80]` 按字节切，而中文占 3 字节 ⇒ 切点常落在
-		// 多字节字符中间，产生**非法 UTF-8**。后果实测：
-		//
-		//   seq-tools v - 把反复出现的同类工具操作编成「序列」存起来，以后一次�
-		//
-		// 模型看到的是乱码尾部，且"什么时候该用"那部分整段丢失 ——
-		// 于是它根本不知道这个 skill 何时适用（e2e 实测：该用 seq 的
-		// 多对象重复场景，模型改去调 file-tools）。
-		//
-		// 本仓 25 个 skill 里有 8 个（32%）踩过这个截断。
-		// 判据见 TestSkillIndexTruncatesByRune。
-		desc = truncateDesc(desc)
+		desc = p.truncateDesc(desc)
 		fmt.Fprintf(&b, "%s v%s - %s\n", e.sk.Name(), e.sk.Version(), desc)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// truncateDesc 把 skill 描述截断到 80 个**字符**（rune），超出加省略号。
-//
-// 必须是字符而不是字节：中文占 3 字节，按字节切会落在多字节字符中间，
-// 产生非法 UTF-8。见 TestSkillIndexTruncatesByRune 的真实缺陷说明。
+// truncateDesc truncates a skill description to 80 runes and appends an ellipsis.
 func truncateDesc(desc string) string {
+	const maxRunes = 80
+	r := []rune(desc)
+	if len(r) <= maxRunes {
+		return desc
+	}
+	return string(r[:maxRunes]) + "..."
+}
+
+// SkillDescriptions returns the full one-line descriptions of enabled skills.
+// 供 agent 在有限的提示词空间里准确匹配技能；完整机制与操作步骤仍由 skill_info 按需读取。
+// 描述应包括：适用问题/时机 + 该机制的关键区别，避免仅用含糊的目录名。
+func (p *Plugin) SkillDescriptions() string {
+	entries := p.snapshot()
+	var b strings.Builder
+	for _, e := range entries {
+		if !e.enabled {
+			continue
+		}
+		desc := strings.TrimSpace(e.sk.Description())
+		if desc == "" || desc == "---" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %s\n", e.sk.Name(), desc)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (p *Plugin) truncateDesc(desc string) string {
 	const maxRunes = 80
 	r := []rune(desc)
 	if len(r) <= maxRunes {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -401,6 +402,22 @@ func applyInjectOpts(payload map[string]interface{}, opts InjectOptions) {
 	// priority 只对中断注入有意义；排队路径会忽略它（内核侧只读不写）。
 	if opts.Priority != "" {
 		payload["priority"] = opts.Priority
+	}
+	// ★ 插件声明的**命名安全限式**（可选）：本插件 inputch 触发时选一档。
+	//
+	// 语义（用户 2026-10-26）：插件声明 `qq.owner` / `qq.guest` 等档位，
+	// 按发送者身份在这里带上档位名；内核在**本轮**激活它并据此判定工具
+	// 与内容策略。空串 = 不使用档位（沿用内核默认策略），零行为变化。
+	if opts.SecurityProfile != "" {
+		payload["security_profile"] = opts.SecurityProfile
+	}
+	// ★ 本轮附加提示（插件陈述的"这一轮才成立的事实"）。
+	//
+	// 与 `content` 分开携带：content 是用户/来源说的话，turn_hint 是
+	// 给模型的**系统侧说明**。混在一起会让模型分不清哪句是人说的，
+	// 也让审计看不出哪些文字来自插件而非用户。
+	if strings.TrimSpace(opts.TurnHint) != "" {
+		payload["turn_hint"] = opts.TurnHint
 	}
 	// ★ 合并插件的 payload 扩展，但**不允许覆盖内核保留键**。
 	//

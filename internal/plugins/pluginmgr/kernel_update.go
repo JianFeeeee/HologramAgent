@@ -151,11 +151,24 @@ func kernelDataDir(p *Plugin) string {
 	// 算成 /home —— pending 标记落到 /home/kernel-upgrade-pending.json，
 	// 而第 0 层 update 模块从 ks.DataDir 读 ⇒ **永远读不到标记** ⇒
 	// agent 发起的升级一旦启动失败就**不会回滚**（静默失效）。
+	// ★ 不再写死生产路径（2026-10-26 迁移教训）：
+	// 硬编码 /home/newqqagent 在目录/用户迁移后会让 pending 标记落到一个
+	// **已经不存在的目录**，而第 0 层 update 从 ks.DataDir 读 ⇒ 永远读不到
+	// ⇒ agent 发起的升级失败时静默不回滚。
+	//
+	// 优先级：显式环境变量（部署方声明自己在哪）→ 从 pluginDir 反推 → 空。
+	// 空表示"不知道"，由调用方拒绝执行并报错，而不是猜一个路径。
+	if d := os.Getenv(dataDirEnv); d != "" {
+		return d
+	}
 	if p.pluginDir != "" {
 		return filepath.Dir(p.pluginDir)
 	}
-	return "/home/newqqagent"
+	return ""
 }
+
+// dataDirEnv 是部署方声明数据目录的环境变量（与 webui 侧同名）。
+const dataDirEnv = "HOMEAGENT_DATA_DIR"
 
 // currentKernelVersion 读本机 homed 自报版本（尽力而为）。
 func currentKernelVersion(p *Plugin) *update.BinVersion {

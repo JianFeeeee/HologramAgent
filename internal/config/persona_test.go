@@ -19,7 +19,11 @@ func TestDefaultPersonaPromptHasNoVersionLiterals(t *testing.T) {
 		t.Fatalf("默认人格模板含版本号字面量 %v —— 发版后必然腐坏，"+
 			"被问版本时应要求 agent 读运行时快照", m)
 	}
-	if !strings.Contains(DefaultPersonaPrompt, "运行时快照") {
+	// ★ 判据锚在**语义**而不是某个中文词：内核提示词已英文化
+	//（中文提示会让模型行为漂移）。这里同时接受两种表述，
+	// 但要求"版本/构建信息必须来自运行时快照"这个事实**明确出现**。
+	if !strings.Contains(DefaultPersonaPrompt, "runtime snapshot") &&
+		!strings.Contains(DefaultPersonaPrompt, "运行时快照") {
 		t.Fatal("默认人格模板必须显式要求「版本以运行时快照为准」，否则模型会凭记忆编造版本")
 	}
 }

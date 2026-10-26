@@ -167,6 +167,15 @@ func TestEveryPublishedEventHasAnOutwardPath(t *testing.T) {
 		// （如 seq 的开机序列）用。它是**内核内部**的就绪信号，
 		// 不是对话流程事件，前端无需感知。
 		"tools_ready": "内核就绪信号（plugin-host → 订阅者），非对话流程",
+		// security_ready / device_ready 同属**内核就绪信号**：订阅者是内核侧
+		// （状态面、healthcheck），前端不需要"装配完成"这一刻的时间点事件。
+		//
+		// ★ 但「安全审查是否真的在生效」是用户该知道的事实 —— 那通过
+		// **状态查询**（status API 读 ks.Security.RuntimeGlobal().Enabled()）
+		// 暴露，而不是靠一条瞬时 SSE 事件（错过就永远不知道）。
+		// 判据见 internal/security/gate_test.go 的 TestEnabledRuntimeReportsEnabled。
+		"security_ready": "内核就绪信号（security 模块装配完成），事实由状态查询暴露",
+		"device_ready":   "内核就绪信号（device 数据面装配完成），事实由状态查询暴露",
 		// delta 已由 appendDeltaSub 覆盖（见 sseSubscribedTypes ②）
 		"reasoning_delta": "由 appendDeltaSub 订阅",
 		"content_delta":   "由 appendDeltaSub 订阅",

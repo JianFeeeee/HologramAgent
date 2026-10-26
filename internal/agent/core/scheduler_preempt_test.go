@@ -332,7 +332,7 @@ func TestPreempt_ResumeRebaseRestoresTailDecorations(t *testing.T) {
 	// 模拟 prepare 后的形状：基础前缀 + 一段“本任务自己的现场”
 	f.Msgs = []agentAPI.Message{
 		{Role: "system", Content: "S"},
-		{Role: "user", Content: "[中断消息] 打断文本"},
+		{Role: "user", Content: "[Interrupt] 打断文本"},
 		{Role: "assistant", Content: "进行中"},
 	}
 	f.PrefixLen = 2
@@ -347,7 +347,7 @@ func TestPreempt_ResumeRebaseRestoresTailDecorations(t *testing.T) {
 		t.Fatalf("本任务现场应接回最后，实际 %+v", last)
 	}
 	prefixLast := f.Msgs[f.PrefixLen-1]
-	if prefixLast.Role != "system" || !strings.HasPrefix(prefixLast.Content, "[中断消息]") {
+	if prefixLast.Role != "system" || !strings.HasPrefix(prefixLast.Content, "[Interrupt]") {
 		t.Fatalf("中断标记未补回：%+v", prefixLast)
 	}
 	if len(prefixLast.Blocks) != 1 || prefixLast.Blocks[0].Text != "图" {

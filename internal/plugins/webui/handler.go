@@ -177,16 +177,16 @@ type Handler struct {
 
 func NewHandler(s *sdk.PluginSDK) *Handler {
 	var (
-		sup  sdk.SupervisorAPI
-		mem  sdk.MemoryAPI
-		idx  sdk.IndexerAPI
-		ad   sdk.AdapterAPI
-		cfg  sdk.ConfigAPI
-		tm   sdk.TextMemoryAPI
-		ks   sdk.KnowledgeAPI
-		tr   sdk.TrackerAPI
-		se   sdk.SettingsAPI
-		pm   sdk.PluginManager
+		sup sdk.SupervisorAPI
+		mem sdk.MemoryAPI
+		idx sdk.IndexerAPI
+		ad  sdk.AdapterAPI
+		cfg sdk.ConfigAPI
+		tm  sdk.TextMemoryAPI
+		ks  sdk.KnowledgeAPI
+		tr  sdk.TrackerAPI
+		se  sdk.SettingsAPI
+		pm  sdk.PluginManager
 		st  sdk.StatusAPI
 		llm sdk.LLMAPI
 		// kc 是内核重启/关机通道；nil 表示该部署没接（端点会明确报不可用）。

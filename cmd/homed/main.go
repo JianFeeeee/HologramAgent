@@ -8,6 +8,7 @@ import (
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/pluginhost"
+	securitymod "github.com/JianFeeeee/HologramAgent/internal/kernelmod/security"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	// ★ 内置插件统一走 internal/plugins 的清单（all.go），**不要**在这里
 	// 单独导入某个插件：
@@ -15,7 +16,6 @@ import (
 	//     —— 按它盘点的工具/文档会漏项（kbtree 曾因此长期游离在清单之外）；
 	//   · 想增删内置插件请改 all.go。
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/systemd"
 
 	// 空白导入内置 provider：它们各自在 init 里注册到 pkg/embedding。
@@ -104,81 +104,14 @@ func main() {
 	//
 	// 约束：安全块只依赖 cfgReg（不依赖 cfg），所以可以安全前移。
 	// ========================================================================
-	if cfgReg.GetBool("core.security.enabled", true) {
-		// ★ 先收敛数据目录与敏感文件权限（幂等），再读密钥。
-		//
-		// 顺序有意为之：内嵌主密钥把密钥放进了 0755 的二进制里，
-		// 而 config.db 出厂是 0644 —— 「能读二进制就能解密数据库」。
-		// 收紧到 0600/0750 是本机缓解手段，必须在服务开始读写之前生效。
-		//
-		// 失败不 Fatal（权限问题不该让服务不可用），但会逐条响亮记录。
-		if hr := security.HardenDataDir(opt.dataDir); len(hr.Changed) > 0 {
-			log.Printf("[homed] hardened %d file permissions (necessary mitigation for embedded-key scenario): %v",
-				len(hr.Changed), hr.Changed)
-		}
-		key, keySrc, kerr := security.LoadOrCreateKey(opt.dataDir)
-		if kerr != nil {
-			log.Fatalf("[homed] security key init failed (refusing to start in degraded mode): %v", kerr)
-		}
-		// E-1：若存在密钥环，装入历史钥（只读旧密文；当前钥仍由
-		// systemd credential/env/security.key 提供）。密钥环损坏或 current 不一致
-		// 必须响亮失败，不能猜一把钥继续启动。
-		oldKeys, rerr := security.LoadKeyring(opt.dataDir, key)
-		if rerr != nil {
-			log.Fatalf("[homed] security keyring load failed (refusing to silently pick wrong key): %v", rerr)
-		}
-		// ★ 内嵌钥上台时，磁盘钥必须继续参与**解密**。
-		//
-		// 否则一台用磁盘钥加密过的老机器升级到内嵌了另一把钥的二进制后，
-		// 旧密文会全部解不开 ⇒ 服务起不来；用户此时若选择"重建库"，
-		// 凭据就**一次性全丢** —— 那恰好与内嵌的初衷（防丢）相反。
-		//
-		// 与 E-1 同一套语义：当前钥负责 Seal，旧钥只参与 Open。
-		if extra := security.AdditionalDecryptKeys(opt.dataDir, key); len(extra) > 0 {
-			oldKeys = append(oldKeys, extra...)
-		}
-		if len(oldKeys) > 0 {
-			log.Printf("[homed] security module loaded %d historical/extra key(s) (E-1 smooth rotation + embedded migration)", len(oldKeys))
-		}
-		if _, serr := security.InitGlobal(security.Options{
-			Path:    filepath.Join(opt.dataDir, "security", "variables.json"),
-			KeyFn:   func() ([]byte, error) { return key, nil },
-			OldKeys: oldKeys,
-			Enabled: true,
-		}); serr != nil {
-			log.Fatalf("[homed] security variable store load failed (will not silently rebuild): %v", serr)
-		}
-		// 配置落盘用的子密钥（域隔离：与别名密钥不共用）。
-		// 必须早于 EncryptExistingSecrets，后者依赖它。
-		if _, cerr := security.InitConfigCodecWithOldKeys(key, oldKeys); cerr != nil {
-			log.Fatalf("[homed] config-encryption subkey derivation failed: %v", cerr)
-		}
-		// 把库里仍是明文的敏感项就地加密（幂等；升级路径必须跑）。
-		if n, merr := cfgReg.EncryptExistingSecrets(); merr != nil {
-			// 不 Fatal：库可能是只读/被锁，而“部分为明文”不等于服务不可用。
-			// 但要**响亮告警**：这是用户必须知道的安全事实。
-			log.Printf("[homed] existing sensitive config encryption incomplete (some entries still plaintext): %v", merr)
-		} else if n > 0 {
-			log.Printf("[homed] encrypted %d existing sensitive config entries", n)
-		}
-		log.Printf("[homed] security module enabled (key source %s, %d variables, config-at-rest encryption on)",
-			keySrc, security.Global().Count())
-
-		// ★ E-2：备份跨机器恢复的诊断。
-		//
-		// 场景：把 config.db 备份恢复到另一台机器，而主密钥没一起搬过来
-		// ⇒ 库里密文是**旧机器密钥**加的，当前钥解不开。
-		// 此前这种状态只在“读某一条配置”时才暴露成“某个功能坏了”，
-		// 用户看到的是症状而不是原因。这里一次性说清事实与修复动作。
-		if okN, badN, aerr := cfgReg.AuditSecrets(); aerr == nil && badN > 0 {
-			log.Printf("[homed] WARNING: %d ciphertext entries cannot be decrypted with current master key (%d decryptable) — " +
-				"most common cause: this config.db came from **another machine / another key**. " +
-				"Fix: bring the original machine's key over (systemd credential / %s / " +
-				"%s), or start once with the old key and run the re-encryption migration.",
-				badN, okN, security.EnvKeyName, security.KeyringFileName)
-		}
-	} else {
-		log.Printf("[homed] security module explicitly disabled (core.security.enabled=false) — data at rest is plaintext and relay is unprotected")
+	// ★ 安全模块的装配已迁到 internal/kernelmod/security（正式内核模块）。
+	//
+	// 为什么仍在这里调：密钥与变量库必须早于 `cfgReg.ToConfig()`
+	// （否则读 core.llm.* 的密文解不开 ⇒ 全部 provider 401 invalid api key，
+	// 症状极具误导性）。那是**时序**要求，依赖图表达不了 —— 与 Group 0
+	// 其他动作同性质。模块侧提供幂等的 Prepare()，调度时 Init 会复用同一实例。
+	if _, serr := securitymod.Prepare(opt.dataDir, cfgReg); serr != nil {
+		log.Fatalf("[homed] security module init failed (refusing to start in degraded mode): %v", serr)
 	}
 
 	// ========================================================================
@@ -301,7 +234,6 @@ func main() {
 
 	stopRuntime := startAgentRuntime(cfgReg, pluginReg, agent, logDir, ctx)
 	defer stopRuntime()
-
 
 	_, closeIPC := startIPCServer(opt.dataDir, opt.boot, agent)
 	defer closeIPC()

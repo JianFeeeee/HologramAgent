@@ -24,10 +24,12 @@ func TestPromptDeclaresParallelContract(t *testing.T) {
 		key   string
 		words []string
 	}{
-		{"默认并行", []string{"并行"}},
-		{"不可依赖顺序", []string{"顺序"}},
-		{"同通道保序", []string{"保序"}},
-		{"并发安全声明", []string{"并发安全", "ParallelSafe", "声明"}},
+		{"默认并行", []string{"run **in parallel**"}},
+		{"不可依赖顺序", []string{"Never depend on order"}},
+		{"同通道保序", []string{"keep their order"}},
+		// ★ 2026-10-26：parallel-safe/sequential 的调度细节下沉到
+		// kernel-tool-order skill；提示词只保留"必须并行 + 不可依赖顺序"。
+		{"同通道保序例外", []string{"keep their order"}},
 	}
 	for _, r := range required {
 		found := false
@@ -54,7 +56,9 @@ func TestPromptDeclaresParallelContract(t *testing.T) {
 func TestPromptStatesExceptionsNotJustParallelism(t *testing.T) {
 	a := newPreemptAgent(t, newPreemptProvider())
 	p := a.buildSystemPrompt("", "hi")
-	for _, w := range []string{"例外", "不会并发", "不并发"} {
+	// ★ 2026-10-26：仅保留"同通道保序"这一条模型必须知道的例外；
+	// 批内降级（写类工具退化为串行）属于实现细节，已下沉到 skill。
+	for _, w := range []string{"keep their order"} {
 		if strings.Contains(p, w) {
 			return
 		}
@@ -73,7 +77,7 @@ func TestPromptExplainsSameChannelOrdering(t *testing.T) {
 	if !strings.Contains(p, "output_send__") {
 		t.Fatal("提示词未提及 output_send__，无法说明同通道保序")
 	}
-	if !strings.Contains(p, "保序") {
+	if !strings.Contains(p, "keep their order") {
 		t.Error("提示词未说明同通道多次发送会保序")
 	}
 }
@@ -100,12 +104,12 @@ func TestPromptKeepsExistingContract(t *testing.T) {
 	a := newPreemptAgent(t, newPreemptProvider())
 	p := a.buildSystemPrompt("", "hi")
 	for _, want := range []string{
-		"【输出规则】",
+		"[Output rules]",
 		"output_list_channels",
-		"【可用工具能力】",
+		"[Available tool capabilities]",
 		// 记忆维护块：标题从【记忆清理指令】改为【记忆维护】——具体工具选择
 		// 下沉到 memory_* 的工具描述，提示词只保留「必须真做、不许只描述计划」。
-		"【记忆维护】",
+		"[Memory maintenance]",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("提示词丢失既有要点 %q", want)

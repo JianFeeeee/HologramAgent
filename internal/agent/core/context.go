@@ -54,7 +54,7 @@ type ContextEvent struct {
 	//
 	// ★★ 为什么不能顺手把归档也关掉（2026-10-22 踩过的坑）：
 	//
-	//	doc_query 的 Consume 已经**从 L2 删除**了原文。若回填事件在 L1
+	//	coldcontext_query 的 Consume 已经**从 L2 删除**了原文。若回填事件在 L1
 	//	被裁掉时又不归档，它就**三层都不在**了 —— 内容被永久丢弃。
 	//	L1 是它最后的落脚点，必须能落回去。
 	//
@@ -249,7 +249,7 @@ func (c *RelevanceContext) load() {
 }
 
 func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolDef, channelDefLookup func(name string) (sdk.ChannelDef, bool)) string {
-	// 事件自带 NoMemory（doc_query 回填的历史事件）：不进计算层。
+	// 事件自带 NoMemory（coldcontext_query 回填的历史事件）：不进计算层。
 	//
 	// 为什么回填事件不参与计算：它们的内容刚刚在 L2 里被向量化过一次，
 	// 再算一次只会让"同一内容"在向量空间里被重复加权。但它们**照常归档**。
@@ -289,7 +289,7 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 			}
 			// ② 内置工具（core 自己的 switch 分派）：走包级声明表。
 			//
-			// ★ doc_query 属于这一类 —— 它的返回值含被召回事件的正文片段，
+			// ★ coldcontext_query 属于这一类 —— 它的返回值含被召回事件的正文片段，
 			//   而那些正文已在记忆体系里（来自 L2/L3）。若返回值再参与向量化
 			//   与蒸馏，就是把同一内容重新注入记忆，与「回填事件不再归档」
 			//   构成同一个自激回路的两个入口。
@@ -583,7 +583,7 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 		// ★ 回填事件（NoMemory）**照常归档** —— 这是数据不丢的关键。
 		//
 		// 曾经在这里跳过它们（理由是"防自激"），那是错的：
-		// doc_query 的 Consume 已经把 L2 副本删掉了，L1 是唯一副本。
+		// coldcontext_query 的 Consume 已经把 L2 副本删掉了，L1 是唯一副本。
 		// 跳过归档 = 裁掉即丢失（L1、L2、L3 三层都不在）。
 		//
 		// 自激的入口不在"归档"这一侧，而在"重新计算向量"那一侧 ——

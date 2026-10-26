@@ -67,7 +67,7 @@ var builtinToolOwner = map[string]string{
 	"knowledge_search": "core", "knowledge_create": "core", "knowledge_list": "core",
 	"knowledge_delete": "core", "knowledge_import_dir": "core",
 	// 文档记忆
-	"doc_query": "core", "doc_commit": "core",
+	"coldcontext_query": "core", "coldcontext_commit": "core",
 	// 社交 / 人格
 	"person_query": "core", "person_set_trait": "core", "person_relate": "core",
 	"persona_set": "core",

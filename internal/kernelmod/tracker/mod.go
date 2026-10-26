@@ -4,6 +4,7 @@
 package tracker
 
 import (
+	"errors"
 	"log"
 	"time"
 
@@ -27,7 +28,16 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	if err := trk.Init(); err != nil {
 		log.Printf("[homed] warning: tracker init: %v", err)
 	} else if err := trk.Start(); err != nil {
-		log.Printf("[homed] warning: tracker mount overlay: %v (non-fatal: no overlayfs support?)", err)
+		if errors.Is(err, tracker.ErrOverlayNoPrivilege) {
+			// 用户 2026-10-26 拍板方案 A：服务降权运行，接受变更追踪降级。
+			// 日志必须说清"是什么、影响什么、怎么恢复"，而不是"可能不支持"。
+			log.Printf("[homed] change tracker degraded: agentfs overlay needs mount privilege, " +
+				"service runs as non-root (decision A, 2026-10-26). " +
+				"Consequence: agentfs file-change tracking/rollback is disabled; chat, memory, " +
+				"plugins and tools are unaffected. To restore: run as root, or grant mount capability.")
+		} else {
+			log.Printf("[homed] warning: tracker mount overlay: %v (non-fatal)", err)
+		}
 	} else {
 		log.Printf("[homed] change tracker active at %s", trk.MergeDir())
 	}

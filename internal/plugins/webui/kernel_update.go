@@ -148,5 +148,7 @@ func dataDirOf(binPath string) string {
 	if d := os.Getenv("HOMEAGENT_DATA_DIR"); d != "" {
 		return d
 	}
-	return "/home/newqqagent"
+	// ★ 不写死生产路径：迁移后它会指向一个不存在的目录，
+	// 让升级 pending 标记落错地方（静默不回滚）。返回空由调用方报错。
+	return ""
 }

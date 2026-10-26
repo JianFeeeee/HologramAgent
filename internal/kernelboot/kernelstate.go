@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
@@ -19,6 +20,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -240,6 +242,24 @@ type KernelState struct {
 
 	// Agent 是主 agent（agent 模块产出）。
 	Agent *agentCore.Agent
+
+	// Security 是**安全防火墙运行时**（security 模块产出）。
+	//
+	// ★ 它不是"某项能力"，而是横在 Core 与全部外部模块之间的边界：
+	//   出向（Core → 外部）与入向（外部 → Core）都要经它审查。
+	//
+	// 为什么是具体类型而不是接口：internal/security 不依赖本包（无环），
+	// 而类型化字段能让"取错类型/拼错字段"变成编译错误 —— 这正是本结构体
+	// 存在的理由（见包注释）。未装配时为 nil；配置显式关闭时是
+	// Disabled Runtime（所有审查零成本透传），不是 nil。
+	Security *security.Runtime
+
+	// Device 是**工具/通道数据面**（device 模块产出）。
+	//
+	// 类型是低层接口（internal/agent/api.DeviceSurface）而不是
+	// *kernelmod/device.Runtime：后者 import kernelboot，直接用具体类型会成环。
+	// 接口只暴露"读面"（工具清单），执行仍经 Agent —— 那里才有授权闸与超时。
+	Device api.DeviceSurface
 
 	// ── 运行期（装配阶段建立，后续流程用） ──
 

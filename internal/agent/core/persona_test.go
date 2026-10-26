@@ -37,7 +37,7 @@ func TestPersonaOnboardingGateInSystemPrompt(t *testing.T) {
 	a := newTestAgent(st)
 
 	p := a.buildSystemPrompt("", "你好")
-	if !strings.Contains(p, "首启人格设定") || !strings.Contains(p, "persona_set") {
+	if !strings.Contains(p, "First-run persona setup") || !strings.Contains(p, "persona_set") {
 		t.Fatalf("未确认人格时提示词应要求模型询问并调用 persona_set，实际缺少该段")
 	}
 

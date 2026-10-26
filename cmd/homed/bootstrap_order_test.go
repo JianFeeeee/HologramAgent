@@ -39,6 +39,31 @@ func TestSecurityModuleInitializesBeforeConfigSnapshot(t *testing.T) {
 	}
 	src := string(b)
 
+	// ★ 2026-10-26 起安全装配搬进正式内核模块 internal/kernelmod/security。
+	// 判据必须继续守**真实的装配点**，所以把模块源码一起读进来：
+	// 否则锚点（LoadOrCreateKey / InitConfigCodecWithOldKeys）会"找不到"，
+	// 而那种失败会被误读成"安全模块没了"。不变量本身不变：
+	// 主密钥必须先于任何读 core.llm.* 的操作。
+	if mb, merr := os.ReadFile("../../internal/kernelmod/security/mod.go"); merr == nil {
+		src += "\n" + string(mb)
+	} else {
+		t.Fatalf("读不到 kernelmod/security/mod.go（安全模块的实现文件）: %v", merr)
+	}
+	lineOfMain := func(call string) int {
+		for i, ln := range strings.Split(string(b), "\n") {
+			t := strings.TrimSpace(ln)
+			if strings.HasPrefix(t, "//") {
+				continue
+			}
+			if strings.Contains(ln, call) {
+				return i + 1
+			}
+		}
+		return -1
+	}
+	// 装配入口现在是 main.go 里的 securitymod.Prepare(...)：它必须早于快照。
+	prepLine := lineOfMain("securitymod.Prepare(")
+
 	// 找**真实的调用点**：行内出现调用名，且该行不是注释。
 	//
 	// 为什么用 Contains 而不是 HasPrefix：真实形式有三种
@@ -76,34 +101,45 @@ func TestSecurityModuleInitializesBeforeConfigSnapshot(t *testing.T) {
 			"**不要**删掉这条判据：它守的是「主密钥必须先于配置快照」")
 	}
 	// 安全模块的**生效点**是 InitConfigCodecWithOldKeys（配置加密子密钥派生）
-	secLine := lineOf("security.InitConfigCodecWithOldKeys(")
+	// ★ 2026-10-26：模块内的调用是 sec.InitConfigCodecWithOldKeys(...)，
+	// 裸源码读取（非 AST）匹配不到包名，故按函数名匹配。
+	secLine := lineOf("InitConfigCodecWithOldKeys(")
 	if secLine < 0 {
-		secLine = lineOf("security.InitConfigCodec(")
+		secLine = lineOf("InitConfigCodec(")
 	}
 	if secLine < 0 {
 		t.Fatal("找不到 InitConfigCodec 调用（安全模块装配点）")
 	}
 	// 密钥装载点也要在快照之前（两者都在安全块里）
-	keyLine := lineOf("security.LoadOrCreateKey(")
+	keyLine := lineOf("LoadOrCreateKey(")
 
-	if secLine > snapLine {
-		t.Errorf("★ 安全模块装配（第 %d 行）在配置快照（第 %d 行）**之后** —— "+
+	// 真正的"生效点"是 main.go 里对安全模块 Prepare() 的调用 ——
+	// 密钥装载与子密钥派生都在它内部完成。它必须在快照之前。
+	if prepLine <= 0 {
+		t.Fatalf("找不到 securitymod.Prepare( 调用（安全模块装配入口）")
+	}
+	if prepLine > snapLine {
+		t.Errorf("★ 安全模块装配（main.go 第 %d 行）在配置快照（第 %d 行）**之后** —— "+
 			"ToConfig() 会在无主密钥时读 core.llm.*.api_key，key 变空 ⇒ 全 provider 401。"+
-			"必须把整个安全块前移到 ToConfig() 之前", secLine, snapLine)
+			"必须把 securitymod.Prepare() 前移到 ToConfig() 之前", prepLine, snapLine)
 	}
-	if keyLine < 0 {
-		t.Fatal("找不到 LoadOrCreateKey 调用")
+	// 且模块内部**确实**装了密钥与子密钥（防止有人把 Prepare 改成空壳而判据仍绿）。
+	if secLine <= 0 || keyLine <= 0 {
+		t.Errorf("★ 安全模块实现里找不到密钥装配（InitConfigCodec=%d LoadOrCreateKey=%d）—— "+
+			"Prepare() 退化成空壳，安全审查将不生效", secLine, keyLine)
 	}
-	if keyLine > snapLine {
-		t.Errorf("★ 主密钥装载（第 %d 行）在配置快照（第 %d 行）之后 —— 同上",
-			keyLine, snapLine)
+	// ★ 行号只在**同一文件内**可比。密钥装载与子密钥派生现在都在
+	// kernelmod/security.Prepare() 内部，所以"主密钥先于快照"由上面
+	// prepLine < snapLine 保证；这里只需确认模块**确实**装了它们
+	//（防止 Prepare() 退化成空壳而判据仍绿）。
+	if keyLine <= 0 {
+		t.Fatal("安全模块实现里找不到 LoadOrCreateKey 调用（Prepare 可能被改成空壳）")
 	}
+
 	// 且 provider 注册必须用**快照之后**的 cfg（这条锚定"快照确实被使用了"，
 	// 防止有人把 ToConfig() 挪到别处却没人发现）
-	// ★ 锚点已随"内核模块化"改写（2026-10-16）：provider 注册搬进 llm 模块，
-	// 由 `RunKernelModules` 触发 ⇒ 新的等价锚点是它。
 	// 不变量不变：provider 注册必须晚于配置快照（否则拿到空 key）。
-	asmLine := lineOf("RunKernelModules(")
+	asmLine := lineOfMain("RunKernelModules(")
 	if asmLine > 0 && asmLine < snapLine {
 		t.Errorf("★ 内核模块装配（第 %d 行）早于配置快照（第 %d 行）—— "+
 			"llm 模块会拿到空 key 注册 provider", asmLine, snapLine)
@@ -112,15 +148,16 @@ func TestSecurityModuleInitializesBeforeConfigSnapshot(t *testing.T) {
 	// ★ **第二个读取点**：SetLLMSnapshotFile 启动即快照 core.llm.*（会读密文）。
 	// 第一版判据只盯了 ToConfig() ⇒ 把它前移后判据变绿，但线上**照旧报**
 	// `listPrefix 解密 core.llm.api_key 失败: 无可用主密钥` ——
-	// 因为真正早于安全模块的是**这个**调用（main.go 里在 SeedDefaults 之后立刻执行）。
-	// 这正是本会话反复吃到的"判据只覆盖一个出口"：修一个点，另一个点照样漏。
-	snapFileLine := lineOf("cfgReg.SetLLMSnapshotFile(")
+	// 因为真正早于安全模块的是**这个**调用。
+	// 这正是"判据只覆盖一个出口"：修一个点，另一个点照样漏。
+	snapFileLine := lineOfMain("cfgReg.SetLLMSnapshotFile(")
 	if snapFileLine < 0 {
 		t.Fatal("找不到 SetLLMSnapshotFile 调用")
 	}
-	if snapFileLine < secLine {
+	if snapFileLine < prepLine {
 		t.Errorf("★ SetLLMSnapshotFile（第 %d 行）早于安全模块装配（第 %d 行）—— "+
 			"启动即快照会读 core.llm.* 密文，主密钥还没装 ⇒ 密文解不开、快照写成空值，"+
-			"且日志刷 '无可用主密钥'。必须把安全块前移到它之前", snapFileLine, secLine)
+			"且日志刷 '无可用主密钥'。必须把 securitymod.Prepare() 前移到它之前",
+			snapFileLine, prepLine)
 	}
 }

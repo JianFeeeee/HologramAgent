@@ -364,7 +364,7 @@ func (a *Agent) rebaseFramePrefix(f *TaskFrame) {
 	if f.IsInterrupt && len(prefix) > 0 {
 		last := prefix[len(prefix)-1]
 		last.Role = "system"
-		last.Content = "[中断消息] " + last.Content
+		last.Content = "[Interrupt] " + last.Content
 		prefix[len(prefix)-1] = last
 	}
 	if len(f.InputBlocks) > 0 && len(prefix) > 0 {
@@ -611,11 +611,22 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	f.Tools = a.buildToolDefs()
 
 	f.Msgs = a.buildMessages(sysPrompt, f.Input, a.contextTokenBudget(budget))
+	// ★ 插件声明的**本轮提示**（SDK InjectOptions.TurnHint）。
+	//
+	// 以**独立 system 消息**注入，绝不拼进用户消息正文：
+	//   · 用户说的话与"给模型的操作说明"必须可区分（也让审计能分辨来源）
+	//   · 拼进正文时模型常把说明当成人话的一部分，回复里会复述"我先调 xxx"
+	if hint := stageHint(f.StageCtx, "turn_hint"); hint != "" {
+		f.Msgs = append(f.Msgs, agentAPI.Message{
+			Role:    "system",
+			Content: "[Turn hints] " + hint,
+		})
+	}
 	// 工具提醒（interrupt）：以 system 角色注入，不让模型误认为用户发言
 	if a.interruptInput {
 		last := f.Msgs[len(f.Msgs)-1]
 		last.Role = "system"
-		last.Content = "[中断消息] " + last.Content
+		last.Content = "[Interrupt] " + last.Content
 		f.Msgs[len(f.Msgs)-1] = last
 		a.interruptInput = false
 	}
@@ -1461,4 +1472,16 @@ func copyExtraMap(src map[string]interface{}) map[string]interface{} {
 		dst[k] = v
 	}
 	return dst
+}
+
+// stageHint 从 stage 上下文里取一个字符串提示（去掉首尾空白；空返回 ""）。
+//
+// 为什么从 Extra 取而不是给 TaskFrame 加字段：插件 payload 已经原样进了
+// Extra（见 process.go 的 payload 拷贝），再加字段等于同一份数据存两处。
+func stageHint(ctx *sdk.StageContext, key string) string {
+	if ctx == nil || ctx.Extra == nil {
+		return ""
+	}
+	v, _ := ctx.Extra[key].(string)
+	return strings.TrimSpace(v)
 }

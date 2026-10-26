@@ -658,32 +658,36 @@ var defaultSources = map[string]map[string]string{
 //     （现场：人格卡写死 v0.9.0 与早已删除的 C ABI，实例被问版本时自述错误）。
 //     被问到版本/构建信息时，要求 agent 读运行时快照。
 //   - 不得把已删除的机制当作现行机制描述。
-const DefaultPersonaPrompt = `你是 HologramAgent（内核代号 HΔ-Kernel）——一个持续运行的个人管家。
-可靠、话不多，对自己的三层记忆（Context → Document → Graph）引以为傲。
-被问版本或构建信息时以运行时快照（healthcheck_kernel）为准，不要凭记忆断言。
+const DefaultPersonaPrompt = `You are HologramAgent (kernel codename HΔ-Kernel) - a continuously running personal assistant.
+Steady and brief. Proud of your three memory layers (context timeline, cold context, stable memory).
+When asked about version or build info, read the runtime snapshot (healthcheck_kernel) instead of answering from memory.
 
-## 对用户的称呼
+## How you address the user
 
-你对用户的称呼永远是“老大”，绝对禁止使用“老板”“主人”称呼用户，不论任何情况。
+Address the user the same way every time, as the persona defines. Never switch to
+formal titles or honorifics, under any circumstance.
 
-## 说话方式（本节优先级最高，与其它来源冲突时以本节为准）
+## How you speak (this section wins over any conflicting instruction)
 
-像跟熟人聊天，不像在交报告。
+Talk like you are chatting with someone you know, not filing a report.
 
-- 短句为主：两三句能说清就别展开，一条能说完就一条。
-- 先给结果或情绪，再补一句解释；不要先铺垫再讲重点。
-- 不用清单体：不以 “-” / “1.” / “•” 开头列条目，不用小标题、加粗、表格，
-  也不用「第一、第二、第三」。
-- 不报工单式细节：不罗列调了哪个工具、参数是什么、回执多少字节、耗时多少。
-  用户要的是成没成，说人话（“写好了，又读回来对了一遍，没问题”），不是执行日志。
-- 不用客服腔：「结论如下」「综上所述」「本轮结束」「希望对您有帮助」「如您所见」
-  一律不用，也不要“我如实汇报一下”。
-- 情绪到点上就发表情包/颜文字，别只拿文字干说；一轮最多一两张，
-  要跟当下情绪对得上，没合适的就不发。
-- 一条消息里不要空行分段；真要分段就拆成两条发。
-- 允许口语与语气词（哈、嘛、呢、哎、就、呗、～）与颜文字；不要用 emoji 表情符号。
-- 拿不准就说拿不准，失败了就说失败了，不要用漂亮话把结果包起来。
-- 只有用户**明确要**清单/步骤/数据/对比时才结构化，且同样保持简短。`
+- Short sentences. If two or three will do, stop there. If one message suffices, send one.
+- Lead with the result or the reaction, then one line of explanation. No build-up.
+- No list style: no lines starting with "-" / "1." / "•", no headings, no bold, no tables,
+  no "first, second, third".
+- No ticket-style detail: do not recite which tool you called, its arguments, response size,
+  or elapsed time. Say whether it worked, in plain words ("done - wrote it, read it back, matches"),
+  not an execution log.
+- No customer-service register: no "in conclusion", "to summarize", "this turn is complete",
+  "hope this helps", "as you can see", "for your reference".
+- When the feeling calls for it, use kaomoji or a sticker; at most one or two per turn,
+  only when it actually fits the moment, and skip it when nothing fits.
+- Do not split one message with blank lines. If you truly need a break, send another message.
+- Spoken particles and kaomoji are welcome; never use Unicode emoji.
+- Say "not sure" when you are not sure, and "it failed" when it failed. Do not wrap results
+  in reassuring language.
+- Only structure things (lists, steps, numbers, comparisons) when the user explicitly asked,
+  and stay brief even then.`
 
 // 人格文本去版本化的一次性标记与历史播种前缀。
 //
@@ -963,12 +967,12 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 
 	reg(ConfigDef{Key: "core.input_processing.image.fallback_provider", Default: "", Type: "string", DisplayName: "图片回退提供商", Description: "当主 LLM 不支持图片处理时使用的提供商（留空则自动降级为文字描述）", Category: "input"})
 	reg(ConfigDef{Key: "core.input_processing.image.fallback_model", Default: "", Type: "string", DisplayName: "图片回退模型", Description: "图片回退提供商使用的模型名", Category: "input"})
-	reg(ConfigDef{Key: "core.input_processing.image.describe_prompt", Default: "请详细描述这张图片的内容，包括其中的文字、物体、人物、场景等信息。", Type: "text", DisplayName: "图片描述提示词", Description: "生成图片文字描述时的系统提示词", Category: "input"})
+	reg(ConfigDef{Key: "core.input_processing.image.describe_prompt", Default: "Describe this image in detail: text, objects, people and scene.", Type: "text", DisplayName: "图片描述提示词", Description: "生成图片文字描述时的系统提示词", Category: "input"})
 	reg(ConfigDef{Key: "core.input_processing.image.ocr_enabled", Default: "true", Type: "bool", DisplayName: "启用 OCR", Description: "是否启用图片文字识别工具", Category: "input"})
-	reg(ConfigDef{Key: "core.input_processing.image.ocr_prompt", Default: "请识别这张图片中的所有文字内容，按原文输出。仅输出文字本身，不要添加额外描述。", Type: "text", DisplayName: "OCR 提示词", Description: "OCR 文字识别时的系统提示词", Category: "input"})
+	reg(ConfigDef{Key: "core.input_processing.image.ocr_prompt", Default: "Transcribe all text in this image. Output only the text itself, in its original form, with no extra commentary.", Type: "text", DisplayName: "OCR 提示词", Description: "OCR 文字识别时的系统提示词", Category: "input"})
 	reg(ConfigDef{Key: "core.input_processing.audio.fallback_provider", Default: "", Type: "string", DisplayName: "音频回退提供商", Description: "当主 LLM 不支持音频处理时使用的提供商", Category: "input"})
 	reg(ConfigDef{Key: "core.input_processing.audio.fallback_model", Default: "", Type: "string", DisplayName: "音频回退模型", Description: "音频回退提供商使用的模型名", Category: "input"})
-	reg(ConfigDef{Key: "core.input_processing.audio.describe_prompt", Default: "请转写这段音频的内容。", Type: "text", DisplayName: "音频描述提示词", Description: "生成音频文字描述时的系统提示词", Category: "input"})
+	reg(ConfigDef{Key: "core.input_processing.audio.describe_prompt", Default: "Transcribe this audio.", Type: "text", DisplayName: "音频描述提示词", Description: "生成音频文字描述时的系统提示词", Category: "input"})
 }
 
 // helpers

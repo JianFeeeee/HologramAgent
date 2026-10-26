@@ -85,8 +85,8 @@ func (f *fakePluginMgr) StartPlugin(name string) error {
 	f.starts = append(f.starts, name)
 	return nil
 }
-func (f *fakePluginMgr) IsPluginRuntimeStopped(string) bool            { return false }
-func (f *fakePluginMgr) RemovePlugin(string) error                     { return nil }
+func (f *fakePluginMgr) IsPluginRuntimeStopped(string) bool { return false }
+func (f *fakePluginMgr) RemovePlugin(string) error          { return nil }
 func (f *fakePluginMgr) StopAndUnload(name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

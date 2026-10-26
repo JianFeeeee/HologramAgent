@@ -61,6 +61,14 @@ const (
 	FacilityStageHost = "stagehost"
 	// FacilityAgent 是主 Agent 就绪（**最晚**的一个，通常在插件加载前）。
 	FacilityAgent = "agent"
+	// FacilitySecurity 是安全防火墙就绪。
+	//
+	// 它不是"某项能力"，而是横跨 Core 与全部外部模块的数据面闸门：
+	// Core → 外部、外部 → Core 的每条数据流都经它审查。需要被安全审查后
+	// 才能访问外部模块的插件声明依赖它。
+	FacilitySecurity = "security"
+	// FacilityDevice 是设备/工具数据面就绪（工具注册与分发、inputch、outputch）。
+	FacilityDevice = "device"
 )
 
 // KnownFacilities 返回本 SDK 已知的全部设施名（供工具链校验插件声明）。
@@ -72,6 +80,6 @@ func KnownFacilities() []string {
 		FacilityConfig, FacilityKernelIO, FacilityMemory, FacilityLua,
 		FacilitySupervisor, FacilityTracker, FacilityTextMemory, FacilityLLM,
 		FacilityDocStore, FacilityKnowledge, FacilityMultimodal, FacilityONNX,
-		FacilityStageHost, FacilityAgent,
+		FacilityStageHost, FacilityAgent, FacilitySecurity, FacilityDevice,
 	}
 }

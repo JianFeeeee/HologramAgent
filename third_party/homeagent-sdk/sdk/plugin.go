@@ -176,6 +176,57 @@ type InjectOptions struct {
 	ScenePolicy string
 	CleanerName string
 
+	// SecurityProfile 选择**本插件自己声明的命名安全限式**（可选）。
+	//
+	// ## 用途（用户 2026-10-26）
+	//
+	// > 插件可以声明自身安全限制策略，并在插件自身 inputch 触发时携带参数
+	// > 选择其中一种 —— 正好对应 QQ 插件内部 owner 与非 owner 的差别对待。
+	//
+	// 例：QQ 声明两个档位
+	//
+	//	Security().DeclareProfile(sdk.SecurityProfile{
+	//	    Name: "qq.owner", Owner: "qq", AllowTools: []string{"*"},
+	//	})
+	//	Security().DeclareProfile(sdk.SecurityProfile{
+	//	    Name: "qq.guest", Owner: "qq", DenyTools: []string{"cmd_*", "files_write"},
+	//	})
+	//
+	// 然后按发送者身份在注入时带上 `SecurityProfile: "qq.guest"`。
+	//
+	// ## 缺省语义（重要）
+	//
+	//	空串 = **不使用档位**，一切判定沿用内核默认安全策略
+	//
+	// 也就是说这是**可选**参数：不声明、不传的插件行为与之前完全一致。
+	// 而一旦传了**未声明**的档位名，内核会**报错**而不是静默回落 ——
+	// 拼错档位名却默默用默认策略是安全事故的经典形态。
+	SecurityProfile string
+
+	// TurnHint 是**本轮附加提示**（可选）：插件把"这一轮才成立的事实"
+	// 交给内核，由内核以 system 侧说明注入，**不混进用户消息正文**。
+	//
+	// ## 为什么它属于 SDK 而不是某个插件自己拼字符串
+	//
+	// 现场（2026-10-26）：QQ 插件把"用 output_send__qq 回复、群里要 @ 对方、
+	// 可发表情包"这类提示**拼进中断文本**，于是
+	//   · 用户消息里混着给模型的操作说明，模型分不清哪句是人说的
+	//   · 每个插件各拼一套措辞，风格与安全审查都绕过了内核
+	//   · 想改提示必须重编插件
+	//
+	// 作为 SDK 字段后：提示是**结构化数据**，内核统一注入与审查，
+	// 插件只负责陈述事实。
+	//
+	// ## 该写什么 / 不该写什么（分工）
+	//
+	//	该写：本轮渠道与回复 meta、群里是否必须 @、可用表情数量与用法、
+	//	      本批合并了几条消息 —— **只放这一轮确定成立的事实**
+	//	不该写：短句、别用 markdown、别客服腔、语气与黑名单
+	//	      —— 那些是**人设**，静态且对所有轮次都成立
+	//
+	// 多行用 "\n" 分隔；内核按行注入，空行忽略。
+	TurnHint string
+
 	// Priority 声明**中断注入**的优先级（仅 InjectInterrupt* 有意义）。
 	//
 	// 取值 PriorityL1..PriorityL4；空等同 L1（默认级）。

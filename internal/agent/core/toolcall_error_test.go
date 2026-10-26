@@ -66,7 +66,7 @@ func TestExecuteToolCallReportsMissingToolClearly(t *testing.T) {
 		t.Fatalf("错误文案应含工具名，实际: %s", got)
 	}
 	// 模型需要能据此判断该做什么（换名字 / 查 get_plugin_tools / 加载插件）
-	if !strings.Contains(got, "不存在") && !strings.Contains(got, "未注册") && !strings.Contains(got, "not found") {
+	if !strings.Contains(got, "does not exist") && !strings.Contains(got, "not registered") && !strings.Contains(got, "not found") {
 		t.Errorf("错误文案应明示『不存在/未注册』，实际: %s", got)
 	}
 }

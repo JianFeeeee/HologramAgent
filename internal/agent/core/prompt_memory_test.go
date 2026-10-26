@@ -5,7 +5,7 @@ package core
 // 这类判据的目的是防止「提示词在说谎」——它比不说更糟：
 // 模型按提示词行事，而实现不是那样，于是行为与预期系统性错位。
 //
-// 生产实测（2026-10-22 日志）：agent 几乎不调用 doc_query，即使调用也
+// 生产实测（2026-10-22 日志）：agent 几乎不调用 coldcontext_query，即使调用也
 // 只看返回值、不知道原文已被回填到对话时序。根因是：
 //   · 工具描述只有「查询文档记忆。返回相关文档摘要」一句（且与真实行为不符）
 //   · 系统提示词从未解释 L1/L2/L3 是什么
@@ -18,41 +18,37 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
 )
 
-// ① doc_query 的描述必须覆盖五项，且与真实行为一致。
+// ① coldcontext_query 的描述必须覆盖五项，且与真实行为一致。
 func TestDocQueryDescriptionCoversRealBehavior(t *testing.T) {
 	a := newToolTestAgent(t)
-	desc := findToolDescription(t, a, "doc_query")
+	desc := findToolDescription(t, a, "coldcontext_query")
 
-	mustHave := []struct {
-		name string
-		sub  string
-	}{
-		{"L2 是什么", "历史记忆层"},
-		{"何时该用", "何时用"},
-		{"调用后行为=回填时序", "插回你的对话时序"},
-		{"原始时间戳", "原始时间戳"},
-		{"与 memory_recall 分工", "memory_recall"},
-		{"副作用=消费式取出", "消费式"},
+	mustHave := []string{
+		"past episode",
+		"original timestamps",
+		"inserted back into the timeline",
+		"memory_recall",
+		"consuming",
 	}
-	for _, m := range mustHave {
-		if !strings.Contains(desc, m.sub) {
-			t.Errorf("doc_query 描述缺少「%s」（应含 %q）：\n%s", m.name, m.sub, desc)
+	for _, sub := range mustHave {
+		if !strings.Contains(desc, sub) {
+			t.Errorf("coldcontext_query description is missing %q: %s", sub, desc)
 		}
 	}
 	// 不得再声称"返回摘要"—— 那是旧实现的谎
 	if strings.Contains(desc, "返回相关文档摘要") {
-		t.Error("doc_query 描述仍声称『返回相关文档摘要』，与真实行为（回填原文到时序）不符")
+		t.Error("coldcontext_query 描述仍声称『返回相关文档摘要』，与真实行为（回填原文到时序）不符")
 	}
 }
 
-// ② doc_commit 描述必须说清「适合/不适合写什么」，并与另外两层分工。
+// ② coldcontext_commit description must distinguish stored episodes from facts.
 func TestDocCommitDescriptionExplainsScope(t *testing.T) {
 	a := newToolTestAgent(t)
-	desc := findToolDescription(t, a, "doc_commit")
+	desc := findToolDescription(t, a, "coldcontext_commit")
 
-	for _, sub := range []string{"适合写什么", "不适合写什么", "memory_commit", "knowledge_create"} {
+	for _, sub := range []string{"complete process", "single fact", "memory_commit", "knowledge_create"} {
 		if !strings.Contains(desc, sub) {
-			t.Errorf("doc_commit 描述缺少 %q：\n%s", sub, desc)
+			t.Errorf("cold context commit description is missing %q: %s", sub, desc)
 		}
 	}
 }
@@ -68,33 +64,34 @@ func TestSystemPromptExplainsThreeLayers(t *testing.T) {
 	// memContext 为空即可：三层记忆段落是内核无条件注入的
 	prompt := a.buildSystemPrompt("", "测试输入")
 
+	// ★ 2026-10-26 契约变更（用户裁定「技术相关下沉到 skill」）：
+	// 提示词只留"去哪拿什么"，分层编号与实现细节移入 kernel-memory skill。
+	// 所以这里断言**行为要点**，不再要求提示词复述 L1/L2/L3。
 	for _, sub := range []string{
-		"【三层记忆】",
-		"对话时序（L1",
-		"历史记忆（L2",
-		"图记忆（L3",
-		"doc_query",
+		"[Memory]",
+		"coldcontext_query",
 		"memory_recall",
+		"knowledge_search",
 	} {
 		if !strings.Contains(prompt, sub) {
-			t.Errorf("系统提示词缺少三层记忆段落的 %q", sub)
+			t.Errorf("系统提示词缺少记忆段落的 %q", sub)
 		}
 	}
 	// 提示词承诺「按原始时间戳插回」，实现必须真的这么做
-	if !strings.Contains(prompt, "原始时间戳") {
-		t.Error("提示词没有说明 doc_query 会按原始时间戳回填")
+	if !strings.Contains(prompt, "original timestamps") {
+		t.Error("提示词没有说明 coldcontext_query 会按原始时间戳回填")
 	}
-	if !strings.Contains(prompt, "插回你的对话时序") {
-		t.Error("提示词没有说明 doc_query 把事件插回时序（模型会以为只是返回摘要）")
+	if !strings.Contains(prompt, "re-inserts them into your timeline") {
+		t.Error("提示词没有说明 coldcontext_query 把事件插回时序（模型会以为只是返回摘要）")
 	}
 }
 
-// ④ doc_commit 不得再有 tags 参数（Doc.Tags 已删除，留着会骗模型）。
+// ④ coldcontext_commit must not expose a tags parameter (Doc.Tags was removed).
 func TestDocCommitHasNoTagsParam(t *testing.T) {
 	a := newToolTestAgent(t)
-	params := findToolParams(t, a, "doc_commit")
+	params := findToolParams(t, a, "coldcontext_commit")
 	if _, ok := params["tags"]; ok {
-		t.Error("doc_commit 仍有 tags 参数，但 Doc.Tags 已删除 —— 参数会静默丢弃")
+		t.Error("coldcontext_commit still exposes tags, but Doc.Tags was removed")
 	}
 }
 
@@ -141,7 +138,7 @@ func findToolParams(t *testing.T, a *Agent, name string) map[string]interface{} 
 	return nil
 }
 
-// ⑤ 预填充注入的文案必须：给真实内容 + 明确引导用 doc_query。
+// ⑤ 预填充注入的文案必须：给真实内容 + 明确引导用 coldcontext_query。
 //
 // 断点史：旧文案只给「来自 4 个来源的 61 条对话 相关度:0.78」——
 // 统计描述，没有任何内容，也没有一个字提示可以取全文。
@@ -181,9 +178,9 @@ func TestPrefillMarkdownCarriesContentAndGuide(t *testing.T) {
 	if !strings.Contains(md, "2026-07-08") {
 		t.Errorf("预填充文案没有时间：\n%s", md)
 	}
-	// 4) ★ 必须明确引导使用 doc_query
-	if !strings.Contains(md, "doc_query") {
-		t.Errorf("预填充文案没有引导使用 doc_query：\n%s", md)
+	// 4) ★ 必须明确引导使用 coldcontext_query
+	if !strings.Contains(md, "coldcontext_query") {
+		t.Errorf("预填充文案没有引导使用 coldcontext_query：\n%s", md)
 	}
 	// 5) 必须说明它来自历史层而非当前对话
 	if !strings.Contains(md, "L2") && !strings.Contains(md, "历史记忆") {
@@ -227,20 +224,31 @@ func TestSystemPromptHasNoImplementationJargon(t *testing.T) {
 
 // ⑦ 提示词长度上限（防止技术说明再次淤积）。
 //
-// 历史：收敛前 2309 → 收敛后 1723 → 上限取 2000（留 277 字增删余地）。
+// 历史：收敛前 2309 → 收敛后 1723 → 上限取 2000（中文口径）。
 //
 // ★ 2026-10-25 的一次真实教训：
-//   我曾为 seq 加【加速序列】115 字，超限后把上限调到 2100 —— 那是错的。
-//   用户裁定"seq 知识应在 skill 中"，删掉该块后回到 1907 字，上限也还原 2000。
 //
-//   所以这条判据超限时的**正确反应是删内容或下沉到 skill**，不是调数字。
-//   领域知识（某个工具什么时候该用、参数怎么填）属于 skill；
-//   这里只该放"模型不看文档也会做错"的通用规则。
+//	我曾为 seq 加【加速序列】115 字，超限后把上限调到 2100 —— 那是错的。
+//	用户裁定"seq 知识应在 skill 中"，删掉该块后回到 1907 字，上限也还原 2000。
+//
+//	所以这条判据超限时的**正确反应是删内容或下沉到 skill**，不是调数字。
+//	领域知识（某个工具什么时候该用、参数怎么填）属于 skill；
+//	这里只该放"模型不看文档也会做错"的通用规则。
+//
+// ★★ 2026-10-26 口径重标定：内核提示词全部改为英文（用户要求：中文会
+//
+//	触发一些奇怪问题）。同一份内容，英文的 rune 数是中文的约 1.7 倍
+//	（实测：1907 中文 rune 的等价英文 3364 rune，且新增了 [Voice] 契约）。
+//	rune 上限因此按英文重新标定为 3500 —— 这不是"为了塞更多内容而调高"，
+//	换语言本身就改变了字符成本。内容纪律不变：
+//	  · 超限仍应删内容或下沉 skill
+//	  · 实现术语另有 TestSystemPromptHasNoImplementationJargon 单独守
 func TestSystemPromptStaysCompact(t *testing.T) {
 	a := newToolTestAgent(t)
 	prompt := a.buildSystemPrompt("", "测试输入")
 
-	const maxRunes = 2000
+	// 3500 = 英文标定（见上）；中文时代的 2000 不适用于英文编码。
+	const maxRunes = 3500
 	if n := len([]rune(prompt)); n > maxRunes {
 		t.Errorf("系统提示词 %d 字，超过上限 %d —— \n"+
 			"新加的内容先问：模型会据此做什么不同的事？答不上来就该进 skill 或工具描述",

@@ -30,7 +30,7 @@ plane). A plugin crash cannot take down the kernel and it restarts automatically
 
 - **Context Layer**: Pretrained word embedding / TF-IDF fallback relevance-scored event window, protects last 10 entries, maintains topK context entries
 - **Document Layer**: Temporary memory with automatic cold data sinking, also supports user-initiated submissions
-- **Graph Layer**: SQLite graph database, persists entity relationships and semantic memory, supports distillation pipelines to extract triples from conversations
+- **stablemem layer**: SQLite graph database, persists entity relationships and semantic memory, supports distillation pipelines to extract triples from conversations
 
 **Input Scheduling: 2 classes + 4 interrupt levels** — Input does not go straight to the LLM;
 it first enters the scheduler. Two classes (queued = pending work, interrupt = ranked L1–L4 by

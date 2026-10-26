@@ -2,10 +2,13 @@ package tracker
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -153,28 +156,46 @@ func (t *Tracker) capture() *FSState {
 	return state
 }
 
+// ErrOverlayNoPrivilege 表示**权限不足**导致 overlay 挂不上（不是不支持）。
+//
+// 用途：上层据此给出可执行说明（降权运行 vs 提权运行），而不是一律说
+// "no overlayfs support?" —— 那会让排查方向完全错。
+var ErrOverlayNoPrivilege = errors.New("overlayfs requires mount privilege")
+
 func (t *Tracker) mountOverlay() error {
 	workDir := filepath.Join(t.workDir, "work")
 	os.MkdirAll(workDir, 0755)
 
-	args := []string{
-		"-t", "overlay",
-		"overlay",
-		"-o", fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", t.lowerDir, t.upperDir, workDir),
-		t.mergeDir,
-	}
+	data := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", t.lowerDir, t.upperDir, workDir)
 
-	cmd := exec.Command("mount", args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("mount overlayfs failed: %s: %w", string(output), err)
+	// ★ 直接走 mount(2)，**不要** exec `/bin/mount`（2026-10-26）。
+	//
+	// 原因：util-linux 的 mount 在 euid != 0 时会**提前**拒绝
+	// （"must be superuser to use mount"），即使进程持有 CAP_SYS_ADMIN
+	// 环境能力。而内核的判定是 ns_capable(CAP_SYS_ADMIN) —— 环境能力足够。
+	//
+	// 现场：服务降权到 hologramagent 后，overlay 一直挂不上（exit status 32），
+	// 而 systemd 已给 AmbientCapabilities=CAP_SYS_ADMIN。
+	// 换成 syscall.Mount 后同一能力集即可生效。
+	if err := unix.Mount("overlay", t.mergeDir, "overlay", 0, data); err != nil {
+		// ★ 区分"没权限"与"不支持"（2026-10-26 迁移后实测）：
+		// 服务降权到非 root 时，即使持有 CAP_SYS_ADMIN，overlay mount 仍可能
+		// 返回 EPERM。此时上层若统一报 "no overlayfs support?" 会误导排查
+		// （看起来像内核不支持，实际是权限模型选择）。
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			return fmt.Errorf("%w (lower=%s upper=%s): %v", ErrOverlayNoPrivilege, t.lowerDir, t.upperDir, err)
+		}
+		return fmt.Errorf("mount overlayfs failed (lower=%s upper=%s): %w", t.lowerDir, t.upperDir, err)
 	}
 	return nil
 }
 
 func (t *Tracker) umountOverlay() error {
-	cmd := exec.Command("umount", t.mergeDir)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("umount overlayfs failed: %s: %w", string(output), err)
+	if err := unix.Unmount(t.mergeDir, 0); err != nil {
+		// EBUSY/MNT_EXPIRE 等：换懒卸载再试一次（与 `umount -l` 等价）。
+		if err2 := unix.Unmount(t.mergeDir, unix.MNT_DETACH); err2 != nil {
+			return fmt.Errorf("umount overlayfs failed: %w (lazy retry: %v)", err, err2)
+		}
 	}
 	return nil
 }

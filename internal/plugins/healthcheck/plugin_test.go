@@ -398,7 +398,7 @@ func TestLLMReportCollection(t *testing.T) {
 func TestSafeReadonlyTool(t *testing.T) {
 	// 只读：应放行
 	readonly := []string{
-		"memory_recall", "memory_introspect", "doc_query",
+		"memory_recall", "memory_introspect", "coldcontext_query",
 		"knowledge_search", "knowledge_list", "person_query",
 		"person_network", "llm_list_sources", "output_list_channels",
 		"terminal_list", "files_list",
@@ -414,7 +414,7 @@ func TestSafeReadonlyTool(t *testing.T) {
 		"memory_commit", "memory_edit", "memory_purge", "memory_delete_entity",
 		"memory_merge", "memory_block_merge",
 		"knowledge_create", "knowledge_delete",
-		"doc_commit", "doc_delete",
+		"coldcontext_commit", "doc_delete",
 		"person_set_trait", "person_relate",
 		"output_send__qq", "output_send__cli",
 		"llm_set_source", "config_set",
@@ -438,8 +438,8 @@ func TestCollectToolDefsForLLMNoMutating(t *testing.T) {
 	defs := []sdk.ToolDef{
 		{Name: "memory_recall", Plugin: "memory", Description: "recall"},
 		{Name: "memory_commit", Plugin: "memory", Description: "commit"},
-		{Name: "doc_query", Plugin: "doc", Description: "query"},
-		{Name: "doc_commit", Plugin: "doc", Description: "commit doc"},
+		{Name: "coldcontext_query", Plugin: "coldcontext", Description: "query"},
+		{Name: "coldcontext_commit", Plugin: "coldcontext", Description: "commit doc"},
 		{Name: "knowledge_search", Plugin: "knowledge", Description: "search"},
 		{Name: "knowledge_create", Plugin: "knowledge", Description: "create"},
 		{Name: "cmd_run", Plugin: "cmd", Description: "run cmd"},
@@ -465,13 +465,13 @@ func TestCollectToolDefsForLLMNoMutating(t *testing.T) {
 	}
 
 	// 只读工具应被包含
-	for _, name := range []string{"memory_recall", "doc_query", "knowledge_search", "files_list"} {
+	for _, name := range []string{"memory_recall", "coldcontext_query", "knowledge_search", "files_list"} {
 		if !allowed[name] {
 			t.Errorf("expected readonly tool %q in LLM selftest set, missing", name)
 		}
 	}
 	// 写类/副作用工具绝不能被交给 LLM
-	for _, name := range []string{"memory_commit", "doc_commit", "knowledge_create", "cmd_run"} {
+	for _, name := range []string{"memory_commit", "coldcontext_commit", "knowledge_create", "cmd_run"} {
 		if allowed[name] {
 			t.Errorf("mutating tool %q must NOT be in LLM selftest set", name)
 		}
@@ -486,8 +486,8 @@ func TestCollectToolDefsForLLMPluginFilter(t *testing.T) {
 	defs := []sdk.ToolDef{
 		{Name: "memory_recall", Plugin: "memory", Description: "recall"},
 		{Name: "memory_commit", Plugin: "memory", Description: "commit"},
-		{Name: "doc_query", Plugin: "doc", Description: "query"},
-		{Name: "doc_commit", Plugin: "doc", Description: "commit doc"},
+		{Name: "coldcontext_query", Plugin: "coldcontext", Description: "query"},
+		{Name: "coldcontext_commit", Plugin: "coldcontext", Description: "commit doc"},
 		{Name: "knowledge_search", Plugin: "knowledge", Description: "search"},
 		{Name: "files_list", Plugin: "files", Description: "list"},
 		{Name: "files_write", Plugin: "files", Description: "write"},
@@ -514,7 +514,7 @@ func TestCollectToolDefsForLLMPluginFilter(t *testing.T) {
 	if len(got) != 1 || !allowed["files_list"] {
 		t.Fatalf("expected only files_list for files plugin, got %v", allowed)
 	}
-	for _, name := range []string{"memory_recall", "doc_query", "knowledge_search", "files_write"} {
+	for _, name := range []string{"memory_recall", "coldcontext_query", "knowledge_search", "files_write"} {
 		if allowed[name] {
 			t.Errorf("tool %q must NOT be in files-filtered set", name)
 		}
@@ -537,7 +537,7 @@ func TestReportsToChecks(t *testing.T) {
 	p := &Plugin{}
 	p.reports = []llmReport{
 		{ToolName: "qq_get_message", Status: "ok", Detail: "正常"},
-		{ToolName: "doc_query", Status: "skip", Detail: "无可测数据"},
+		{ToolName: "coldcontext_query", Status: "skip", Detail: "无可测数据"},
 		{ToolName: "knowledge_search", Status: "fail", Detail: "搜索超时"},
 	}
 	checks := p.reportsToChecks()
@@ -551,7 +551,7 @@ func TestReportsToChecks(t *testing.T) {
 	if !byName["llm_tool/qq_get_message"].Pass {
 		t.Error("ok report must pass")
 	}
-	if !byName["llm_tool/doc_query"].Pass {
+	if !byName["llm_tool/coldcontext_query"].Pass {
 		t.Error("skip report must pass")
 	}
 	if byName["llm_tool/knowledge_search"].Pass {

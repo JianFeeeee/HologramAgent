@@ -78,8 +78,8 @@ func isToolError(v interface{}) bool {
 	}
 }
 
-// toolErrorText 把一个失败返回值渲染成给模型看的文本。
-// 结构化 ToolError 会带上 Hint——这是「让模型看得懂真因」的关键。
+// toolErrorText renders a failed tool result for the model.
+// A structured ToolError includes its Hint so the model can act on the real cause.
 func toolErrorText(toolName string, v interface{}) string {
 	switch x := v.(type) {
 	case *sdk.ToolError:
@@ -90,28 +90,28 @@ func toolErrorText(toolName string, v interface{}) string {
 		if b, ok := x["isError"].(bool); ok && b {
 			msg, _ := x["content"].(string)
 			if msg == "" {
-				msg = "（插件未给出原因）"
+				msg = "(plugin did not provide a reason)"
 			}
-			return fmt.Sprintf("工具 %s 失败: %s", toolName, msg)
+			return fmt.Sprintf("Tool %s failed: %s", toolName, msg)
 		}
 		if e, ok := x["error"]; ok {
 			if s, ok := e.(string); ok {
-				return fmt.Sprintf("工具 %s 失败: %s", toolName, s)
+				return fmt.Sprintf("Tool %s failed: %s", toolName, s)
 			}
 		}
 	case error:
-		return fmt.Sprintf("工具 %s 失败: %v", toolName, x)
+		return fmt.Sprintf("Tool %s failed: %v", toolName, x)
 	}
-	return fmt.Sprintf("工具 %s 失败: %v", toolName, v)
+	return fmt.Sprintf("Tool %s failed: %v", toolName, v)
 }
 
-// renderToolError 渲染结构化失败：把 field/reason/hint 都摆出来，
-// 让模型知道**该改什么**，而不是只知道「失败了」。
+// renderToolError renders a structured failure with field/reason/hint,
+// so the model knows what to change instead of seeing only "failed".
 func renderToolError(toolName string, e *sdk.ToolError) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "工具 %s 失败", toolName)
+	fmt.Fprintf(&sb, "Tool %s failed", toolName)
 	if e.Field != "" {
-		fmt.Fprintf(&sb, "（字段 %s）", e.Field)
+		fmt.Fprintf(&sb, " (field %s)", e.Field)
 	}
 	sb.WriteString(": ")
 	if e.Reason != "" {
@@ -122,17 +122,15 @@ func renderToolError(toolName string, e *sdk.ToolError) string {
 		sb.WriteString(e.Detail)
 	}
 	if e.Hint != "" {
-		sb.WriteString("\n请据此修正后重试：")
+		sb.WriteString("\nFix this and retry: ")
 		sb.WriteString(e.Hint)
 	}
 	return sb.String()
 }
 
-// renderToolResult 把工具返回值渲染成给模型看的文本。
-//
-// 规则：**结构化失败优先**——失败必须带上可执行信息（字段/原因/Hint），
-// 而不是退化成 `map[error:xxx]` 这种模型读不懂的 Go 语法。
-// 成功则用紧凑 JSON（绝不用 fmt.Sprintf("%v")，那会产出 Go 的 map 语法）。
+// renderToolResult renders tool output for the model.
+// Structured failures take priority and include actionable information;
+// successful non-string values use compact JSON instead of Go map syntax.
 func renderToolResult(toolName string, raw interface{}) string {
 	if raw == nil {
 		return ""

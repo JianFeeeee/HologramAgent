@@ -33,7 +33,7 @@
 // seemedia 经 SetToolBlocks 注入的块，内核在 task.go `captureBlockMedia` 处**无条件**
 // 落进 CAS 并转成一等记忆块挂到本轮 ContextEvent（「无论直视还是回退转写，媒体
 // 本体都该进记忆」）。所以记忆载体块化之后，一手看到的图/帧**同时**进了记忆，
-// 之后能按多模态向量被 doc_query / memory_recall 召回。本插件不写任何入库代码。
+// 之后能按多模态向量被 coldcontext_query / memory_recall 召回。本插件不写任何入库代码。
 //
 // ★ 但有一个边界：`captureBlockMedia` 只对 **data URL** 做 CAS 入库，http(s) URL
 // 会被跳过（不下载、不入记忆、不算向量——避免下载引入超时/SSRF）。因此：

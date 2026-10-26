@@ -117,7 +117,22 @@ func TestMainInitsSecurityBeforeProviders(t *testing.T) {
 	}
 	text := string(src)
 
-	iSec := strings.Index(text, "security.InitGlobal")
+	// ★ 2026-10-26：安全装配搬进正式内核模块 internal/kernelmod/security。
+	// main.go 里的真实装配点是 `securitymod.Prepare(...)`，而
+	// `security.InitGlobal` 在模块实现里。判据必须同时盯住**两个真实点**：
+	//   · main.go 的 Prepare 调用（装配时机）
+	//   · 模块实现里的 InitGlobal（Prepare 不是空壳）
+	// 只盯其中一个都会变成"改了实现就静默变绿"。
+	iSec := strings.Index(text, "securitymod.Prepare(")
+	if iSec < 0 {
+		iSec = strings.Index(text, "security.InitGlobal")
+	}
+	modSrc, modErr := os.ReadFile("../../kernelmod/security/mod.go")
+	modText := string(modSrc)
+	if modErr != nil || !strings.Contains(modText, "sec.InitGlobal(") {
+		t.Fatalf("security 模块实现里找不到 InitGlobal（%v）—— "+
+			"Prepare() 退化成空壳，安全审查不会生效", modErr)
+	}
 	// ★ 锚点已随"内核模块化"改写（2026-10-16）。
 	//
 	// 原先锚 `initLLMProviders(cfg,`（那时它直接写在 main 里）。
@@ -132,7 +147,7 @@ func TestMainInitsSecurityBeforeProviders(t *testing.T) {
 	// 为防止"换个锚点就变绿"式的偷懒，另加两条硬校验（见下）。
 	iProv := strings.Index(text, "RunKernelModules(")
 	if iSec < 0 {
-		t.Fatal("main.go 里找不到 security.InitGlobal —— 安全模块根本没被装配")
+		t.Fatal("main.go 里找不到 securitymod.Prepare / security.InitGlobal —— 安全模块根本没被装配")
 	}
 	if iProv < 0 {
 		t.Fatal("main.go 里找不到 RunKernelModules —— 内核模块装配点没了")

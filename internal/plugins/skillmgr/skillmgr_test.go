@@ -355,8 +355,13 @@ func TestPackTarSlipRejected(t *testing.T) {
 func TestSkillIndex(t *testing.T) {
 	p, spy, _ := newTestPlugin(t)
 
-	if idx := p.SkillIndex(); idx != "" {
-		t.Fatalf("empty registry should give empty index, got %q", idx)
+	// The plugin now materializes the four kernel skills before scanning. They are
+	// part of the built-in skill index, so an empty user registry is not empty.
+	idx := p.SkillIndex()
+	for _, want := range []string{"kernel-memory", "kernel-output", "kernel-plugins", "kernel-tool-order"} {
+		if !strings.Contains(idx, want) {
+			t.Fatalf("built-in skill missing from index: %q", idx)
+		}
 	}
 
 	if _, err := spy.call(t, "skill_create", map[string]interface{}{
@@ -365,7 +370,7 @@ func TestSkillIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := p.SkillIndex()
+	idx = p.SkillIndex()
 	if !strings.Contains(idx, "idx-test v0.2.0") || !strings.Contains(idx, "用于测试的演示技能。") {
 		t.Fatalf("index missing name/desc: %q", idx)
 	}

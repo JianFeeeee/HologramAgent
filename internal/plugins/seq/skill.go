@@ -19,7 +19,7 @@ package seq
 // skill 会被 skillmgr 汇总成索引注入系统提示词（buildSystemPrompt 的 skillIndex 段）：
 // 模型**每轮**都能看到"有这么个能力"的一行摘要。只写在 ToolDef.Description 里，
 // 模型不主动翻工具列表就看不到——这正是此前 seq 几乎不被使用的原因
-// （与 doc_query 的历史教训同构：内核从没解释过 L1/L2/L3，agent 就只能靠猜）。
+// （与 coldcontext_query 的历史教训同构：内核从没解释过 L1/L2/L3，agent 就只能靠猜）。
 
 const builtinSkillName = "seq-tools"
 

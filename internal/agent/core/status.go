@@ -131,7 +131,28 @@ func collectKernelStatus(
 
 	// Tools
 	if stageHost != nil {
-		status.Tools = stageHost.GetToolDefs()
+		// ★ 只给**摘要**，不给完整定义（2026-10-26 实测）。
+		//
+		// 原先直接塞 GetToolDefs()：173 个工具的完整 Description + Parameters
+		// JSON ⇒ healthcheck_kernel 单条结果 **98,989 tokens**（预算 65,375 的 151%），
+		// 一轮对话里它就把上下文塞满，还拖慢每一次后续往返。
+		//
+		// 摘要保留"有哪些工具、属于哪个插件、能干什么"，足够状态页与模型判断；
+		// 需要完整参数表的场景走 get_plugin_tools(<plugin>)，那是按需的。
+		defs := stageHost.GetToolDefs()
+		summary := make([]sdk.ToolDef, 0, len(defs))
+		for _, d := range defs {
+			desc := d.Description
+			if r := []rune(desc); len(r) > 120 {
+				desc = string(r[:120]) + "…"
+			}
+			summary = append(summary, sdk.ToolDef{
+				Name:        d.Name,
+				Plugin:      d.Plugin,
+				Description: desc,
+			})
+		}
+		status.Tools = summary
 	}
 
 	// Channels

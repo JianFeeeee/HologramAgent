@@ -8,11 +8,11 @@ package sdk
 // AES-256-GCM + 别名表 + `${ENV}` 解析），与内核的 `internal/security`
 // **完全重复**：
 //
-//	             内核 security.Store        插件 unifiedSecretFile
-//	  落盘        secrets.json               secrets.json
-//	  加密        AES-256-GCM                AES-256-GCM
-//	  别名        HMAC 自动派生              用户指定
-//	  引用语法     @{sec_xxx}                 @{name}
+//	           内核 security.Store        插件 unifiedSecretFile
+//	落盘        secrets.json               secrets.json
+//	加密        AES-256-GCM                AES-256-GCM
+//	别名        HMAC 自动派生              用户指定
+//	引用语法     @{sec_xxx}                 @{name}
 //
 // 重复的代价不只是代码量：**两套变量库互不可见** —— 内核拦截时登记的
 // 变量，插件看不到；插件登记的，内核拦截不认识。结果是同一个凭据可能
@@ -103,7 +103,7 @@ type SecretsAPI interface {
 // SecretInfo 是一条变量的元信息（**不含明文**）。
 type SecretInfo struct {
 	Alias     string `json:"alias"`
-	Source    string `json:"source"`               // intercepted | submitted
+	Source    string `json:"source"` // intercepted | submitted
 	Note      string `json:"note,omitempty"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at,omitempty"`

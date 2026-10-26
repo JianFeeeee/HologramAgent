@@ -250,7 +250,7 @@ func fuseCrossModal(textHits, visualHits []CrossModalHit, topK int, cfg CrossMod
 //  2. **没有一个字**说"你可以把这些原文取回来" —— 模型看完只能忽略；
 //  3. 来源写了 `context_archived` 这种内部标记，对模型无意义。
 //
-// 现在每条给出「时间 · 来源 · 正文开头」，并在块尾**明确告知 doc_query 的作用**：
+// 现在每条给出「时间 · 来源 · 正文开头」，并在块尾**明确告知 coldcontext_query 的作用**：
 // 这才是让预填充真正被用起来的必要条件。
 func (a *Agent) crossModalMarkdown(hits []CrossModalHit) string {
 	if len(hits) == 0 {
@@ -306,7 +306,7 @@ func (a *Agent) crossModalMarkdown(hits []CrossModalHit) string {
 	b.WriteString("【历史记忆（L2，自动预填充）】\n")
 	b.WriteString("下面是按语义相似度从历史层挑出的相关片段 —— **不是当前对话**。\n")
 	b.WriteString(strings.Join(lines, "\n"))
-	b.WriteString("\n要其中某条的完整原文与当时过程：用 doc_query，它会把那些事件" +
+	b.WriteString("\n要其中某条的完整原文与当时过程：用 coldcontext_query，它会把那些事件" +
 		"按原始时间戳插回你的对话时序。")
 	return b.String()
 }
@@ -328,7 +328,7 @@ func firstRealSource(events []document.DocEvent) string {
 
 // docHeadlineForPrompt 取文档正文的第一句，作为注入行里的内容提示。
 //
-// 不截断成"摘要"：这里只是一行提示，完整内容在 L2 里、需要时用 doc_query 取。
+// 不截断成"摘要"：这里只是一行提示，完整内容在 L2 里、需要时用 coldcontext_query 取。
 func docHeadlineForPrompt(d *document.Doc) string {
 	if d == nil {
 		return ""

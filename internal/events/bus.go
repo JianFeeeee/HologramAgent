@@ -140,6 +140,26 @@ const (
 	//	error:       失败原因（成功时为空）
 	EventUpdateResult EventType = "update_result"
 
+	// EventSecurityReady 在**安全防火墙装配完成**后发布一次。
+	//
+	// 语义：此后 Core 与外部模块之间的数据流都经过安全闸门。
+	// 订阅者（状态面 / healthcheck）据此报告"审查是否真的生效"，
+	// 而不是靠读配置猜 —— 配置开了但装配失败是另一回事。
+	//
+	// payload 约定：
+	//
+	//	enabled:    bool，是否真的在审查（配置关闭时 false）
+	//	variables:  int，变量库条数
+	EventSecurityReady EventType = "security_ready"
+
+	// EventDeviceReady 在**设备/工具数据面装配完成**后发布一次。
+	//
+	// payload 约定：
+	//
+	//	tools:   int，模型可见的工具数
+	//	secured: bool，安全审查是否真的在生效
+	EventDeviceReady EventType = "device_ready"
+
 	EventAll EventType = "*"
 )
 

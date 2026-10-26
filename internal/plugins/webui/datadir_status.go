@@ -66,10 +66,10 @@ func (h *Handler) handleDataDirStatus(w http.ResponseWriter, r *http.Request) {
 		ConfigDataDir:  configDir,
 	}
 	out := map[string]interface{}{
-		"runtime_dir": runtimeDir,
-		"config_dir":  configDir,
-		"in_sync":     st.InSync(),
-		"describe":    st.Describe(),
+		"runtime_dir":   runtimeDir,
+		"config_dir":    configDir,
+		"in_sync":       st.InSync(),
+		"describe":      st.Describe(),
 		"under_systemd": systemd.IsUnderSystemd(),
 	}
 	if !st.InSync() {

@@ -22,7 +22,8 @@ package sdk
 //	RequestKernelShutdown ⇒ 内核清理 → 通知 guard 主动停机 → systemd 不再拉起
 //
 // ★ 关机为什么不能用"guard 退出"实现：systemd 是 Restart=always，
-//   guard 退出会被它无条件重新拉起。必须显式 `systemctl stop`）
+//
+//	guard 退出会被它无条件重新拉起。必须显式 `systemctl stop`）
 //
 // ## 失败语义
 //

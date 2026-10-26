@@ -56,7 +56,7 @@ func TestLoadAndSavePersonality(t *testing.T) {
 	if err != nil || p.Content != "人格内容" {
 		t.Fatalf("读回失败: %+v err=%v", p, err)
 	}
-	if got := p.InjectPrompt(); !strings.Contains(got, "【人格设定】") || !strings.Contains(got, "人格内容") {
+	if got := p.InjectPrompt(); !strings.Contains(got, "[Persona]") || !strings.Contains(got, "人格内容") {
 		t.Fatalf("InjectPrompt 形状不对: %q", got)
 	}
 }

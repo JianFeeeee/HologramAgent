@@ -852,7 +852,7 @@ func isSafeReadonlyTool(name string) bool {
 	readonlyExact := map[string]bool{
 		"memory_recall":        true,
 		"memory_introspect":    true,
-		"doc_query":            true,
+		"coldcontext_query":    true,
 		"knowledge_search":     true,
 		"knowledge_list":       true,
 		"person_query":         true,

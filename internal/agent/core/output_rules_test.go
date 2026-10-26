@@ -19,20 +19,20 @@ func TestSystemPromptDoesNotRestrictOutputCount(t *testing.T) {
 
 	prompt := parent.buildSystemPrompt("", "你好")
 	banned := []string{
-		"只需调用一次",
-		"只能调用一次",
-		"通常只需调用",
-		"不要重复发送",
+		"only call once",
+		"call exactly once",
+		"usually only need to call",
+		"do not resend",
 	}
 	for _, b := range banned {
 		if strings.Contains(prompt, b) {
 			t.Fatalf("系统提示词里仍有输出次数限制 %q —— 设计上次数不限", b)
 		}
 	}
-	if !strings.Contains(prompt, "输出次数与目标通道由你自己决定") {
+	if !strings.Contains(prompt, "You choose how many outputs and which channels") {
 		t.Fatal("系统提示词应明确「输出次数与目标通道由你自己决定」")
 	}
-	if !strings.Contains(prompt, "没有任何「一轮只能发一次」的限制") {
+	if !strings.Contains(prompt, "No \"one output per turn\" limit") {
 		t.Fatal("系统提示词应显式否认「一轮只能发一次」")
 	}
 }
@@ -50,20 +50,20 @@ func TestSystemPromptRequiresExplicitOutputCall(t *testing.T) {
 	prompt := parent.buildSystemPrompt("", "你好")
 
 	// 必须是**开篇总述**级别的一句，不能只藏在分项里。
-	if !strings.Contains(prompt, "只有显式调用 `output_send__{通道名}` 才会把内容送达用户") {
+	if !strings.Contains(prompt, "Content reaches the user only when you explicitly call `output_send__{channel}`") {
 		t.Fatalf("系统提示词必须以总述句明确「只有显式调用 outputch 才会送达用户」，当前：\n%s",
 			prompt[:min(600, len(prompt))])
 	}
 	// 且必须点明"返回纯文本用户看不到"，否则模型仍会以为直接回答就行。
-	if !strings.Contains(prompt, "返回纯文本只是在这次推理里说话，用户看不到") {
+	if !strings.Contains(prompt, "Returning plain text only speaks inside this reasoning step") {
 		t.Error("应显式说明「返回纯文本用户看不到」")
 	}
 	// 同步通道是唯一的例外，必须说清，否则模型在 webui 上也会多余地调工具。
-	if !strings.Contains(prompt, "这是唯一的例外") {
+	if !strings.Contains(prompt, "The only exception") {
 		t.Error("同步通道例外必须显式标为「唯一的例外」")
 	}
 	// 批量能力要让模型知道（一 call 多发是本次内核新增能力）。
-	if !strings.Contains(prompt, "payload 传数组") {
+	if !strings.Contains(prompt, "pass an array as payload") {
 		t.Error("提示词应告知 payload 可传数组一次发多条")
 	}
 }

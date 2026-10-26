@@ -18,6 +18,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -222,6 +223,23 @@ type Agent struct {
 
 	// 技能索引提供者：由 skillmgr 插件实现，向 system prompt 注入轻量技能索引
 	skillIndex SkillIndexProvider
+
+	// device 是挂载上来的工具/通道数据面（kernelmod/device 产出）。
+	// 类型是低层接口：core 不认识具体模块，避免 core ↔ kernelboot 成环。
+	device agentAPI.DeviceSurface
+	// deviceMu 只保护 device 字段（挂载是装配期动作，读取可能来自状态面）。
+	// ★ 刻意不复用整轮执行的锁：Agent 按设计**没有**保护整轮的互斥量
+	//（挂起不能持锁，见 input-scheduler-design §8.1 I3）。
+	deviceMu sync.RWMutex
+
+	// builtinHandlers 是交给 device 路由层的族处理器适配器（装配期构造一次）。
+	builtinHandlers agentAPI.BuiltinToolHandlers
+
+	// security 是安全防火墙运行时（security 模块产出，可 nil）。
+	//
+	// ★ 可 nil：测试与独立工具（memgc 等）不需要安全模块。
+	// 所有使用点写法统一为 `if a.security != nil`（零成本跳过）。
+	security *security.Runtime
 
 	// usageLedger 累计**跨调用**的 token 用量与缓存命中。
 	//

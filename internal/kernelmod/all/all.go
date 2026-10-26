@@ -26,6 +26,7 @@ import (
 	// （见 kernelmod/core.go）。真正的先后只由 Requires/Provides 决定。
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agent"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/config"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/device"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/docstore"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/kernelapi"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/knowledge"
@@ -36,6 +37,7 @@ import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/multimodal"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/onnx"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/pluginhost"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/security"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/stagehost"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/supervisor"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/textmem"

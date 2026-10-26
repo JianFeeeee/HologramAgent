@@ -79,7 +79,7 @@ func TestMemoryRecall_块召回优先(t *testing.T) {
 	if strings.Contains(got, "完全无关") {
 		t.Errorf("低分块不该出现（MinScore 应滤掉），实际: %s", got)
 	}
-	if !strings.Contains(got, "相关记忆片段") {
+	if !strings.Contains(got, "relevant memory fragments") {
 		t.Errorf("应标明这是块召回结果，实际: %s", got)
 	}
 }

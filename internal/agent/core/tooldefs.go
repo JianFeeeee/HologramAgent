@@ -34,7 +34,7 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 		if s != "" {
 			s += "\n"
 		}
-		s += "【关联媒体】\n" + mc
+		s += "[Related media]\n" + mc
 	}
 
 	if maxTokens > 0 {
@@ -157,12 +157,12 @@ func appendPromptBlock(prompt, block string) string {
 func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	prompt := expandPromptVars(a.systemPrompt)
 	if prompt == "" {
-		prompt = "你是小宅，HologramAgent 的看板娘，一个家政型 AI 管家助手。绝不用 Unicode emoji，只用颜文字表达情感，句尾带语气词。WebUI 概览页展示你的立绘。"
+		prompt = "You are HologramAgent, a household-manager AI assistant. Never use Unicode emoji; express affect with kaomoji only, and end sentences with a soft particle. The WebUI overview page shows your portrait."
 	}
 
 	// 驻留子：在**固定提示词之上**注入任务提示词（设计 §7「创建」）。
 	if a.taskPrompt != "" {
-		prompt = appendPromptBlock(prompt, "【任务】"+a.taskPrompt)
+		prompt = appendPromptBlock(prompt, "[Task] "+a.taskPrompt)
 	}
 
 	if a.personality != nil {
@@ -183,7 +183,7 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 哪个工具会做什么），不是工具用法 —— 工具用法归各 ToolDef.Description。
 	//
 	// 为什么必须有这一段：此前系统提示词从未解释 L1/L2/L3 是什么，
-	// agent 只能从工具名猜。生产日志实测：agent 几乎从不调用 doc_query，
+	// agent 只能从工具名猜。生产日志实测：agent 几乎从不调用 coldcontext_query，
 	// 即使调用了也只看返回值、不知道原文已被回填到对话时序。
 	// 【三层记忆】只留**模型据此选择工具**的语义。
 	//
@@ -191,19 +191,14 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 对应工具的 description 与 skill：模型只需要知道"哪里有原文、哪里有
 	// 关系、用什么去取"，不需要知道内核怎么存。
 	//
-	// ★ 但有一件事必须说：doc_query 会把历史事件**插回时序**，而不是返回
+	// ★ 但有一件事必须说：coldcontext_query 会把历史事件**插回时序**，而不是返回
 	//   一段摘要 —— 这与模型对"检索工具"的默认预期相反，不说就会误用。
-	prompt = appendPromptBlock(prompt, "【三层记忆】你这儿有三种记忆，按需要的东西选：\n"+
-		"- **对话时序（L1）**：最近的对话就在上面的【对话时序】里，直接能看。\n"+
-		"- **历史记忆（L2）**：更早的事被移出窗口了，但原文还在。要看某段完整经过用 `doc_query` —— "+
-		"它会把那些事**按原始时间戳插回你的对话时序**，你随后就能像看当前对话一样读它们。\n"+
-		"- **图记忆（L3）**：事实与关系（谁是什么、某值现在多少）用 `memory_recall`；"+
-		"成文的可复用知识用 `knowledge_search`。")
+	prompt = appendPromptBlock(prompt, "[Memory] Recent turns are above. For older conversations use `coldcontext_query` - it **re-inserts them into your timeline at their original timestamps**, so read them there, not in the return value. "+
+		"Facts and relations: `memory_recall`. Written knowledge: `knowledge_search`.")
 
 	// 记忆维护：具体选哪个工具、各有什么副作用，都写在 memory_* 的工具描述里
 	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
-	prompt = appendPromptBlock(prompt, "【记忆维护】用户要求整理或清理记忆时，必须真的调用 memory_* 工具去做，"+
-		"不能只描述计划；选哪个工具、各有什么副作用见对应工具描述。做完用一句人话说结果。")
+	prompt = appendPromptBlock(prompt, "[Memory maintenance] To tidy or clear memory, call the memory_* tools - a described plan is not the work. Report the result in one sentence.")
 
 	// 跨模态召回：文本路（fastText/TF-IDF 文档层，媒体描述文本已随记忆进入）
 	// + 视觉路（多模态文本编码 → 媒体库坐标）两路归一化融合。
@@ -215,7 +210,7 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 		}
 	}
 
-	prompt = appendPromptBlock(prompt, "【中断消息】长任务执行期间，工具/插件/定时器等会通过中断机制向你发送提醒（如 QQ 新消息、终端输出到达、定时器到点等）。中断消息以 system 角色注入，内容带 [中断消息] 前缀，**不是用户发言，但也必须认真处理**：优先停下当前长任务，针对中断内容作出响应或决定继续执行。不要忽略带 [中断消息] 前缀的 system 消息。")
+	prompt = appendPromptBlock(prompt, "[Interrupt] During long tasks a system message prefixed [Interrupt] may arrive (new message, terminal output, timer). It is not user speech, but handle it: pause, respond, or consciously continue.")
 
 	// 工具执行顺序（阶段 2.5）。必须在**并行执行落地之后**才加：
 	// 反序会让本段对模型说谎——说"并发"而内核仍串行，模型据此推断
@@ -228,34 +223,27 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 技术性内容（ParallelSafe 声明、批内降级、内核如何判据）全部下沉：
 	// 那是实现细节，模型既不需要也改不了 —— 讲它只会让回复带上说明书腔。
 	// 判断依据仍是真实的 batchRunnable 语义（勿写反）。
-	prompt = appendPromptBlock(prompt, "【工具执行顺序】同一条回复里的多个工具调用默认**并行**执行。\n"+
-		"- 不要依赖先后：后一个要用前一个的结果时，分两轮发。\n"+
-		"- **例外一**：对同一通道的多次输出会**保序**（按你发出的顺序送达），所以「先回执、再结论」可以放同一轮。\n"+
-		"- **例外二**：写类工具（记忆/知识/文档写入等）以及不声明**并发安全**的工具，这一批会退回依次执行 —— "+
-		"只是变慢，不影响结果，你不用为它调整写法。")
+	prompt = appendPromptBlock(prompt, "[Tool order] Calls in one reply run **in parallel** by default. **Never depend on order**: if one needs another's result, use two turns. "+
+		"Outputs to the same channel **keep their order**, so \"acknowledge, then conclude\" fits in one turn.")
 
-	prompt = appendPromptBlock(prompt, "【输出规则】\n")
+	prompt = appendPromptBlock(prompt, "[Output rules]\n")
 	// ★ 这一句是本段最重要的：用户明确要求「必须显式调用 outputch 才会输出给用户」。
 	// 模型最常见的错误不是不会调工具，而是**以为返回文本就等于回复了**——
 	// 异步通道下那等于自言自语（用户永远收不到）。
-	prompt += "**只有显式调用 `output_send__{通道名}` 才会把内容送达用户。**" +
-		"返回纯文本只是在这次推理里说话，用户看不到 —— 除非是下面说的同步通道。\n"
-	prompt += "- **不要假设当前通道是某个固定值**：同一会话里可能同时有多个来源（多设备、多通道、子任务）。\n"
-	prompt += "  先看这条消息本身与上下文里的来源信息，再决定往哪里回；不确定有哪些通道时先调 output_list_channels。\n"
-	prompt += "- 同步通道（webui / cli / 终端）：直接返回纯文本即可，内核会把它交给等待方显示，**这是唯一的例外**。\n"
-	prompt += "- 异步通道（qq / wechat / 群聊等）：**必须**调用 output_send__{通道名}，并在 meta 里带上正确的 user_id 或 group_id。\n"
-	prompt += "- 一次调用可以发多条：payload 传数组即可（type/meta 也支持数组一一对应，只给一个值则应用到每一条）。\n"
-	prompt += "- 不确定当前通道的发送方式时，先用 output_send__{通道名}_help 查看该通道的 meta 格式和 type 枚举，再决定。\n"
+	prompt += "**Content reaches the user only when you explicitly call `output_send__{channel}`.** " +
+		"Returning plain text only speaks inside this reasoning step; the user cannot see it - except on the synchronous channels described below.\n"
+	prompt += "- Don't assume a fixed channel: one conversation may span devices and channels. If unsure, call output_list_channels.\n"
+	prompt += "- Sync channels (webui / cli / terminal): return plain text. **The only exception.**\n"
+	prompt += "- Async channels (qq / wechat / groups): call output_send__{channel} with the right user_id or group_id.\n"
+	prompt += "- One call may send several messages: pass an array as payload. Unclear how to send? output_send__{channel}_help.\n"
 	// ❗这里**不得**限制"一轮只能发一次"。设计上输出是 agent 的**主动调用**：
 	// 收到一次输入后，可以往**任意（已授权的）通道**发**任意多次**（分段播报、
 	// 先回执后结论、同时通知多个通道都合法）。此前这里写着"每轮对话通常只需调用
 	// 一次 output_send"——那是一条**凭空的限制**，会让模型自己收起合理的多次输出。
 	// 真正需要提醒的只有两件事：单条长度上限（超长拆成完整段落）与"别反复重发
 	// 完全相同的内容"（自律，不是判据）。
-	prompt += "- **输出次数与目标通道由你自己决定**：一次输入可以对同一通道发多条（先回执后结论、分步播报、分段长文），也可以同时发到多个通道（例如同时通知 webui 与 qq）。**没有任何「一轮只能发一次」的限制。**\n"
-	prompt += "- 输出时只需注意两点：单条消息的长度上限（超长就拆成完整段落，不要碎片化）；别反复重发**完全相同**的内容（那是浪费，不是限制）。\n"
-	prompt += "- 需要多步执行的长任务：**必须先**向当前对话通道发一条确认消息告诉用户已收到（异步通道用输出门工具，同步通道直接返回文本），**然后再**执行具体排查工具。确认消息不代表任务完成，发出后仍需继续执行实际工具并最终汇报结果。\n"
-	prompt += "- 用户从其他渠道发来「在哪里/怎么样了」这类追问时，先回忆上次任务的通道与上下文，再回同一通道。"
+	prompt += "- **You choose how many outputs and which channels.** **No \"one output per turn\" limit.** Keep messages whole; don't resend identical content.\n"
+	prompt += "- Multi-step work: acknowledge on the current channel **first**, then run the real tools. An acknowledgement is not completion - finish and report.\n"
 
 	if a.indexer != nil {
 		prompt += "\n\n" + a.indexer.BuildToolPrompt()
@@ -283,11 +271,8 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 			// 以及按需插件要先 plugin_start 拉起。
 			//
 			// 不看 skill 就直接调工具，是这个仓库反复吃过亏的一类错误。
-			prompt = appendPromptBlock(prompt, "【可用技能】这些是插件配套的**使用说明书**，不是可选装饰。\n"+
-				"**规则**：准备调用某个插件的工具（或工具调用失败、参数不确定）时，**先看这里有没有同名技能的**"+
-				"（如 file-tools / cmd-tools / qq-tools），用 skill_info(\"技能名\") 读全文，"+
-				"再严格按其中步骤与坑位说明执行。技能里通常会写明：工具该怎么调、需要先启动哪个插件、常见报错怎么读。\n"+
-				"用户明确要求用某技能时同样先 skill_info 读全文，不要凭名字猜做法。\n\n"+idx)
+			prompt = appendPromptBlock(prompt, "[Skills] Usage manuals for plugins. Before calling a plugin's tool (or when it fails), read the same-named skill with skill_info(\"skill-name\") and follow it. "+
+				"Never guess from the name.\n\n"+idx)
 		}
 	}
 
@@ -295,10 +280,8 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// 系统提示词每轮重建，因此 WebUI / QQ / CLI / ACP / 邮件等所有通道都会带上它；
 	// 模型调用 persona_set（或用户在 WebUI 向导里选）落地后，标记置位，本段消失。
 	if a.personaStore != nil && !a.personaStore.PersonaInitialized() {
-		prompt = appendPromptBlock(prompt, "【首启人格设定】你的**人格设定尚未确认**。请在本轮回复里先问用户一句："+
-			"要用默认人格，还是自定义一个？拿到明确答复后**必须调用 persona_set 工具**落库："+
-			"用户选默认 → mode=default；自定义 → mode=custom 且把内容写进 content；"+
-			"用户说以后再说 → mode=later。用户答复前不要假设已设置，也不要反复追问同一件事。")
+		prompt = appendPromptBlock(prompt, "[First-run persona setup] Your **persona is not confirmed**. Ask once this turn: default persona, or a custom one? Then **call persona_set**: "+
+			"default -> mode=default; custom -> mode=custom with the text in content; later -> mode=later. Until answered, don't assume it is set and don't repeat the question.")
 	}
 
 	prompt += a.buildToolCatalog()
@@ -364,8 +347,8 @@ func (a *Agent) buildToolCatalog() string {
 		}
 	}
 	var sb strings.Builder
-	sb.WriteString("\n\n【可用工具能力】\n")
-	sb.WriteString("工具按插件分组注册。需要某个插件的具体工具时，调用 get_plugin_tools(\"{插件名}\") 获取该插件的完整工具定义（名称/参数/用途）。\n")
+	sb.WriteString("\n\n[Available tool capabilities]\n")
+	sb.WriteString("Grouped per plugin; call get_plugin_tools(\"{plugin}\") for full definitions.\n")
 	// ★ 说明"按需插件"这回事（2026-10-22）。
 	//
 	// 插件有两种启动形态（SDK autostart.go）：
@@ -374,12 +357,12 @@ func (a *Agent) buildToolCatalog() string {
 	//
 	// 不说清这件事的后果：模型看到"清单里没有某能力"就断定"没有这个能力"，
 	// 于是绕道去用别的工具硬凑，或者干脆告诉用户做不到。
-	sb.WriteString("★ **工具清单里没有 ≠ 没有这个能力**：部分插件是**按需加载**的，" +
-		"它们的工具一开始不在清单里。需要时先 get_plugin_tools(\"插件名\") 看它有哪些工具、" +
-		"再 plugin_start(\"插件名\") 把它拉起来，工具就会出现。对应的 skill（同类名字或同名技能）" +
-		"会说明这个插件是常驻还是按需、以及拉起后怎么用。\n")
+	sb.WriteString("**Not listed does not mean unavailable**: some plugins are **on-demand**; " +
+		"their tools are absent until started. Call get_plugin_tools(\"plugin\") to see them, " +
+		"then plugin_start(\"plugin\") to bring the plugin up. The matching skill states " +
+		"whether a plugin is resident or on-demand, and how to use it once started.\n")
 	for _, plg := range order {
-		sb.WriteString(fmt.Sprintf("- %s (%d 个工具)", plg, byPlugin[plg]))
+		sb.WriteString(fmt.Sprintf("- %s (%d tools)", plg, byPlugin[plg]))
 		if d := pluginDesc[plg]; d != "" {
 			sb.WriteString(": " + d)
 		}
@@ -441,7 +424,7 @@ type toolDefOptions struct {
 	// noMemory 声明该工具的**输出**不参与记忆计算（向量化/关键词/蒸馏），
 	// 原文仍留在上下文可读。语义与 ToolDef.NoMemory 一致。
 	//
-	// ★ 注意：doc_query 的 noMemory **不写在这里**，而是由 init() 里的
+	// ★ 注意：coldcontext_query 的 noMemory **不写在这里**，而是由 init() 里的
 	//   显式名单登记。原因：工具表是按需构造的（受 `if a.docStore != nil`
 	//   之类条件控制），而 textForVector 可能在构造之前被调用 ——
 	//   靠构造时登记会让声明"时有时无"。声明是静态事实，init 期定死。
@@ -518,7 +501,7 @@ func init() {
 		// 插件与来源：列举
 		"get_plugin_tools", "llm_list_sources",
 		// 文档：检索
-		"doc_query",
+		"coldcontext_query",
 		// 安全模块：列举变量（只读，无共享写）
 		"secret_list",
 	} {
@@ -533,10 +516,10 @@ func init() {
 	//   在工具被构造之前也可能被调用 ⇒ 声明会"时有时无"。
 	//   声明是静态事实，就该在 init 期定死（与上面 parallel 同一理由）。
 	//
-	// 目前只有 doc_query：它的返回值含被召回事件的正文片段，
+	// 目前只有 coldcontext_query：它的返回值含被召回事件的正文片段，
 	// 而那些正文已在记忆体系里 —— 再参与向量化/蒸馏就是重复注入。
 	for _, name := range []string{
-		"doc_query",
+		"coldcontext_query",
 	} {
 		declareNoMemoryTool(name)
 	}
@@ -590,16 +573,16 @@ func (a *Agent) buildToolDefs() []interface{} {
 				"用本工具按 offset/limit 取其余部分；单次最多 64KB。"+
 				"结果不会自动过期，但会**随那条上下文事件淘汰**——事件被裁掉后再读会明确告知已淘汰。",
 			map[string]interface{}{
-				"event_id": map[string]interface{}{"type": "string", "description": "预览里给出的句柄（形如 evt_1770000000000000000）"},
-				"offset":   map[string]interface{}{"type": "number", "description": "起始字节偏移，从 0 开始；省略即从头"},
-				"limit":    map[string]interface{}{"type": "number", "description": "读取字节数，省略或 <=0 取 64KB；不该超过剩余量"},
+				"event_id": map[string]interface{}{"type": "string", "description": "Handle shown in the preview (e.g. evt_1770000000000000000)"},
+				"offset":   map[string]interface{}{"type": "number", "description": "Start byte offset (0-based); omit to read from the beginning"},
+				"limit":    map[string]interface{}{"type": "number", "description": "Bytes to read; omit or <=0 for 64KB; should not exceed the remainder"},
 			}, "event_id"))
 	}
 
 	if a.personaStore != nil {
 		tools = append(tools, toolDef("persona_set", "【首启人格】落地用户的人格选择并记录「已经问过」。仅在用户明确答复后调用：默认用 mode=default；自定义用 mode=custom 并把人格内容放进 content；用户说以后再说用 mode=later。", map[string]interface{}{
 			"mode":    map[string]interface{}{"type": "string", "description": "default | custom | later"},
-			"content": map[string]interface{}{"type": "string", "description": "自定义人格内容（mode=custom 时必填）"},
+			"content": map[string]interface{}{"type": "string", "description": "Custom persona text (required when mode=custom)"},
 		}, "mode"))
 	}
 
@@ -684,38 +667,20 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	if a.docStore != nil {
-		// ★ doc_query / doc_commit 的描述必须与**真实行为**一致。
-		//
-		// 旧描述只有一句「查询文档记忆。输入查询内容，返回相关文档摘要」：
-		//   · "文档记忆"没有定义，模型不知道 L2 是什么；
-		//   · "返回相关文档摘要"与真实行为**不符**（真实是把事件逐条按
-		//     原始时间戳插回对话时序）；
-		//   · 没说什么时候该用，也没说与 memory_recall 的分工。
-		// 结果：生产实测 agent 几乎不调用 doc_query，即使调用也只看返回值、
-		// 不知道原文已回填到时序。
-		tools = append(tools, toolDefWith("doc_query",
-			"从**历史记忆层**（L2）召回过去的事件原文。"+
-				"\n\n**这一层是什么**：当前对话窗口里只看得到最近的事件；更早的事件被移出窗口后，"+
-				"连同原文完整保存在历史层，不会丢失。"+
-				"\n\n**何时用**：记得«这事办过/说过»但想不起细节；需要当时的原始过程而非结论；"+
-				"跨会话、跨天追问；用户问\"上次那个\"/\"之前怎么弄的\"。只想知道某个事实的当前值、"+
-				"或某个实体的关系，用 memory_recall（图记忆），不要用这个。"+
-				"\n\n**调用后会发生什么**：命中的事件会**逐条按原始时间戳插回你的对话时序**"+
-				"（就是【对话时序】那一段，出现在它当时的时间点上），"+
-				"返回值会列出每条的时间/来源/正文开头。要引用细节，读时序里对应时间点即可。"+
-				"\n\n**副作用**：召回即从历史层取出（消费式），该文档不再留在 L2。",
+		// The public tool name remains coldcontext_query for compatibility. Its description
+		// uses "cold context" so the model does not mistake replayable conversation
+		// history for a user-authored document.
+		tools = append(tools, toolDefWith("coldcontext_query",
+			"Retrieve earlier conversation turns that are no longer in the current context. Use this when the user refers to a past episode, asks what was said or done, or you remember an event but need its exact details. For current facts or entity relations, use `memory_recall` instead.\n\n"+
+				"The full matching turns are restored into your conversation timeline at their original timestamps (they are inserted back into the timeline, not returned as a summary); read them there. This is consuming: retrieved material leaves cold context.",
 			map[string]interface{}{
 				"query": map[string]interface{}{"type": "string", "description": "查询内容，用当时可能出现的词描述"},
 				"top_k": map[string]interface{}{"type": "integer", "description": "召回多少篇（默认 3）", "default": 3},
 			}, []string{"query"}, parallelOpts()))
 
-		tools = append(tools, toolDef("doc_commit",
-			"把**整段结论/过程**写进历史记忆层（L2）。"+
-				"\n\n**适合写什么**：做完一件事的完整过程与结论、排查链条、方案取舍的理由 —— "+
-				"这些内容长、有上下文、以后要回看原文。"+
-				"\n\n**不适合写什么**：单个事实或实体关系（谁是谁、某值等于多少、偏好）→ 用 memory_commit；"+
-				"可复用的成文知识 → 用 knowledge_create。"+
-				"\n\n写入后会参与后续的自动预填充与 doc_query 召回。",
+		tools = append(tools, toolDef("coldcontext_commit",
+			"Write a durable episode or conclusion into cold context (older conversation history). Use this for a complete process, investigation trail, or decision rationale. For a single fact or relation use `memory_commit`; for reusable written knowledge use `knowledge_create`.",
+
 			map[string]interface{}{
 				"content": map[string]interface{}{"type": "string", "description": "文档内容（完整正文，不要自己截断）"},
 				"summary": map[string]interface{}{"type": "string", "description": "一句话摘要（可选，留空则由正文首行生成）"},
@@ -752,7 +717,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	// 按插件动态拉取工具定义(避免全量注入提示词污染)
-	tools = append(tools, toolDefWith("get_plugin_tools", "获取指定插件的完整工具定义(名称/参数/用途)。参数 plugin_name 传插件名(见系统提示的【可用工具能力】列表)。省略时返回全部插件的工具摘要。", map[string]interface{}{
+	tools = append(tools, toolDefWith("get_plugin_tools", "Get a plugin's full tool definitions (name / parameters / purpose). Pass the plugin name as plugin_name (see the [Available tool capabilities] list in the system prompt). Omit it to get a summary of tools for every plugin.", map[string]interface{}{
 		"plugin_name": map[string]interface{}{"type": "string", "description": "插件名，如 qq / remotedevice / weather", "default": ""},
 	}, nil, parallelOpts()))
 

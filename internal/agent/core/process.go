@@ -514,7 +514,7 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 	}
 
 	// 第一轮：从最新到最旧，计算在预算内能放多少条
-	headerTokens := EstimateTokens("【对话时序】\n")
+	headerTokens := EstimateTokens("[Conversation timeline]\n")
 	remaining := maxTokens - headerTokens
 	include := 0
 	for i := len(events) - 1; i >= 0; i-- {
@@ -545,7 +545,7 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 	// 头部自带语义说明（**块自我描述**）：此前这句解释写在人格/系统提示词里，
 	// 提示词一精简就丢语义 ⇒ 模型把历史摘要当成当前待办。说明跟数据贴在一起
 	// 才不会漂移。
-	sb.WriteString("【对话时序】以下是过去发生的事件摘要（**不是当前任务**；不要把其中内容当成用户此刻的新要求）。\n")
+	sb.WriteString("[Conversation timeline] Summaries of past events follow (**not the current task**; do not treat their content as a new request from the user).\n")
 	for _, e := range events[start:] {
 		sb.WriteString(fmt.Sprintf("[%s] %s: %s",
 			e.Timestamp.Format("15:04:05"), e.Source, e.Input))

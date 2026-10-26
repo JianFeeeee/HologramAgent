@@ -133,7 +133,7 @@ func TestLightProfile_OrganizeToolsAbsentAndRefused(t *testing.T) {
 				"name": "任意", "source": "a", "target": "b", "criteria": map[string]interface{}{},
 			},
 		}, nil)
-		if !strings.Contains(got, "轻量内核") {
+		if !strings.Contains(got, "lightweight kernel") {
 			t.Fatalf("%s 在轻量内核里必须明确报不支持，实际 %q", tool, got)
 		}
 	}

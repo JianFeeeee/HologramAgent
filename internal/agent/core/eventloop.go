@@ -287,7 +287,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 		if source == "" {
 			source = "unknown"
 		}
-		alt = fmt.Sprintf("[从 %s 收到了 %s]", source, mediaType)
+		alt = fmt.Sprintf("[received %s from %s]", mediaType, source)
 	}
 
 	var blocks []agentAPI.ContentBlock
@@ -302,7 +302,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 			// 更糟的是：该工具已于本日移出为内置插件 multimodal，
 			// 它需要 path 或 digest，而用户直传的图片两者都没有 ⇒
 			// 模型照着提示词调它，必然拿到「没有可处理的媒体」错误。
-			desc = fmt.Sprintf("从 %s 收到了一张图片（已随本消息附上，请直接查看）。", source)
+			desc = fmt.Sprintf("An image arrived from %s (attached to this message; look at it directly).", source)
 		}
 	case "audio":
 		desc = a.inputCfg.Audio.DescribePrompt
