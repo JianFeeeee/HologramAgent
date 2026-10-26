@@ -774,7 +774,17 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 		//   即每次工具调用都亮同一批无关节点。
 		//
 		// 事件本身很小（只含块 ID 数组，不含正文）—— 与 tool_call 同量级。
-		"memory_access"}
+		"memory_access",
+		// update_check / update_progress / update_result：更新子系统的三个事件。
+		//
+		// ★ 为什么必须进 SSE：升级是**长耗时且会让进程消失**的动作。
+		//   WebUI 若只能轮询 /kernel/update，重启瞬间必然断线 —— 而断线那一刻
+		//   用户最需要知道"升到哪一步/失败了/已回滚"。事件是唯一能穿越重启的
+		//   通知通道（SSE 客户端会按 Last-Event-ID 重连补发）。
+		//
+		// 三者都进 sseEventRing（不只是实时推送）：断线重连要能补到最终结论
+		// （update_result），否则用户重连后只看到"开始升级"而没有结局。
+		"update_check", "update_progress", "update_result"}
 	// token 级流式增量事件：实时转发给浏览器做逐 token 渲染。
 	// 不进 sseEventRing —— 断线重连只重放聚合事件（最终真相），
 	// 避免重放 delta 与聚合内容重复追加。

@@ -31,9 +31,9 @@ package update
 // 是崩溃，不是回退版本。这里只认一个事实：**上次升级留下的版本没能启动成功**。
 
 import (
-	"log"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"

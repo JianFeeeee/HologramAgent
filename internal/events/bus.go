@@ -73,6 +73,54 @@ const (
 	// 订阅者（webui SSE）据此按**真实块 ID** 精确高亮，不再猜。
 	EventMemoryAccess EventType = "memory_access"
 
+	// ── 更新子系统（internal/update）的事件 ──
+	//
+	// 为什么不走"工具返回值 + WebUI 轮询"：
+	// 升级是**长耗时且会重启进程**的动作。轮询在重启瞬间必然断，
+	// 而断线时用户最需要知道"升级到哪一步了/失败了/已回滚"。
+	// 事件总线是内核既有的发布订阅机制（同步投递、handler panic 隔离），
+	// 用它不需要新造一条通知通道。
+
+	// EventUpdateCheck 发布一次「更新检查」结果（内核或插件）。
+	//
+	// 语义：只读检查，不改动任何东西。WebUI 据此刷新版本徽标。
+	//
+	// payload 约定：
+	//
+	//	scope:      "kernel" | "plugin"
+	//	name:       插件名（scope=plugin 时有值；kernel 时为空）
+	//	current:    本地版本
+	//	latest:     远端最新版本（查不到时为空）
+	//	has_update: bool
+	//	reason:     查不到的原因（可空）
+	EventUpdateCheck EventType = "update_check"
+
+	// EventUpdateProgress 发布升级过程中的一个步骤。
+	//
+	// 语义：进度通知。升级会让进程消失，所以每一步都必须**先发事件再动作** ——
+	// 顺序反了的话，最后几步的事件永远发不出去（进程已经没了）。
+	//
+	// payload 约定：
+	//
+	//	scope:  "kernel" | "plugin"
+	//	name:   插件名（scope=plugin 时有值）
+	//	step:   "verify" | "backup" | "replace" | "restart" | "verify_version"
+	//	         | "rollback" | "done" | "failed"
+	//	detail: 该步的人读说明
+	EventUpdateProgress EventType = "update_progress"
+
+	// EventUpdateResult 发布升级的最终结果（成功或失败，含回滚轨迹）。
+	//
+	// payload 约定：
+	//
+	//	scope:       "kernel" | "plugin"
+	//	name:        插件名（scope=plugin 时有值）
+	//	ok:          bool
+	//	from / to:   版本轨迹（回滚时 to 是回滚后的版本）
+	//	rolled_back: bool
+	//	error:       失败原因（成功时为空）
+	EventUpdateResult EventType = "update_result"
+
 	EventAll EventType = "*"
 )
 

@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
@@ -65,7 +66,12 @@ func (h *Handler) handleKernelUpdateApply(w http.ResponseWriter, r *http.Request
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	go runKernelUpgrade(body.Pkg)
+	// WebUI 侧天然有总线（它就是 SSE 的上游）：升级每一步都让界面看得到
+	var bus *events.Bus
+	if h.sdk != nil {
+		bus = h.sdk.EventBus()
+	}
+	go runKernelUpgrade(body.Pkg, bus)
 }
 
 // currentKernelVersion 读本机 homed 的版本（尽力而为）。
@@ -82,7 +88,9 @@ func currentKernelVersion() *update.BinVersion {
 }
 
 // runKernelUpgrade 在后台执行完整升级闭环（含重启与回滚）。
-func runKernelUpgrade(pkgPath string) {
+//
+// bus 为 nil 时退化成纯日志（该部署未接事件总线）。
+func runKernelUpgrade(pkgPath string, bus *events.Bus) {
 	if pkgPath == "" {
 		// 没给本地包：从最新 release 资产下载。
 		// 下载与升级的完整闭环由 CLI 工具实现，这里复用同一二进制
@@ -107,5 +115,5 @@ func runKernelUpgrade(pkgPath string) {
 	if newBin == "" {
 		return
 	}
-	_ = update.DoUpgrade(root, "/usr/local/bin/homed", newDG, "/home/newqqagent/plugins", "/home/newqqagent")
+	_ = update.DoUpgradeBus(root, "/usr/local/bin/homed", newDG, "/home/newqqagent/plugins", "/home/newqqagent", bus)
 }

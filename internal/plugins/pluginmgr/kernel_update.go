@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
@@ -91,7 +92,13 @@ func (p *Plugin) kernelUpdateApply(pkgPath string) (interface{}, error) {
 		_ = kc.RequestKernelRestart("kernel_update apply")
 	}
 	go func() {
-		if err := update.DoUpgrade(root, kernelBinPath(p), newDG, p.pluginDir, kernelDataDir(p)); err != nil {
+		// 走事件总线：升级的每一步（含重启前的最后几步）都让 WebUI 看得到。
+		// 顺序上 publish 紧贴动作之前 —— 进程消失后事件就发不出去了。
+		bus := (*events.Bus)(nil)
+		if p.sdk != nil {
+			bus = p.sdk.EventBus()
+		}
+		if err := update.DoUpgradeBus(root, kernelBinPath(p), newDG, p.pluginDir, kernelDataDir(p), bus); err != nil {
 			// DoUpgrade 内部失败已自行回滚；这里只留一条诊断日志
 			fmt.Fprintf(os.Stderr, "[pluginmgr] kernel_update upgrade failed (rolled back): %v\n", err)
 		}

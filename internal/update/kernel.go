@@ -1,4 +1,5 @@
-// Package kernelupgrade 实现**内核**的升级闭环：探测 / 校验 / 备份 / 原子替换 / 重启 / 回滚。
+// 内核升级闭环：探测 / 校验 / 备份 / 原子替换 / 重启 / 回滚。
+// 包级说明见 doc.go（update 子系统）。
 //
 // 抽成独立包而不是留在 cmd/homed-upgrade：内核侧的 kernel_update 工具
 // 与 CLI 必须走**同一套**逻辑。两份实现必然漂移，而这条路径上漂移的
@@ -22,6 +23,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 )
 
 // binVersion 是 homed --version 的输出。
@@ -248,6 +251,17 @@ func FileSize(p string) int64 {
 // 每一步失败都往回退，且**回滚后必须能正常启动**——这是本函数的核心承诺：
 // 宁可升级失败，不可让机器起不来。
 func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
+	return DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir, nil)
+}
+
+// DoUpgradeBus 同 DoUpgrade，但把每个步骤发布到事件总线。
+//
+// ★ 为什么必须"先发事件再动作"：升级的最后几步会让进程消失
+// （replace → restart）。顺序一反，最后几步的事件永远发不出去 ——
+// 而那时用户最需要知道"升级到哪一步了/失败了/已回滚"。
+//
+// bus 为 nil 时退化成纯 printf（CLI 场景没有总线）。
+func DoUpgradeBus(root, binPath, newDG, pluginsDir, dataDir string, bus *events.Bus) error {
 	newBin := FindFile(root, "homed")
 	if newBin == "" {
 		return fmt.Errorf("包内无 homed")
@@ -258,6 +272,7 @@ func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
 	if err != nil {
 		return fmt.Errorf("预检失败，新二进制不可执行: %w", err)
 	}
+	publishProgress(bus, "kernel", "", "verify", "新内核可执行，版本 "+nv.Version)
 	fmt.Printf("\n== 预检通过 ==\n新内核 %s 可执行\n", nv.Version)
 
 	// ── 备份：只备本次会动的文件（不整目录拷贝，那是几百 MB）──
@@ -275,6 +290,7 @@ func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
 			return fmt.Errorf("备份 %s: %w", t, err)
 		}
 	}
+	publishProgress(bus, "kernel", "", "backup", fmt.Sprintf("已备份 %d 个文件", len(targets)))
 	fmt.Printf("已备份 %d 个文件 → %s\n", len(targets), backup)
 
 	// ── 写待确认升级标记（在替换**之前**）──
@@ -304,6 +320,7 @@ func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
 	}
 
 	rollback := func(cause error) error {
+		publishProgress(bus, "kernel", "", "rollback", cause.Error())
 		fmt.Printf("\n❌ %v\n== 开始回滚 ==\n", cause)
 		if dataDir != "" {
 			if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
@@ -354,6 +371,7 @@ func DoUpgrade(root, binPath, newDG, pluginsDir, dataDir string) error {
 	if err != nil || got.Version != nv.Version || got.Commit != nv.Commit {
 		return rollback(fmt.Errorf("版本复核不符：期望 %s/%s，实际 %v", nv.Version, ShortCommit(nv.Commit), got))
 	}
+	publishResult(bus, "kernel", "", true, curVer.Version, got.Version, false, "")
 	fmt.Printf("\n✅ 升级完成：%s (commit %s)\n", got.Version, ShortCommit(got.Commit))
 	fmt.Printf("   备份保留在 %s（确认稳定后可删）\n", backup)
 	return nil

@@ -504,6 +504,14 @@ func (s *PluginSDK) Publish(evt *events.Event) {
 	}
 }
 
+// EventBus 返回内核事件总线（nil 表示该部署未接总线）。
+//
+// ★ 为什么需要 getter 而不只用 Publish：有些能力要**把总线本身传下去**，
+// 例如 update 子系统的升级闭环（internal/update.DoUpgradeBus）——
+// 它在替换二进制、重启进程的长过程中持续发进度事件。
+// 只给 Publish 的话，那类长流程就得在每个调用点手动转发一遍。
+func (s *PluginSDK) EventBus() *events.Bus { return s.eventBus }
+
 func (s *PluginSDK) Subscribe(eventType events.EventType, handler events.Handler) func() {
 	if s.eventBus != nil {
 		return s.eventBus.Subscribe(eventType, handler)
