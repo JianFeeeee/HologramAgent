@@ -40,12 +40,7 @@ install -m 0644 "$ROOT/build/depgraph.bin" "$OUT/bin/depgraph.bin"
 install -m 0755 "$ROOT/build/waiter" "$OUT/bin/waiter"
 install -m 0755 "$ROOT/build/hmapdev" "$OUT/bin/hmapdev"
 install -m 0755 "$ROOT/build/homed-upgrade" "$OUT/bin/homed-upgrade"
-# 只带 SDK **源码**，排除构建产物。
-#
-# 实测：直接 cp -r 会把 example/commondev/rawfile(321M)、dist(189M)、
-# build/(422M) 等产物一起打进去，包从 319M 涨到 1.3G、文件数 23293。
-# 安装包里 sdk 的用途只有一个——给 hmapdev 现场编译插件提供 SDK 头/源码，
-# 产物对它毫无用处。
+# 只带 SDK 源码，排除构建产物。
 SDK_SRC=third_party/homeagent-sdk
 mkdir -p "$OUT/sdk"
 (cd "$SDK_SRC" && tar -cf - \

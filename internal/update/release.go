@@ -1,11 +1,14 @@
 package update
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -30,14 +33,15 @@ var kernelHTTPClient = &http.Client{Timeout: 20 * time.Second}
 
 // ReleaseInfo 是一次「内核检查更新」的结果。
 type ReleaseInfo struct {
-	Current   string `json:"current"`              // 本机版本
-	CurrentC  string `json:"current_commit"`       // 本机 commit
-	Latest    string `json:"latest"`               // 远端最新 release tag
-	LatestURL string `json:"latest_url,omitempty"` // release 页面
-	Asset     string `json:"asset,omitempty"`      // 匹配到的资产名（tar.gz）
-	AssetURL  string `json:"asset_url,omitempty"`  // 资产下载地址
-	HasUpdate bool   `json:"has_update"`
-	Reason    string `json:"reason,omitempty"` // 查不到时的说明
+	Current     string `json:"current"`                // 本机版本
+	CurrentC    string `json:"current_commit"`         // 本机 commit
+	Latest      string `json:"latest"`                 // 远端最新 release tag
+	LatestURL   string `json:"latest_url,omitempty"`   // release 页面
+	Asset       string `json:"asset,omitempty"`        // 匹配到的资产名（tar.gz）
+	AssetURL    string `json:"asset_url,omitempty"`    // 资产下载地址
+	AssetDigest string `json:"asset_digest,omitempty"` // GitHub SHA-256 digest
+	HasUpdate   bool   `json:"has_update"`
+	Reason      string `json:"reason,omitempty"` // 查不到时的说明
 }
 
 // CheckRelease 查 GitHub Release 并与本机版本比较。
@@ -57,6 +61,7 @@ func CheckRelease(current *BinVersion) *ReleaseInfo {
 		Assets  []struct {
 			Name               string `json:"name"`
 			BrowserDownloadURL string `json:"browser_download_url"`
+			Digest             string `json:"digest"`
 		} `json:"assets"`
 	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", ghRepo())
@@ -76,6 +81,7 @@ func CheckRelease(current *BinVersion) *ReleaseInfo {
 		if strings.Contains(a.Name, "linux") && strings.Contains(a.Name, "amd64") && strings.HasSuffix(a.Name, ".tar.gz") {
 			info.Asset = a.Name
 			info.AssetURL = a.BrowserDownloadURL
+			info.AssetDigest = a.Digest
 			break
 		}
 	}
@@ -110,5 +116,72 @@ func httpGetJSON(url string, v interface{}) error {
 	}
 	return json.NewDecoder(resp.Body).Decode(v)
 }
-
 func osGetenv(k string) string { return os.Getenv(k) }
+
+// DownloadLatestRelease downloads the latest Linux amd64 release asset into dst.
+// The package path is supplied by the caller; the update subsystem owns release
+// discovery, download, and digest verification. It is safe to use from CLI,
+// WebAPI, or an agent tool. No files are replaced by this function.
+func DownloadLatestRelease(dst string) (*ReleaseInfo, error) {
+	info := CheckRelease(nil)
+	if info.AssetURL == "" {
+		return info, fmt.Errorf("latest release has no linux/amd64 tar.gz asset: %s", info.Reason)
+	}
+	if err := downloadFile(info.AssetURL, dst); err != nil {
+		return info, err
+	}
+	if strings.HasPrefix(info.AssetDigest, "sha256:") {
+		want := strings.TrimPrefix(info.AssetDigest, "sha256:")
+		got, err := sha256File(dst)
+		if err != nil {
+			return info, err
+		}
+		if !strings.EqualFold(want, got) {
+			return info, fmt.Errorf("release asset sha256 mismatch: want %s got %s", want, got)
+		}
+	}
+	return info, nil
+}
+
+func downloadFile(url, dst string) error {
+	resp, err := kernelHTTPClient.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download HTTP %d", resp.StatusCode)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
+		os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		os.Remove(tmp)
+		return closeErr
+	}
+	return os.Rename(tmp, dst)
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}

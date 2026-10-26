@@ -33,6 +33,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/JianFeeeee/HologramAgent/internal/update"
@@ -43,10 +44,11 @@ import (
 //
 // 与生产一致：内核按 `--data <dir>` 运行，标记必须落在同一个 dataDir 下，
 // 否则 update 模块读不到它。推导规则：
-//   ① 环境变量 HOMEAGENT_DATA_DIR（部署方显式指定）
-//   ② 二进制同级的 ../newqqagent（/usr/local/bin/homed → /home/newqqagent）
-//      —— 太脆弱，改为最常见的部署形态：/usr/local/bin/homed → /home/newqqagent
-//   ③ 退回 /home/newqqagent（本仓默认部署路径）
+//
+//	① 环境变量 HOMEAGENT_DATA_DIR（部署方显式指定）
+//	② 二进制同级的 ../newqqagent（/usr/local/bin/homed → /home/newqqagent）
+//	   —— 太脆弱，改为最常见的部署形态：/usr/local/bin/homed → /home/newqqagent
+//	③ 退回 /home/newqqagent（本仓默认部署路径）
 func upgradeDataDir(binPath string) string {
 	if d := strings.TrimSpace(os.Getenv("HOMEAGENT_DATA_DIR")); d != "" {
 		return d
@@ -60,14 +62,15 @@ func fail(format string, a ...interface{}) {
 }
 
 func main() {
-	pkgPath := flag.String("pkg", "", "新安装包（.tar.gz）；给出即做探测")
+	pkgPath := flag.String("pkg", "", "本地安装包（.tar.gz）；与 -release 二选一")
+	release := flag.Bool("release", false, "从 GitHub 最新 Release 下载 OTA 包（默认仅探测；配合 -apply 执行）")
 	binPath := flag.String("bin", "/usr/local/bin/homed", "当前运行的内核二进制路径")
 	pluginsDir := flag.String("plugins", "/home/newqqagent/plugins", "外部插件目录（探测兼容性用）")
 	apply := flag.Bool("apply", false, "真正执行升级（默认只探测+预检）")
 	flag.Parse()
 
-	if *pkgPath == "" {
-		fmt.Fprintln(os.Stderr, "必须提供 -pkg <新安装包.tar.gz>")
+	if *pkgPath == "" && !*release {
+		fmt.Fprintln(os.Stderr, "必须提供 -pkg <安装包.tar.gz> 或 -release")
 		os.Exit(2)
 	}
 
@@ -76,6 +79,16 @@ func main() {
 		fail("建临时目录: %v", err)
 	}
 	defer os.RemoveAll(tmp)
+
+	if *release {
+		path := filepath.Join(tmp, "release.tar.gz")
+		info, downloadErr := update.DownloadLatestRelease(path)
+		if downloadErr != nil {
+			fail("下载最新 GitHub Release: %v", downloadErr)
+		}
+		*pkgPath = path
+		fmt.Printf("最新 Release: %s (%s)\n", info.Latest, info.Asset)
+	}
 
 	fmt.Printf("== 解包 %s ==\n", *pkgPath)
 	root, err := update.ExtractPkg(*pkgPath, tmp)
@@ -138,4 +151,3 @@ func main() {
 		fail("升级失败: %v", err)
 	}
 }
-
