@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -349,6 +350,56 @@ func (r *Registry) kernelControlFor(name string) sdk.KernelControlAPI {
 //
 // 拆出来的原因：buildSDK 要在**一次** RLock 里取走整组依赖（见 snapshotDeps），
 // 不能再回头单独取锁 —— RWMutex 不可重入，持锁再 RLock 在写者排队时会自锁。
+// lazyKernelControl 是**晚绑定**的内核控制通道。
+//
+// 它不持有具体实现，只持有 registry：每次调用时按授权表重新解析。
+// 这样"插件先启动、通道后注入"不会丢能力，而授权仍由
+// kernelControlAllowed / kernelRestartAllowed 决定（不因晚绑定放宽）。
+type lazyKernelControl struct {
+	r    *Registry
+	name string
+}
+
+func (l lazyKernelControl) resolve() sdk.KernelControlAPI {
+	return kernelControlForCtl(l.r.currentKernelControl(), l.name)
+}
+
+func (l lazyKernelControl) RequestKernelRestart(reason string) error {
+	if c := l.resolve(); c != nil {
+		return c.RequestKernelRestart(reason)
+	}
+	return errKernelControlUnavailable
+}
+
+func (l lazyKernelControl) RequestKernelShutdown(reason string) error {
+	if c := l.resolve(); c != nil {
+		return c.RequestKernelShutdown(reason)
+	}
+	return errKernelControlUnavailable
+}
+
+// errKernelControlUnavailable 表示通道尚未注入（装配期）或本插件未获授权。
+var errKernelControlUnavailable = errors.New(
+	"内核控制通道不可用：未注入（装配未完成）或本插件未获授权")
+
+// currentKernelControl 线程安全地取当前通道。
+func (r *Registry) currentKernelControl() sdk.KernelControlAPI {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.kernelCtl
+}
+
+// kernelControlFor 给插件返回**晚绑定**控制通道。
+//
+// 返回非 nil 即表示"该插件按授权表**可能**有这个能力"——真正的授权仍在
+// 每次调用时按 kernelControlForCtl 复核（所以晚绑定不放宽任何权限）。
+func kernelControlFor(name string, r *Registry) sdk.KernelControlAPI {
+	if !kernelControlAllowed[name] && !kernelRestartAllowed[name] {
+		return nil
+	}
+	return lazyKernelControl{r: r, name: name}
+}
+
 func kernelControlForCtl(ctl sdk.KernelControlAPI, name string) sdk.KernelControlAPI {
 	if ctl == nil {
 		return nil
@@ -710,7 +761,16 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		RegOutputUnreg: regOutputUnreg,
 		RegInput:       regInput,
 		PluginMgr:      r,
-		KernelControl:  kernelControlForCtl(deps.kernelCtl, name),
+		// ★ 晚绑定（2026-10-26 真机 503 实测）。
+		//
+		// 原先把 deps.kernelCtl 的**当时的取值**交给插件，而 webui 由
+		// plugin-host 在装配期就拉起，main() 里 SetKernelControl 那一行
+		// 还没执行 ⇒ 插件拿到 nil ⇒ 按钮点了永远 503
+		// （日志证据：POST /api/v1/kernel/restart status=503）。
+		//
+		// 依赖图保证不了"main 里某一行先于插件启动"，所以不能靠调整顺序，
+		// 只能让插件拿到**解析器**：调用那一刻再取真实通道。
+		KernelControl: kernelControlFor(name, r),
 
 		Status:     deps.status,
 		Supervisor: deps.sup,
@@ -1761,7 +1821,18 @@ func (r *Registry) StartPlugin(name string) error {
 		r.runtimeStopped[name] = true
 	}
 	r.mu.Unlock()
-	return fmt.Errorf("启动插件 %s 失败（本身加载出错，或插件不存在）", name)
+	// ★ 报错要**带上可用名字**：模型最常见的错是拼错（实测把 files 写成 file），
+	// 而原来的"加载出错，或插件不存在"两者都提、却一个可用名字都不给，
+	// 模型只能盲猜下一个名字（连续撞 3 次都不奇怪）。
+	//
+	// 这里列目录里的真实插件名（最多 12 个）并指出最接近的那个。
+	avail := r.installedPluginNames()
+	hint := ""
+	if near := nearestName(name, avail); near != "" {
+		hint = fmt.Sprintf("；你要找的是不是 %q？", near)
+	}
+	return fmt.Errorf("启动插件 %s 失败（%s）%s 已安装: %v",
+		name, r.loadFailureReason(name), hint, avail)
 }
 
 // refuseSelfLock 拦住会自锁的关闭/禁用操作（设计 §2.6.7.4）。
@@ -2044,4 +2115,93 @@ func (r *Registry) readConfig(plgDir string) map[string]interface{} {
 		return meta
 	}
 	return cfg
+}
+
+// installedPluginNames 返回 plugins 目录下真实存在的插件名（排序，最多 12 个）。
+func (r *Registry) installedPluginNames() []string {
+	dir := r.pluginDirOrEmpty()
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	sort.Strings(out)
+	if len(out) > 12 {
+		out = out[:12]
+	}
+	return out
+}
+
+// loadFailureReason 说明"为什么没加载起来"：目录不存在 / 没清单 / 加载报错。
+//
+// 区分三者是必要的：目录不存在（名字错）与清单损坏（插件坏了）对模型
+// 意味着完全不同的下一步动作。
+func (r *Registry) loadFailureReason(name string) string {
+	dir := filepath.Join(r.pluginDirOrEmpty(), name)
+	if _, err := os.Stat(dir); err != nil {
+		return "该名字没有对应目录，可能拼错了"
+	}
+	hasManifest := false
+	for _, n := range []string{"plugin.json", "plg.json"} {
+		if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+			hasManifest = true
+			break
+		}
+	}
+	if !hasManifest {
+		return "目录存在但没有 plugin.json/plg.json 清单"
+	}
+	return "插件自身加载失败，原因见内核日志"
+}
+
+// nearestName 在一个候选集合里找与 name 最接近的（差一个字符以内视为接近）。
+func nearestName(name string, candidates []string) string {
+	best, bestD := "", 3
+	for _, c := range candidates {
+		if d := editDistance(strings.ToLower(name), strings.ToLower(c)); d < bestD {
+			best, bestD = c, d
+		}
+	}
+	if bestD <= 2 {
+		return best
+	}
+	return ""
+}
+
+// editDistance 是经典 Levenshtein 距离（只用于给"拼错"提建议，规模极小）。
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			m := prev[j] + 1
+			if cur[j-1]+1 < m {
+				m = cur[j-1] + 1
+			}
+			if prev[j-1]+cost < m {
+				m = prev[j-1] + cost
+			}
+			cur[j] = m
+		}
+		prev = cur
+	}
+	return prev[len(rb)]
 }

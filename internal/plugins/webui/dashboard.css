@@ -598,6 +598,28 @@
           all var(--dur-micro) var(--ease-out),
           transform var(--dur-micro) var(--ease-out);
       }
+      /* 内核控制按钮组（侧栏底部）：与"退出登录"同族，带文字与图标。
+         两枚按钮等宽、同一行、间距一致；关机用红色悬停提示危险操作。 */
+      .nav-kernel {
+        display: flex;
+        gap: 8px;
+        margin: 8px 0 4px;
+      }
+      .nav-kernel .btn {
+        flex: 1 1 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 6px 10px;
+        font-size: 13px;
+        line-height: 1.2;
+      }
+      .nav-kernel .nav-danger:hover {
+        color: #e5484d;
+        border-color: rgba(229, 72, 77, 0.5);
+        background: rgba(229, 72, 77, 0.08);
+      }
       .theme-btn:hover {
         color: var(--accent);
         border-color: rgba(var(--accent-rgb), 0.5);

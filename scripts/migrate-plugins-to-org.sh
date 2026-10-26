@@ -27,12 +27,18 @@ set -euo pipefail
 DRY=0
 ONLY=""
 for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY=1 ;;
-    --only) shift; ONLY="${1:-}" ;;
-    *) echo "未知参数: $arg" >&2; exit 2 ;;
-  esac
-  shift || true
+	case "$arg" in
+	--dry-run) DRY=1 ;;
+	--only)
+		shift
+		ONLY="${1:-}"
+		;;
+	*)
+		echo "未知参数: $arg" >&2
+		exit 2
+		;;
+	esac
+	shift || true
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,81 +47,83 @@ GH_ORG="${GH_ORG:-HologramAgent}"
 TOKEN="${GH_ORG_TOKEN:-}"
 
 if [ "$DRY" -eq 0 ] && [ -z "$TOKEN" ]; then
-  echo "ERROR: 非 dry-run 需要 GH_ORG_TOKEN" >&2
-  exit 2
+	echo "ERROR: 非 dry-run 需要 GH_ORG_TOKEN" >&2
+	exit 2
 fi
 
 api() {
-  # $1=method $2=path $3=payload(optional)
-  local method="$1" path="$2" payload="${3:-}"
-  if [ -n "$payload" ]; then
-    curl -sS -X "$method" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com${path}" -d "$payload"
-  else
-    curl -sS -X "$method" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com${path}"
-  fi
+	# $1=method $2=path $3=payload(optional)
+	local method="$1" path="$2" payload="${3:-}"
+	if [ -n "$payload" ]; then
+		curl -sS -X "$method" \
+			-H "Authorization: Bearer $TOKEN" \
+			-H "Accept: application/vnd.github+json" \
+			"https://api.github.com${path}" -d "$payload"
+	else
+		curl -sS -X "$method" \
+			-H "Authorization: Bearer $TOKEN" \
+			-H "Accept: application/vnd.github+json" \
+			"https://api.github.com${path}"
+	fi
 }
 
-created=0; pushed=0; skipped=0
+created=0
+pushed=0
+skipped=0
 
 for dir in "$EXAMPLES"/*/; do
-  name="$(basename "$dir")"
-  if [ -n "$ONLY" ]; then
-    case ",$ONLY," in *",$name,"*) ;; *) continue ;; esac
-  fi
+	name="$(basename "$dir")"
+	if [ -n "$ONLY" ]; then
+		case ",$ONLY," in *",$name,"*) ;; *) continue ;; esac
+	fi
 
-  # 入口判据：Go 插件是 plugin.go，Lua 插件是 main.lua（与 build-examples.sh 同）
-  if [ ! -f "$dir/plugin.go" ] && [ ! -f "$dir/main.lua" ]; then
-    continue
-  fi
-  desc=$(python3 -c "import json,sys;print(json.load(open('$dir/plg.json')).get('description',''))" 2>/dev/null || echo "")
-  ver=$(python3 -c "import json,sys;print(json.load(open('$dir/plg.json')).get('version',''))" 2>/dev/null || echo "")
+	# 入口判据：Go 插件是 plugin.go，Lua 插件是 main.lua（与 build-examples.sh 同）
+	if [ ! -f "$dir/plugin.go" ] && [ ! -f "$dir/main.lua" ]; then
+		continue
+	fi
+	desc=$(python3 -c "import json,sys;print(json.load(open('$dir/plg.json')).get('description',''))" 2>/dev/null || echo "")
+	ver=$(python3 -c "import json,sys;print(json.load(open('$dir/plg.json')).get('version',''))" 2>/dev/null || echo "")
 
-  echo ""
-  echo "── $name (v$ver) ──"
-  echo "   desc: ${desc:0:60}"
+	echo ""
+	echo "── $name (v$ver) ──"
+	echo "   desc: ${desc:0:60}"
 
-  if [ "$DRY" -eq 1 ]; then
-    echo "   [dry-run] 将创建仓库 $GH_ORG/$name 并推送源码（排除 dist/build/rawfile/node_modules）"
-    continue
-  fi
+	if [ "$DRY" -eq 1 ]; then
+		echo "   [dry-run] 将创建仓库 $GH_ORG/$name 并推送源码（排除 dist/build/rawfile/node_modules）"
+		continue
+	fi
 
-  # ① 创建仓库（已存在则跳过 —— 幂等，重跑安全）
-  code=$(curl -s -o /tmp/ghresp -w "%{http_code}" -X POST \
-    -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
-    https://api.github.com/orgs/$GH_ORG/repos \
-    -d "{\"name\":\"$name\",\"private\":false,\"description\":\"$desc\",\"has_issues\":true}")
-  if [ "$code" = "201" ]; then
-    echo "   ✓ 仓库已创建"
-    created=$((created+1))
-  elif [ "$code" = "422" ]; then
-    echo "   · 仓库已存在（跳过创建）"
-    skipped=$((skipped+1))
-  else
-    echo "   ✗ 创建失败 HTTP=$code: $(head -c 200 /tmp/ghresp)"
-    continue
-  fi
+	# ① 创建仓库（已存在则跳过 —— 幂等，重跑安全）
+	code=$(curl -s -o /tmp/ghresp -w "%{http_code}" -X POST \
+		-H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+		https://api.github.com/orgs/$GH_ORG/repos \
+		-d "{\"name\":\"$name\",\"private\":false,\"description\":\"$desc\",\"has_issues\":true}")
+	if [ "$code" = "201" ]; then
+		echo "   ✓ 仓库已创建"
+		created=$((created + 1))
+	elif [ "$code" = "422" ]; then
+		echo "   · 仓库已存在（跳过创建）"
+		skipped=$((skipped + 1))
+	else
+		echo "   ✗ 创建失败 HTTP=$code: $(head -c 200 /tmp/ghresp)"
+		continue
+	fi
 
-  # ② 准备干净的源码副本
-  #
-  # 用 tar 管道而不是 rsync/cp -r：rsync 在最小化系统里常常没有
-  # （本机实测就是），而 cp -r 无法精确排除多类产物。
-  # --exclude 用**不带前导斜杠**的形态，匹配任意层级同名目录。
-  work=$(mktemp -d)
-  mkdir -p "$work/$name"
-  ( cd "$dir" && tar -cf - \
-      --exclude='dist' --exclude='build' --exclude='rawfile' \
-      --exclude='node_modules' --exclude='*.hmap' --exclude='.git' \
-      . ) | ( cd "$work/$name" && tar -xf - )
+	# ② 准备干净的源码副本
+	#
+	# 用 tar 管道而不是 rsync/cp -r：rsync 在最小化系统里常常没有
+	# （本机实测就是），而 cp -r 无法精确排除多类产物。
+	# --exclude 用**不带前导斜杠**的形态，匹配任意层级同名目录。
+	work=$(mktemp -d)
+	mkdir -p "$work/$name"
+	(cd "$dir" && tar -cf - \
+		--exclude='dist' --exclude='build' --exclude='rawfile' \
+		--exclude='node_modules' --exclude='*.hmap' --exclude='.git' \
+		.) | (cd "$work/$name" && tar -xf -)
 
-  # plg.json 里补 repository 字段，让装好的插件能反过来找到自己的仓库
-  # （plugin_update 靠它拉源码；不填的话插件永远无法自动更新）
-  python3 - "$work/$name/plg.json" "https://github.com/$GH_ORG/$name" <<'PY'
+	# plg.json 里补 repository 字段，让装好的插件能反过来找到自己的仓库
+	# （plugin_update 靠它拉源码；不填的话插件永远无法自动更新）
+	python3 - "$work/$name/plg.json" "https://github.com/$GH_ORG/$name" <<'PY'
 import json, sys
 path, repo = sys.argv[1], sys.argv[2]
 d = json.load(open(path))
@@ -124,8 +132,8 @@ json.dump(d, open(path, "w"), indent=2, ensure_ascii=False)
 open(path, "a").write("\n")
 PY
 
-  # 每个独立仓库都要有自己的 README 与 LICENSE 指引
-  cat > "$work/$name/README.md" <<EOF
+	# 每个独立仓库都要有自己的 README 与 LICENSE 指引
+	cat >"$work/$name/README.md" <<EOF
 # $name
 
 $desc
@@ -147,23 +155,23 @@ hmapdev build
 从本仓库拉最新源码并重编安装。
 EOF
 
-  # ③ 推送
-  (
-    cd "$work/$name"
-    git init -q
-    git checkout -q -b main
-    git add -A
-    git -c user.name="$GH_ORG" -c user.email="$GH_ORG@users.noreply.github.com" \
-      commit -q -m "feat: 从 SDK example/ 迁移为独立仓库
+	# ③ 推送
+	(
+		cd "$work/$name"
+		git init -q
+		git checkout -q -b main
+		git add -A
+		git -c user.name="$GH_ORG" -c user.email="$GH_ORG@users.noreply.github.com" \
+			commit -q -m "feat: 从 SDK example/ 迁移为独立仓库
 
 保留全部源码与测试（dist/build/rawfile/node_modules 等产物不入库）。
 plg.json 补 repo 字段，使 plugin_update 能定位本仓库。"
-    git remote add origin "https://x-access-token:$TOKEN@github.com/$GH_ORG/$name.git"
-    git push -q origin main 2>&1 | tail -1 || echo "   ✗ 推送失败（见上）"
-  )
-  echo "   ✓ 已推送"
-  pushed=$((pushed+1))
-  rm -rf "$work"
+		git remote add origin "https://x-access-token:$TOKEN@github.com/$GH_ORG/$name.git"
+		git push -q origin main 2>&1 | tail -1 || echo "   ✗ 推送失败（见上）"
+	)
+	echo "   ✓ 已推送"
+	pushed=$((pushed + 1))
+	rm -rf "$work"
 done
 
 echo ""

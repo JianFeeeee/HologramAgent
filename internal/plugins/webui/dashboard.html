@@ -142,33 +142,43 @@
           </button>
           <!-- 内核控制：重启 / 关机。
                放在导航底部而不是页面里，是因为它们作用于**整个服务**，
-               不属于任何一个标签页。 -->
-          <button
-            class="theme-btn"
-            id="kernel-restart-btn"
-            onclick="kernelRestart()"
-            title="重启内核（服务约断线数秒后自动重连）"
-            aria-label="重启内核"
-          >
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M21 12a9 9 0 1 1-2.6-6.4" />
-              <path d="M21 3v6h-6" />
-            </svg>
-          </button>
-          <button
-            class="theme-btn"
-            id="kernel-shutdown-btn"
-            onclick="kernelShutdown()"
-            title="关闭内核（需人工 systemctl start 才能再启动）"
-            aria-label="关闭内核"
-          >
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M12 3v9" />
-              <path d="M6.3 6.3a8 8 0 1 0 11.4 0" />
-            </svg>
-          </button>
+               不属于任何一个标签页。
+
+               ★ 2026-10-26：原先是两个只有图标的 .theme-btn（那是**顶栏**的样式：
+                 有 margin-right、pill 圆角、无文字），混在侧栏底部的文字按钮里
+                 ⇒ 大小不一、挤在一起、且用户看不出哪个是关机。
+                 现在改成与"退出登录"同族的 btn-sm，带图标 + 文字，
+                 关机额外用 danger 样式（红色悬停）区别于重启。 -->
+          <div class="nav-kernel">
+            <button
+              class="btn btn-ghost btn-sm"
+              id="kernel-restart-btn"
+              onclick="kernelRestart()"
+              title="重启内核（服务断线数秒后自动重连；进行中的对话可能中断）"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+                <path d="M21 3v6h-6" />
+              </svg>
+              重启
+            </button>
+            <button
+              class="btn btn-ghost btn-sm nav-danger"
+              id="kernel-shutdown-btn"
+              onclick="kernelShutdown()"
+              title="关闭内核（不会自动重启，需人工 systemctl start）"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   aria-hidden="true">
+                <path d="M12 3v9" />
+                <path d="M6.3 6.3a8 8 0 1 0 11.4 0" />
+              </svg>
+              关机
+            </button>
+          </div>
           <button
             class="btn btn-ghost btn-sm"
             onclick="logout()"
