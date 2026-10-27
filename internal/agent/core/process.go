@@ -75,11 +75,22 @@ func (a *Agent) toolOutputForQuery(toolName, raw string) string {
 	}
 	cleaner := a.stageHost.ToolDefCleaner(toolName)
 	if cleaner == nil {
+		// ★ 可见性（2026-10-27）：cleaner 缺失时必须**说出来**。
+		// 此前这里静默回退原文，于是"召回 query 是 tool 原始 map[...] 字符串"
+		// 这件事在日志里完全看不到 —— 只能靠读代码猜。
+		if len(raw) > 0 {
+			log.Printf("[agent] recall query for %s has NO cleaner, using raw output (%d bytes, head=%q)",
+				toolName, len(raw), headRunes(raw, 40))
+		}
 		return raw
 	}
-	if cleaned := cleaner(raw); cleaned != "" {
+	cleaned := cleaner(raw)
+	if cleaned != "" {
+		log.Printf("[agent] recall query for %s cleaned: %d -> %d bytes (head=%q)",
+			toolName, len(raw), len(cleaned), headRunes(cleaned, 40))
 		return cleaned
 	}
+	log.Printf("[agent] recall query for %s cleaner returned empty, falling back to raw (%d bytes)", toolName, len(raw))
 	return raw
 }
 
@@ -588,9 +599,26 @@ const (
 	// 时间线是"给下一轮看的历史"，不是当轮工作区 —— 够让模型认出
 	// "我查到了什么"，细节仍可用 coldcontext_query / 工具重取。
 	toolResultTimelineChars = 160
+	// toolResultTimelineCharsChat 是**对话正文类**工具（qq_get_message /
+	// qq_get_history）的放宽值（2026-10-27）：群聊上下文被切到 160 字后只剩碎片，
+	// 模型看得到"有人说过平板"，看不到"平板→promax→机型→随机发货"这条链。
+	toolResultTimelineCharsChat = 400
 	// toolResultTimelineMax 单条事件最多渲染几条工具回执。
 	toolResultTimelineMax = 3
 )
+
+// isChatCorpusTool 报告该工具的输出是否属于"对话正文"（需要更长的渲染）。
+//
+// 判定用后缀而不是全名：工具名带插件前缀（qq_get_message / telegram_get_message…），
+// 而语义是"取聊天正文"这一族。
+func isChatCorpusTool(name string) bool {
+	for _, suffix := range []string{"_get_message", "_get_history", "_list_chats", "_search_messages"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
 
 // oneLine 压成单行（时间线是一行一条事件，换行会破坏结构）。
 func oneLine(s string) string {
@@ -625,7 +653,11 @@ func (a *Agent) renderedToolResultsOf(e *ContextEvent) []string {
 			skipped++
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s: %s", tr.Name, truncateStr(txt, toolResultTimelineChars)))
+		limit := toolResultTimelineChars
+		if isChatCorpusTool(tr.Name) {
+			limit = toolResultTimelineCharsChat
+		}
+		out = append(out, fmt.Sprintf("%s: %s", tr.Name, truncateStr(txt, limit)))
 	}
 	if skipped > 0 {
 		out = append(out, fmt.Sprintf("+%d more tool results", skipped))
@@ -642,4 +674,13 @@ func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI
 
 	msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
 	return msgs
+}
+
+// headRunes 取前 n 个 rune 用于日志（避免把整段回执打进 journal）。
+func headRunes(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
 }

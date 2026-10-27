@@ -383,6 +383,11 @@ func New(cfg AgentConfig) *Agent {
 	// 未配置时退化到 TF-IDF/fastText 稀疏检索，保持既有行为。
 	if cfg.MultimodalSpace != nil && cfg.MultimodalSpace.Loaded() {
 		rc.SetDenseSpace(cfg.MultimodalSpace)
+		// 场景召回的相关性判定用同一空间：块里存的就是这个空间的向量，
+		// 所以"相关"只是一次余弦比较（缺了它就只能按时间倒序灌旧事实）。
+		if cfg.Indexer != nil {
+			cfg.Indexer.SetDenseSpace(cfg.MultimodalSpace)
+		}
 		if cfg.DocStore != nil {
 			cfg.DocStore.SetDenseSpace(cfg.MultimodalSpace)
 			cfg.DocStore.BuildDenseIndex(cfg.MultimodalSpace)

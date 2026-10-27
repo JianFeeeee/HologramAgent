@@ -115,6 +115,17 @@ type Relation struct {
 	SentenceText  string    `json:"sentence_text,omitempty"` // 原句全文（走原句块回溯）
 	// SentenceBlockID 是原句块的 ID（blk_src_<hash>），供场景引用与去重。
 	SentenceBlockID string `json:"sentence_block_id,omitempty"`
+	// SourceVec / TargetVec / SentenceVec 是端点块与原句块的**稠密向量**。
+	//
+	// 为什么带在关系上：场景召回是"每轮都要跑的常驻注入"，排序必须与本轮
+	// query 相关（块里本来就存着向量，相关性就是一次余弦比较）。
+	// 此前 RecallByScene 只按「场景权重 → 时间倒序」排，老图库里的历史高频
+	// 三元组常年霸榜，每轮灌同一批无关内容（实测 90% token 是这些）。
+	//
+	// 不落 JSON / 不入库：它们只用于本次比较，块向量本身仍在 memory_blocks 里。
+	SourceVec   []float64 `json:"-"`
+	TargetVec   []float64 `json:"-"`
+	SentenceVec []float64 `json:"-"`
 }
 
 type Triple struct {

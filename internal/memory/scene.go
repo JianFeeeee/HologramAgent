@@ -391,6 +391,7 @@ func (g *GraphDB) RecallByScene(scenes []string, limit int) (*SceneRecall, error
 	relQuery := `SELECT e.id, sb.id, tb.id, sb.text_content, tb.text_content,
 			e.edge_type, e.confidence, COALESCE(e.status, ''), e.session_id,
 			e.turn_id, e.created_at, COALESCE(srt.text, ''),
+			COALESCE(sb.vector, ''), COALESCE(tb.vector, ''), COALESCE(srt.vector, ''),
 			MAX(sr.weight) AS w
 		FROM scene_refs sr
 		JOIN scenes s ON sr.scene_id = s.id
@@ -398,7 +399,7 @@ func (g *GraphDB) RecallByScene(scenes []string, limit int) (*SceneRecall, error
 		JOIN memory_blocks sb ON sb.id = e.source_id
 		JOIN memory_blocks tb ON tb.id = e.target_id
 		LEFT JOIN (
-			SELECT c.target_id AS edge_id, MIN(b.text_content) AS text
+			SELECT c.target_id AS edge_id, MIN(b.text_content) AS text, MIN(b.vector) AS vector
 			FROM memory_block_edges c
 			JOIN memory_blocks b ON b.id = c.source_id
 			WHERE c.edge_type = 'contains' AND c.target_kind = 'edge'
@@ -420,12 +421,24 @@ func (g *GraphDB) RecallByScene(scenes []string, limit int) (*SceneRecall, error
 		//   relations 行号，块体系下无意义）。
 		// ★ DateBucket / SentenceID 不再有来源：旧表退场后边表不存这两列，
 		//   日期可从 created_at 推，原句 ID 由 contains 边回溯得到。
+		var srcVecRaw, tgtVecRaw, senVecRaw string
 		if err := rows.Scan(&rel.ID, &rel.SourceBlockID, &rel.TargetBlockID,
 			&rel.SourceName, &rel.TargetName,
 			&rel.RelationType, &rel.Confidence, &rel.Status, &rel.SessionID,
-			&rel.TurnID, &rel.CreatedAt, &rel.SentenceText, &w); err != nil {
+			&rel.TurnID, &rel.CreatedAt, &rel.SentenceText,
+			&srcVecRaw, &tgtVecRaw, &senVecRaw, &w); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		// 块向量（算场景相关度用）：解码失败就当没有，不影响召回本身。
+		if v, err := decodeVector(srcVecRaw); err == nil {
+			rel.SourceVec = v
+		}
+		if v, err := decodeVector(tgtVecRaw); err == nil {
+			rel.TargetVec = v
+		}
+		if v, err := decodeVector(senVecRaw); err == nil {
+			rel.SentenceVec = v
 		}
 		// 旧表退场后边表不存 date_bucket，从 created_at 推日期桶。
 		if rel.DateBucket == "" && !rel.CreatedAt.IsZero() {

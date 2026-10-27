@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,21 @@ type Indexer struct {
 	// 起来"就是这么来的。这里记下上次同步的实体数，召回前发现数量变了就补一次。
 	lastSyncCount int
 	lastSyncAt    time.Time
+
+	// dense 是多模态稠密空间（可选）。场景召回的相关性用它算余弦 ——
+	// 块里本来就有向量（memory_blocks.vector），所以"相关"就是一次向量比较，
+	// 不需要另建索引，也不该退化成字符串匹配。
+	dense vector.MultimodalEmbedder
+}
+
+// SetDenseSpace 注入稠密多模态空间（由内核装配时传入）。
+func (idx *Indexer) SetDenseSpace(ds vector.MultimodalEmbedder) {
+	if idx == nil {
+		return
+	}
+	idx.mu.Lock()
+	idx.dense = ds
+	idx.mu.Unlock()
 }
 
 // retrainInterval 是增量重训的最小间隔。
@@ -253,8 +269,18 @@ func (idx *Indexer) BuildContextInScene(userInput string, scenes []string) *Inje
 		Relations: nil,
 	}
 	if sceneRecall != nil {
+		// ★ 场景召回按**块向量余弦**排序并设下限（2026-10-27 现场）。
+		//
+		// RecallByScene 的排序是「场景权重 → 时间倒序」，与本轮 query 无关：
+		// 老图库里 `rt 标签 / rtchild / inputch` 这类历史事实常年霸榜，
+		// 每轮都灌同一批无关三元组（实测 1833 字符里九成是它们），
+		// 真正刚聊的内容一句没有 —— 模型"忘事"就是这样产生的。
+		//
+		// 块里本就存着向量，所以相关性只是一次余弦比较（不建额外索引）。
+		// 措辞零字面重合但语义相近的场景记忆仍然会被召回（既有判据要求）。
+		ranked := idx.rankSceneRelationsByVector(input, sceneRecall.Relations)
 		ctx.Scenes = sceneRecall.Scenes
-		ctx.SceneRelations = sceneRecall.Relations
+		ctx.SceneRelations = ranked
 		ctx.SceneBlocks = sceneRecall.Blocks
 	}
 
@@ -406,6 +432,82 @@ func (idx *Indexer) FormatContext(ctx *InjectedContext) string {
 
 	b.WriteString(" | 需更多细节请用 memory_recall 查询")
 	return b.String()
+}
+
+// sceneRelevanceFloor 是场景关系的余弦下限。
+//
+// 0.20 的依据：多模态空间下同一段对话内的话题相关短语通常 ≥0.35，
+// 而跨主题（rt 设计 vs 平板闲聊）实测多在 0.1 以下；0.20 夹在中间，
+// 既不会把"换了个说法"的真记忆挡在门外，也不会让长期霸榜的旧事实混进来。
+const sceneRelevanceFloor = 0.20
+
+// rankSceneRelationsByVector 用 query 向量给场景关系打分并截断。
+//
+// 无稠密空间（未启用多模态）时退回原顺序：此时没有可用向量，
+// 宁可少一层排序，也不能用字符串匹配冒充语义（既有判据明确要求
+// 「措辞与记忆零字面重合时场景路必须兜住」）。
+func (idx *Indexer) rankSceneRelationsByVector(query string, rels []Relation) []Relation {
+	if len(rels) == 0 {
+		return nil
+	}
+	idx.mu.RLock()
+	ds := idx.dense
+	idx.mu.RUnlock()
+	if ds == nil || !ds.Loaded() || strings.TrimSpace(query) == "" {
+		if len(rels) > maxSceneRecallRelations {
+			return rels[:maxSceneRecallRelations]
+		}
+		return rels
+	}
+	qv, err := ds.VectorizeDense(query)
+	if err != nil || len(qv) == 0 {
+		if len(rels) > maxSceneRecallRelations {
+			return rels[:maxSceneRecallRelations]
+		}
+		return rels
+	}
+	type scored struct {
+		rel Relation
+		sim float64
+	}
+	out := make([]scored, 0, len(rels))
+	for _, rel := range rels {
+		best := 0.0
+		for _, v := range [][]float64{rel.SentenceVec, rel.SourceVec, rel.TargetVec} {
+			if len(v) != len(qv) {
+				continue
+			}
+			if s := denseCosine(qv, v); s > best {
+				best = s
+			}
+		}
+		if best >= sceneRelevanceFloor {
+			out = append(out, scored{rel: rel, sim: best})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].sim > out[j].sim })
+	if len(out) > maxSceneRecallRelations {
+		out = out[:maxSceneRecallRelations]
+	}
+	kept := make([]Relation, 0, len(out))
+	for _, e := range out {
+		kept = append(kept, e.rel)
+	}
+	return kept
+}
+
+// denseCosine 计算两个等长向量的余弦相似度（零向量返回 0）。
+func denseCosine(a, b []float64) float64 {
+	var dot, na, nb float64
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 // maxSceneRecallRelations 是单次场景召回的关系上限。
