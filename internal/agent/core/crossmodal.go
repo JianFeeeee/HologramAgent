@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -286,6 +287,13 @@ func (a *Agent) crossModalMarkdown(hits []CrossModalHit) string {
 			if head := docHeadlineForPrompt(h.Doc); head != "" {
 				parts = append(parts, head)
 			}
+			// ★ 摘要行常常只是"我回复过什么"，不含被谈论的东西本身
+			//   （实测：召回到「已回复老大：原来是「魔芋爽」这个谐音梗」——
+			//   模型读得懂"我回复过"，但不知道梗是什么，只好答不知道）。
+			//   所以补一段**正文/工具回执**摘录：真实内容就在那里。
+			if body := docBodyExcerptForPrompt(h.Doc, 80); body != "" {
+				parts = append(parts, "正文:"+body)
+			}
 		}
 		// 媒体只报类型与数量，不编描述（描述式索引已在 v1.2.0 拆除）
 		if h.Media != nil {
@@ -329,6 +337,107 @@ func firstRealSource(events []document.DocEvent) string {
 // docHeadlineForPrompt 取文档正文的第一句，作为注入行里的内容提示。
 //
 // 不截断成"摘要"：这里只是一行提示，完整内容在 L2 里、需要时用 coldcontext_query 取。
+// docBodyExcerptForPrompt 取文档里**真实内容**的首段摘录。
+//
+// 顺序：事件正文（块里的文本）→ 工具回执 → 文档 Content。
+// 摘要行（"已回复…"）不在这里出现——它由 docHeadlineForPrompt 负责，
+// 两者互补：一个说"发生了什么"，一个说"内容是什么"。
+func docBodyExcerptForPrompt(d *document.Doc, n int) string {
+	if d == nil {
+		return ""
+	}
+	// 最多取两段：事件正文（可能是用户原话）与工具回执（可能是被谈到的内容）。
+	// 只取一段时，遇到"已回复…"这类复述就会把真实内容挤掉——实测正是这样：
+	// 模型看到"原来是这个谐音梗"，却看不到梗是什么。
+	var cands []string
+	for _, ev := range d.Events {
+		for _, b := range ev.Blocks {
+			if b.Modality != "" && b.Modality != "text" {
+				continue
+			}
+			if line := firstMeaningfulLineForPrompt(b.Text); line != "" {
+				cands = append(cands, line)
+			}
+		}
+		for _, tr := range ev.ToolResults {
+			if line := toolResultExcerptForPrompt(tr.Output); line != "" {
+				cands = append(cands, line)
+			}
+		}
+		if len(cands) >= 2 {
+			break
+		}
+	}
+	if len(cands) == 0 {
+		cands = append(cands, firstMeaningfulLineForPrompt(d.Content))
+	}
+	var uniq []string
+	for _, c := range cands {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		dup := false
+		for _, u := range uniq {
+			if u == c {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			uniq = append(uniq, c)
+		}
+		if len(uniq) >= 2 {
+			break
+		}
+	}
+	return truncateRunesForPrompt(strings.Join(uniq, " ｜ "), n)
+}
+
+// toolResultExcerptForPrompt 把工具回执压成一行可读正文。
+//
+// qq_get_message 这类工具返回 JSON（{"content":"因为魔芋爽"}），直接截断会
+// 让模型看到一堆花括号；这里优先取其中的字符串值，取不到才退回原文。
+func toolResultExcerptForPrompt(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "{") || strings.HasPrefix(raw, "[") {
+		var v interface{}
+		if err := json.Unmarshal([]byte(raw), &v); err == nil {
+			if vals := collectJSONStrings(v, 0); len(vals) > 0 {
+				return strings.Join(vals, " ")
+			}
+		}
+	}
+	return firstMeaningfulLineForPrompt(raw)
+}
+
+// collectJSONStrings 收集 JSON 里的字符串值（跳过键名与内部字段），深度受限。
+func collectJSONStrings(v interface{}, depth int) []string {
+	if depth > 3 {
+		return nil
+	}
+	var out []string
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for _, k := range []string{"content", "text", "message", "msg", "summary", "data", "result"} {
+			if sub, ok := t[k]; ok {
+				out = append(out, collectJSONStrings(sub, depth+1)...)
+			}
+		}
+	case []interface{}:
+		for _, sub := range t {
+			out = append(out, collectJSONStrings(sub, depth+1)...)
+		}
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func docHeadlineForPrompt(d *document.Doc) string {
 	if d == nil {
 		return ""

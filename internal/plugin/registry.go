@@ -778,7 +778,7 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		Tracker:    deps.trk,
 		Config:     sdk.NewConfig(deps.cfg),
 		Tool:       sdk.NewTool(deps.stageHost, deps.iom),
-		Indexer:    sdk.NewIndexer(deps.idx),
+		Indexer:    sdk.NewIndexerWithDocs(deps.idx, deps.docStore),
 	})
 }
 

@@ -4166,8 +4166,39 @@ async function queryMemoryContext() {
 		var ctx = data?.context || __("无上下文", "No context");
 		var summary = data?.summary || "";
 		var entities = data?.entities || [];
+		var docs = data?.docs || [];
 		var tk = data?.token_estimate || 0;
 		var html = '<div style="font-size:11px">';
+		// ★ 召回是 L2+L3 **双路**（2026-10-27）：这里必须两路都显示。
+		// 此前只显示 L3 图记忆，而 L3 有 72h 冷化延迟 —— 冷化没跑起来时
+		// 面板会一直显示"无上下文"，让人以为召回彻底坏了（实际 L2 一直有命中）。
+		if (docs.length) {
+			html +=
+				'<div class="kv-row" style="align-items:flex-start"><span class="key">' +
+				__("L2 冷上下文", "L2 cold context") +
+				'</span><span class="val">' +
+				docs
+					.map((d) => {
+						var when = String(d.when || "").slice(5, 16);
+						var score = Number(d.score || 0).toFixed(2);
+						return (
+							'<div style="margin-bottom:4px">' +
+							'<span style="opacity:.7">' + escHtml(when) + " · " + score + "</span> " +
+							escHtml(d.text || "") +
+							"</div>"
+						);
+					})
+					.join("") +
+				"</span></div>";
+		}
+		if (entities.length) {
+			html +=
+				'<div class="kv-row"><span class="key">' +
+				__("L3 图记忆实体", "L3 graph entities") +
+				'</span><span class="val">' +
+				entities.length +
+				"</span></div>";
+		}
 		if (summary)
 			html +=
 				'<div class="kv-row"><span class="key">' +
