@@ -528,26 +528,6 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	return f, terminalNone
 }
 
-// isInjectionBoilerplate 判断一段中断文本是否只是**取件指令样板**。
-//
-// 为什么不是"所有中断都清空"：内核中断（如 overflow 抢占、用户 L4 打断）的
-// 正文本身是有意义的内容，测试 D1=B 明确要求「中断任务的上下文要加载回被抢占
-// 任务之上」。真正污染记忆的是插件注入的那句样板：
-//
-//	来自「X」的私聊消息(message_id=…) 先用 qq_get_message 取正文；若取不到…
-//
-// 它每轮一字不差，存进 L1 只会把真实内容挤掉（实测导致指代消解失效）。
-func isInjectionBoilerplate(text string) bool {
-	t := strings.TrimSpace(text)
-	if t == "" {
-		return false
-	}
-	if strings.HasPrefix(t, "来自「") && strings.Contains(t, "message_id=") {
-		return true
-	}
-	return strings.Contains(t, "取正文") && strings.Contains(t, "先用")
-}
-
 // finishInputTask 执行 processInput 的后半段（日志、上下文提交、回执、记忆候选）。
 //
 // 只在任务真正结束时调用一次——这正是不变量 I5（每任务恰一次终态）的落点。
@@ -578,23 +558,10 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 
 	// 本轮捕获的媒体一起挂到这条事件上：用户上传的、插件注入的，以及模型调
 	// multimodal_see_picture / see_video 时经 SetToolBlocks 注入的。
-	// ★ 中断**消息本身**不进记忆（2026-10-27 用户口径，颗粒度=单条消息，不是单轮）：
-	//   中断的 CleanInput 是"来自「X」的私聊消息(message_id=…)先用 qq_get_message 取正文…"
-	//   这类触发文本 —— 它是给模型的指令，不是用户说的话。存进 L1 的后果：
-	//   a) 记忆里堆满同一句样板（每轮一字不差），时间线里全是它；
-	//   b) 真正的对话内容反而只能靠工具回执片段体现 → 指代消解失效
-	//      （实测：用户回"233719"，模型问"那串数字什么意思"）。
-	//
-	//   所以只清掉**这条消息**：Input 置空，而本轮的工具回执（qq_get_message 正文等，
-	//   它们各自声明 NoMemory=false）与 agent 的回复照常入库 —— 内容该记的照记。
-	input := f.CleanInput
-	if f.IsInterrupt && isInjectionBoilerplate(input) {
-		input = ""
-	}
 	turnEvt := ContextEvent{
 		Timestamp:   time.Now(),
 		Source:      "agent",
-		Input:       input,
+		Input:       f.CleanInput,
 		Response:    f.Response,
 		ToolsUsed:   f.ToolsUsed,
 		ToolResults: f.ToolResults,
