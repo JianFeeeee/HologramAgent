@@ -1353,6 +1353,24 @@ func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers [
 				fbProvider.Name(), pi, len(providers)-1)
 		}
 
+		// ★ 每个 provider 必须用**自己的** model 发请求（2026-10-27 真机）。
+		//
+		// 现场：默认源 deepseek(model=deepseek-flash) 402 → 回退 llmsproxy(model=AUTO)
+		// 时复用了同一个 req ⇒ llmsproxy 收到 model="deepseek-flash" ⇒ 403
+		// model_not_allowed ⇒ 两个源全挂，且 llmsproxy 被整源标记不可用(冷却)
+		// ⇒ 视觉回退跳过它 ⇒ 用户看到"配置了视觉却说没有视觉"。
+		//
+		// model 是 **provider 的属性**，不是请求的共享字段。
+		if rp, ok := fbProvider.(agentAPI.RoutableProvider); ok {
+			if m := rp.Model(); m != "" && m != req.Model {
+				if pi > 0 {
+					log.Printf("[agent] fallback provider %q uses its own model %q (was %q)",
+						fbProvider.Name(), m, req.Model)
+				}
+				req.Model = m
+			}
+		}
+
 		// 同源瞬时错误重试：网关瞬断（502/503/504/429/网络抖动）通常秒级恢复，
 		// 直接跳下一个 provider（或直接报错）会丢掉本可成功的请求。
 		// 凭证错误（401/403）与用户中断不重试。
@@ -1415,8 +1433,17 @@ func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers [
 		}
 		var pe *agentAPI.ProviderError
 		if errors.As(llmErr, &pe) && (pe.StatusCode == 401 || pe.StatusCode == 403) {
-			a.providerManager.ReportStatus(fbProvider.Name(), pe.StatusCode)
-			log.Printf("[agent] provider %q marked unavailable (HTTP %d)", fbProvider.Name(), pe.StatusCode)
+			// 403 分两类：凭证/权限问题 ⇒ 整源不可用；**模型名不被该 key 允许**
+			// （model_not_allowed）⇒ 只是这个 model 不行，provider 仍可用于
+			// 其他 model，也包括视觉回退。混为一谈会让一次模型名不匹配把整源判死。
+			if isModelNotAllowed(llmErr) {
+				log.Printf("[agent] provider %q rejected model %q (HTTP %d) — "+
+					"model-level issue, provider stays available: %v",
+					fbProvider.Name(), req.Model, pe.StatusCode, llmErr)
+			} else {
+				a.providerManager.ReportStatus(fbProvider.Name(), pe.StatusCode)
+				log.Printf("[agent] provider %q marked unavailable (HTTP %d)", fbProvider.Name(), pe.StatusCode)
+			}
 		} else {
 			a.providerManager.MarkUnavailable(fbProvider.Name())
 		}
@@ -1484,4 +1511,27 @@ func stageHint(ctx *sdk.StageContext, key string) string {
 	}
 	v, _ := ctx.Extra[key].(string)
 	return strings.TrimSpace(v)
+}
+
+// isModelNotAllowed 判断错误是不是"这个模型名不被该 key 允许"。
+//
+// 与"凭证失效"处置相反：前者只否掉一个 model（provider 仍可服务其他 model，
+// 也仍可用于视觉回退），后者才该把整源标记不可用。
+func isModelNotAllowed(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, m := range []string{
+		"model_not_allowed",
+		"is not allowed for this key",
+		"model not allowed",
+		"model_not_found",
+		"does not exist or you do not have access",
+	} {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
 }

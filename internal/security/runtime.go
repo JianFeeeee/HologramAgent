@@ -57,6 +57,12 @@ type Runtime struct {
 	profiles *profileRegistry
 	// active 记录**当前活跃档位**（由 inputch 输入的 SecurityProfile 选择）。
 	active *profileActivator
+	// eventPolicy 是**事件总线授权表**（谁能发/订阅什么事件）。
+	//
+	// ★ 它与凭据闸门无关：`core.security.enabled=false` 关掉的是凭据替换，
+	// 而"插件不许发 raw_input"这类授权始终生效 —— 所以 Disabled Runtime
+	// 同样持有默认策略（见 NewDisabledRuntime）。
+	eventPolicy EventPolicy
 	// principals 是**按主体**的能力策略（插件声明，内核执行）。
 	//
 	// ★ 它替代的正是"插件自己在 stage 里拦工具"那种实现
@@ -71,13 +77,14 @@ func NewRuntime(store *Store) *Runtime {
 		return NewDisabledRuntime()
 	}
 	return &Runtime{
-		gate:       NewGate(store),
-		enabled:    true,
-		policy:     DefaultPolicy(),
-		scopes:     NewScopeRegistry(),
-		principals: newPrincipalRegistry(),
-		profiles:   newProfileRegistry(),
-		active:     &profileActivator{},
+		gate:        NewGate(store),
+		enabled:     true,
+		policy:      DefaultPolicy(),
+		eventPolicy: DefaultEventPolicy(),
+		scopes:      NewScopeRegistry(),
+		principals:  newPrincipalRegistry(),
+		profiles:    newProfileRegistry(),
+		active:      &profileActivator{},
 	}
 }
 
@@ -86,12 +93,13 @@ func NewDisabledRuntime() *Runtime {
 	// 即使禁用也装一个策略表：否则"关闭凭据防火墙"会连带让工具策略失效，
 	// 而这是两件不同的事（用户可以只要策略、不要凭据替换）。
 	return &Runtime{
-		enabled:    false,
-		policy:     DefaultPolicy(),
-		scopes:     NewScopeRegistry(),
-		principals: newPrincipalRegistry(),
-		profiles:   newProfileRegistry(),
-		active:     &profileActivator{},
+		enabled:     false,
+		policy:      DefaultPolicy(),
+		eventPolicy: DefaultEventPolicy(),
+		scopes:      NewScopeRegistry(),
+		principals:  newPrincipalRegistry(),
+		profiles:    newProfileRegistry(),
+		active:      &profileActivator{},
 	}
 }
 

@@ -127,8 +127,9 @@ func TestEventsPayloadIsScrubbed(t *testing.T) {
 // ⑥ 键数上限：事件是通知，不是数据通道。
 func TestEventsPayloadKeyLimit(t *testing.T) {
 	e, _ := newTestEvents(t, "big")
+	limit := security.DefaultEventPolicy().MaxPayloadKeys
 	p := map[string]interface{}{}
-	for i := 0; i < eventPayloadMaxKeys+1; i++ {
+	for i := 0; i < limit+1; i++ {
 		p[string(rune('a'+i%26))+strings.Repeat("x", i)] = i
 	}
 	if err := e.Publish("skill_detected", p); err == nil {

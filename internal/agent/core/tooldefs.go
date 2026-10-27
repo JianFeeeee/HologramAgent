@@ -37,6 +37,25 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 		s += "[Related media]\n" + mc
 	}
 
+	// ★ L2（冷上下文）相似度预填充：**必须在这里做**，不能只在上层 buildSystemPrompt。
+	//
+	// 设计里 prune 与 recall 是一对：工具声明 ContextPolicy=prune + RecallPolicy=auto
+	// 时，工具输出既触发裁剪也触发预填充（memoryPass → recallTextFor → 本函数）。
+	// 而此前 L2 那一路只写在 buildSystemPrompt 里、且 query 是**注入文本**
+	// （QQ 是"来自「X」的私聊消息(message_id=…)，先用 qq_get_message 取正文"），
+	// 跟用户真实说的话毫不相似 ⇒ 冷上下文预填充等于没有
+	//（2026-10-27 现场：头天晚上讲的冷笑话第二天早上完全唤不回）。
+	//
+	// 放进本函数后：输入路用输入文本、工具路用工具正文，两条路都能召回 L2 摘要。
+	if a.docStore != nil {
+		if md := a.crossModalMarkdown(a.retrieveCrossModal(input, 3, a.fusionCfg)); md != "" {
+			if s != "" {
+				s += "\n"
+			}
+			s += md
+		}
+	}
+
 	if maxTokens > 0 {
 		s = TruncateByTokens(s, maxTokens)
 	}
@@ -200,15 +219,8 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
 	prompt = appendPromptBlock(prompt, "[Memory maintenance] To tidy or clear memory, call the memory_* tools - a described plan is not the work. Report the result in one sentence.")
 
-	// 跨模态召回：文本路（fastText/TF-IDF 文档层，媒体描述文本已随记忆进入）
-	// + 视觉路（多模态文本编码 → 媒体库坐标）两路归一化融合。
-	// 未配置多模态空间时视觉路为空，等价旧的 docStore.Query。
-	if a.docStore != nil {
-		hits := a.retrieveCrossModal(userInput, 3, a.fusionCfg)
-		if md := a.crossModalMarkdown(hits); md != "" {
-			prompt = appendPromptBlock(prompt, md)
-		}
-	}
+	// L2（冷上下文）预填充已并入 buildMemoryContext（输入路/工具路共用一次），
+	// 这里不再重复注入，否则同一批摘要会出现两遍。
 
 	prompt = appendPromptBlock(prompt, "[Interrupt] During long tasks a system message prefixed [Interrupt] may arrive (new message, terminal output, timer). It is not user speech, but handle it: pause, respond, or consciously continue.")
 

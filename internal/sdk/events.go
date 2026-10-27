@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
@@ -40,76 +39,75 @@ const (
 
 // ───────────────────── 受限事件总线（插件可见） ─────────────────────
 //
-// 边界由三件事决定，缺一不可：
-//  1. 类型白名单 + 插件自己的命名空间（`plugin.<name>.*`）
-//  2. 载荷出向经 security 审查（明文凭据换成 @{别名}）+ 键数上限
-//  3. 订阅只开只读事件（tools_ready / security_ready / device_ready）
+// **本层只做适配，不做策略**（用户 2026-10-27 的指正）：
 //
-// 为什么不直接把 *events.Bus 交给插件：Bus.Publish 能发 EventAll 通配类型、
-// 能伪造任意 Source、载荷不做任何审查。那不是"多给一个便利"，而是把内核
-// 内部同步面变成没有边界的公共写口。
-
-const (
-	// eventPayloadMaxKeys 限制载荷顶层键数，防止"把一个对象当事件"塞进来。
-	// 事件是**通知**，不是数据通道：大块数据该走插件自己的通道或工具返回值。
-	eventPayloadMaxKeys = 64
-)
+//	internal/security    谁可以发/订阅什么事件（EventPolicy）+ 载荷过闸
+//	internal/sdk（本文件）  查策略 → 发/订 → 过闸 → 落到 *events.Bus
+//	sdk（公开）            只给接口与事件名
+//
+// 为什么策略必须住在 security：事件的边界就是**授权**。能发 skill_detected
+// 等于能驱动 skillmgr 接管；能发 update_request 等于能触发内核升级流程。
+// 这类判断与工具黑白名单是同一类，必须与它们同处一处，否则策略会有两份真相，
+// 换个实现就换口径。
 
 type eventsAPI struct {
 	pluginName string
 	bus        *events.Bus
-	sec        *security.Runtime // 可 nil（安全模块未装配时零成本跳过）
+	sec        *security.Runtime // 可 nil：未装配时按**默认策略**（最小集合）判定
 	unsubs     []func()
+	// unavailable 非空表示宿主没接总线：Publish/Subscribe 一律返回该原因。
+	unavailable string
 }
 
-// newEventsAPI 构造插件的受限事件面（bus 为 nil 时返回 nil，调用方按 nil 处理）。
+// newEventsAPI 构造插件的受限事件面。
+//
+// ★ bus 为 nil 时返回**不可用实现**而不是 nil：
+// 返回 nil 会让 `s.Events().Publish(...)` 在未接总线的宿主里直接 panic
+// （实测：internal/plugins 的集成测试在 loadOne 阶段崩在 clawhubadapter 上）。
+// 插件不该为"宿主没接总线"写 nil 判断——那是一个该报错、而不是该崩溃的状态。
 func newEventsAPI(pluginName string, bus *events.Bus) pubsdk.EventsAPI {
+	api := &eventsAPI{pluginName: pluginName, bus: bus, sec: security.RuntimeGlobal()}
 	if bus == nil {
-		return nil
+		api.unavailable = "event bus is not wired in this host"
 	}
-	return &eventsAPI{pluginName: pluginName, bus: bus, sec: security.RuntimeGlobal()}
+	return api
 }
 
 func (e *eventsAPI) AllowedPublish() []string {
-	out := pubsdk.PluginPublishableEvents()
+	pol := e.EventPolicy()
+	out := make([]string, len(pol.Publishable))
+	copy(out, pol.Publishable)
 	return append(out, "plugin."+e.pluginName+".*")
 }
 
-func (e *eventsAPI) AllowedSubscribe() []string { return pubsdk.PluginSubscribableEvents() }
-
-// publishAllowed：白名单精确匹配，或本插件命名空间前缀（plugin.<name>.<后缀>）。
-func (e *eventsAPI) publishAllowed(t string) bool {
-	for _, a := range pubsdk.PluginPublishableEvents() {
-		if t == a {
-			return true
-		}
-	}
-	prefix := "plugin." + e.pluginName + "."
-	return strings.HasPrefix(t, prefix) && len(t) > len(prefix)
+func (e *eventsAPI) AllowedSubscribe() []string {
+	pol := e.EventPolicy()
+	out := make([]string, len(pol.Subscribable))
+	copy(out, pol.Subscribable)
+	return out
 }
 
-func (e *eventsAPI) subscribeAllowed(t string) bool {
-	for _, a := range pubsdk.PluginSubscribableEvents() {
-		if t == a {
-			return true
-		}
+// EventPolicy 取当前策略：优先用 security Runtime 的（可热改），
+// Runtime 为 nil 时退回 security 包的默认策略（同样是最小集合，失败方向收紧）。
+func (e *eventsAPI) EventPolicy() security.EventPolicy {
+	if e.sec != nil {
+		return e.sec.EventPolicy()
 	}
-	return false
+	return security.DefaultEventPolicy()
 }
 
 func (e *eventsAPI) Publish(eventType string, payload map[string]interface{}) error {
-	if eventType == "" {
-		return fmt.Errorf("events: event type must not be empty")
+	if e.unavailable != "" {
+		return fmt.Errorf("events: %s", e.unavailable)
 	}
-	if !e.publishAllowed(eventType) {
-		return fmt.Errorf("events: plugin %q may not publish %q (allowed: %v)",
-			e.pluginName, eventType, e.AllowedPublish())
+	if d := e.checkPublish(eventType); !d.Allowed {
+		return fmt.Errorf("%s", d.Reason)
 	}
 	if payload == nil {
 		payload = map[string]interface{}{}
 	}
-	if len(payload) > eventPayloadMaxKeys {
-		return fmt.Errorf("events: payload has %d keys, limit is %d", len(payload), eventPayloadMaxKeys)
+	if d := e.checkSize(len(payload)); !d.Allowed {
+		return fmt.Errorf("%s", d.Reason)
 	}
 
 	// ★ 载荷出向审查：事件载荷会被其他订阅者（含 WebUI/状态面）读到，
@@ -120,6 +118,27 @@ func (e *eventsAPI) Publish(eventType string, payload map[string]interface{}) er
 		Payload: e.scrubOut(eventType, payload),
 	})
 	return nil
+}
+
+func (e *eventsAPI) checkPublish(t string) security.Decision {
+	if e.sec != nil {
+		return e.sec.CheckEventPublish(e.pluginName, t)
+	}
+	return security.DefaultEventPolicy().CheckEventPublish(e.pluginName, t)
+}
+
+func (e *eventsAPI) checkSubscribe(t string) security.Decision {
+	if e.sec != nil {
+		return e.sec.CheckEventSubscribe(e.pluginName, t)
+	}
+	return security.DefaultEventPolicy().CheckEventSubscribe(e.pluginName, t)
+}
+
+func (e *eventsAPI) checkSize(keys int) security.Decision {
+	if e.sec != nil {
+		return e.sec.CheckEventPayloadSize(keys)
+	}
+	return security.DefaultEventPolicy().CheckEventPayloadSize(keys)
 }
 
 // scrubOut 对载荷做一次出向脱敏（安全模块未装配时原样返回）。
@@ -145,9 +164,11 @@ func (e *eventsAPI) scrubOut(eventType string, payload map[string]interface{}) m
 }
 
 func (e *eventsAPI) Subscribe(eventType string, handler func(map[string]interface{})) (func(), error) {
-	if !e.subscribeAllowed(eventType) {
-		return nil, fmt.Errorf("events: plugin %q may not subscribe to %q (allowed: %v)",
-			e.pluginName, eventType, e.AllowedSubscribe())
+	if e.unavailable != "" {
+		return nil, fmt.Errorf("events: %s", e.unavailable)
+	}
+	if d := e.checkSubscribe(eventType); !d.Allowed {
+		return nil, fmt.Errorf("%s", d.Reason)
 	}
 	if handler == nil {
 		return nil, fmt.Errorf("events: handler must not be nil")
