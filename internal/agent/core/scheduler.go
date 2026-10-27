@@ -328,10 +328,16 @@ func (s *scheduler) registerInterrupt(t *Task) bool {
 		s.enqueueInterruptLocked(t)
 		// 入队而不是抢占：这也是要能看见的（否则「中断明明到了却没生效」无从解释）。
 		// 两种成因分开写：临界区 vs 级别不够/冷却期。
+		// 成因必须分开写，否则「中断明明到了却没生效」无从解释。
+		// 特别地：**空闲时没有受害者可抢**，不该报 "level insufficient"——
+		// 那会让运维以为级别配错了（实测日志里满屏 "vs <nil> (?) — level insufficient"）。
 		reason := "level insufficient"
-		if critical {
+		switch {
+		case running == nil:
+			reason = "idle (no running task; queued for next pick)"
+		case critical:
 			reason = "running in critical section"
-		} else if canPreempt(t, running) && running != nil && !running.LastPreemptAt.IsZero() && time.Since(running.LastPreemptAt) < preemptCooldown {
+		case canPreempt(t, running) && !running.LastPreemptAt.IsZero() && time.Since(running.LastPreemptAt) < preemptCooldown:
 			reason = "preempt cooldown"
 		}
 		log.Printf("[agent] interrupt queued: %s from %s (L%d) vs %s (%s) — %s; queue=%d",
