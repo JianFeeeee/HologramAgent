@@ -48,7 +48,7 @@ import (
 )
 
 // UnitName 是内核的服务单元名。
-const UnitName = "homeagent.service"
+const UnitName = "hologramagent.service"
 
 // State 描述一次一致性检查的结果。
 type State struct {

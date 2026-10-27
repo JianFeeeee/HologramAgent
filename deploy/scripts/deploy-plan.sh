@@ -17,7 +17,7 @@ DATA=${HA_DATA}
 BAK=/var/tmp/homed-backup-$(date +%Y%m%d-%H%M%S)
 NEW=${NEW_BIN:-/tmp/homed-ort}
 ADAPTERS=$DATA/adapters
-SVC=homeagent.service
+SVC=hologramagent.service
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
