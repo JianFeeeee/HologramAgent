@@ -31,7 +31,7 @@ HologramAgent 采用内核 + 插件双层架构：
 
 ### 内核
 - **LLM 引擎**：多 Provider 自动故障转移，8 个适配器（Anthropic/DeepSeek/Gemini/GitHub/Groq/Mistral/Ollama/OpenAI），自动降级
-- **记忆系统**：三层记忆架构——上下文记忆（Context）、文档记忆（Document）、图记忆（Graph，实体+关系），向量索引检索；文本记忆与社交记忆为辅助存储
+- **记忆系统**：三层记忆架构——上下文记忆（L1，热）、冷上下文（L2，cold context）、稳定记忆（L3，stablemem，实体+关系），向量索引检索；文本记忆与社交记忆为辅助存储
 - **上下文管理**：自动剪枝低相关性事件，蒸馏重要信息写入长期记忆，有效防止上下文膨胀和记忆衰减
 - **工具调度**：同质阶段并行执行，支持 pre_action/post_action/on_input 等生命周期钩子
 - **事件总线**：发布/订阅模式，插件间松耦合通信
