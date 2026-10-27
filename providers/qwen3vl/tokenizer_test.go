@@ -10,7 +10,7 @@ import (
 
 // modelDir 是本地千问模型目录。不存在则跳过——参考数据已固化在 testdata，
 // 但分词器本身要从 tokenizer.json 加载词表与 merges（11MB，不入库）。
-const modelDir = "/opt/models/qwen3-vl-embedding-2b"  // 环境变量 QWEN3VL_MODEL_DIR 可覆盖
+const modelDir = "/opt/models/qwen3-vl-embedding-2b" // 环境变量 QWEN3VL_MODEL_DIR 可覆盖
 
 type tokenizerRef struct {
 	VocabSize int `json:"vocab_size"`

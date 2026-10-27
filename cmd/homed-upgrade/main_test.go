@@ -113,5 +113,3 @@ func TestFirstSemverLike(t *testing.T) {
 		t.Errorf("日期不应被识别为版本号，实际 %q", got)
 	}
 }
-
-

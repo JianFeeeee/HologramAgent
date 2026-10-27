@@ -57,12 +57,12 @@ func benchTok(b *testing.B) *Tokenizer {
 
 // benchInputs 覆盖真实分布：短查询 / 中文长句 / 英文长文 / 混合 / 超长。
 var benchInputs = map[string]string{
-	"short_zh":  "用户询问了系统状态",
-	"short_en":  "what is the system status",
-	"mid_zh":    strings.Repeat("这是一段中文文本，用于测试分词器的吞吐。", 10),
-	"mid_en":    strings.Repeat("the quick brown fox jumps over the lazy dog. ", 10),
-	"mixed":     strings.Repeat("记忆 memory 检索 recall 上下文 context 注入 inject。", 8),
-	"long_zh":   strings.Repeat("长文本。", 200),
+	"short_zh":    "用户询问了系统状态",
+	"short_en":    "what is the system status",
+	"mid_zh":      strings.Repeat("这是一段中文文本，用于测试分词器的吞吐。", 10),
+	"mid_en":      strings.Repeat("the quick brown fox jumps over the lazy dog. ", 10),
+	"mixed":       strings.Repeat("记忆 memory 检索 recall 上下文 context 注入 inject。", 8),
+	"long_zh":     strings.Repeat("长文本。", 200),
 	"punct_heavy": strings.Repeat("你好，世界！这是一个测试。", 20),
 }
 
@@ -83,8 +83,9 @@ func BenchmarkTokenizerEncode(b *testing.B) {
 // BenchmarkTokenizerStages 分解流水线各段，用于定位真正的热点。
 //
 // ★ 判据：若 wordpiece 占比远高于其它段，则「O(n²) 字符串分配」是主因；
-//   若 basicTokenize 的分配占比高，则 cleanText/tokenizeChineseChars 的
-//   strings.Builder 往返是主因。两者处方完全不同，不能凭直觉断言。
+//
+//	若 basicTokenize 的分配占比高，则 cleanText/tokenizeChineseChars 的
+//	strings.Builder 往返是主因。两者处方完全不同，不能凭直觉断言。
 func BenchmarkTokenizerStages(b *testing.B) {
 	tok := benchTok(b)
 	for _, name := range []string{"mid_zh", "mid_en"} {

@@ -121,13 +121,13 @@ var diffInputs = []string{
 	"混合Mixed中英English文本text。",
 	"標點測試：；、（）《》「」",
 	"emoji 😀 与中文混合",
-	"combin\u0301ing",                    // 组合音标
-	"café naïve résumé",                  // 预组合
-	"a" + strings.Repeat("b", 300),       // 超长 ASCII 词（> maxInputCharsPerWord）
+	"combin\u0301ing",              // 组合音标
+	"café naïve résumé",            // 预组合
+	"a" + strings.Repeat("b", 300), // 超长 ASCII 词（> maxInputCharsPerWord）
 	"字" + strings.Repeat("长", 300),
 	"  多个   空格\t制表\n换行  ",
 	"$+=^`|~ 符号",
-	"＃全角＃ＡＢＣ",                            // 全角
+	"＃全角＃ＡＢＣ", // 全角
 	"1234567890",
 	"UPPER lower MiXeD",
 	"无标点长句onetwothreefour",
@@ -221,9 +221,10 @@ func TestTokenizerDiff_Encode(t *testing.T) {
 //
 // ★ 为什么必须测这个：字节层面扫描（新实现）与 rune 层面扫描（旧实现）在
 // **非法 UTF-8** 上的行为最容易不同 ——
-//   · []rune(s) 把非法字节变成 U+FFFD（每个坏字节一个）
-//   · utf8.DecodeRuneInString 返回 (RuneError, 1) 并前进 1 字节
-//   两者语义应当一致，但「应当」不是证据。
+//
+//	· []rune(s) 把非法字节变成 U+FFFD（每个坏字节一个）
+//	· utf8.DecodeRuneInString 返回 (RuneError, 1) 并前进 1 字节
+//	两者语义应当一致，但「应当」不是证据。
 func TestTokenizerDiff_RandomBytes(t *testing.T) {
 	rng := newSeededRand(20260926)
 	alphabet := []byte("ab ,.!?中文。，！？$+=^`|~\xff\xfe\x80\xc3\xe4\t\n")

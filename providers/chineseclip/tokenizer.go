@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"unicode/utf8"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -193,20 +193,23 @@ func stripAccents(text string) string {
 // 不是 Unicode P*，但它们也是标点（HF 用的是 ASCII 码点区间）。
 //
 // ★ 性能改动：把「累积 rune slice + 每次 string(cur)」换成
-//   一趟扫描，段以**字节区间**表示，最后一次 substring。
-//   pprof 实测（mid_zh）本函数占 alloc_objects 的 33.5%。
+//
+//	一趟扫描，段以**字节区间**表示，最后一次 substring。
+//	pprof 实测（mid_zh）本函数占 alloc_objects 的 33.5%。
 //
 // ★★ 但**非法 UTF-8 必须与旧实现逐值一致**：旧实现走 `[]rune(text)`，
-//   会把每个非法字节归一成 U+FFFD（`�`，3 字节）；而纯字节切片会
-//   **原样保留坏字节**。差分测试当场抓到这一分歧：
-//     "\xbc\xef=..." → 旧 ["��" ...]  vs 新 ["\xbc\xef" ...]
-//   这是**真实缺陷**而非测量噪声：下游把 piece 当分词输入、也可能进日志，
-//   保留坏字节会让它进入本不该到达的地方（且 hash/去重会与旧行为不一致）。
+//
+//	会把每个非法字节归一成 U+FFFD（`�`，3 字节）；而纯字节切片会
+//	**原样保留坏字节**。差分测试当场抓到这一分歧：
+//	  "\xbc\xef=..." → 旧 ["��" ...]  vs 新 ["\xbc\xef" ...]
+//	这是**真实缺陷**而非测量噪声：下游把 piece 当分词输入、也可能进日志，
+//	保留坏字节会让它进入本不该到达的地方（且 hash/去重会与旧行为不一致）。
 //
 // ⇒ 正确做法：**逐 rune 扫描**（utf8.DecodeRuneInString 对非法序列返回
-//   (RuneError, 1)，与 []rune 同语义），但**不预先把整串转成 rune slice**；
-//   对非 ASCII/非法字节的段，用 strings.Builder 写回 RuneError 的 UTF-8，
-//   从而与旧实现完全一致，同时省掉「整串 rune slice」那一块分配。
+//
+//	(RuneError, 1)，与 []rune 同语义），但**不预先把整串转成 rune slice**；
+//	对非 ASCII/非法字节的段，用 strings.Builder 写回 RuneError 的 UTF-8，
+//	从而与旧实现完全一致，同时省掉「整串 rune slice」那一块分配。
 func splitOnPunctuation(text string) []string {
 	var out []string
 	var b strings.Builder
@@ -247,15 +250,16 @@ func splitOnPunctuation(text string) []string {
 // wordpiece 贪心最长匹配；整词任一段无法匹配则该词整体退化为 [UNK]。
 //
 // ★ 先定字节边界，再取一次 substring（而非每个候选都 string(runes[a:b])）：
-//   pprof 实测（mid_zh）本函数占 alloc_objects 的 29.5%，是第二大分配源。
-//   根因是内层循环**每轮候选都构造一个 string**：
-//     piece := string(runes[start:end])   // "##"+piece 又是第二次分配
-//   而绝大多数候选都是未命中（要慢慢缩短 end），也就是**绝大多数
-//   分配都是浪费的**。
-//   改为：在原始字符串上按 rune 边界倒着推 end，只对**命中前最后一次**
-//   候选做一次 substring。于是每次匹配尝试从「2 次分配」降为 0 次，
-//   只有真正命中的那一段才分配。
-//   语义严格不变：仍然是最长前缀匹配、仍然对未命中整体退 [UNK]。
+//
+//	pprof 实测（mid_zh）本函数占 alloc_objects 的 29.5%，是第二大分配源。
+//	根因是内层循环**每轮候选都构造一个 string**：
+//	  piece := string(runes[start:end])   // "##"+piece 又是第二次分配
+//	而绝大多数候选都是未命中（要慢慢缩短 end），也就是**绝大多数
+//	分配都是浪费的**。
+//	改为：在原始字符串上按 rune 边界倒着推 end，只对**命中前最后一次**
+//	候选做一次 substring。于是每次匹配尝试从「2 次分配」降为 0 次，
+//	只有真正命中的那一段才分配。
+//	语义严格不变：仍然是最长前缀匹配、仍然对未命中整体退 [UNK]。
 func (t *Tokenizer) wordpiece(token string) []string {
 	// 先建立 rune 边界表（单次分配，比每轮 substring 便宜得多）
 	if utf8.RuneCountInString(token) > maxInputCharsPerWord {
