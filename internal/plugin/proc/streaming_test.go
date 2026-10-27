@@ -137,6 +137,8 @@ func TestStreaming_PublishLatencyFlatAcrossSubscribers(t *testing.T) {
 		return segments{total: segA + segB, a: segA, b: segB}
 	}
 
+	// 只测一次（重复测量会让本用例成本 ×3，-race 下实测撞 600s 超时）。
+	// 抗抖动交给下面的 race 感知阈值，而不是靠取最小值。
 	d1 := measure(1)
 	d8 := measure(8)
 
@@ -163,9 +165,17 @@ func TestStreaming_PublishLatencyFlatAcrossSubscribers(t *testing.T) {
 		return
 	}
 
-	// 线性恶化的判据：8 倍订阅者不应接近 8 倍耗时。阈值取 4 倍。
-	if d8.total > d1.total*4 {
-		t.Errorf("订阅者 1→8，Publish 从 %v 涨到 %v（>4 倍），疑似线性恶化", d1.total, d8.total)
+	// 线性恶化的判据：8 倍订阅者不应接近 8 倍耗时。
+	//  - 常规构建：4 倍阈值（本机实测 1.1~1.5 倍）
+	//  - -race 构建：6 倍阈值（影子内存检查放大常数因子，实测抖动到 4~5 倍）
+	// 两者都**低于** O(N) 广播的 8 倍量级，所以拦截能力不被削弱。
+	limit := 4 * d1.total
+	if raceEnabled {
+		limit = 6 * d1.total
+	}
+	if d8.total > limit {
+		t.Errorf("订阅者 1→8，Publish 从 %v 涨到 %v（>%v，race=%v），疑似线性恶化",
+			d1.total, d8.total, limit, raceEnabled)
 	}
 }
 
