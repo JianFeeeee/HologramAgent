@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -187,8 +188,18 @@ func (g *GraphDB) LoadCentroid(fingerprint string, queryDim int) (*Centroid, boo
 		delta = -delta
 	}
 	if delta > centroidRebuildRatio {
-		log.Printf("[graph] centroid invalidated: samples %d -> store %d (change %.0f%% > %.0f%%)",
+		// ★ 过期就**就地重建**（2026-10-27 现场）：此前这里只打印一行然后
+		//   `return nil, false, nil`，而重建入口只存在于三个 CLI 工具里。
+		//   结果：库里的带向量块数一旦越过 20% 线（实测 1391 → 1877），
+		//   该库就永远处于"过期"状态 —— 每轮召回都读同一个旧 samples、
+		//   每次都判过期、每次都不重建，中心化校正永久关闭，且日志每轮刷一行。
+		log.Printf("[graph] centroid stale: samples %d -> store %d (change %.0f%% > %.0f%%)",
 			vecCount, curVectored, delta*100, centroidRebuildRatio*100)
+		// ★ 重建必须**离开锁之后**做（2026-10-27 实测踩坑）：
+		//   本函数全程持有 g.mu.RLock，而 RebuildCentroid/SaveCentroid 需要写锁
+		//   ⇒ 就地重建必然自死锁（internal/memory 的测试 180s 超时，真机召回挂住）。
+		//   所以这里只登记一次异步重建，本轮照旧返回"不用校正"。
+		g.scheduleCentroidRebuild(fingerprint)
 		return nil, false, nil
 	}
 	if !meta.Anomalous {
@@ -297,6 +308,42 @@ func (g *GraphDB) RebuildCentroid(fingerprint string) (*Centroid, bool, error) {
 		return c, false, err
 	}
 	return c, c.Stats().Anomalous, nil
+}
+
+// scheduleCentroidRebuild 在后台重建中心（每 fingerprint 至少间隔
+// centroidRebuildMinInterval）。
+//
+// 为什么异步 + 节流：
+//   - 同步重建会与调用方的读锁冲突（见 LoadCentroid 里的注释）；
+//   - 中心过期是**常态**（块数持续增长），每次召回都重建会把召回拖到秒级。
+//
+// 召回失败方向是安全的：本轮拿不到中心 ⇒ 不做中心化校正，只是分数未去主轴。
+var (
+	centroidRebuildMu   sync.Mutex
+	centroidRebuiltAt   = map[string]time.Time{}
+	centroidRebuildWait = 10 * time.Minute
+)
+
+func (g *GraphDB) scheduleCentroidRebuild(fingerprint string) {
+	centroidRebuildMu.Lock()
+	if last, ok := centroidRebuiltAt[fingerprint]; ok && time.Since(last) < centroidRebuildWait {
+		centroidRebuildMu.Unlock()
+		return
+	}
+	centroidRebuiltAt[fingerprint] = time.Now()
+	centroidRebuildMu.Unlock()
+
+	go func(fp string) {
+		// 等本轮召回把读锁放掉（LoadCentroid 用 defer 解锁）。
+		time.Sleep(2 * time.Second)
+		c, anomalous, err := g.RebuildCentroid(fp)
+		if err != nil {
+			log.Printf("[graph] centroid rebuild failed, recall continues without centering: %v", err)
+			return
+		}
+		log.Printf("[graph] centroid rebuilt: dim=%d samples=%d anomalous=%v",
+			len(c.Mean()), c.Count, anomalous)
+	}(fingerprint)
 }
 
 // CentroidStatus 供运维/CLI 报告中心状态。
