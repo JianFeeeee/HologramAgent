@@ -1087,6 +1087,68 @@ type ProviderManager struct {
 	order     []string
 	default_  string
 	status    map[string]*providerStatus
+
+	// caps 是**配置层声明**的模态能力（源名 → vision/audio）。
+	//
+	// ★ 为什么不靠 `provider.(ModalProvider)` 断言（2026-10-27 用户指正）：
+	// 是否支持视觉是**配置事实**（core.llm.sources.<name>.vision=true），
+	// 而 adapter 只负责格式转换。用类型断言去"猜"能力，等于让能力声明
+	// 穿过 adapter 与安全装饰器两层——任何一层漏实现方法，能力就静默变成
+	// false（这就是反复出现的"配了视觉却说没有视觉"）。
+	// 断言只保留为**兜底**（配置未声明时的旧路径）。
+	caps map[string]ProviderCaps
+}
+
+// ProviderCaps 是一个 provider 的模态能力（来自配置）。
+type ProviderCaps struct {
+	Vision bool
+	Audio  bool
+}
+
+// SetCapabilities 由装配层（llm 模块）把配置里的能力声明登记进来。
+func (m *ProviderManager) SetCapabilities(name string, caps ProviderCaps) {
+	if m == nil || name == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.caps == nil {
+		m.caps = map[string]ProviderCaps{}
+	}
+	m.caps[name] = caps
+	m.mu.Unlock()
+}
+
+// Capabilities 返回某 provider 的配置层能力（ok=false 表示配置未声明）。
+func (m *ProviderManager) Capabilities(name string) (ProviderCaps, bool) {
+	if m == nil {
+		return ProviderCaps{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	c, ok := m.caps[name]
+	return c, ok
+}
+
+// SupportsVision / SupportsAudio 是**面向调用方**的能力查询：
+// 先看配置声明，配置没说才退回类型断言（兼容外部/测试 provider）。
+func (m *ProviderManager) SupportsVision(name string) bool {
+	if c, ok := m.Capabilities(name); ok {
+		return c.Vision
+	}
+	if p := m.Get(name); p != nil {
+		return ProviderSupportsVision(p)
+	}
+	return false
+}
+
+func (m *ProviderManager) SupportsAudio(name string) bool {
+	if c, ok := m.Capabilities(name); ok {
+		return c.Audio
+	}
+	if p := m.Get(name); p != nil {
+		return ProviderSupportsAudio(p)
+	}
+	return false
 }
 
 const (

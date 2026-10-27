@@ -250,7 +250,7 @@ func (a *Agent) transcribeBlocksForFallback(blocks []agentAPI.ContentBlock) moda
 // 为何逐模态判定而不是一刀切：一批块里可能图能看、音频不能听（很多视觉
 // 模型就是这样）。全部走回退会白白把本可直视的图降级成二手文字描述。
 func (a *Agent) prepareToolBlocks(blocks []agentAPI.ContentBlock) ([]agentAPI.ContentBlock, string) {
-	canVision := agentAPI.ProviderSupportsVision(a.provider)
+	canVision := a.providerCanVision()
 	canAudio := agentAPI.ProviderSupportsAudio(a.provider)
 
 	var native []agentAPI.ContentBlock
@@ -357,4 +357,20 @@ func (a *Agent) chatModalFallbackBatch(p agentAPI.Provider, kind string, urls, d
 		return "", fmt.Errorf("fallback source returned empty content (it may not support this modality either)")
 	}
 	return out, nil
+}
+
+// providerCanVision 判定**当前主 provider** 能否看图。
+//
+// 先查配置层声明的能力（ProviderManager.Capabilities），配置没说才退回
+// 类型断言。这样 adapter/装饰器漏实现方法也不会让能力凭空消失。
+func (a *Agent) providerCanVision() bool {
+	if a == nil || a.provider == nil {
+		return false
+	}
+	if a.providerManager != nil {
+		if _, ok := a.providerManager.Capabilities(a.provider.Name()); ok {
+			return a.providerManager.SupportsVision(a.provider.Name())
+		}
+	}
+	return agentAPI.ProviderSupportsVision(a.provider)
 }

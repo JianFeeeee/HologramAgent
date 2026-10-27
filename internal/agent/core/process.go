@@ -526,6 +526,11 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 		if e.Response != "" {
 			estTokens += 120
 		}
+		// 工具回执现在**会**进时间线（见下方渲染），预算必须如实计入，
+		// 否则"算出来的窗口装得下"与"实际发出去的更长"两笔账对不上。
+		for _, tr := range a.renderedToolResultsOf(e) {
+			estTokens += EstimateTokens(tr)
+		}
 		if remaining-estTokens < 0 && include > 0 {
 			break
 		}
@@ -555,9 +560,77 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 		if e.Response != "" {
 			sb.WriteString(fmt.Sprintf(" → %s", truncateStr(e.Response, 120)))
 		}
+		// ★ 工具回执按**声明**渲染（2026-10-27 用户裁定：声明了 Cleaner 的工具
+		// 必须被正确渲染进记忆块）。
+		//
+		// 此前这里只写"调用了工具: a, b"，工具取回的正文在下一轮彻底消失 ——
+		// 模型因此"刚说的话转头就忘"：它记得自己查过，却不记得查到了什么。
+		// 声明契约（ToolDef.NoMemory / Cleaner）早就有，缺的是这个消费端。
+		//
+		// 三条规则：
+		//   ① NoMemory=true 的工具**不渲染**（它明确声明"不进记忆"，时间线即记忆视图）
+		//   ② 有 Cleaner 的走 Cleaner（工具自己说清"哪一段才是语义"）
+		//   ③ 都没有就渲染原文首段，按预算截断
+		for _, line := range a.renderedToolResultsOf(e) {
+			sb.WriteString(" → " + line)
+		}
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// renderedToolResults 把一条事件里的工具回执渲染成时间线片段。
+//
+// 排序即执行顺序；单条截断 toolResultTimelineChars，最多 toolResultTimelineMax 条
+// （更早的只留"还有 N 条"），避免一次 bulk 查询把时间线挤爆。
+const (
+	// toolResultTimelineChars 单条工具回执在时间线里的字符上限。
+	// 时间线是"给下一轮看的历史"，不是当轮工作区 —— 够让模型认出
+	// "我查到了什么"，细节仍可用 coldcontext_query / 工具重取。
+	toolResultTimelineChars = 160
+	// toolResultTimelineMax 单条事件最多渲染几条工具回执。
+	toolResultTimelineMax = 3
+)
+
+// oneLine 压成单行（时间线是一行一条事件，换行会破坏结构）。
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func (a *Agent) renderedToolResultsOf(e *ContextEvent) []string {
+	if e == nil || len(e.ToolResults) == 0 {
+		return nil
+	}
+	noMem := map[string]bool(nil)
+	if a != nil && a.stageHost != nil {
+		noMem = a.stageHost.NoMemoryToolNames()
+	}
+	out := make([]string, 0, len(e.ToolResults))
+	skipped := 0
+	for _, tr := range e.ToolResults {
+		if noMem[tr.Name] {
+			continue
+		}
+		txt := tr.Output
+		if a != nil {
+			txt = a.toolOutputForQuery(tr.Name, txt) // ← Cleaner 生效
+		}
+		txt = oneLine(txt)
+		if strings.TrimSpace(txt) == "" {
+			continue
+		}
+		if len(out) >= toolResultTimelineMax {
+			skipped++
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s: %s", tr.Name, truncateStr(txt, toolResultTimelineChars)))
+	}
+	if skipped > 0 {
+		out = append(out, fmt.Sprintf("+%d more tool results", skipped))
+	}
+	return out
 }
 
 func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI.Message {

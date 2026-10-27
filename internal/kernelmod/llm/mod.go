@@ -63,6 +63,13 @@ func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string
 			Audio:         src.Audio,
 		}, luaVM, src.Name, src.Adapter)
 		providerMgr.Register(src.Name, luaProvider)
+		// ★ 能力是**配置事实**，由装配层登记；不让内核靠 adapter 上的
+		// 类型断言去猜（断言穿过 adapter + 安全装饰器，任一层漏实现方法
+		// 就会静默变成"没有视觉"—— 这是反复出现的老 bug）。
+		providerMgr.SetCapabilities(src.Name, api.ProviderCaps{
+			Vision: src.Vision,
+			Audio:  src.Audio,
+		})
 		if src.Adapter != "" {
 			adapterConcurrency[src.Adapter] += src.MaxConcurrent
 		}
