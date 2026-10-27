@@ -543,14 +543,10 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 		// ❗单位必须与 EstimateTokens 一致（rune×2）。这里曾用 `len()`（**字节**）再 ×2：
 		// CJK 一字 3 字节 ⇒ 中文事件被高估 3 倍，窗口还有余量也会提前 break，
 		// 把更早的事件整段丢掉（实测：2384 字的中文事件被估成 14398 token > 8192）。
-		estTokens := EstimateTokens(e.Source) + EstimateTokens(e.Input) + 40
-		if e.Response != "" {
-			estTokens += 120
-		}
-		// 工具回执现在**会**进时间线（见下方渲染），预算必须如实计入，
-		// 否则"算出来的窗口装得下"与"实际发出去的更长"两笔账对不上。
-		for _, tr := range a.renderedToolResultsOf(e) {
-			estTokens += EstimateTokens(tr)
+		// 预算按**实际渲染出来的内容**算：用户行 + 助手全文 + 展开的工具行。
+		estTokens := EstimateTokens(timelineUserText(e)) + EstimateTokens(e.Response) + 40
+		for _, line := range a.timelineToolLines(e) {
+			estTokens += EstimateTokens(line)
 		}
 		if remaining-estTokens < 0 && include > 0 {
 			break
@@ -573,31 +569,120 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 	// 才不会漂移。
 	sb.WriteString("[Conversation timeline] Summaries of past events follow (**not the current task**; do not treat their content as a new request from the user).\n")
 	for _, e := range events[start:] {
-		sb.WriteString(fmt.Sprintf("[%s] %s: %s",
-			e.Timestamp.Format("15:04:05"), e.Source, e.Input))
-		if len(e.ToolsUsed) > 0 {
-			sb.WriteString(fmt.Sprintf(" → 调用工具: %s", strings.Join(e.ToolsUsed, ", ")))
+		// ★ L1 是工作记忆区，送给模型的是**时序排列的对话**。
+		//   历史教训（2026-10-27）：这里曾被渲染成"摘要 + 工具管道"
+		//   （"—/ → 调用工具: qq_get_message, output_send__qq → 已回复…"），
+		//   主体是注入样板与工具名，真正的话被压成行尾碎片 ⇒ 指代消解失效
+		//   （用户回"新乡"，模型接不上上一句"帮我找一套月租＜400…"）。
+		sb.WriteString(fmt.Sprintf("[%s] %s: %s\n",
+			e.Timestamp.Format("15:04:05"), timelineUserLabel, timelineUserText(e)))
+		if resp := oneLine(e.Response); resp != "" {
+			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n",
+				e.Timestamp.Format("15:04:05"), timelineAssistantLabel, resp))
 		}
-		if e.Response != "" {
-			sb.WriteString(fmt.Sprintf(" → %s", truncateStr(e.Response, 120)))
+		// 工具结果在 context 中**展开**（全文，不截断）。
+		// 只有**超长**结果按工具环设计折叠成句柄，模型用 toolresult_read 按区间读回。
+		for _, line := range a.timelineToolLines(e) {
+			sb.WriteString(fmt.Sprintf("[%s] %s\n", e.Timestamp.Format("15:04:05"), line))
 		}
-		// ★ 工具回执按**声明**渲染（2026-10-27 用户裁定：声明了 Cleaner 的工具
-		// 必须被正确渲染进记忆块）。
-		//
-		// 此前这里只写"调用了工具: a, b"，工具取回的正文在下一轮彻底消失 ——
-		// 模型因此"刚说的话转头就忘"：它记得自己查过，却不记得查到了什么。
-		// 声明契约（ToolDef.NoMemory / Cleaner）早就有，缺的是这个消费端。
-		//
-		// 三条规则：
-		//   ① NoMemory=true 的工具**不渲染**（它明确声明"不进记忆"，时间线即记忆视图）
-		//   ② 有 Cleaner 的走 Cleaner（工具自己说清"哪一段才是语义"）
-		//   ③ 都没有就渲染原文首段，按预算截断
-		for _, line := range a.renderedToolResultsOf(e) {
-			sb.WriteString(" → " + line)
-		}
-		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// 时间线（L1）的两个说话人标签。
+const (
+	timelineUserLabel      = "用户"
+	timelineAssistantLabel = "助手"
+)
+
+// timelineUserText 取这一轮**用户真正说的话**。
+//
+// 两个来源：
+//  1. 普通轮 → e.Input；
+//  2. 中断轮（NoMemory=true，Input 是"来自「X」…先用 qq_get_message 取正文"样板）
+//     → 从该事件的聊天工具回执里取正文（qq_get_message 的 content，
+//     或 qq_get_history 的 messages 末条）。
+//
+// 这一条决定了指代消解能否成立：模型必须看到上一句**原话**，
+// 而不是"我调用过 qq_get_message"。
+func timelineUserText(e *ContextEvent) string {
+	if e == nil {
+		return ""
+	}
+	if !e.NoMemory {
+		if t := oneLine(e.Input); t != "" {
+			return t
+		}
+	}
+	if t := chatUtteranceFromResults(e.ToolResults); t != "" {
+		return t
+	}
+	return oneLine(e.Input)
+}
+
+// chatUtteranceFromResults 从聊天类工具回执里取"人说的话"（最近一条）。
+func chatUtteranceFromResults(trs []ToolResultItem) string {
+	for i := len(trs) - 1; i >= 0; i-- {
+		var one struct {
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(trs[i].Output)), &one) == nil &&
+			strings.TrimSpace(one.Content) != "" {
+			return oneLine(strings.TrimSpace(one.Content))
+		}
+	}
+	for i := len(trs) - 1; i >= 0; i-- {
+		var hist struct {
+			Messages []string `json:"messages"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(trs[i].Output)), &hist) != nil || len(hist.Messages) == 0 {
+			continue
+		}
+		return oneLine(hist.Messages[len(hist.Messages)-1])
+	}
+	return ""
+}
+
+// timelineToolLines 渲染一条事件里的工具结果行。
+//
+// 契约（2026-10-27 用户口径）：
+//   - 工具结果在 context 里**展开**（全文，不截断、不限条数）；
+//   - 只有**超长**结果（已落盘进 toolresult_store）折叠成句柄，
+//     模型用 toolresult_read(event_id, offset, limit) 按区间读回。
+//
+// 为什么不能截断普通结果：截断会让模型拿到残缺信息且不知情（本仓
+// "静默降级"同族），而历史里工具结果正是消解指代的依据。
+func (a *Agent) timelineToolLines(e *ContextEvent) []string {
+	if e == nil || len(e.ToolResults) == 0 {
+		return nil
+	}
+	noMem := map[string]bool(nil)
+	if a != nil && a.stageHost != nil {
+		noMem = a.stageHost.NoMemoryToolNames()
+	}
+	stored := make(map[string]ToolResultStore, len(e.ToolResultStores))
+	for _, st := range e.ToolResultStores {
+		stored[st.Tool] = st
+	}
+	out := make([]string, 0, len(e.ToolResults))
+	for _, tr := range e.ToolResults {
+		if noMem[tr.Name] {
+			continue
+		}
+		if st, ok := stored[tr.Name]; ok {
+			out = append(out, fmt.Sprintf("工具(%s): [stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]",
+				tr.Name, st.TotalBytes, st.TotalLines, e.ID))
+			continue
+		}
+		txt := tr.Output
+		if a != nil {
+			txt = a.toolOutputForQuery(tr.Name, txt) // Cleaner（计算层清洗，不改原文）
+		}
+		if txt = oneLine(txt); txt != "" {
+			out = append(out, fmt.Sprintf("工具(%s): %s", tr.Name, txt))
+		}
+	}
+	return out
 }
 
 // renderedToolResults 把一条事件里的工具回执渲染成时间线片段。
