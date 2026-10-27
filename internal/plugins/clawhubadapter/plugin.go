@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -1305,12 +1304,15 @@ func (p *Plugin) Stop() error {
 // publishSkillDetected 发布 skill_detected 事件，将纯 SKILL 条目移交原生
 // skillmgr 插件注册。OpenClaw 兼容层不持有 native skill 状态。
 func (p *Plugin) publishSkillDetected(s *sdk.PluginSDK, path string) {
-	s.Publish(&events.Event{
-		Type:      events.EventSkillDetected,
-		Source:    p.name,
-		Payload:   map[string]interface{}{"path": path},
-		Timestamp: time.Now().Unix(),
-	})
+	// ★ 走**受限** SDK 事件面，而不是内核私有总线（2026-10-27）。
+	//
+	// 这样 clawhubadapter 对外部化不再有阻塞项：它只需要 SDK 的
+	// Events().Publish，而不需要 internal/events。事件类型仍是 skill_detected
+	// （白名单内），载荷出向会经 security 过闸，Source 由 SDK 固定成本插件名。
+	if err := s.Events().Publish("skill_detected", map[string]interface{}{"path": path}); err != nil {
+		log.Printf("[clawhubadapter] publish skill_detected failed: %v", err)
+		return
+	}
 	log.Printf("[clawhubadapter] skill %s detected, handed off to skillmgr", filepath.Base(path))
 }
 

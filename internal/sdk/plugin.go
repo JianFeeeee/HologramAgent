@@ -179,6 +179,7 @@ type PluginSDK struct {
 
 	iom       *agentIO.IOManager
 	eventBus  *events.Bus
+	events    pubsdk.EventsAPI
 	logger    *log.Logger
 	pluginMgr PluginManager
 
@@ -198,7 +199,13 @@ func (s *PluginSDK) PluginMgr() PluginManager { return s.pluginMgr }
 
 // 以下访问器遮蔽公共 SDK 的同名方法，返回内置插件可用的全量接口。
 
-func (s *PluginSDK) Settings() SettingsAPI     { return s.settings }
+func (s *PluginSDK) Settings() SettingsAPI { return s.settings }
+
+// Events 返回**受限**事件总线（可 nil：未接总线时）。
+//
+// 与直接拿 *events.Bus 的区别：只能发布白名单类型或自己的命名空间
+// （`plugin.<name>.*`），载荷出向经 security 过闸，订阅只开只读事件。
+func (s *PluginSDK) Events() pubsdk.EventsAPI  { return s.events }
 func (s *PluginSDK) Memory() MemoryAPI         { return s.memory }
 func (s *PluginSDK) TextMemory() TextMemoryAPI { return s.textMem }
 func (s *PluginSDK) DocMemory() DocMemoryAPI   { return s.docMem }
@@ -383,6 +390,7 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 
 		iom:       cfg.IOManager,
 		eventBus:  cfg.EventBus,
+		events:    newEventsAPI(name, cfg.EventBus),
 		logger:    log.Default(),
 		pluginMgr: cfg.PluginMgr,
 
