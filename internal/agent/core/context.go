@@ -410,6 +410,15 @@ func (c *RelevanceContext) Save() error {
 // （另一处 InsertByTimestamp 同样处理）。所以明文拦截放在这里，
 // 而不是在每个调用点 —— 逐个补必漏（实测踩到：只拦了 f.Msgs，
 // 而 f.CleanInput / f.ToolResults / f.Response 都是独立副本）。
+// snapshotEvents 返回当前事件的浅拷贝（判据/诊断用；调用方不得修改元素）。
+func (c *RelevanceContext) snapshotEvents() []*ContextEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*ContextEvent, len(c.events))
+	copy(out, c.events)
+	return out
+}
+
 func (c *RelevanceContext) Append(evt ContextEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

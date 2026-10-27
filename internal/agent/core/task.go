@@ -558,9 +558,22 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 
 	// 本轮捕获的媒体一起挂到这条事件上：用户上传的、插件注入的，以及模型调
 	// multimodal_see_picture / see_video 时经 SetToolBlocks 注入的。
+	// ★ 把插件声明落到事件上（2026-10-27）：`NoMemory` 只影响**计算层**
+	//（不向量化 / 不提关键词 / 不蒸馏）与**记忆视图**，而**归档照常** ——
+	// 这是 ContextEvent.NoMemory 的既有契约（见 context.go 的字段注释：
+	// coldcontext_query 的 Consume 已从 L2 删掉原文，回填事件必须能落回 L2，
+	// 否则三层都不在，内容被永久丢弃）。
+	//
+	// 此前这个位从来没被赋值：插件声明 InjectOptions.NoMemory=true（QQ 那句
+	// "来自「X」的私聊消息(message_id=…) 先用 qq_get_message 取正文…"），
+	// 经 payload.no_memory 合进 stageCtx.NoMemory 后，却只有
+	// emitMemoryCandidate 一处消费它 —— 于是这句样板每轮都进计算层。
+	//
+	// 声明来源：payload["no_memory"]（插件注入）或 ChannelDef.NoMemory（通道）。
 	turnEvt := ContextEvent{
 		Timestamp:   time.Now(),
 		Source:      "agent",
+		NoMemory:    f.StageCtx.NoMemory,
 		Input:       f.CleanInput,
 		Response:    f.Response,
 		ToolsUsed:   f.ToolsUsed,
