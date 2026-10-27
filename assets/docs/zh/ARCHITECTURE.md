@@ -109,7 +109,7 @@ eventLoop() → processTextInput()
 |---|---|---|---|---|
 | **L1 Context** | 事件（内联正文 + 块） | **直接投喂**（进 system prompt 时序） | 最近 n 条 / 上限 m 条 | 超限时按相似度迁出 |
 | **L2 Document** | 事件（内联正文 + 块） | **不直接投喂**（需召回才进 L1） | 无上限 | 冷到阈值后蒸馏进 L3 |
-| **L3 Graph** | 三元组（节点 + 关系边），节点即记忆块 | 不投喂（经召回进入 L1） | 持久 | 不流出 |
+| **L3 Stable** | 三元组（节点 + 关系边），节点即记忆块 | 不投喂（经召回进入 L1） | 持久 | 不流出 |
 
 ★ **L1 与 L2 结构完全同构**，唯一区别是「是否被直接投喂给模型」。
 L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样的事件 + 同样的块，只是不直接进模型视野。
@@ -138,10 +138,10 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 
 ② Document (文件记忆 — 不直接投喂，结构与 L1 同构)
    DocStore — 每篇文档 = 检索元数据 + 事件列表（内联正文 + 块）
-   写入: Prune归档 / doc_commit / Graph快照(syncGraphToDocs)
+   写入: Prune归档 / coldcontext_commit / stablemem 快照(syncGraphToDocs)
    读取:
        ├── 自动预填充: Query(input, top3) → 同一向量空间下相似度摘要 → 【相关记忆文档】→ system prompt (只读，不动层)
-       └── LLM主动:  doc_query → Consume(取走)
+       └── LLM主动:  coldcontext_query → Consume(取走)
                          → 逐条按各自原始时间戳把事件插回 L1 时序
                          → 块随事件迁回（同一块 ID，向量不重算），L2 不再持有
    冷化: FindColdDocs(72h, ≤2次访问) → docToTriples → Graph
@@ -226,8 +226,37 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 - 正文内联在块里：文本块的 `Text` 是正文，媒体块的 `Data` 是字节
 - `Doc.Content` 只是**渲染视图**（供摘要/人工阅读/SDK 兼容），不是原文载体
 - 自动预填充：与 Context 共享的向量空间做相似度检索 → 摘要进 system prompt（**只读**，不动层）
-- 主动召回：`doc_query` 取走后，**逐条按各自原始时间戳**把事件插回 L1 时序，块随事件迁回
+- 主动召回：`coldcontext_query` 取走后，**逐条按各自原始时间戳**把事件插回 L1 时序，块随事件迁回
 - 冷化：`FindColdDocs(72h, ≤2次访问)` → `docToTriples` → Graph
+
+## 安全防火墙与设备数据面（内核模块）
+
+###security 内核模块（`internal/kernelmod/security`）
+
+安全不是"某项能力"，而是**横在 Core 与全部外部模块之间的一堵墙**：
+
+```text
+Core ──出向审查──▶ 外部（device / plugin / channel）
+Core ◀─入向审查── 外部
+```
+
+- **凭据闸门**：出向把明文换成 `@{别名}`、入向清洗返回值、执行前才回填真实值
+- **工具黑白名单 + 沙箱**：路径读写根、网络开关、`..` 逃逸拦截（`deny` 永远优先）
+- **内容审查**：敏感词过滤 + 提示词注入预警（Finding **不带原文**，避免日志泄漏）
+- **按主体授权**：hard-private 工具对任何非内部主体永久拒绝
+- **插件命名限式**：插件声明 `qq.owner` / `qq.guest` 等档位，inputch 触发时用
+  `InjectOptions.SecurityProfile` 选择；**未声明的档位名会报错**，不静默回落
+
+落地形态是**显式代理**（不是 monkey patch）：装配时把 `KernelState` 的公共挂载点
+换成安全对象，业务模块仍认为自己直接与对端交互。
+
+### device 内核模块（`internal/kernelmod/device`）
+
+统一拥有：工具注册与路由、inputch、outputch、设备登记。内置工具的路由表在
+`internal/toolroute`（避免 core ↔ kernelboot 成环），device 保留对外入口；
+未挂载 device 时 agent 退化为本地 switch。
+
+---
 
 ### Graph 层
 
@@ -252,10 +281,10 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 | `memory_edit` | 编辑已有实体/关系 |
 | `memory_delete_entity` | 删除实体及其所有关系 |
 | `memory_introspect` | 查看记忆统计 |
-| `doc_query` | 从 Document 搜索 |
-| `doc_commit` | 写入 Document |
+| `coldcontext_query` | 从冷上下文（cold context）召回 |
+| `coldcontext_commit` | 写入冷上下文 |
 
-`memory_commit` 与 `doc_commit` 自 v1.1.1 起接受 `media_digests`，并由内核把
+`memory_commit` 与 `coldcontext_commit` 自 v1.1.1 起接受 `media_digests`，并由内核把
 `[<mime> <短digest>] <描述>` 标记补进句子/正文——**标记由内核拼，模型只给 digest**。
 要求调用方知道格式，等于让一个拼写错误静默切断引用绑定而全链路无人报错。
 `memory_commit` 同时新增 `sentence_text`：媒体引用挂在句子上，没有句子就无处可挂。
@@ -626,7 +655,7 @@ type Plugin interface {
 
 设计见 [`docs/zh/resident-subagent-design.md`](../../../docs/zh/resident-subagent-design.md)。
 
-- **驻留子**是轻量内核的独立 agent：自己的调度器、自己的 temp 图记忆、共享的通道登记表。
+- **驻留子**是轻量内核的独立 agent：自己的调度器、自己的 temp 稳定记忆、共享的通道登记表。
 - 父对子的控制面：`resident_agents`（list / create / send / inspect / compress / reclaim / destroy）。
 - **积压及时反馈**：主 agent 长时间忙时（默认 > 5m，可配），内核把排队输入交给
   一个临时**分诊助手**（`offload_*` 配置）：简单的直接处理并回复，需要主 agent 的

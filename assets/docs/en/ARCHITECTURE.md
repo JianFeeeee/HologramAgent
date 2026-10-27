@@ -100,10 +100,10 @@ Setting `ctx.Response` at any stage jumps to `after_output`.
 
 ② Document (File Memory)
    DocStore — JSON files + dense vectors (unified multimodal space; dense_fp must match the current space fingerprint or the doc is recomputed; fallback: StaticEmbedder / TF-IDF InvertedIndex)
-   Write: Prune archive / doc_commit / Graph snapshot (syncGraphToDocs)
+   Write: Prune archive / coldcontext_commit / stablemem snapshot (syncGraphToDocs)
    Read:
        ├── Auto-inject: Query(input, top3) → similarity summary under same vector space → [Related Memory Docs] → system prompt (read-only)
-       └── LLM active:  doc_query → Consume(read and delete)
+       └── LLM active:  coldcontext_query → Consume(read and delete)
                          → context.Append{Timestamp: d.CreatedAt, Source: "cold_storage"} per doc
                          → Docs written to context timeline with original timestamps, deleted from docStore
    Cold: FindColdDocs(72h, ≤2 accesses) → docToTriples → Graph
@@ -178,15 +178,47 @@ dimension** participate in fusion (mixing coordinate systems yields a direction 
 - Three-branch `textForVector`: agent events → Response, user events → Input, cold_storage → Input+Response
 - Pretrained word embedding `StaticEmbedder` → CosineSimilarity, auto-fallback to TF-IDF if unavailable
 - Protects last 10 events from eviction; excess candidates are sorted by relevance and archived to document memory
-- Archived events retain original timestamps; on `doc_query` recall they re-insert into the context timeline at their original position
+- Archived events retain original timestamps; on `coldcontext_query` recall they re-insert into the context timeline at their original position
 
 ### Document Layer
 
 `internal/memory/document/document.go` — `Store`
-- Consume-on-read mode: deleted after `doc_query` retrieval
+- Consume-on-read mode: deleted after `coldcontext_query` retrieval
 - Dual recall: shared StaticEmbedder semantic vector search + jieba keyword extraction (falls back to char-bigram TF-IDF when model is not loaded)
 
-### Graph Layer
+### Security firewall (kernel module)
+
+`internal/kernelmod/security` is a standalone kernel module sitting between Core and
+every external module:
+
+```text
+Core ──outbound inspection──▶ external (device / plugin / channel)
+Core ◀─inbound inspection── external
+```
+
+- **Credential gate**: outbound plaintext becomes `@{alias}`, inbound results are scrubbed,
+  real values are filled back only right before execution
+- **Tool allow/deny + sandbox**: read/write roots, network switch, `..` escape rejection
+  (`deny` always wins)
+- **Content review**: sensitive-word filtering and prompt-injection warnings
+  (findings never carry the matched text, so logs cannot leak it)
+- **Per-principal grants**: hard-private tools are refused for every non-internal principal
+- **Plugin-named profiles**: a plugin declares `qq.owner` / `qq.guest` and selects one per
+  inputch via `InjectOptions.SecurityProfile`; an undeclared name is an **error**, never a
+  silent fallback
+
+It is implemented as an **explicit proxy** (not monkey patching): at assembly the public
+mount points on `KernelState` are replaced by security-owned objects, so modules keep
+believing they talk to each other directly.
+
+### Device / tool data plane (kernel module)
+
+`internal/kernelmod/device` owns tool registration and routing, inputch, outputch and the
+device registry. The built-in tool routing table lives in `internal/toolroute` (to avoid a
+core ↔ kernelboot import cycle) while device keeps the public entry point; without a mounted
+device, the agent falls back to its local switch.
+
+### Stable memory layer
 
 `internal/memory/graph.go` — `GraphDB`
 - SQLite WAL mode, two tables (driver: mattn/go-sqlite3, CGo)
@@ -204,10 +236,10 @@ dimension** participate in fusion (mixing coordinate systems yields a direction 
 | `memory_edit` | Edit existing entity/relation |
 | `memory_delete_entity` | Delete entity and all its relations |
 | `memory_introspect` | View memory statistics |
-| `doc_query` | Search from Document |
-| `doc_commit` | Write to Document |
+| `coldcontext_query` | Recall from cold context |
+| `coldcontext_commit` | Write to cold context |
 
-Since v1.1.1 `memory_commit` and `doc_commit` accept `media_digests`, and the kernel appends the
+Since v1.1.1 `memory_commit` and `coldcontext_commit` accept `media_digests`, and the kernel appends the
 `[<mime> <short digest>] <description>` marker into the sentence/body — **the kernel builds the
 marker, the model only supplies the digest**. Requiring the caller to know the format would mean a
 single typo silently breaks reference binding with no error anywhere in the chain. `memory_commit`
@@ -605,7 +637,7 @@ task, and counting only `sched.queue` yields 0.
 Design: [`docs/zh/resident-subagent-design.md`](../../../docs/zh/resident-subagent-design.md).
 
 - A **resident** is an independent lightweight-kernel agent: its own scheduler, its own
-  temp graph memory, sharing the channel registry.
+  temp stable memory, sharing the channel registry.
 - Parent→child control plane: `resident_agents`
   (list / create / send / inspect / compress / reclaim / destroy).
 - **Backlog feedback**: when the main agent is busy for a long time (default > 5m,

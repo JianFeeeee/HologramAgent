@@ -1,5 +1,11 @@
 # 三层记忆可用性修复计划：统一向量化 + 提示词让 agent 真正理解
 
+> **归档说明（2026-10-27）**：本文是历史计划，**术语已过时** ——
+> `doc_query` / `doc_commit` 已改名为 `coldcontext_query` / `coldcontext_commit`，
+> 图记忆（Graph）在对外语义上改称 **stablemem（稳定记忆）**。
+> 现行架构与术语以 `assets/docs/zh/ARCHITECTURE.md` 为准；本文保留作为决策记录。
+
+
 > 状态：**待执行**（2026-10-22）
 > 前置：`docs/zh/memory-blockflow-repair-plan.md`（L1↔L2 结构同构，已实施）
 > 本文修的是**上一轮没修的那一层**：结构对了，但检索质量与提示词仍然不可用。

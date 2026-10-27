@@ -1,5 +1,11 @@
 # entities 退场迁移方案
 
+> **归档说明（2026-10-27）**：本文是历史计划，**术语已过时** ——
+> `doc_query` / `doc_commit` 已改名为 `coldcontext_query` / `coldcontext_commit`，
+> 图记忆（Graph）在对外语义上改称 **stablemem（稳定记忆）**。
+> 现行架构与术语以 `assets/docs/zh/ARCHITECTURE.md` 为准；本文保留作为决策记录。
+
+
 > 状态：已确认（方案 A：三表全退），执行中
 > 范围：含生产实例 ${HA_DATA}（用户 2026-10-02 确认迁移）
 > 前置：docs/zh/memory-restructure-plan.md（重构计划）

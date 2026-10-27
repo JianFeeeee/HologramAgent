@@ -38,12 +38,23 @@ homed（内核零 IO） ← PluginSDK → 插件（所有 IO 能力）
 > 当输入已过期时，它会据此认出「这事上一轮已经办过」并**主动纠正自己先前的错误判断**——
 > 表现为自我复盘。这是记忆召回的自然结果，内核里**没有**任何名为「反思」的机制。
 
+**安全防火墙（独立内核模块）** — 安全不是"某个工具顺手扫一下"，而是**横在 Core 与
+全部外部模块之间的一堵墙**：Core 流出的请求、外部流回的响应都先过 security 审查。
+它管四件事：凭据闸门（明文 ⇄ `@{别名}`，执行前才回填）、工具黑白名单与沙箱
+（读写根/网络/`..` 逃逸，`deny` 永远优先）、敏感词与提示词注入预警（命中记录不带原文）、
+按主体授权与**插件命名限式**（`qq.owner` / `qq.guest`，未声明的档位会报错而不是静默回落）。
+落地形态是**显式代理**，不是 monkey patch。
+
+**device 数据面（独立内核模块）** — 工具注册与路由、inputch、outputch、设备登记
+统一归 `internal/kernelmod/device`；内置工具路由表在 `internal/toolroute`（避免
+core ↔ kernelboot 成环），device 保留对外入口。
+
 **输入调度：两类别 + 四级中断** — 输入不直接进 LLM，先进调度器。
 排队（待办工作）与中断（按"有多不能等"分 L1~L4）两类；高级可抢占低级并保存现场
 （中断栈），同级不抢占。L4 只归内核与内核级插件（如 WebUI 终止按钮）。
 见 [`assets/docs/zh/ARCHITECTURE.md`](assets/docs/zh/ARCHITECTURE.md) 的「输入调度器与中断机制」。
 
-**驻留式子 agent** — 内核可派驻轻量内核的子 agent（自己的调度器与 temp 图记忆，
+**驻留式子 agent** — 内核可派驻轻量内核的子 agent（自己的调度器与 temp 稳定记忆，
 共享通道登记表），把长任务/积压交出去并行做。主 agent 忙久了，内核还会把排队输入
 交给临时**分诊助手**：简单的直接处理，需要主 agent 的立刻回「忙碌中，请稍候」，
 用户不再干等。见 [`docs/zh/resident-subagent-design.md`](docs/zh/resident-subagent-design.md)。
@@ -157,7 +168,7 @@ flowchart TB
     subgraph D[② Document 文件记忆]
         DS[DocStore JSON+TF-IDF]
         Q1[QueryScored+crossModalMarkdown] -->|【跨模态相关记忆】| SP
-        Q2[doc_query LLM主动召回] -->|Consume+删除源| DS
+        Q2[coldcontext_query 冷上下文召回] -->|Consume+删除源| DS
         Q2 -->|原始时间戳写入上下文| RC
         CD[FindColdDocs 72h] -->|docToTriples| G
     end
@@ -184,7 +195,7 @@ flowchart TB
         PIPE[Pipeline 正则] -->|姓名/住址/喜好/年龄/职业| DB
     end
     SP[System Prompt] -->|顺序组装| LLM
-    LLM[LLM] -->|doc_query| Q2
+    LLM[LLM] -->|coldcontext_query| Q2
     LLM -->|memory_recall| MEM
 ```
 
@@ -263,14 +274,14 @@ internal/
 
 **v1.3.x 线**（v1.3.1–v1.3.13）—— **驻留式子 agent** + **输入调度器重做**。
 
-- **驻留式子 agent**：内核可派驻轻量内核的子 agent（自己的调度器、自己的 temp 图记忆、
+- **驻留式子 agent**：内核可派驻轻量内核的子 agent（自己的调度器、自己的 temp 稳定记忆、
   共享通道登记表）。父经 `resident_agents`（list/create/send/inspect/compress/reclaim/destroy）
   派活与收活；inputch 可划给子，输入**在进内核之前**就已路由到子。
 - **输出通道可寻址到具体 agent**：`AllowedOutputs` 授权集合（三处过滤点一致），
   父/子之间可互相投递；设备能力也 outputch 化（每设备一个 `device/<id>` 通道）。
 - **输入调度器**：排队/中断两类别 + 四级中断（L1~L4）+ 抢占/挂起/恢复/中断栈；
   同级不抢占、有饥饿防护与抢占冷却；L4 只归内核与内核级插件（WebUI 终止按钮）。
-- **轻量内核 profile**：子的记忆面收窄为「传统上下文 + 图记忆」（窄接口，
+- **轻量内核 profile**：子的记忆面收窄为「传统上下文 + 稳定记忆（stablemem）」（窄接口，
   主库以 query_only 受限句柄打开，写走自己的 temp 实例）。
 - **积压及时反馈**（后续线）：主 agent 长时间忙时，内核把排队输入交给临时**分诊助手** ——
   简单的直接处理并回复，需要主 agent 的立刻回「忙碌中，请稍候」，用户不再干等十几分钟。
@@ -278,7 +289,7 @@ internal/
   子的轮次永远显示 0（`info()` 根本没填）、子侧 childIO 空壳（未继承父的输出通道）、
   设备心跳 pong 忘了 Flush（每 60 秒掉线）、Lua 插件桥与 SDK 1.3.0 对齐。
 
-**v1.2.0** — 统一多模态向量空间 + 媒体升为图记忆一等节点 + 数据面全量迁到共享内存。
+**v1.2.0** — 统一多模态向量空间 + 媒体升为稳定记忆一等节点 + 数据面全量迁到共享内存。
 
 - **模型中立的统一向量空间**：内核不再适配任何具体模型，只提供公共 provider SPI
   （`pkg/embedding`：`Modality` / `Input{Data,MIME}` / `Info{Dimension,Fingerprint,Modalities}`

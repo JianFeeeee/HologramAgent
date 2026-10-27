@@ -1,5 +1,11 @@
 # Git 分支管理规范
 
+> **归档说明（2026-10-27）**：本文是历史计划，**术语已过时** ——
+> `doc_query` / `doc_commit` 已改名为 `coldcontext_query` / `coldcontext_commit`，
+> 图记忆（Graph）在对外语义上改称 **stablemem（稳定记忆）**。
+> 现行架构与术语以 `assets/docs/zh/ARCHITECTURE.md` 为准；本文保留作为决策记录。
+
+
 > 生效：2026-08-31，2026-09-04 修订（三级发布通道 + 单条发布分支），2026-09-06 修订（SDK 仓版本语义与发版联动，见 §七），2026-09-13 修订（发布线路牌随 patch 推进 + 版本号不得固化落库）。
 > 适用：**本仓（HologramAgent）与 third_party/homeagent-sdk（SDK 仓）**——两仓协作时分支策略必须一致，本规范两仓同用。
 > 核心原则一句话：**main 唯一长命、永远可部署；一切新工作在特性分支；一个中版本一条发布分支，alpha/beta/正式由 tag 区分；hotfix 只进发布分支并 cherry-pick 回 main。**

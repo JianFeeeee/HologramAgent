@@ -1,5 +1,11 @@
 # 三层记忆系统修复计划：块化重构后的失效面
 
+> **归档说明（2026-10-27）**：本文是历史计划，**术语已过时** ——
+> `doc_query` / `doc_commit` 已改名为 `coldcontext_query` / `coldcontext_commit`，
+> 图记忆（Graph）在对外语义上改称 **stablemem（稳定记忆）**。
+> 现行架构与术语以 `assets/docs/zh/ARCHITECTURE.md` 为准；本文保留作为决策记录。
+
+
 > 状态：**已实施**（2026-10-22）。实施记录见文末 §九。
 > 原计划写作于同日，下述前提与失效面均经源码与生产数据核实。
 > 触发：块化统一（`docs/zh/memory-restructure-plan.md`）重构了底层数据结构，

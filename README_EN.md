@@ -28,9 +28,13 @@ plane). A plugin crash cannot take down the kernel and it restarts automatically
 
 **Three-Layer Memory Architecture** — Manages information retention in long-running agents through a tiered storage strategy:
 
-- **Context Layer**: Pretrained word embedding / TF-IDF fallback relevance-scored event window, protects last 10 entries, maintains topK context entries
-- **Document Layer**: Temporary memory with automatic cold data sinking, also supports user-initiated submissions
-- **stablemem layer**: SQLite graph database, persists entity relationships and semantic memory, supports distillation pipelines to extract triples from conversations
+- **Context Layer (L1, hot)**: Pretrained word embedding / TF-IDF fallback relevance-scored event window, protects last 10 entries, maintains topK context entries
+- **Cold-context Layer (L2, not fed directly)**: Temporary memory with automatic cold data sinking, also supports user-initiated submissions
+- **Stablemem Layer (L3, persistent)**: SQLite graph database, persists entity relationships and semantic memory, supports distillation pipelines to extract triples from conversations
+
+**Security firewall (standalone kernel module)** — Security is not "a scan tucked into some tool"; it is a wall between Core and every external module: requests leaving Core and responses coming back both pass inspection. It owns four things: the credential gate (plaintext ⇄ `@{alias}`, real values filled only right before execution), tool allow/deny plus sandbox (read/write roots, network, `..` escapes; **deny always wins**), sensitive-word and prompt-injection warnings (findings never carry the matched text), and per-principal grants with **plugin-named profiles** (`qq.owner` / `qq.guest`; an undeclared profile is an error, never a silent fallback). Implemented as an **explicit proxy**, not monkey patching.
+
+**Device data plane (standalone kernel module)** — Tool registration and routing, inputch, outputch and the device registry all belong to `internal/kernelmod/device`; the built-in routing table lives in `internal/toolroute` (to avoid a core ↔ kernelboot cycle) while device keeps the public entry point.
 
 **Input Scheduling: 2 classes + 4 interrupt levels** — Input does not go straight to the LLM;
 it first enters the scheduler. Two classes (queued = pending work, interrupt = ranked L1–L4 by
@@ -39,7 +43,7 @@ same level. L4 belongs only to the kernel and kernel-level plugins (e.g. the Web
 See "Input Scheduler & Interrupt Mechanism" in [`assets/docs/en/ARCHITECTURE.md`](assets/docs/en/ARCHITECTURE.md).
 
 **Resident sub-agents** — The kernel can station lightweight-kernel child agents (their own
-scheduler and temp graph memory, sharing the channel registry) to run long or backlogged work
+scheduler and temp stable memory, sharing the channel registry) to run long or backlogged work
 in parallel. When the main agent stays busy, the kernel hands queued input to a temporary
 **triage assistant**: simple items are handled directly, items needing the main agent get an
 immediate "busy, please wait" — users no longer wait in silence.
@@ -155,7 +159,7 @@ flowchart TB
     subgraph D[② Document File Memory]
         DS[DocStore JSON+TF-IDF]
         Q1[Query summary auto-inject] -->|Related Memory Docs| SP
-        Q2[doc_query LLM active recall] -->|Consume+delete source| DS
+        Q2[coldcontext_query cold-context recall] -->|Consume+delete source| DS
         Q2 -->|Original timestamp write to context| RC
         CD[FindColdDocs 72h] -->|docToTriples| G
     end
@@ -182,7 +186,7 @@ flowchart TB
         PIPE[Pipeline regex] -->|Name/Address/Likes/Age/Job| DB
     end
     SP[System Prompt] -->|Sequential assembly| LLM
-    LLM[LLM] -->|doc_query| Q2
+    LLM[LLM] -->|coldcontext_query| Q2
     LLM -->|memory_recall| MEM
 ```
 
@@ -247,7 +251,7 @@ External plugin development: see [hologramagentsdk](https://github.com/JianFeeee
 **v1.3.x line** (v1.3.1–v1.3.13) — **resident sub-agents** + **input scheduler rework**.
 
 - **Resident sub-agents**: the kernel can station lightweight-kernel child agents (their own
-  scheduler, their own temp graph memory, sharing the channel registry). The parent dispatches
+  scheduler, their own temp stable memory, sharing the channel registry). The parent dispatches
   and collects work via `resident_agents` (list/create/send/inspect/compress/reclaim/destroy).
   An inputch can be assigned to a child, so input is routed to it **before entering the kernel**.
 - **Output channels addressable to a specific agent**: the `AllowedOutputs` grant set
@@ -258,7 +262,7 @@ External plugin development: see [hologramagentsdk](https://github.com/JianFeeee
   starvation guard and preemption cooldown. L4 belongs only to the kernel and kernel-level
   plugins (e.g. the WebUI stop button).
 - **Lightweight kernel profile**: a child's memory surface narrows to "conventional context
-  - graph memory" (narrow interface; the main graph opens as a query_only handle, writes go
+  - stable memory" (narrow interface; the main graph opens as a query_only handle, writes go
   to its own temp instance).
 - **Backlog timely feedback** (later in the line): when the main agent is busy for a long time,
   the kernel hands queued input to a temporary **triage assistant** — simple items are handled
@@ -269,7 +273,7 @@ External plugin development: see [hologramagentsdk](https://github.com/JianFeeee
   child-side childIO (output channels not inherited), device heartbeat pong missing Flush
   (dropping every 60s), and Lua plugin bridge alignment with SDK 1.3.0.
 
-**v1.2.0** — unified multimodal vector space, media promoted to first-class graph memory, and the whole data plane moved into shared memory.
+**v1.2.0** — unified multimodal vector space, media promoted to first-class stable-memory nodes, and the whole data plane moved into shared memory.
 
 - **Model-neutral unified embedding space**: the kernel no longer adapts to any specific model.
   It exposes only a public provider SPI (`pkg/embedding`: `Modality` / `Input{Data,MIME}` /
