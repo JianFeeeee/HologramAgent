@@ -2,6 +2,83 @@
 
 # HologramAgent 架构
 
+## 内核装配（模块化内核）
+
+内核不是一个"从上到下 init 一遍"的单体启动序列，而是**声明式依赖图**：
+
+```text
+internal/kernelmod/          模块注册表（根目录只有 core.go）
+  core.go                    Register / Registered / IsRegistered
+  facilities.go              设施名常量（模块间协议；与公开 SDK 逐字一致）
+  config/ kernelapi/ lua/ llm/ memory/ docstore/ knowledge/ multimodal/
+  onnx/ textmem/ stagehost/ supervisor/ tracker/ migration/ agent/
+  pluginhost/ device/ security/ update/     ← 每个模块一个独立文件夹
+internal/kernelmod/all/      唯一的空白 import 清单（加模块 = 加一行）
+```text
+
+**模块只声明依赖，不声明顺序。** `Requires()` 的语义是"我需要谁**已就绪**"，
+不是"我要排在谁之后"——顺序由依赖图推导，人肉排序正是要消灭的东西。
+
+```go
+type Module interface {
+    Name() string        // 依赖图节点名
+    Requires() []string  // 需要的设施（别人 Provides 的名字）
+    Provides() []string  // 自己产出的设施
+    Init(ks *KernelState) error
+}
+```text
+
+装配由 `internal/kernelboot` 完成，分两步：
+
+1. **`Build()` 解析依赖并分层** —— 缺设施（拼错名字）、提供者重名、循环依赖三种
+   结构性错误在这里报死，且报错带"已被声明的设施清单"，便于发现拼写差异。
+2. **`Run()` 逐层执行** —— 同层模块**并行** `Init`；每层执行前再核一次
+   "实际已产出的设施是否涵盖本层依赖"，防止计划对、执行顺序被改坏。
+
+**`KernelState` 是内核唯一的公共数据结构**：所有包级共享状态收敛成它的类型化字段，
+模块从里面读依赖、只写自己那一个字段。字段拼错/取错类型是**编译错误**，
+而不是运行期静默拿到 nil。同层模块各写各字段 ⇒ 无数据竞争，因此字段上不加锁。
+
+**当前真实分层**（启动日志逐行可验，20 个模块 6 层）：
+
+```text
+layer 0  config, kernel-api, update
+layer 1  doc-store, knowledge-migration, lua, memory, migration,
+         multimodal, onnx-parser, security, supervisor, tracker
+layer 2  knowledge-store, llm, text-memory
+layer 3  stage-host
+layer 4  agent, plugin-host
+layer 5  device
+```text
+
+几个刻意的位置选择：
+
+- **`update` 在第 0 层**：启动自检、版本比对、升级失败回滚的判定必须早于
+  memory/LLM/pluginhost —— 回滚晚于别人读配置，读到的就是"已回滚版本"的假象。
+- **`security` 在第 1 层**：它要 `config` 就绪才能读密钥与变量库，同时必须早于
+  一切会读 `core.llm.*` 密文的模块（否则解不开密文 ⇒ 全 provider 401）。
+- **`device` 在第 5 层**：它要 `agent` 已存在才谈得上"把工具数据面挂上去"。
+
+**`Group 0` 不在图里，但必须最先跑完**：平台门、心跳首写、日志、配置库打开、
+安全块装配、配置快照 —— 这些是**副作用顺序**（"此动作必须先于那个动作生效"），
+依赖图表达不了（图表达的是"我产出数据给他"）。因此它们由 main 串行执行，
+之后的模块装配才交给调度器。
+
+**`depgraph.bin`**：依赖图在**编译期**生成并内嵌进二进制（同时注入
+`EmbeddedGraphHash` 摘要）。运行期先比对摘要再按图装配 —— 装配顺序是构建产物，
+不是运行期猜出来的。文件损坏或摘要不符会响亮失败，不会"能起就先用着"。
+
+**设施名是插件契约**：图里的设施名（`config` / `kernel-io` / `memory` / `llm` /
+`docmem` / `knowledge` / `multimodal` / `onnx` / `stagehost` / `agent` / `security` /
+`device` …）与公开 SDK 的 `sdk.Facility*` **逐字一致**（有判据守着）。插件在
+`plugin.json` 的 `requires_facilities` 里声明它要等什么就绪；写错名字的后果是
+**永不启动且不报错** —— 这正是把名字放进 SDK 常量、让拼错变成编译错误的原因。
+
+## 认知层（Agent 运行时）
+
+下面几节描述的是 **agent 运行时**（事件循环、上下文窗口、阶段管道）——
+它们是内核装配完成后的执行层，不是内核的启动机制。
+
 ## 体系结构原则
 
 HologramAgent 的认知架构由三个核心子系统构成：事件循环（eventLoop）、上下文窗口（RelevanceContext）与阶段管道（StageHost）。三者共同组成编排框架。LLM 在其中作为可调度的推理执行单元运行；认知连续性由事件循环、上下文窗口与阶段管道维持。
@@ -16,6 +93,7 @@ HologramAgent 的认知架构由三个核心子系统构成：事件循环（eve
 >
 > 旧版这里写的是「过滤掉 `agentcli` 和 `terminal` 来源后归档」——那是在内核里
 > 硬编码插件行为，已废除。正确姿势是插件在注册时就声明：
+>
 > - `ToolDef.NoMemory` / `ToolDef.Cleaner`：工具输出不进计算层
 > - `ChannelDef.NoMemory` / `ChannelDef.Cleaner`：该通道的输入不进计算层
 > - `InjectOptions.NoMemory`：本次注入不参与记忆
@@ -34,7 +112,7 @@ HologramAgent 的认知架构由三个核心子系统构成：事件循环（eve
 
 ### 完整链路
 
-```
+```text
 外部输入（通过插件 InjectInput）
         │
         ▼
@@ -63,14 +141,14 @@ eventLoop() → processTextInput()
         ├── before_output stage      插件可改最终文本
         ├── emitResponse()          通过 output_send 发送
         └── after_output stage       插件只读，收尾
-```
+```text
 
 代码：`internal/agent/core/process.go` — `process()` 是工具循环主体
 
 ### 7 个阶段钩子
 
 | 阶段 | 触发时机 | 插件可做 |
-|------|----------|----------|
+| ------ | ---------- | ---------- |
 | `on_input` | 消息到 Agent，零处理 | 黑名单/限流/短路回复 |
 | `pre_action` | 上下文就绪，LLM 调用前 | 注入外部数据到 context |
 | `post_action` | LLM 返回文本+工具列表 | 敏感词过滤/强制 redirect |
@@ -90,23 +168,22 @@ eventLoop() → processTextInput()
 
 任意阶段设 `ctx.Response` 即跳到 `after_output`。
 
-
 ## 三层记忆
 
 ### 记忆块是唯一载体，层是持有关系
 
 三层不是三种数据结构，而是**同一批记忆块的三层持有关系**：
 
-```
+```text
 记忆块 MemoryBlock（union）
   ├─ 文本块：负载在 Text
   └─ 媒体块：负载在 Data（配 MIME/宽高/尺寸）
        ↑ 同一个块 ID 在 context → doc → graph 全程不变
        ↑ 块自带 vector + fingerprint：向量只算一次，跨层复用
-```
+```text
 
 | 层 | 承载单元 | 与模型的关系 | 容量 | 流动性 |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | **L1 Context** | 事件（内联正文 + 块） | **直接投喂**（进 system prompt 时序） | 最近 n 条 / 上限 m 条 | 超限时按相似度迁出 |
 | **L2 Document** | 事件（内联正文 + 块） | **不直接投喂**（需召回才进 L1） | 无上限 | 冷到阈值后蒸馏进 L3 |
 | **L3 Stable** | 三元组（节点 + 关系边），节点即记忆块 | 不投喂（经召回进入 L1） | 持久 | 不流出 |
@@ -122,7 +199,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 
 ### 记忆流转
 
-```
+```text
 ① Context (工作窗口 — 直接投喂)
    RelevanceContext — 内存 events[] + JSON持久化
    每条事件：Timestamp / Source / Input / Response(完整) / ToolsUsed / ToolResults / Blocks
@@ -169,7 +246,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
    distillOnce → 正则匹配个人信息:
      我叫X / 我住在X / 我喜欢X / 我X岁 / 我的工作是X
      → 三元组 → GraphDB.Commit
-```
+```text
 
 ### 向量化：统一多模态空间（主）→ 词嵌入 → TF-IDF（回退）
 
@@ -185,6 +262,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 **② 词嵌入（文本兜底）** — `StaticEmbedder`（`internal/memory/static_embedder.go`）：
 
 **模型来源**（词对齐 300 维）
+
 - 模型来源：ConceptNet Numberbatch（77 语对齐）/ fastText 中文 / fastText 英文
 - 通过 `core.agent.embedding_model_path` 配置（逗号分隔多模型）
 - 路径名含 `numberbatch` → 自动下载 ConceptNet，含 `cc.zh.` → fastText 中文，含 `cc.en.` → fastText 英文
@@ -195,12 +273,13 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 
 | 位置 | 文件 | 用途 | 算法 |
 |------|------|------|------|
+
 > 下表按**函数名**定位，不绑定行号：行号随每次改动漂移，函数名才是稳定锚点。
 > （旧版这里写的是 `context.go:155` / `document.go:206` / `indexer.go:96+111`，
 > 但 memory 重组后 `context.go` 已迁到 `agent/core/`，那些行号早已失效。）
 
 | 位置 | 文件（函数） | 用途 | 算法 |
-|------|------|------|------|
+| ------ | ------ | ------ | ------ |
 | Context Prune | `internal/agent/core/context.go` — `RelevanceContext.Prune` / `PruneWithProtected` | 裁剪低相关性上下文事件 | VectorizeClean → CosineSimilarity(queryVec, evt.Vector) |
 | DocStore Query | `internal/memory/document/document.go` — `Store.Query` / `QueryScored` | 文档记忆召回 | StaticEmbedder.Vectorize（首选）/ TF-IDF（兜底）→ vec.Search |
 | Indexer 实体搜索 | `internal/memory/indexer.go` — `Indexer.vectorSearchEntities` | Graph实体召回 | 向量实体搜索 + jieba关键词 → SQLite LIKE + BFS |
@@ -209,6 +288,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 ### Context 层
 
 `internal/agent/core/context.go` — `RelevanceContext`
+
 - 维护最近事件列表，每次 Append/Prune 写入 JSON 防丢
 - 向量化前统一经 `CleanText` 去模版噪声
 - 三分支 `textForVector`：agent 事件用 Response、用户事件用 Input、cold_storage 用 Input+Response
@@ -221,8 +301,9 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 `internal/memory/document/document.go` — `Store`
 
 **与 Context 同构，只是不直接投喂给模型**：
+
 - 每篇文档 = 检索元数据（`ID`/`Summary`/`Vector`/`DenseVec`/`DenseFP`/`AccessCount`）
-  + **事件列表**（内联正文 + 块）
+  - **事件列表**（内联正文 + 块）
 - 正文内联在块里：文本块的 `Text` 是正文，媒体块的 `Data` 是字节
 - `Doc.Content` 只是**渲染视图**（供摘要/人工阅读/SDK 兼容），不是原文载体
 - 自动预填充：与 Context 共享的向量空间做相似度检索 → 摘要进 system prompt（**只读**，不动层）
@@ -231,14 +312,14 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 
 ## 安全防火墙与设备数据面（内核模块）
 
-###security 内核模块（`internal/kernelmod/security`）
+### security 内核模块（`internal/kernelmod/security`）
 
 安全不是"某项能力"，而是**横在 Core 与全部外部模块之间的一堵墙**：
 
 ```text
 Core ──出向审查──▶ 外部（device / plugin / channel）
 Core ◀─入向审查── 外部
-```
+```text
 
 - **凭据闸门**：出向把明文换成 `@{别名}`、入向清洗返回值、执行前才回填真实值
 - **工具黑白名单 + 沙箱**：路径读写根、网络开关、`..` 逃逸拦截（`deny` 永远优先）
@@ -263,6 +344,7 @@ Core ◀─入向审查── 外部
 `internal/memory/graph.go` — `GraphDB`
 
 **顶层结构仍是三元组，变的是节点的物理表示**：
+
 - SQLite WAL 模式（驱动：mattn/go-sqlite3，CGo）
 - `memory_blocks`（节点，带 vector + fingerprint + modality）+ `memory_block_edges`（边）
 - 三元组 = 【节点】【关系边】【节点】：`putTripleBlocksTx` 落为 `src --edge_type--> dst`
@@ -273,7 +355,7 @@ Core ◀─入向审查── 外部
 ### 记忆工具（LLM 可直接调用）
 
 | 工具 | 作用 |
-|------|------|
+| ------ | ------ |
 | `memory_recall` | 从 Graph 召回 |
 | `memory_commit` | 写入 Graph 三元组 |
 | `memory_merge` | 合并两个实体节点 |
@@ -302,7 +384,7 @@ Core ◀─入向审查── 外部
 > 该层已整体拆除：媒体跟着块走，块 ID 就是媒体的身份。
 
 | 关注点 | 做法 | 为何 |
-|---|---|---|
+| --- | --- | --- |
 | 负载归属 | 字节在 `memory_blocks.data`（BLOB），随块同生共灭 | 一个块要么带文本、要么带字节；不存在块外的字节存储层 |
 | 块身份 | **内容派生** `blk_media_<sha256(trim(mime)+\0+data)[:12]>` | 同内容⇒同 ID⇒`ON CONFLICT` 天然去重（内容寻址当年的好处，现在由块 ID 直接提供） |
 | 检索 | 块携带**自己的多模态向量与指纹**，直接参与 `RecallBlocks` 向量召回 | 纯向量检索，全程不碰负载；负载只在块被选中后按需 `BlockData` 取用 |
@@ -329,13 +411,14 @@ Core ◀─入向审查── 外部
 ### 蒸馏管道
 
 `internal/memory/pipeline/pipeline.go`
+
 - 10 分钟 tick，7 天保留
 - 规则提取三元组（name / location / likes / age / job 模式）
 - 写入 GraphDB
 
 ### 上下文剪枝
 
-```
+```text
 四个独立心跳循环（各自可配置间隔）:
   ├── distillLoop  (distillInterval,  默认30m)
   │   └── distillContext() — Context.Prune → Document
@@ -345,22 +428,21 @@ Core ◀─入向审查── 外部
   │   └── detectEntityMerge() — 实体相似度检测 → LLM 裁决
   └── reviewLoop  (reviewInterval,  默认120m)
       └── reviewRelations() — 关系复审 → SentenceRef 回溯 → LLM 修正
-```
+```text
 
 实体冲突检测启发式（bigram Jaccard > 0.75），走 `selfInputCh` 内部通道，LLM 最终判断是否合并。
-
 
 ## 知识库
 
 `internal/knowledge/knowledge.go`
+
 - 文件目录 `knowledge/<name>/content.md`
 - 独立 TF-IDF 索引，与记忆系统不冲突
 - `knowledge_search` / `knowledge_create` / `knowledge_list`
 
-
 ## Provider 与 Lua 适配层
 
-```
+```text
 Agent
   │
   ▼
@@ -372,7 +454,7 @@ Provider 接口 (Name / Chat / ChatStream)
       ├── HTTP 请求 + adapter.headers
       ├── adapter.transform_response() → 统一格式
       └── 反序列化
-```
+```text
 
 代码：`internal/agent/api/provider.go`
 
@@ -380,13 +462,12 @@ ProviderManager 管理多个源，按注册顺序 fallback。Lua 适配器位于
 
 VM 内置 `json.encode` / `json.decode` / `log` / `http_get` / `http_post`。
 
-
 ## 插件系统
 
 ### 四种加载方式
 
 | 方式 | 注册机制 | 编译 | 用途 |
-|------|----------|------|------|
+| ------ | ---------- | ------ | ------ |
 | 内置插件 | `init()` → `RegisterFactory` | `internal/plugins/` 编译进内核 | webui/cli/agentcli 等 13 个（判定标准见下） |
 | 外部子进程插件 | 握手 + stdio JSON-RPC 反向注册 | `hmapdev build` → `plugin.bin`（普通 Go 二进制） | qq/browser/files 等 |
 | Lua 脚本插件 | 执行 `main.lua` 注册工具 | 无需编译，重启/重载生效 | luademo 等 |
@@ -422,7 +503,7 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 正例（留内置，各有非它不可的理由）：
 
 | 插件 | 依赖的内部能力 |
-|---|---|
+| --- | --- |
 | cli / webui | TrackerAPI、StatusAPI、SupervisorAPI、AdapterAPI |
 | agentcli | **EventPublish**：靠 `Publish(EventTerminalOutput)` 上报终端输出与生命周期，公开 SDK 无 Publish |
 | healthcheck | SelftestAPI（能构造虚拟内核实例做自检） |
@@ -434,7 +515,7 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 反例（已外置，因为它们只要公开能力）：
 
 | 插件 | 实际依赖 |
-|---|---|
+| --- | --- |
 | timer | RegisterTool + Settings + InjectText（公开） |
 | ai_image / files / cmd / localuse / mcp | RegisterTool + Settings（+ 公开 RegisterStage） |
 
@@ -460,7 +541,7 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 插件侧（WebUI / CLI）需要终端面板时，**订阅事件总线自己攒视图**：
 
 | 事件 | 发布者 | 用途 |
-|---|---|---|
+| --- | --- | --- |
 | `EventTerminalOutput` | agentcli | 会话输出、创建/关闭/超时（`running` 翻转） |
 | `EventToolCall` | 内核 | `cmd_run` 历史、`terminal_create/close` 归并 |
 
@@ -474,7 +555,7 @@ agentcli 因此需要 `Publish`（外部插件无此能力），按判定标准�
 ### 内置插件 vs 外部插件
 
 | 维度 | 内置插件 | 外部插件 |
-|------|----------|----------|
+| ------ | ---------- | ---------- |
 | 注册方式 | `init()` 调用 `plugin.RegisterFactory(name, factory)` | 实现 `NewPluginFactory(name, config) (sdk.Plugin, error)` 入口函数 |
 | 编译方式 | 编译进 `homed` 二进制，无需独立编译 | 通过 `hmapdev build` 编译为 `plugin.bin`（普通 Go 二进制，零 cgo），内核 spawn 为子进程 |
 | 分发方式 | 随内核分发，不可独立安装/卸载 | `.hmap` 包（ZIP 归档），通过 WebUI 或 pluginmgr API 安装 |
@@ -485,6 +566,7 @@ agentcli 因此需要 `Publish`（外部插件无此能力），按判定标准�
 | 崩溃恢复 | 无独立恢复机制 | 进程级隔离：崩溃不影响内核，内核摘除其注册面后按退避自动重启（`SetAutoRestart(false)` 可关） |
 
 两者的联系：
+
 - 内置插件的工厂函数 `RegisterFactory` 与外部插件的 `NewPluginFactory` 共用同一个 `NativeFactory` 类型签名
 - `Registry.Load()` 统一处理两者的加载：先查工厂表（内置），无工厂则按 manifest 的 `entry` 分派到 proc / lua / skill 通道
 - 两者使用相同的 `Plugin` 接口和公开 SDK API，工具注册、阶段钩子、输出通道等完全一致
@@ -493,7 +575,7 @@ agentcli 因此需要 `Publish`（外部插件无此能力），按判定标准�
 ### 子进程插件的三个通信面（v1.0.0）
 
 | 面 | 机制 | 为何这么选 |
-|---|---|---|
+| --- | --- | --- |
 | 控制面 | stdio JSON-RPC（NDJSON 帧），当前 82 个 method（权威清单见 `internal/plugin/proc/protocol.go`） | 进程边界即 ABI 边界，无需维护三套平台特定的动态库加载代码 |
 | 数据面 | 共享内存段，**全部子进程共用一块** | 每插件一段会让「内核 ctx → 段 → 插件改 → 回读 ctx」在多插件下退化成副本模型，lost update 原样复现 |
 | 通知面 | 事件环 + 平台通知（Linux eventfd / macOS pipe / Windows Event） | 内核发事件绕不等消费者，流式输出逐 token 发布时任何等待都会造成卡顿 |
@@ -506,6 +588,7 @@ data URL 本身已是 base64 文本，包进二进制传输省不了空间，还
 > （settings / secrets / social / knowledge 等面），故不再回填到历史叙述里。
 
 **子进程生命周期管理**：
+
 - 每子进程一根专职 `waitLoop`（`cmd.Wait()` 唯一调用点）——不依赖 stdout EOF，
   因为插件 fork 的孙子进程（browser 拉 chromium、editdoc 拉 python）继承同一 stdout，
   插件本体死后 EOF 永不到来
@@ -516,14 +599,14 @@ data URL 本身已是 base64 文本，包进二进制传输省不了空间，还
 
 ### PluginSDK 四通道
 
-```
+```text
 插件 ──→ 核心
 
 RegisterTool(name, fn)   ──→  buildToolDefs() / executeToolCall()
 RegisterStage(stage, fn, scope...)  ──→  runStage() 在对应阶段调用（scope 控制全局/仅自己工具）
 Subscribe(event, fn)      ──→  Publish() 通知所有订阅者
 RegisterOutputChannel(name, caps, desc, handler) ──→ output_send__{name} 工具生成
-```
+```text
 
 `internal/sdk/` 桥接外部 SDK 接口到内核，定义完整 PluginSDK：
 
@@ -543,7 +626,7 @@ sdk.DocMemory().InsertWithMedia(doc, attachments)   // 带 Data 的落进 CAS，
 sdk.InjectInputMedia(source, channel, text, blocks) // 媒体在「本轮」就发给模型
 sdk.InjectInputMediaSync(...)                       // 同上并同步等回复
 sdk.InjectInterruptMedia(...)                       // 带媒体的中断，可抢占当前处理
-```
+```text
 
 媒体注入与 `SetToolBlocks` 的区别：后者只能在工具处理函数内部调用，且媒体要等**下一条**
 tool message 才到模型手上；前三个是插件**主动发起一轮带媒体的对话**，媒体随本轮消息发出，
@@ -559,8 +642,7 @@ type Plugin interface {
     Start(sdk *PluginSDK) error
     Stop() error
 }
-```
-
+```text
 
 ## 输出通道系统
 
@@ -574,7 +656,7 @@ type Plugin interface {
 能力标志位：
 
 | 标志 | 值 | 含义 |
-|------|-----|------|
+| ------ | ----- | ------ |
 | CapText | 1 | 纯文本 |
 | CapFile | 2 | 文件 |
 | CapImage | 4 | 图片 |
@@ -584,14 +666,12 @@ type Plugin interface {
 系统提示注入：输出门控规则、多调用支持、长消息拆分。
 子代理权限：`output_send__` 前缀工具允许使用。
 
-
 ## LLM 链事件
 
 - 事件类型 `agent_llm_chain`，每次 LLM 轮次后发射
 - 包含完整 LLM 响应（文本 + 工具调用 + 推理）
 - WebUI 通过 SSE 订阅此事件实现实时显示
 - 插件可通过 EventSubscriber 订阅（外部插件只读）
-
 
 ## 受限外部插件 API
 
@@ -603,9 +683,9 @@ type Plugin interface {
 | EventSubscriber | 订阅 + 发布 | 仅订阅（无 Publish 能力） |
 
 扩展字段：
+
 - Triple 扩展：Confidence、SubjectType、ObjectType
 - Relation 扩展：Confidence
-
 
 ## 输入调度器与中断机制
 
@@ -622,7 +702,7 @@ type Plugin interface {
 ### 四级中断
 
 | 级别 | 含义 | 典型来源 |
-|------|------|----------|
+| ------ | ------ | ---------- |
 | L1 背景 | 完全可等 | QQ/微信消息、批量通知 |
 | L2 消息 | 一般提醒 | 插件希望尽快看到但不紧急的提示 |
 | L3 交互 | 需及时处理 | 定时器到达、终端输出、子 agent 汇报 |
@@ -666,13 +746,13 @@ type Plugin interface {
 
 ### 旧版三路径（仍存在，但已是调度器之下的一层）
 
-```
+```text
 interceptLoop (goroutine)
   ├── InputInterruptChan() ← 定时器/消息通知
   ├── (a) cancelLLM() → 取消 Provider HTTP 请求
   ├── (b) interceptCh → process() 轮前读 [打断消息]
   └── (c) InjectInput() → 空闲时触发新处理
-```
+```text
 
 代码：`internal/agent/core/scheduler.go`（调度器）、`eventloop.go`（拦截循环）。
 
@@ -680,12 +760,12 @@ interceptLoop (goroutine)
 
 `internal/agent/core/tokenbudget.go` — `ComputeTokenBudget`：
 
-```
+```text
 maxCtx        = provider.MaxContextTokens()      // 声明窗口（per-source context_window 优先）
 targetUsage   = min(maxCtx × 0.8, 600000)        // 工作面：封顶 600K
   ├── 记忆召回预算  = (targetUsage - 固定开销) / 3
   └── 上下文事件预算 = 其余 2/3
-```
+```text
 
 ★ **窗口 ≠ 工作面**：源的真实窗口可能到 1M，但接近满窗口时注意力涣散、
 成本与延迟线性上升，因此 `maxTargetTokens=600000` 把工作面单独封顶。
@@ -695,13 +775,12 @@ targetUsage   = min(maxCtx × 0.8, 600000)        // 工作面：封顶 600K
 **预算都是上限而非填充目标**：记忆按相关度召回（没相关就停），时间线按预算从新到旧取。
 实测：预算 400K 时实际注入仍只有几百字符。
 
-
 ## 提示词分层（2026-10-20 定型）
 
 系统提示词**不是**放工具用法的位置。判断一段话该放哪里，看它的**生命周期与可见性**：
 
 | 内容 | 归属 | 为什么 |
-|---|---|---|
+| --- | --- | --- |
 | 身份、对用户的称呼、语气风格、形象 | 人格（`personal/personal.md` 或 `core.agent.personal_prompt`） | 与人设同生共死，跨插件、跨通道稳定 |
 | 单工具：何时用、参数含义、副作用、坑 | 工具 `description` | **跟着工具走**：插件没装/没启动，描述就不在清单里，模型不会误用 |
 | 多步流程、策略、领域知识（如「怎么查 QQ 历史」「怎么改文件」） | skill（`skill/<name>/SKILL.md`） | 渐进披露：索引常驻、全文按需 `skill_info` 取，不占常驻预算 |
@@ -730,10 +809,9 @@ hmapdev 在打包期强制校验这条（`autostart_skill_guard_test.go`）。
 - `RegisterDefault` 插入 ~80 个默认键（含 1 个 LLM 源 seed，其余源由部署时添加）
 - WebUI 设置页 `/api/v1/settings` 读写
 
-
 ## 代码结构
 
-```
+```text
 cmd/homed/main.go          — 入口：组装所有子系统
 cmd/waiter/main.go         — CLI 客户端 (Unix socket)
 internal/
@@ -788,4 +866,4 @@ internal/
 ├── supervisor/            — 守护进程管理
 └── meta/                  — 元信息
     └── meta.go            — Agent 元数据
-```
+```text

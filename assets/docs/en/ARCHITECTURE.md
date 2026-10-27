@@ -2,6 +2,94 @@
 
 # HologramAgent Architecture
 
+## Kernel assembly (modular kernel)
+
+The kernel is not a "run every init from top to bottom" startup sequence; it is a
+**declarative dependency graph**:
+
+```text
+internal/kernelmod/          module registry (core.go at the root)
+  core.go                    Register / Registered / IsRegistered
+  facilities.go              facility-name constants (inter-module protocol, identical to the public SDK)
+  config/ kernelapi/ lua/ llm/ memory/ docstore/ knowledge/ multimodal/
+  onnx/ textmem/ stagehost/ supervisor/ tracker/ migration/ agent/
+  pluginhost/ device/ security/ update/    ← one folder per module
+internal/kernelmod/all/      the single blank-import list (adding a module = one line)
+```text
+
+**Modules declare dependencies, never an order.** `Requires()` means "I need this to be
+**ready**", not "I must run after that" — the order is derived from the graph, and hand
+ordering is exactly what this design removes.
+
+```go
+type Module interface {
+    Name() string        // graph node name
+    Requires() []string  // facilities this module needs
+    Provides() []string  // facilities this module produces
+    Init(ks *KernelState) error
+}
+```text
+
+Assembly lives in `internal/kernelboot` and has two steps:
+
+1. **`Build()` resolves the graph into layers** — missing facilities (misspelled names),
+   duplicate providers and cycles all fail here, and the error lists every declared
+   facility so a typo is visible instead of silent.
+2. **`Run()` executes layer by layer** — modules inside a layer run `Init` **in parallel**;
+   before each layer it re-checks that the facilities actually produced cover that layer's
+   requirements, so a correct plan executed in a broken order is still caught.
+
+**`KernelState` is the kernel's only public data structure**: package-level shared state is
+replaced by typed fields. Modules read dependencies from it and write only their own field.
+A misspelled field or wrong type is a **compile error** instead of a nil at runtime.
+Same-layer modules write different fields, so no field is locked.
+
+**Actual layer topology today** (printed line by line at startup; 20 modules, 6 layers):
+
+```text
+layer 0  config, kernel-api, update
+layer 1  doc-store, knowledge-migration, lua, memory, migration,
+         multimodal, onnx-parser, security, supervisor, tracker
+layer 2  knowledge-store, llm, text-memory
+layer 3  stage-host
+layer 4  agent, plugin-host
+layer 5  device
+```text
+
+Three deliberate placements:
+
+- **`update` sits in layer 0**: the startup self-check, version comparison and
+  upgrade-rollback decision must precede memory/LLM/pluginhost, or a rollback happens
+  after other modules already read the config and they keep the pre-rollback view.
+- **`security` sits in layer 1**: it needs `config` to read keys and the variable store,
+  and must precede every module that reads encrypted `core.llm.*` values (otherwise the
+  ciphertext cannot be decrypted and every provider returns 401).
+- **`device` sits in layer 5**: it needs `agent` to exist before it can mount the tool
+  data plane.
+
+**Group 0 is not in the graph, but must finish first**: platform gate, first heartbeat
+write, logging, opening the config DB, assembling the security block, taking the config
+snapshot. These are **side-effect orderings** ("this must take effect before that"), which
+the graph cannot express (the graph expresses "I produce data for you"). main runs them
+serially; only then does the scheduler take over module assembly.
+
+**`depgraph.bin`**: the dependency graph is generated at **build time** and embedded in the
+binary (together with an `EmbeddedGraphHash` digest). At runtime the digest is verified
+before assembling, so the order is a build artifact rather than something guessed at
+runtime. A corrupt file or digest mismatch fails loudly instead of "starting anyway".
+
+**Facility names are the plugin contract**: the names in the graph (`config` / `kernel-io`
+/ `memory` / `llm` / `docmem` / `knowledge` / `multimodal` / `onnx` / `stagehost` /
+`agent` / `security` / `device` …) match `sdk.Facility*` **character for character**, and a
+judgement guards that. A plugin declares `requires_facilities` in `plugin.json`; a
+misspelled name means the plugin **never starts and nothing is logged** — which is why the
+names ship as SDK constants, so a typo becomes a compile error.
+
+## Cognitive layer (agent runtime)
+
+The sections below describe the **agent runtime** (event loop, context window, stage
+pipeline) — the execution layer that runs after assembly, not the startup mechanism.
+
 ## Architectural Principles
 
 HologramAgent's cognitive architecture consists of three subsystems: the event loop (eventLoop), the context window (RelevanceContext), and the stage pipeline (StageHost). Together they form the orchestration framework. Within this framework, the LLM serves as a scheduled reasoning unit; cognitive continuity is maintained by the event loop, context window, and stage pipeline.
@@ -24,7 +112,7 @@ HologramAgent's cognitive architecture consists of three subsystems: the event l
 
 ### Full Pipeline
 
-```
+```text
 External input (via plugin InjectInput)
         │
         ▼
@@ -53,7 +141,7 @@ eventLoop() → processTextInput()
         ├── before_output stage     Plugins can modify final text
         ├── emitResponse()          Send via output_send
         └── after_output stage      Read-only, cleanup
-```
+```text
 
 Code: `internal/agent/core/process.go` — `process()` is the main tool loop
 
@@ -85,7 +173,7 @@ Setting `ctx.Response` at any stage jumps to `after_output`.
 
 ### Memory Flow
 
-```
+```text
 ① Context (Working Window)
    RelevanceContext — In-memory events[] + JSON persistence
    Append: Each input, CleanTemplateText → three-branch vector(textForVector)
@@ -130,7 +218,7 @@ Setting `ctx.Response` at any stage jumps to `after_output`.
    distillOnce → regex match personal info:
      我叫X / 我住在X / 我喜欢X / 我X岁 / 我的工作是X
      → triples → GraphDB.Commit
-```
+```text
 
 ### Vectorization: Unified Multimodal Space (primary) → Word Embedding → TF-IDF (fallback)
 
@@ -194,7 +282,7 @@ every external module:
 ```text
 Core ──outbound inspection──▶ external (device / plugin / channel)
 Core ◀─inbound inspection── external
-```
+```text
 
 - **Credential gate**: outbound plaintext becomes `@{alias}`, inbound results are scrubbed,
   real values are filled back only right before execution
@@ -298,7 +386,7 @@ switched), fetching bytes on demand via `BlockData`. Modalities outside the spac
 
 ### Context Pruning
 
-```
+```text
 Four independent heartbeat loops (each with configurable interval):
   ├── distillLoop  (distillInterval,  default 30m)
   │   └── distillContext() — Context.Prune → Document
@@ -308,7 +396,7 @@ Four independent heartbeat loops (each with configurable interval):
   │   └── detectEntityMerge() — Entity similarity detection → LLM decision
   └── reviewLoop  (reviewInterval,  default 120m)
       └── reviewRelations() — Relation review → SentenceRef recall → LLM fix
-```
+```text
 
 Entity conflict detection heuristic (bigram Jaccard > 0.75), routed through `selfInputCh` internal channel, LLM makes the final merge decision.
 
@@ -323,7 +411,7 @@ Entity conflict detection heuristic (bigram Jaccard > 0.75), routed through `sel
 
 ## Provider & Lua Adapter Layer
 
-```
+```text
 Agent
   │
   ▼
@@ -335,7 +423,7 @@ Provider Interface (Name / Chat / ChatStream)
       ├── HTTP request + adapter.headers
       ├── adapter.transform_response() → unified format
       └── Deserialize
-```
+```text
 
 Code: `internal/agent/api/provider.go`
 
@@ -489,14 +577,14 @@ Common ground:
 
 ### PluginSDK Four Channels
 
-```
+```text
 Plugin ──→ Kernel
 
 RegisterTool(name, fn)   ──→  buildToolDefs() / executeToolCall()
 RegisterStage(stage, fn, scope...)  ──→  runStage() called at corresponding phase (scope: global / own-tools-only)
 Subscribe(event, fn)      ──→  Publish() notify all subscribers
 RegisterOutputChannel(name, caps, desc, handler) ──→ output_send__{name} tool generation
-```
+```text
 
 `internal/sdk/` bridges external SDK interface to kernel, defines complete PluginSDK:
 
@@ -516,7 +604,7 @@ sdk.DocMemory().InsertWithMedia(doc, attachments)   // attachments with Data lan
 sdk.InjectInputMedia(source, channel, text, blocks) // media reaches the model in *this* turn
 sdk.InjectInputMediaSync(...)                       // same, and waits for the reply
 sdk.InjectInterruptMedia(...)                       // media-bearing interrupt, can preempt current processing
-```
+```text
 
 How media injection differs from `SetToolBlocks`: the latter is only callable inside a tool handler
 and its media reaches the model with the **next** tool message; these three let a plugin
@@ -535,7 +623,7 @@ type Plugin interface {
     Start(sdk *PluginSDK) error
     Stop() error
 }
-```
+```text
 
 
 ## Output Channel System
@@ -652,13 +740,13 @@ Design: [`docs/zh/resident-subagent-design.md`](../../../docs/zh/resident-subage
 
 ### Legacy three-path view (still present, now a layer beneath the scheduler)
 
-```
+```text
 interceptLoop (goroutine)
   ├── InputInterruptChan() ← Timer/message notifications
   ├── (a) cancelLLM() → Cancel Provider HTTP request
   ├── (b) interceptCh → process() pre-loop read [interrupt message]
   └── (c) InjectInput() → Trigger new processing when idle
-```
+```text
 
 Code: `internal/agent/core/scheduler.go` (scheduler), `eventloop.go` (intercept loop).
 
@@ -666,12 +754,12 @@ Code: `internal/agent/core/scheduler.go` (scheduler), `eventloop.go` (intercept 
 
 `internal/agent/core/tokenbudget.go` — `ComputeTokenBudget`:
 
-```
+```text
 maxCtx        = provider.MaxContextTokens()      // declared window (per-source context_window wins)
 targetUsage   = min(maxCtx × 0.8, 600000)        // working band, capped at 600K
   ├── memory recall budget = (targetUsage - fixed) / 3
   └── context events budget = remaining 2/3
-```
+```text
 
 ★ **Window ≠ working band**: a source's real window may reach 1M, but near-full windows
 lose attention and cost/latency rise linearly, so `maxTargetTokens=600000` caps the
@@ -727,7 +815,7 @@ being installed. hmapdev enforces this at packaging time
 
 ## Code Structure
 
-```
+```text
 cmd/homed/main.go          — Entry: assembles all subsystems
 cmd/waiter/main.go         — CLI client (Unix socket)
 internal/
@@ -782,4 +870,4 @@ internal/
 ├── supervisor/            — Daemon management
 └── meta/                  — Meta information
     └── meta.go            — Agent metadata
-```
+```text
