@@ -635,10 +635,25 @@ func (a *Agent) renderedToolResultsOf(e *ContextEvent) []string {
 	if a != nil && a.stageHost != nil {
 		noMem = a.stageHost.NoMemoryToolNames()
 	}
+	// ★ 超长结果不渲染正文，只给**句柄**（2026-10-27 用户口径：
+	//   渲染工具回执，但超长的才不渲染 —— 它们已经在工具环里）。
+	//
+	// 为什么不能渲染它的预览：预览本身是多行文本，塞进时间线会把历史压成
+	// "半截结果"，而模型真正需要的是「知道有这么一份东西、能从哪儿读」。
+	// 正文按需用 toolresult_read(event_id, offset, limit) 取，信息不丢。
+	stored := make(map[string]ToolResultStore, len(e.ToolResultStores))
+	for _, st := range e.ToolResultStores {
+		stored[st.Tool] = st
+	}
 	out := make([]string, 0, len(e.ToolResults))
 	skipped := 0
 	for _, tr := range e.ToolResults {
 		if noMem[tr.Name] {
+			continue
+		}
+		if st, ok := stored[tr.Name]; ok {
+			out = append(out, fmt.Sprintf("%s: [stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]",
+				tr.Name, st.TotalBytes, st.TotalLines, e.ID))
 			continue
 		}
 		txt := tr.Output

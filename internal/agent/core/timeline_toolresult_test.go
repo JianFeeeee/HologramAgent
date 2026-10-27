@@ -67,3 +67,33 @@ func TestTimelineToolResultsBounded(t *testing.T) {
 		t.Fatalf("省略提示应说明还有几条，实际: %q", got[len(got)-1])
 	}
 }
+
+// 超长结果（已落盘进工具环）在时间线里**不渲染正文**，只给句柄。
+//
+// 用户口径（2026-10-27）：渲染工具回执，但超长的才不渲染 —— 那种结果
+// 已经在 toolresult_store 里，模型用 toolresult_read(event_id, offset, limit)
+// 按需取全文。渲染它的预览会把历史压成半截结果，信息还不如一个句柄。
+func TestTimelineOversizedResultRendersHandleOnly(t *testing.T) {
+	a := newTimelineTestAgent(nil)
+	e := &ContextEvent{
+		ID:    "evt_oversize_1",
+		Input: "跑个大数据",
+		ToolResults: []ToolResultItem{
+			{Name: "cmd_run", Output: "预览：第 1 行\n第 2 行\n第 3 行"},
+			{Name: "qq_get_message", Output: `{"content":"短回执"}`},
+		},
+		ToolResultStores: []ToolResultStore{
+			{Tool: "cmd_run", File: "tool_0.txt", TotalBytes: 36783, TotalLines: 900},
+		},
+	}
+	got := strings.Join(a.renderedToolResultsOf(e), " | ")
+	if strings.Contains(got, "预览") || strings.Contains(got, "第 3 行") {
+		t.Fatalf("超长结果不得渲染正文，实际: %q", got)
+	}
+	if !strings.Contains(got, "toolresult_read") || !strings.Contains(got, "evt_oversize_1") {
+		t.Fatalf("超长结果必须给出句柄与读法，实际: %q", got)
+	}
+	if !strings.Contains(got, "短回执") {
+		t.Fatalf("未落盘的工具回执照旧渲染，实际: %q", got)
+	}
+}
