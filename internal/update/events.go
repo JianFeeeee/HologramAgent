@@ -42,6 +42,16 @@ func publishProgress(bus *events.Bus, scope, name, step, detail string) {
 }
 
 // publishResult 发布升级最终结果（成功或失败，含回滚轨迹）。
+//
+// ★ error 字段**总是**出现在 payload 里（成功时为空串）。
+//
+// 此前失败路径把 errMsg 收进一个 `if errMsg != "" { _ = errMsg }` 分支
+// 直接丢掉了 —— 于是订阅方只能看到 ok=false，**看不到失败原因**，
+// 而"为什么失败"正是用户唯一想知道的。字段固定存在（即使为空）还让
+// 订阅方不必做"字段有没有"的兼容分支。
+//
+// ★ 顺序约定：调用方必须在动作**之前**发事件（见文件头注释）。
+// 成功路径也一样：result 发出后调用方可能立即重启，进程随即消失。
 func publishResult(bus *events.Bus, scope, name string, ok bool, from, to string, rolledBack bool, errMsg string) {
 	if bus == nil {
 		return
@@ -56,12 +66,9 @@ func publishResult(bus *events.Bus, scope, name string, ok bool, from, to string
 			"from":        from,
 			"to":          to,
 			"rolled_back": rolledBack,
+			"error":       errMsg,
 		},
 	})
-	if errMsg != "" {
-		// 错误单独放，避免成功路径也带一个空 error 字段
-		_ = errMsg
-	}
 }
 
 // publishCheck 发布一次更新检查结果（只读，不改动任何东西）。

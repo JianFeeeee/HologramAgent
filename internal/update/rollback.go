@@ -170,11 +170,16 @@ func RollbackIfUnconfirmed(dataDir, binPath string) (bool, string, string, error
 	}
 
 	// 先备份"当前这个坏的"——万一回滚目标也有问题，至少能回到现场
+	//
+	// ★ 落在 dataDir 下，不是二进制目录：二进制目录通常是 /usr/local/bin，
+	// 只读（ProtectSystem=strict）⇒ MkdirAll 静默失败（旧代码没查 err），
+	// 现场丢失且日志里只有一条无关的 copy 失败。
 	ts := NowStamp()
-	brokenDir := filepath.Join(filepath.Dir(binPath), "homed-broken-"+ts)
-	os.MkdirAll(brokenDir, 0755)
-	if err := CopyFile(binPath, filepath.Join(brokenDir, "homed")); err != nil {
+	brokenDir := BrokenDirPath(dataDir, ts)
+	if err := os.MkdirAll(brokenDir, 0755); err != nil {
 		// 备份失败不阻断回滚：回滚是主线，留现场是支线
+		log.Printf("[update] create broken-binary dir %s failed: %v", brokenDir, err)
+	} else if err := CopyFile(binPath, filepath.Join(brokenDir, "homed")); err != nil {
 		log.Printf("[update] backup of broken binary failed: %v", err)
 	} else {
 		log.Printf("[update] broken binary kept at %s", brokenDir)

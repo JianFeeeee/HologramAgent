@@ -246,6 +246,34 @@ func FileSize(p string) int64 {
 	return 0
 }
 
+// DataDirEnv 是部署方声明数据目录的环境变量名。
+const DataDirEnv = "HOMEAGENT_DATA_DIR"
+
+// ResolveDataDir 推导数据目录（升级确认标记、备份、坏二进制留档的落点）。
+//
+// 三端（CLI / WebAPI / agent 工具）**必须**用同一份推导逻辑：pending 标记
+// 落在哪，第 0 层 update 模块就从哪读。两边一旦漂移，升级启动失败时就
+// **静默不回滚**，而症状（崩溃循环）与标记无关，极难反查。
+//
+// 推导顺序：
+//
+//	① HOMEAGENT_DATA_DIR（部署方显式声明，唯一可靠的来源）
+//	② <exe 所在目录>/data 兜底（/usr/local/bin/homed → /usr/local/bin/data）
+//
+// ★ 兜底大概率**不是**内核 `--data` 的真实值，所以它只是"有个地方可写"的
+// 最后手段，不是正确解 —— 部署方应显式设置 HOMEAGENT_DATA_DIR。
+// 也**不**写死任何生产绝对路径（如 /home/newqqagent）：目录/用户迁移后它
+// 指向一个不存在的目录，标记落错地方 ⇒ 静默不回滚（2026-10-26 迁移教训）。
+func ResolveDataDir(exePath string) string {
+	if d := strings.TrimSpace(os.Getenv(DataDirEnv)); d != "" {
+		return d
+	}
+	if exePath == "" {
+		exePath = KernelBinaryPath()
+	}
+	return filepath.Join(filepath.Dir(exePath), "data")
+}
+
 // Apply 执行真实升级：预检 → 备份 → 写 pending → 原子替换。
 //
 // ## ★ 本函数**不重启**内核
@@ -267,6 +295,19 @@ func FileSize(p string) int64 {
 // 每一步失败都往回退：替换中途失败 ⇒ 立即用备份还原并清标记
 // （此时尚未重启，回滚在本进程内完成，机器始终可启动）。
 func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, error) {
+	// ── ★ 最前置的拒绝条件：没有 dataDir 就没有回滚能力，一律不升级 ──
+	//
+	// pending 标记、备份目录、坏二进制留档全都落在 dataDir 下。空 dataDir
+	// 意味着标记写不进去 ⇒ 新内核起不来时没有任何人知道该回滚。
+	// 这种升级不是升级，是赌运气，赌输的代价是机器进崩溃循环。
+	//
+	// 所以在**动任何文件之前**直接失败，把问题交给调用方去修环境
+	// （设置 HOMEAGENT_DATA_DIR），而不是悄悄产出一个"看起来成功、
+	// 实际没有回滚能力"的升级。
+	if dataDir == "" {
+		return nil, fmt.Errorf("dataDir 为空，拒绝升级：无 pending 标记就无回滚能力")
+	}
+
 	newBin := FindFile(root, "homed")
 	if newBin == "" {
 		return nil, fmt.Errorf("包内无 homed")
@@ -281,8 +322,11 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 	fmt.Printf("\n== 预检通过 ==\n新内核 %s 可执行\n", nv.Version)
 
 	// ── 备份：只备本次会动的文件（不整目录拷贝，那是几百 MB）──
+	// ★ 备份必须落在 dataDir 下，不能是 /root：
+	// 服务以 ProtectSystem=strict + ReadWritePaths=/var/lib/hologram 运行，
+	// 非 root 身份对 /root 没有写权限 ⇒ MkdirAll 必 EACCES ⇒ 首次升级必挂。
 	ts := NowStamp()
-	backup := filepath.Join("/root", "homed-upgrade-backup-"+ts)
+	backup := filepath.Join(dataDir, BackupDirPrefix+ts)
 	if err := os.MkdirAll(backup, 0755); err != nil {
 		return nil, fmt.Errorf("建备份目录: %w", err)
 	}
@@ -306,29 +350,25 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 	if v, verr := ReadBinVersion(binPath); verr == nil {
 		curVer = v
 	}
-	if dataDir != "" {
-		if perr := MarkPendingUpgrade(dataDir, PendingRecord{
-			FromVer:    curVer.Version,
-			FromCommit: curVer.Commit,
-			ToVer:      nv.Version,
-			ToCommit:   nv.Commit,
-			BackupDir:  backup,
-		}); perr != nil {
-			// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力，
-			// 而不带回滚的升级等于赌运气。
-			return nil, fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
-		}
-		fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
+	if perr := MarkPendingUpgrade(dataDir, PendingRecord{
+		FromVer:    curVer.Version,
+		FromCommit: curVer.Commit,
+		ToVer:      nv.Version,
+		ToCommit:   nv.Commit,
+		BackupDir:  backup,
+	}); perr != nil {
+		// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力，
+		// 而不带回滚的升级等于赌运气。
+		return nil, fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
 	}
+	fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
 
 	// restore 在替换失败时把已动的文件还原（尚未重启，机器仍可启动）。
 	restore := func(cause error) (*Outcome, error) {
 		publishProgress(bus, "kernel", "", "rollback", cause.Error())
 		fmt.Printf("\n❌ %v\n== 就地还原（尚未重启，机器仍可启动）==\n", cause)
-		if dataDir != "" {
-			if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
-				fmt.Printf("  ⚠️ 清除升级确认标记失败: %v\n", cerr)
-			}
+		if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
+			fmt.Printf("  ⚠️ 清除升级确认标记失败: %v\n", cerr)
 		}
 		for _, t := range targets {
 			src := filepath.Join(backup, filepath.Base(t))
@@ -355,6 +395,17 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 	}
 	fmt.Println("已替换 homed")
 	publishProgress(bus, "kernel", "", "ready", "新内核已就位，等待重启")
+
+	// ★ 成功路径也必须发 result 事件。
+	//
+	// 此前只有失败路径（restore）发 result，成功路径什么都不发 ⇒ 订阅方
+	// 只能靠"进度停在最后一步且没看到 failed"来猜成功，猜错的方向是
+	// "以为还在升级"。先发事件再返回：返回后调用方可能立刻重启，进程消失。
+	publishResult(bus, "kernel", "", true, curVer.Version, nv.Version, false, "")
+
+	// 备份必须 GC：否则每次升级都在 dataDir 下留几十 MB，旧注释写
+	// "确认稳定后可删"，但全仓从来没有一行删除逻辑。
+	PruneOldBackups(dataDir)
 
 	return &Outcome{
 		From:      curVer,
