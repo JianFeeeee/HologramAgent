@@ -644,6 +644,68 @@ func TestMarkPendingUpgrade_IsAtomic(t *testing.T) {
 	}
 }
 
+// TestMarkPendingUpgrade_PreservesOldMarkerOnFailure 钉住 B2 的第二半：
+// **写失败时不得破坏已有的旧 marker**。
+//
+// ★ 为什么 IsAtomic 不够（这是实测出来的缺口）：
+// TestMarkPendingUpgrade_IsAtomic 断言的是「最终状态对」——不留 .tmp、
+// 内容可解析、可覆写。把 MarkPendingUpgrade 整个退回 os.WriteFile
+// 这三条**全都满足**，于是那条判据对「原子写」这个真 bug 是哑的。
+//
+// 真正能区分两者的可观测差异只有一个：**失败路径上旧文件还在不在**。
+//
+//	· 原子写：新内容写到 .tmp 崩掉 ⇒ 目标文件仍是**完整旧版本**
+//	· 原地覆写（os.WriteFile / tmp := p）：O_TRUNC 先清空再写，
+//	  中途失败 ⇒ 目标文件被**截断**，旧 marker 永久丢失
+//
+// 而丢掉旧 marker 的后果正是 B2 要防的那个事故：不知道上次升了什么，
+// 也失去回滚依据。所以这里用「把 tmp 路径占成目录」逼 OpenFile 必失败
+// （EISDIR，稳定可复现，不依赖权限/磁盘/平台），再断言旧 marker 原样还在。
+//
+// ★ 变异纪律：把 rollback.go 的 `tmp := p + ".tmp"` 改成 `tmp := p`
+// （即退回原地覆写），本用例必红 —— 那时 OpenFile 打开的是 marker 本身，
+// O_TRUNC 立刻把它清空，FromVer 变成新值。
+func TestMarkPendingUpgrade_PreservesOldMarkerOnFailure(t *testing.T) {
+	dir := t.TempDir()
+
+	// ① 先写一个完好的旧 marker（模拟「上次升级已有待确认记录」）。
+	old := PendingRecord{FromVer: "1.0.0", FromCommit: "oldcommit", ToVer: "1.1.0", ToCommit: "newok"}
+	if err := MarkPendingUpgrade(dir, old); err != nil {
+		t.Fatalf("预置旧 marker: %v", err)
+	}
+
+	// ② 把临时文件路径占成目录 ⇒ OpenFile(O_CREATE|O_WRONLY) 必 EISDIR。
+	// 这样「写新 marker」一定在中途失败，且失败点与磁盘满/掉电同类
+	// （已打开目标、还没写完全部内容）。
+	tmpPath := pendingPath(dir) + ".tmp"
+	if err := os.Mkdir(tmpPath, 0755); err != nil {
+		t.Fatalf("占用 tmp 路径: %v", err)
+	}
+
+	// ③ 写新的 marker 必须**报错**（不能假装写成功）。
+	// 用 Error 而非 Fatal：让下面的 ④ 也跑完，把「旧 marker 被破坏」
+	// 这个真正的事故形态一并报出来（两个症状都属于同一个病）。
+	if err := MarkPendingUpgrade(dir, PendingRecord{FromVer: "2.0.0", ToVer: "2.1.0"}); err == nil {
+		t.Error("tmp 路径不可写时 MarkPendingUpgrade 必须返回 error（否则调用方以为标记已就绪）")
+	}
+
+	// ④ 旧 marker 必须**原样保留**（这是 B2 的核心承诺）。
+	got, rerr := ReadPendingUpgrade(dir)
+	if rerr != nil {
+		t.Fatalf("写失败后旧 marker 应仍可解析（不允许留下半截 JSON）: %v", rerr)
+	}
+	if got == nil {
+		t.Fatal("写失败后旧 marker 丢了：没有回滚依据，且不知道上次升了什么")
+	}
+	if got.FromVer != "1.0.0" {
+		t.Errorf("旧 marker 被破坏了：FromVer 应为 1.0.0（旧值），实际 %q —— "+
+			"说明写新 marker 时原地覆写了目标文件（原子性丢失）", got.FromVer)
+	}
+	if got.ToVer != "1.1.0" {
+		t.Errorf("旧 marker 被破坏了：ToVer 应为 1.1.0（旧值），实际 %q", got.ToVer)
+	}
+}
+
 // ── 确认分支不得使用推断值（B1 的同一个病，转移到了 confirmed）──
 
 // TestRollback_ConfirmedBranchIgnoresInferredVersion 钉住"确认新版已跑起来"
