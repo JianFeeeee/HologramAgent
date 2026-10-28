@@ -42,20 +42,17 @@ import (
 )
 
 // fail 打印错误并以非零退出（CLI 专属；库内部一律返回 error）。
-// upgradeDataDir 推导数据目录（升级确认标记的落点）。
+// upgradeDataDir 推导数据目录（升级确认标记 / 备份的落点）。
 //
 // 与生产一致：内核按 `--data <dir>` 运行，标记必须落在同一个 dataDir 下，
-// 否则 update 模块读不到它。推导规则：
+// 否则 update 模块读不到它。
 //
-//	① 环境变量 HOMEAGENT_DATA_DIR（部署方显式指定）
-//	② 二进制同级的 ../newqqagent（/usr/local/bin/homed → /home/newqqagent）
-//	   —— 太脆弱，改为最常见的部署形态：/usr/local/bin/homed → /home/newqqagent
-//	③ 退回 /home/newqqagent（本仓默认部署路径）
+// ★ 三端共用 update.ResolveDataDir（CLI / WebUI / agent 工具），
+// 不再在这里写死 /home/newqqagent：硬编码在生产目录迁移后会让标记和备份
+// 落到一个**不存在的路径**，而第 0 层 update 从真实的 --data 读 ⇒ 永远
+// 读不到 ⇒ 升级失败时静默不回滚（2026-10-26 迁移教训）。
 func upgradeDataDir(binPath string) string {
-	if d := strings.TrimSpace(os.Getenv("HOMEAGENT_DATA_DIR")); d != "" {
-		return d
-	}
-	return "/home/newqqagent"
+	return update.ResolveDataDir(binPath)
 }
 
 func fail(format string, a ...interface{}) {

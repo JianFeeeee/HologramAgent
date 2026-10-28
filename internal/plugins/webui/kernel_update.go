@@ -140,15 +140,12 @@ func currentKernelVersion() *update.BinVersion {
 	return v
 }
 
-// dataDirOf 推导数据目录（升级确认标记的落点）。
+// dataDirOf 推导数据目录（升级确认标记 / 备份的落点）。
 //
-// 与内核 `--data` 必须一致，否则第 0 层 update 模块读不到 pending 标记。
-// 优先用环境变量显式指定（部署方知道自己在哪），否则退回本机生产路径。
+// ★ 三端共用 update.ResolveDataDir：pending 标记落在哪，第 0 层 update
+// 模块就从哪读。两边一漂移，升级启动失败时就**静默不回滚**。
+// 返回空的情况已不存在（ResolveDataDir 有 exe 同级 data 兜底），
+// 但仍不写死任何生产绝对路径：迁移后它指向不存在的目录（静默不回滚）。
 func dataDirOf(binPath string) string {
-	if d := os.Getenv("HOMEAGENT_DATA_DIR"); d != "" {
-		return d
-	}
-	// ★ 不写死生产路径：迁移后它会指向一个不存在的目录，
-	// 让升级 pending 标记落错地方（静默不回滚）。返回空由调用方报错。
-	return ""
+	return update.ResolveDataDir(binPath)
 }
