@@ -45,6 +45,22 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	st := &upd.State{}
 	ks.Update = st
 
+	// ⓪ 把内核**真实**的 --data 注入 update 包。
+	//
+	// 进程内调用方（pluginmgr / webui）用 upd.KernelDataDir() 取值，
+	// 而不是自己推导路径。推导必错：生产是
+	//
+	//	ExecStart=/usr/bin/homed --role=guard --data /var/lib/hologram
+	//
+	// 而“exe 同级 data”这种推导会得出 /usr/bin/data（只读目录，建备份必 EROFS；
+	// 且 pending 标记落到内核读不到的地方 ⇒ 静默不回滚）。
+	upd.SetKernelDataDir(ks.DataDir)
+	if ks.DataDir == "" {
+		// 不阻断启动（第 0 层职责是回滚判定，不是参数校验），
+		// 但必须响亮：此时任何升级都会被 Apply 的守卫拒绝。
+		log.Printf("[update] ks.DataDir 为空：内核升级将一律被拒绝（无回滚能力）")
+	}
+
 	bin := upd.KernelBinaryPath()
 	st.BinaryPath = bin
 
@@ -61,6 +77,15 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	}
 
 	// ② 上一次升级的回滚判定
+	//
+	// ★ rerr != nil 必须中止启动：继续装配等于用一个**已知**回滚失败的
+	// 二进制（RollbackIfUnconfirmed 已保证只在"回滚成功且回读校验通过"时
+	// 返回 nil，其余失败均不清 marker）。
+	//
+	// ★ 但 marker **损坏**（掉电截断）不算失败：RollbackIfUnconfirmed
+	// 已经把坏 marker 改名留存并返回 (false,nil)，它自己就吞掉了那种情形。
+	// 早前版本在这里 `if rerr != nil { return rerr }` 之前把解析错误原样
+	// 上抛 ⇒ 内核拒启动、且走不到回滚分支 ⇒ 既起不来也回滚不了。
 	rolled, from, to, rerr := upd.RollbackIfUnconfirmed(ks.DataDir, bin)
 	if rerr != nil {
 		// 回滚失败必须响亮：继续装配等于用一个已知起不来的版本

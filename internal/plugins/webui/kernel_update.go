@@ -140,15 +140,15 @@ func currentKernelVersion() *update.BinVersion {
 	return v
 }
 
-// dataDirOf 推导数据目录（升级确认标记的落点）。
+// dataDirOf 返回内核**真实**的数据目录（ks.DataDir，来自 `-data`）。
 //
-// 与内核 `--data` 必须一致，否则第 0 层 update 模块读不到 pending 标记。
-// 优先用环境变量显式指定（部署方知道自己在哪），否则退回本机生产路径。
+// ★ 取注入值，不做任何推导：pending 标记落在哪，第 0 层 update 模块就从
+// 哪读；两边一漂移，升级失败时就**静默不回滚**。而“猜一个看起来合理的
+// 路径”（曾用过 env → exe 同级 data）会让 Apply 的空值守卫变成死代码——
+// 实测生产是 `--data /var/lib/hologram`，而 exe 推导得 /usr/bin/data
+// （只读目录，建备份必 EROFS）。
+//
+// 拿不到就返回空串，由 Apply 拒绝升级并报错。
 func dataDirOf(binPath string) string {
-	if d := os.Getenv("HOMEAGENT_DATA_DIR"); d != "" {
-		return d
-	}
-	// ★ 不写死生产路径：迁移后它会指向一个不存在的目录，
-	// 让升级 pending 标记落错地方（静默不回滚）。返回空由调用方报错。
-	return ""
+	return update.KernelDataDir()
 }

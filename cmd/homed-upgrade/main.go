@@ -30,6 +30,7 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
 	"os"
@@ -38,24 +39,95 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
 // fail 打印错误并以非零退出（CLI 专属；库内部一律返回 error）。
-// upgradeDataDir 推导数据目录（升级确认标记的落点）。
+// upgradeDataDir 返回内核**真实**的数据目录（升级确认标记与备份的落点）。
 //
-// 与生产一致：内核按 `--data <dir>` 运行，标记必须落在同一个 dataDir 下，
-// 否则 update 模块读不到它。推导规则：
+// ## ★ 不猜路径，只认两个显式来源
 //
-//	① 环境变量 HOMEAGENT_DATA_DIR（部署方显式指定）
-//	② 二进制同级的 ../newqqagent（/usr/local/bin/homed → /home/newqqagent）
-//	   —— 太脆弱，改为最常见的部署形态：/usr/local/bin/homed → /home/newqqagent
-//	③ 退回 /home/newqqagent（本仓默认部署路径）
-func upgradeDataDir(binPath string) string {
-	if d := strings.TrimSpace(os.Getenv("HOMEAGENT_DATA_DIR")); d != "" {
+// ① `-data <dir>`（人工直接给，最高优先）
+// ② `config.db` 里的 `core.daemon.data_dir`
+//
+// 都拿不到就返回**空串**：调用方会因此拒绝 `-apply` 并说明怎么修。
+// 不许"用一个看起来合理的路径顶上"（曾用 `/home/newqqagent` 硬编码，
+// 也曾用 `<exe目录>/data` 兜底）：
+//
+//	· 硬编码在目录/用户迁移后指向**不存在的路径**
+//	· exe 兜底实测得出 /usr/bin/data，而生产实际是
+//	  ExecStart=/usr/bin/homed --role=guard --data /var/lib/hologram
+//	  ⇒ 建备份目录 EROFS（/usr/bin 只读）⇒ 升级必挂；
+//	  ⇒ 标记落到内核读不到的位置 ⇒ 升级失败静默不回滚
+//
+// 返回空比返回一个错的值安全得多：前者被守卫拦住，后者要等出事才知道。
+func upgradeDataDir(explicit string) string {
+	if d := strings.TrimSpace(explicit); d != "" {
 		return d
 	}
-	return "/home/newqqagent"
+	return dataDirFromConfigDB()
+}
+
+// dataDirFromConfigDB 从内核配置库读 core.daemon.data_dir。
+//
+// ## 为什么要猜 config.db 的位置（而 dataDir 本身不猜）
+//
+// 循环依赖：data_dir 就在 config.db 里，而 config.db 就在 data_dir 里。
+// 所以只能按“部署惯例”去找它：二进制同级的 ../newqqagent/config.db
+// （本仓默认部署形态）+ 几个常见位置。这是找**线索**，不是拿它当结论：
+// 读到的 core.daemon.data_dir 是内核自己写下的值，而非我们的推测。
+//
+// 只读打开（PRAGMA query_only=1），不建表、不迁移 —— 升级 CLI 绝不能
+// 因为查询配置而改动内核的库（WAL 模式下写入还会与运行中的内核抢锁）。
+func dataDirFromConfigDB() string {
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "homed-upgrade"
+	}
+	// 候选顺序：安装形态（<prefix>/bin/homed-upgrade → <prefix>/newqqagent）
+	// 在前，其它常见布局在后。找到第一个能读的即止。
+	prefixes := []string{filepath.Dir(filepath.Dir(bin))}
+	if home, herr := os.UserHomeDir(); herr == nil && home != "" {
+		prefixes = append(prefixes, home)
+	}
+	var candidates []string
+	for _, p := range prefixes {
+		candidates = append(candidates, filepath.Join(p, "newqqagent", "config.db"))
+	}
+	candidates = append(candidates, "/var/lib/hologram/config.db", "/home/newqqagent/config.db")
+
+	for _, dbPath := range candidates {
+		if !update.FileExists(dbPath) {
+			continue
+		}
+		if d := readDataDirFromConfigDB(dbPath); d != "" {
+			fmt.Printf("数据目录来源: %s 的 core.daemon.data_dir = %s\n", dbPath, d)
+			return d
+		}
+	}
+	return ""
+}
+
+// readDataDirFromConfigDB 只读地取一个 config.db 里的 core.daemon.data_dir。
+func readDataDirFromConfigDB(dbPath string) string {
+	// 不 import internal/config：那会连带注册表的建表/播种逻辑，
+	// 对一个只读查询来说太重且会写盘。直接一个只读连接。
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	// query_only：结构性地堵死写入（不依赖调用方自觉）。
+	if _, err := db.Exec("PRAGMA query_only=1"); err != nil {
+		return ""
+	}
+	var v string
+	if err := db.QueryRow(`SELECT value FROM config WHERE key = 'core.daemon.data_dir'`).Scan(&v); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v)
 }
 
 func fail(format string, a ...interface{}) {
@@ -69,6 +141,9 @@ func main() {
 	binPath := flag.String("bin", "/usr/local/bin/homed", "当前运行的内核二进制路径")
 	pluginsDir := flag.String("plugins", "/home/newqqagent/plugins", "外部插件目录（探测兼容性用）")
 	apply := flag.Bool("apply", false, "真正执行升级（默认只探测+预检）")
+	// ★ 显式的 --data 优先；不给则从 config.db 的 core.daemon.data_dir 读。
+	// 两者都拿不到时 -apply 直接拒绝（而不是猜一个路径）。
+	dataDirFlag := flag.String("data", "", "内核数据目录（= 内核的 --data；不填则从 config.db 的 core.daemon.data_dir 读）")
 	unit := flag.String("unit", "homeagent", "重启用的 systemd 单元名（仅 -apply 时使用）")
 	flag.Parse()
 
@@ -150,7 +225,18 @@ func main() {
 	}
 
 	// ── 6. 真正升级：预检 → 备份 → pending → 原子替换（**不含重启**）──
-	out, err := update.Apply(root, *binPath, newDG, upgradeDataDir(*binPath), nil)
+	//
+	// ★ dataDir 必须在**动手之前**解析失败就退出：它是备份、pending 标记、
+	// 回滚坏二进制的共同落点。拿不到就拒绝升级，而不是猜一个。
+	dataDir := upgradeDataDir(*dataDirFlag)
+	if dataDir == "" {
+		fail("无法确定内核数据目录（升级确认标记与备份无处可放 ⇒ 无回滚能力）\n"+
+			"请显式指定：-data <dir>（与内核 unit 的 --data 一致，如 systemctl show %s -p ExecStart）\n"+
+			"或确认 %s 存在且含 core.daemon.data_dir", *unit, "/home/newqqagent/config.db")
+	}
+	fmt.Printf("数据目录: %s\n", dataDir)
+
+	out, err := update.Apply(root, *binPath, newDG, dataDir, nil)
 	if err != nil {
 		fail("升级失败: %v", err)
 	}

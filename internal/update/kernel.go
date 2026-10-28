@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
@@ -35,28 +36,48 @@ type BinVersion struct {
 	SDKVersion string
 }
 
-// readBinVersion 跑 `<bin> --version` 并解析。
+// ReadBinVersion 跑 `<bin> --version` 并解析（含老版本回退，用于**探测**）。
 //
 // ★ 为什么用"跑它自己"而不是读文件里的字符串：
 //
 //	版本是 ldflags 注入的，从 ELF 里 grep 只能撞运气；而 --version 是内核
 //	自己算出来的，还能一并拿到 commit（"同版本号不同 commit"很难察觉）。
 func ReadBinVersion(bin string) (*BinVersion, error) {
+	v, err := readBinVersionStrict(bin)
+	if err == nil {
+		return v, nil
+	}
+	// ★ 回退：老版本内核没有 --version（它是 2026-10-25 才加的）。
+	//
+	// 这正是 OTA 的**第一次**升级必然撞到的情况：新版工具要读线上版本，
+	// 而线上那个版本还不支持被读。此时不能失败退出——否则所有人第一次
+	// 升级都要人工介入。改为从运行中进程的环境/文件里找线索，找不到就
+	// 诚实地说"未知"，让版本比较降级（其余预检照常）。
+	//
+	// ★★ 注意：这个回退使 ReadBinVersion **不能**用做回滚校验。
+	// 推断出来的版本可能来自**另一个文件**（或运行中的老进程），拿它当
+	// "刚拷过去的文件能执行"的证词，会让一个零字节约的坏备份"校验通过"。
+	// 回滚路径必须用 readBinVersionStrict（见 rollback.go）。
+	if iv := InferVersionFromRunning(); iv != nil {
+		return iv, nil
+	}
+	return nil, fmt.Errorf("执行 --version: %v（老版本内核不支持 --version，且无法从运行进程推断）", err)
+}
+
+// readBinVersionStrict 只认**这个文件自己**能报出版本，任何回退都不要。
+//
+// 用于**回滚校验**：我们要证明的是"刚替换上去的那个文件是可执行的且
+// 版本对"，而任何形式的推断（读别的路径、问运行中的进程）都会把一个
+// 死文件"验证"成活的。
+func readBinVersionStrict(bin string) (*BinVersion, error) {
 	if _, err := os.Stat(bin); err != nil {
 		return nil, err
 	}
 	out, err := exec.Command(bin, "--version").CombinedOutput()
 	if err != nil {
-		// ★ 回退：老版本内核没有 --version（它是 2026-10-25 才加的）。
-		//
-		// 这正是 OTA 的**第一次**升级必然撞到的情况：新版工具要读线上版本，
-		// 而线上那个版本还不支持被读。此时不能失败退出——否则所有人第一次
-		// 升级都要人工介入。改为从运行中进程的环境/文件里找线索，找不到就
-		// 诚实地说"未知"，让版本比较降级（其余预检照常）。
-		if v := InferVersionFromRunning(); v != nil {
-			return v, nil
-		}
-		return nil, fmt.Errorf("执行 --version: %v（老版本内核不支持 --version，且无法从运行进程推断）", err)
+		// ★ 这里**不**做任何回退（与 ReadBinVersion 的关键区别）：
+		// 执行失败就说明这个文件不可用，回退会把死文件验成活的。
+		return nil, fmt.Errorf("执行 --version: %v（该文件不可执行或架构不符）", err)
 	}
 	v := &BinVersion{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -247,31 +268,51 @@ func FileSize(p string) int64 {
 }
 
 // DataDirEnv 是部署方声明数据目录的环境变量名。
+//
+// ★ 仅作**诊断参考**保留：它**不是** dataDir 的合法来源（部署方很可能不设，
+// 而设了也未必与内核实际的 -data 一致）。详见 KernelDataDir 的说明。
 const DataDirEnv = "HOMEAGENT_DATA_DIR"
 
-// ResolveDataDir 推导数据目录（升级确认标记、备份、坏二进制留档的落点）。
+// kernelDataDir 是内核**实际**的 --data 值，由适配层（kernelmod/update）
+// 在启动时用 ks.DataDir 注入。
+var (
+	kernelDataDirMu sync.RWMutex
+	kernelDataDir   string
+)
+
+// SetKernelDataDir 由内核适配层（internal/kernelmod/update）在启动时注入真实的
+// `--data` 值。**不是给普通调用方用的**。
+func SetKernelDataDir(dir string) {
+	kernelDataDirMu.Lock()
+	defer kernelDataDirMu.Unlock()
+	kernelDataDir = dir
+}
+
+// KernelDataDir 返回内核**实际**的数据目录（即 ks.DataDir，来自 `-data`）。
 //
-// 三端（CLI / WebAPI / agent 工具）**必须**用同一份推导逻辑：pending 标记
-// 落在哪，第 0 层 update 模块就从哪读。两边一旦漂移，升级启动失败时就
-// **静默不回滚**，而症状（崩溃循环）与标记无关，极难反查。
+// ## ★ 为什么不推导（这是本项目交过学费的地方）
 //
-// 推导顺序：
+// 曾经实现过一个 ResolveDataDir：`HOMEAGENT_DATA_DIR` → `<exe目录>/data` 兜底。
+// 已实测它在生产上是**错的**：
 //
-//	① HOMEAGENT_DATA_DIR（部署方显式声明，唯一可靠的来源）
-//	② <exe 所在目录>/data 兜底（/usr/local/bin/homed → /usr/local/bin/data）
+//	ExecStart=/usr/bin/homed --role=guard --data /var/lib/hologram
+//	ResolveDataDir("/usr/bin/homed") == "/usr/bin/data"   ← 与真实值不符
 //
-// ★ 兜底大概率**不是**内核 `--data` 的真实值，所以它只是"有个地方可写"的
-// 最后手段，不是正确解 —— 部署方应显式设置 HOMEAGENT_DATA_DIR。
-// 也**不**写死任何生产绝对路径（如 /home/newqqagent）：目录/用户迁移后它
-// 指向一个不存在的目录，标记落错地方 ⇒ 静默不回滚（2026-10-26 迁移教训）。
-func ResolveDataDir(exePath string) string {
-	if d := strings.TrimSpace(os.Getenv(DataDirEnv)); d != "" {
-		return d
-	}
-	if exePath == "" {
-		exePath = KernelBinaryPath()
-	}
-	return filepath.Join(filepath.Dir(exePath), "data")
+// 后果两个，都是致命的：
+//
+//	① Apply 第一步要在 dataDir 建备份目录，而 /usr/bin 在
+//	   ProtectSystem=strict 下只读 ⇒ EROFS ⇒ 升级必挂
+//	② pending 标记落到内核读不到的位置 ⇒ 升级失败后静默不回滚
+//
+// 所以现在**不猜**：进程内调用方取内核真实注入的值，取不到就返回空串，
+// 由 Apply 的"dataDir 为空则拒绝升级"守卫接管。
+//
+// 「不知道」伪装成「知道」比没有守卫更危险：守卫看起来在守，实际守了个
+// 永远非空的常量。
+func KernelDataDir() string {
+	kernelDataDirMu.RLock()
+	defer kernelDataDirMu.RUnlock()
+	return kernelDataDir
 }
 
 // Apply 执行真实升级：预检 → 备份 → 写 pending → 原子替换。
@@ -465,12 +506,26 @@ func NowStamp() string {
 //  2. 读 WebUI 的 /api/v1/agents（那里返回 meta.Version）—— 需服务在跑
 //
 // 都失败则返回 nil，调用方把比较降级为"未知"，**不阻断**升级。
+// 推断逻辑读的两个路径。
+//
+// ★ 提为变量（而不是写死在函数体里）的唯一目的是**可测**：
+// 以前它们直接内联在 InferVersionFromRunning 里，导致“确认分支不得使用
+// 推断值”这条判据只能在**装了 homed/waiter 且 /usr/local/bin 可写**的机器上
+// 验证。那是典型的“CI 假绿、生产真红”形状：跑不到就 Skip，跳着跳着就没人看。
+//
+// 生产行为完全不变（默认值就是原来那两个绝对路径，没人会改它们）；
+// 只有测试会临时指向自己造的假文件，从而能**稳定复现**“借到别人版本”的场景。
+var (
+	inferHomedPath  = "/usr/local/bin/homed"
+	inferWaiterPath = "/usr/local/bin/waiter"
+)
+
 func InferVersionFromRunning() *BinVersion {
 	// 手段 1：从二进制里找注入的版本串。
 	//
 	// ldflags 注入的字符串在 rodata 里是裸的，形如 "1.4.0dev"；
 	// 配合 "commit=" 一起找才有意义，所以这里只认成对出现的情况。
-	if v := scanBinaryForVersion("/usr/local/bin/homed"); v != nil {
+	if v := scanBinaryForVersion(inferHomedPath); v != nil {
 		return v
 	}
 	// 手段 2：问 waiter。
@@ -479,7 +534,7 @@ func InferVersionFromRunning() *BinVersion {
 	//   而且它一直支持 --version（输出形如
 	//   `waiter 1.4.0 (commit 98850e1, built 2026-10-17T09:20:25Z)`）。
 	//   老内核没有 --version，但同批的 waiter 有 —— 用它反推。
-	if v := versionFromWaiter("/usr/local/bin/waiter"); v != nil {
+	if v := versionFromWaiter(inferWaiterPath); v != nil {
 		return v
 	}
 	return nil

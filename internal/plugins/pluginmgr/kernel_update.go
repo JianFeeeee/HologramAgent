@@ -140,35 +140,20 @@ func (p *Plugin) kernelUpdateApply(pkgPath string, release bool) (interface{}, e
 	return res, nil
 }
 
-// kernelDataDir 推导数据目录（升级确认标记的落点）。
+// kernelDataDir 返回内核**真实**的数据目录（ks.DataDir，来自 `-data`）。
 //
-// 从 pluginDir 反推：<dataDir>/plugins ⇒ 上一级即 dataDir。
-// 与内核 --data 的值一致，update 模块（第 0 层）才能读到同一个标记。
+// ★ 取注入值，不做任何推导。此前这里从 pluginDir 反推（Dir(pluginDir)）、
+// 又曾改成 env→Dir(pluginDir)→空，两者都错过：
+//
+//	· 一旦与内核 `-data` 不一致，pending 标记落到 A 而第 0 层从 B 读
+//	  ⇒ 升级启动失败时**静默不回滚**（症状是崩溃循环，极难反查）
+//	· 而“猜一个看起来合理的路径”比返回空更危险 —— 它让 Apply 的
+//	  dataDir 空值守卫变成死代码
+//
+// 所以：拿不到就返回空串，由 Apply 拒绝升级并报错。
 func kernelDataDir(p *Plugin) string {
-	// <dataDir>/plugins ⇒ 上一级即 dataDir。
-	//
-	// ★ 只 Dir 一次。此前写成 Dir(Dir(...))，把 /home/newqqagent/plugins
-	// 算成 /home —— pending 标记落到 /home/kernel-upgrade-pending.json，
-	// 而第 0 层 update 模块从 ks.DataDir 读 ⇒ **永远读不到标记** ⇒
-	// agent 发起的升级一旦启动失败就**不会回滚**（静默失效）。
-	// ★ 不再写死生产路径（2026-10-26 迁移教训）：
-	// 硬编码 /home/newqqagent 在目录/用户迁移后会让 pending 标记落到一个
-	// **已经不存在的目录**，而第 0 层 update 从 ks.DataDir 读 ⇒ 永远读不到
-	// ⇒ agent 发起的升级失败时静默不回滚。
-	//
-	// 优先级：显式环境变量（部署方声明自己在哪）→ 从 pluginDir 反推 → 空。
-	// 空表示"不知道"，由调用方拒绝执行并报错，而不是猜一个路径。
-	if d := os.Getenv(dataDirEnv); d != "" {
-		return d
-	}
-	if p.pluginDir != "" {
-		return filepath.Dir(p.pluginDir)
-	}
-	return ""
+	return update.KernelDataDir()
 }
-
-// dataDirEnv 是部署方声明数据目录的环境变量（与 webui 侧同名）。
-const dataDirEnv = "HOMEAGENT_DATA_DIR"
 
 // currentKernelVersion 读本机 homed 自报版本（尽力而为）。
 func currentKernelVersion(p *Plugin) *update.BinVersion {

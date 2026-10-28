@@ -106,6 +106,22 @@ func TestApplyRefusesEmptyDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// ★★★ 关键：在**临时目录**里跑，并拍下跑之前的快照。
+	//
+	// 为什么必须切 CWD：守卫万一被挪到后面（先预检/先备份才判空），
+	// filepath.Join("", prefix) 会得到一个**相对路径**，于是备份目录被
+	// 建到当前目录下。旧用例只查了"目标二进制没变"，这种 "什么都没写"
+	// 的违规完全看不到（变异实测：把守卫挪到预检之后，旧用例依旧绿）。
+	workDir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(oldWD) })
+
 	out, err := Apply(root, binPath, newDG, "", nil)
 	if err == nil {
 		t.Fatalf("dataDir 为空时必须拒绝升级，实际返回 out=%+v, err=nil", out)
@@ -130,6 +146,21 @@ func TestApplyRefusesEmptyDataDir(t *testing.T) {
 	// ③ 连临时文件都没留下（CopyFile 的 .tmp-upgrade）
 	if FileExists(binPath + ".tmp-upgrade") {
 		t.Error("拒绝升级却留下了 .tmp-upgrade 临时文件")
+	}
+	// ④ ★ 根本没有写任何东西：备份目录/pending 标记都不许出现。
+	// "不写任何文件"是 H1 的原始承诺（拒绝要在**预检之前**发生）。
+	// 备份目录会因为 filepath.Join("", …) 而变成相对路径 —— 那种情况下
+	// 它会在 CWD 里，所以这里必须盯住 CWD。
+	entries, derr := os.ReadDir(workDir)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("拒绝升级却写了文件（dataDir 为空时的守卫必须发生在动任何文件之前）: %v", names)
 	}
 }
 
@@ -391,5 +422,353 @@ func TestApplySuccessEmitsResult(t *testing.T) {
 		if s, _ := v.(string); s != "" {
 			t.Errorf("成功时 error 应为空串，实际 %q", s)
 		}
+	}
+}
+
+// ── M6：Apply 必须**真的调用** PruneOldBackups（行为级，不是"函数能跑"）──
+
+// TestApplyPrunesOldBackups 钉住"Apply 成功路径真的执行了 GC"。
+//
+// ★ 这一条是补 M6 真空洞的。此前只有 TestPruneOldBackups，它直接调
+// PruneOldBackups —— 把 Apply 里那一行 `PruneOldBackups(dataDir)` 整个删掉，
+// 它照样绿。也就是说旧判据只证明了"函数能跑"，**没证明 Apply 调了它**，
+// 而"没人调用"恰恰是 H3 的原始缺陷形态（注释承诺了 GC，代码里没有）。
+//
+// 做法：预置超量备份（含一个很旧的），跑一次真实 Apply，断言旧的被清掉。
+// 这条路只有 Apply 内部真调了 GC 才会绿。
+func TestApplyPrunesOldBackups(t *testing.T) {
+	binPath, _ := installFakeKernel(t)
+	root := newPkgRoot(t, "1.9.9", "newcommit")
+	dataDir := t.TempDir()
+
+	// 预置 5 个"历史备份"，最旧的那个应该在本次 Apply 后被 GC 掉
+	oldTS := []string{
+		"20200101-010101", "20200102-010101", "20200103-010101",
+		"20200104-010101", "20200105-010101",
+	}
+	for _, ts := range oldTS {
+		if err := os.MkdirAll(filepath.Join(dataDir, BackupDirPrefix+ts), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := Apply(root, binPath, "", dataDir, nil); err != nil {
+		t.Fatalf("Apply 应成功: %v", err)
+	}
+
+	// 5 个旧的 + 本次新增 1 个 = 6 个；保留最近 3 个 ⇒ 最旧的 3 个必须没了。
+	remaining := listStampDirs(t, dataDir, BackupDirPrefix)
+	if len(remaining) != 3 {
+		t.Fatalf("Apply 后应只剩 3 个备份（GC 未被调用？），实际 %d 个: %v", len(remaining), remaining)
+	}
+	for _, ts := range oldTS[:3] {
+		if FileExists(filepath.Join(dataDir, BackupDirPrefix+ts)) {
+			t.Errorf("Apply 后最旧的备份 %s 应已被 GC 清除", ts)
+		}
+	}
+}
+
+// ── B1：回滚必须回读校验，校验不过不得清 marker ─────────────
+
+// TestRollback_RefusesCorruptBackup 钉住"拷贝成功 ≠ 回滚成功"。
+//
+// ★ 这是已复现过的事故形态：备份是**零字节**文件时，CopyFile 会成功
+// （字节确实搬完了），旧代码于是清掉 marker、返回 rolled=true, err=nil，
+// 日志还打 "rolled back to 1.4.0"。而磁盘上躺着的是一个不可执行的
+// 二进制 ⇒ 机器带坏二进制继续启动，且 marker 已清 ⇒ **失去第二次自愈机会**。
+//
+// 正确行为：回读 ReadBinVersion 失败 ⇒ 返回 error、rolled=false、
+// **marker 必须还在**（下一次启动还能再试 / 人能介入）。
+func TestRollback_RefusesCorruptBackup(t *testing.T) {
+	dir := t.TempDir()
+	// 当前跑的是 1.4.0，与标记的 ToVer(1.4.1) 不同 ⇒ 进入回滚分支
+	bin := writeVersionScript(t, dir, "homed", "1.4.0", "oldcommit")
+	orig, _ := os.ReadFile(bin)
+
+	backupDir := filepath.Join(dir, "backup")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// 零字节的坏备份：CopyFile 会"成功"
+	if err := os.WriteFile(filepath.Join(backupDir, "homed"), []byte{}, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MarkPendingUpgrade(dir, PendingRecord{
+		FromVer: "1.4.0", FromCommit: "oldcommit",
+		ToVer: "1.4.1", ToCommit: "newcommit",
+		BackupDir: backupDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rolled, _, _, err := RollbackIfUnconfirmed(dir, bin)
+	if err == nil {
+		t.Fatal("★★ 拿不可执行的备份\"回滚成功\"了 —— 未做回读校验")
+	}
+	if rolled {
+		t.Error("回滚校验失败时 rolled 必须为 false（否则调用方以为自愈完成）")
+	}
+	// ★ marker 必须仍在：失败后要保住第二次自愈机会
+	if rec, _ := ReadPendingUpgrade(dir); rec == nil {
+		t.Error("★★ 回滚失败却清了 marker ⇒ 失去第二次自愈机会")
+	}
+	// 错误必须可执行：指出是回读失败 + 让人去换二进制
+	msg := err.Error()
+	if !strings.Contains(msg, "回读") && !strings.Contains(msg, "不可执行") {
+		t.Errorf("错误应说明回读校验失败，实际: %v", msg)
+	}
+	_ = orig
+}
+
+// TestRollback_RefusesVersionMismatch 钉住"版本非得是标记里的 FromVer"。
+//
+// 备份存在且可执行，但版本不是当初记录的 FromVer（备份与 marker 不匹配，
+// 例如备份目录被别的升级覆盖过）。这种情况不算回滚成功 —— 装回去的是
+// 一个谁也不认识的版本，而 marker 里承诺的是 FromVer。
+func TestRollback_RefusesVersionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeVersionScript(t, dir, "homed", "1.4.0", "oldcommit")
+
+	backupDir := filepath.Join(dir, "backup")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// 备份是**可执行**的，但版本是 1.3.0（≠ marker.FromVer 1.4.0）
+	src := writeVersionScript(t, t.TempDir(), "homed", "1.3.0", "weird")
+	if err := CopyFile(src, filepath.Join(backupDir, "homed")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MarkPendingUpgrade(dir, PendingRecord{
+		FromVer: "1.4.0", FromCommit: "oldcommit",
+		ToVer: "1.4.1", ToCommit: "newcommit",
+		BackupDir: backupDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rolled, _, _, err := RollbackIfUnconfirmed(dir, bin)
+	if err == nil {
+		t.Fatal("版本与标记的 FromVer 不符时必须报错")
+	}
+	if rolled {
+		t.Error("版本不符时 rolled 必须为 false")
+	}
+	if !strings.Contains(err.Error(), "1.3.0") {
+		t.Errorf("错误应报出实际版本，实际: %v", err)
+	}
+	if rec, _ := ReadPendingUpgrade(dir); rec == nil {
+		t.Error("版本不符时 marker 必须保留")
+	}
+}
+
+// TestRollback_CorruptMarkerDoesNotBlockBoot 钉住 B2 的第二半：
+// marker 损坏（掉电截断）**不得**让内核拒绝启动。
+//
+// ★ 已复现的事故形态：marker 写成 `{"from_version":"1.4.0","to_` 时，
+// ReadPendingUpgrade 返回 error，旧代码原样上抛，mod.go `return rerr`
+// ⇒ 内核拒启动，而且走不到回滚分支 ⇒ **既起不来也回滚不了**。
+//
+// 正确行为：返回 (false, "", "", nil) —— 当作"无待确认升级"继续启动，
+// 同时把坏 marker 改名留存（不删，保留现场）。
+func TestRollback_CorruptMarkerDoesNotBlockBoot(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeVersionScript(t, dir, "homed", "1.4.0", "oldcommit")
+
+	p := pendingPath(dir)
+	bad := []byte(`{"from_version":"1.4.0","to_`)
+	if err := os.WriteFile(p, bad, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rolled, from, to, err := RollbackIfUnconfirmed(dir, bin)
+	if err != nil {
+		t.Fatalf("★★ marker 损坏不得让内核拒启动（既起不来也回滚不了）: %v", err)
+	}
+	if rolled {
+		t.Error("marker 读不懂时无法判定回滚目标，rolled 应为 false")
+	}
+	if from != "" || to != "" {
+		t.Errorf("无回滚时版本轨迹应为空，实际 %s → %s", from, to)
+	}
+	// 坏 marker 应被改名留存（保留现场），而不是原样留着（否则下次启动又报一次）
+	if _, err := os.Stat(p); err == nil {
+		t.Error("损坏的 marker 应被隔离改名，否则每次启动都会再撞一次")
+	}
+	entries, _ := os.ReadDir(dir)
+	foundQuarantine := false
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".corrupt-") {
+			foundQuarantine = true
+		}
+	}
+	if !foundQuarantine {
+		t.Error("损坏的 marker 应被改名留存（排查\"上次升级发生了什么\"的唯一线索）")
+	}
+}
+
+// TestMarkPendingUpgrade_IsAtomic 钉住 B2 的第一半：写 marker 不留半截。
+//
+// 掉电时最坏的结果必须是"完整的旧版"或"完整的新版"，不能是半截 JSON。
+// 判据：写完不留下 .tmp 残留，且内容可被完整解析。
+// （真正的掉电无法在单测里模拟，这里钉住原子写带来的可观测后果。）
+func TestMarkPendingUpgrade_IsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	rec := PendingRecord{FromVer: "1.4.0", FromCommit: "a", ToVer: "1.4.1", ToCommit: "b"}
+	if err := MarkPendingUpgrade(dir, rec); err != nil {
+		t.Fatalf("写标记: %v", err)
+	}
+	// ① 不留 .tmp 残留（rename 成功）
+	if FileExists(pendingPath(dir) + ".tmp") {
+		t.Error("写完后不应残留 .tmp 临时文件")
+	}
+	// ② 内容完整可解析
+	got, err := ReadPendingUpgrade(dir)
+	if err != nil {
+		t.Fatalf("读回: %v", err)
+	}
+	if got == nil || got.FromVer != "1.4.0" || got.ToVer != "1.4.1" {
+		t.Errorf("读回内容不对: %+v", got)
+	}
+	// ③ 覆写已有 marker 也要成功（旧版 WriteFile 截断写，这里同样不能坏）
+	if err := MarkPendingUpgrade(dir, PendingRecord{FromVer: "2.0.0", ToVer: "2.1.0"}); err != nil {
+		t.Fatalf("覆写标记: %v", err)
+	}
+	got2, err := ReadPendingUpgrade(dir)
+	if err != nil {
+		t.Fatalf("覆写后读回: %v", err)
+	}
+	if got2.FromVer != "2.0.0" {
+		t.Errorf("覆写未生效: %+v", got2)
+	}
+}
+
+// ── 确认分支不得使用推断值（B1 的同一个病，转移到了 confirmed）──
+
+// TestRollback_ConfirmedBranchIgnoresInferredVersion 钉住"确认新版已跑起来"
+// 只能靠**binPath 自己**报版本，不能用推断回退借来的值。
+//
+// ★ 已实证的事故形态（环境相关，最难查的那类）：
+//   - binPath 写成不可执行的残 file
+//   - marker.ToVer 恰等于本机可推断到的版本（如 /usr/local/bin/waiter 是 1.4.0）
+//   - ReadBinVersion 失败后走 InferVersionFromRunning 回退，从 waiter 借到
+//     1.4.0 ⇒ 与 ToVer 相等 ⇒ confirmed=true ⇒ 清 marker、不回滚
+//   - 实测输出：rolled=false err=nil，marker 被清除
+//     ⇒ 机器带着跑不起来的二进制继续启动，且失去自愈机会。
+//
+// ★★ 判据自身必须**不依赖本机装没装 homed/waiter**，否则 CI 假绿、生产真红。
+// 探针路径（inferWaiterPath/inferHomedPath）是包级变量，这里临时指到
+// t.TempDir() 下自己造的假 waiter，跑完还原。这样判据在任何机器上都
+// **确实**会走到"能借到版本"的成立条件，而不是靠环境碰运气：
+//   - confirmed 用 ReadBinVersion        ⇒ 借到 9.9.9 ⇒ 判据 RED
+//   - confirmed 用 readBinVersionStrict  ⇒ 借不到   ⇒ 走回滚 ⇒ 判据 GREEN
+func TestRollback_ConfirmedBranchIgnoresInferredVersion(t *testing.T) {
+	// 把推断逻辑可读的两个探针都指到可写临时目录（并断言前提成立）。
+	savedHomed, savedWaiter := inferHomedPath, inferWaiterPath
+	t.Cleanup(func() { inferHomedPath, inferWaiterPath = savedHomed, savedWaiter })
+
+	probe := t.TempDir()
+	inferHomedPath = filepath.Join(probe, "homed")   // 不存在：手段 1 必然失效
+	inferWaiterPath = filepath.Join(probe, "waiter") // 下面种一个能报版本的
+	body := "#!/bin/sh\nprintf 'waiter 9.9.9 (commit deadbeef, built 2026-01-01T00:00:00Z)\\n'\n"
+	if err := os.WriteFile(inferWaiterPath, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 前提校验：推断逻辑必须**真的**能从它借到版本。
+	// 借不到就说明这条判据无法区分两种实现（会假绿）—— 直接 Fatal 而不是 Skip：
+	// 现在探针路径是我们自己控制的，借不到就是判据自身坏了。
+	if v := InferVersionFromRunning(); v == nil || v.Version != "9.9.9" {
+		t.Fatalf("判据前提不成立：推断逻辑未从假 waiter 借到 9.9.9（得到 %+v）", v)
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "homed")
+	// 不可执行的残 file：strict 读出版本必然失败
+	if err := os.WriteFile(bin, []byte("THIS-IS-NOT-A-BINARY"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 可用的备份（版本 = FromVer），保证"走回滚"这条路能成功，
+	// 这样 confirmed 判错的后果只体现在"该不该回滚"上，不被别的失败掩盖。
+	backupDir := filepath.Join(dir, "backup")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeVersionScript(t, backupDir, "homed", "1.4.0", "oldcommit")
+
+	// marker.ToVer 恰好等于推断逻辑能借到的版本 9.9.9
+	if err := MarkPendingUpgrade(dir, PendingRecord{
+		FromVer: "1.4.0", FromCommit: "oldcommit",
+		ToVer: "9.9.9", ToCommit: "deadbeef",
+		BackupDir: backupDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rolled, from, to, err := RollbackIfUnconfirmed(dir, bin)
+	if err != nil {
+		t.Fatalf("备份可用时回滚不应失败: %v", err)
+	}
+	// ★ 核心断言：binPath 报不出版本 ⇒ 必须回滚，绝不能因为"借来的版本"而确认
+	if !rolled {
+		t.Fatalf("★★★ binPath 不可执行，却被判为\"新版已跑起来\"（confirmed 用了推断值）⇒ 机器带坏二进制继续启动")
+	}
+	if from != "1.4.0" || to != "9.9.9" {
+		t.Errorf("版本轨迹不对: %s → %s", from, to)
+	}
+	// ② 回读（严格）证明 binPath 真的被换成了可执行的 1.4.0
+	if v, verr := readBinVersionStrict(bin); verr != nil {
+		t.Errorf("回滚后 binPath 应可执行: %v", verr)
+	} else if v.Version != "1.4.0" {
+		t.Errorf("应回滚到 1.4.0，实际 %s", v.Version)
+	}
+}
+
+// TestConfirmedBranch_StrictProbeBitesOnUnparseable 是上一条的"无反依赖"版本：
+// 直接把探针指向一个**报不出版本**的假 waiter，并断言 confirmed 仍为 false。
+//
+// 为什么还要单独一条：上一条依赖"能借到版本"这个前提成立。这一条不依赖
+// 任何前提，专门钉住"探针都失效时也不能确认"。
+func TestConfirmedBranch_StrictProbeBitesOnUnparseable(t *testing.T) {
+	savedHomed, savedWaiter := inferHomedPath, inferWaiterPath
+	t.Cleanup(func() { inferHomedPath, inferWaiterPath = savedHomed, savedWaiter })
+
+	probe := t.TempDir()
+	inferHomedPath = filepath.Join(probe, "homed")
+	inferWaiterPath = filepath.Join(probe, "waiter")
+	// 能跑但输出里没有语义化版本 ⇒ versionFromWaiter 返回 nil
+	if err := os.WriteFile(inferWaiterPath, []byte("#!/bin/sh\necho no-version-here\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if v := InferVersionFromRunning(); v != nil {
+		t.Fatalf("判据前提不成立：应推断不出，实际 %+v", v)
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "homed")
+	if err := os.WriteFile(bin, []byte("THIS-IS-NOT-A-BINARY"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := filepath.Join(dir, "backup")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeVersionScript(t, backupDir, "homed", "1.4.0", "oldcommit")
+	if err := MarkPendingUpgrade(dir, PendingRecord{
+		FromVer: "1.4.0", FromCommit: "oldcommit",
+		ToVer: "1.4.0", ToCommit: "oldcommit", // ToVer 恰等于备份版本（最易误判的形态）
+		BackupDir: backupDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rolled, _, _, err := RollbackIfUnconfirmed(dir, bin)
+	if err != nil {
+		t.Fatalf("回滚不应失败: %v", err)
+	}
+	if !rolled {
+		t.Error("★★ binPath 不可执行时必须回滚（不能因 ToVer 与备份版本相同就确认）")
 	}
 }
