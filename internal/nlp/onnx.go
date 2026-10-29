@@ -298,8 +298,34 @@ func extractEmbeddedModel(dataDir string) (string, error) {
 		dataDir = filepath.Join(os.TempDir(), "homeagent-nlp")
 	}
 	os.MkdirAll(dataDir, 0755)
-	dst := filepath.Join(dataDir, "dep_parser.onnx")
-	if _, err := os.Stat(dst); err == nil {
+
+	// ★ 外置模型优先（第 4 项：数据外置）。
+	//
+	// 模型 47MB 是**数据**不是代码，却 #go:embed 进了 88MB 的二进制：
+	// 改一行代码要重下 47MB，而 patch 版本之间它从未变过。
+	//
+	// 查找顺序（只认非空文件）：
+	//	① <DataDir>/nlp/dep_parser.onnx（部署目录，与旧行为兼容：
+	//	   旧版首次启动会把内嵌模型解到这里）
+	//	② /usr/share/hologram/models/dep_parser.onnx（系统目录）
+	//	③ 内嵌解出
+	//
+	// ★ 不做哈希校验：模型是数据，装错版本最多依存分析变差，
+	// 不阻断启动。哈希会让“用户手工换模型”直接不可用，那是不必要的刚性。
+	for _, cand := range []string{
+		filepath.Join(dataDir, "nlp", "dep_parser.onnx"),
+		"/usr/share/hologram/models/dep_parser.onnx",
+	} {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() && st.Size() > 0 {
+			return cand, nil
+		}
+	}
+
+	// ③ 退回内嵌（保持旧行为：首次启动解到 dataDir/nlp/）
+	nlpDir := filepath.Join(dataDir, "nlp")
+	os.MkdirAll(nlpDir, 0755)
+	dst := filepath.Join(nlpDir, "dep_parser.onnx")
+	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
 		return dst, nil
 	}
 	data, err := onnxModelFS.ReadFile("models/dep_parser.onnx")

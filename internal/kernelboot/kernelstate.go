@@ -185,6 +185,33 @@ type KernelState struct {
 	//   读它时都已就绪 —— 包括"启动失败回滚"的判定结果。
 	Update UpdateStateProvider
 
+	// UpdateCapabilities 是本机**升级能力**的快照（update 模块产出）。
+	//
+	// ## 为什么它是一个独立字段而不是塞进 Update.State
+	//
+	// State 回答"我这台机器现在是什么版本、上次回滚过没有"；
+	// Capabilities 回答"我这台机器**能不能**自己升级"。
+	// 前者随时间变，后者在进程生命周期内恒定（安装形态不变）。
+	//
+	// 消费者不同：
+	//   · WebUI / healthcheck 展示 State（版本、回滚轨迹）
+	//   · kernel_update 工具 / CLI 决策看 Capabilities（走哪条升级通道）
+	//
+	// 合并成一个结构会让“只关心能不能升级”的调用方也拿到一堆版本字段，
+	// 反之亦然——那类混搭在这仓已经出过问题（healthcheck 把工具表塞进快照）。
+	//
+	// ★ 用 interface{} 而不是定义接口（与 PluginCatalog 同一范式）。
+	//
+	// 尝试过定义 UpdateCapabilitiesProvider 接口，但它要求方法名
+	// Variant()/InstallKind() —— 而 Capabilities 的**字段**就叫 Variant，
+	// 方法名与字段名在同一个类型上不能共存（编译错误）。
+	// 改方法名（VariantName()）只会让接口变丑而无收益：读取方本来
+	// 就要完整结构体（WebUI 要 bin_path / reason / package_name）。
+	//
+	// 所以：与 ks.PluginCatalog 一致，存 any，读取方断言回
+	// *update.Capabilities。代价是一次类型断言，收益是零重复定义。
+	UpdateCapabilities any
+
 	// StageHost 是阶段管道（stage-host 模块产出）。
 	StageHost *agentCore.StageHost
 

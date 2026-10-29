@@ -35,12 +35,17 @@ type BinVersion struct {
 	SDKVersion string
 }
 
-// readBinVersion 跑 `<bin> --version` 并解析。
+// ReadBinVersion 跑 `<bin> --version` 并解析（含老版本回退，用于**探测**）。
 //
 // ★ 为什么用"跑它自己"而不是读文件里的字符串：
 //
 //	版本是 ldflags 注入的，从 ELF 里 grep 只能撞运气；而 --version 是内核
 //	自己算出来的，还能一并拿到 commit（"同版本号不同 commit"很难察觉）。
+//
+// ★★ 注意：这个回退使 ReadBinVersion **不能**用作回滚校验。推断出来的
+// 版本可能来自**另一个文件**（或运行中的老进程），拿它当“刚拷过去的
+// 文件能执行”的证词，会让一个零字节的坏备份“校验通过”。回滚路径用
+// digest（见 rollback.go 的 verifyRestored），不用版本。
 func ReadBinVersion(bin string) (*BinVersion, error) {
 	if _, err := os.Stat(bin); err != nil {
 		return nil, err
@@ -174,6 +179,54 @@ func ShortCommit(c string) string {
 	return c
 }
 
+// readBinVersionStrict 只认**这个文件自己**能报出版本，任何回退都不要。
+//
+// 与 ReadBinVersion 的唯一区别：exec 失败直接返回 error，**不**走
+// InferVersionFromRunning。用于“确认分支”这类必须证明“这个文件能用”
+// 的判定。
+//
+// ★ 不要拿它当回滚校验：老内核（1.3.x 及以前）没有 --version，
+// 而它们恰恰是最常见的回滚目标。回滚用 digest（verifyRestored）。
+func readBinVersionStrict(bin string) (*BinVersion, error) {
+	if _, err := os.Stat(bin); err != nil {
+		return nil, err
+	}
+	out, err := exec.Command(bin, "--version").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("执行 --version: %v（该文件不可执行或架构不符）", err)
+	}
+	v := &BinVersion{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		k, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "version":
+			v.Version = val
+		case "commit":
+			v.Commit = val
+		case "build_time":
+			v.BuildTime = val
+		case "sdk":
+			v.SDKVersion = val
+		}
+	}
+	if v.Version == "" {
+		return nil, fmt.Errorf("--version 输出里没有 version= 行: %q", strings.TrimSpace(string(out)))
+	}
+	return v, nil
+}
+
+// ShortSum 把 sha256 缩到前 12 位，用于错误消息（完整值对排查无益）。
+func ShortSum(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
+
 // extractPkg 解包并返回包含 bin/ 的根目录。
 func ExtractPkg(pkg, dst string) (string, error) {
 	f, err := os.Open(pkg)
@@ -264,12 +317,42 @@ func FileSize(p string) int64 {
 // 所以这里只承诺到"磁盘上的产物已就绪，pending 标记已写"。
 // 后续重启 → 新内核启动 → update 模块（第 0 层）确认或回滚。
 //
-// 每一步失败都往回退：替换中途失败 ⇒ 立即用备份还原并清标记
-// （此时尚未重启，回滚在本进程内完成，机器始终可启动）。
+// ## 每一步都是可撤销的（顺序不可换）
+//
+//	预检 → 备份 → 记录 digest → 写 pending → 替换 depgraph → 替换 homed
+//
+// 任一步失败就地回滚，且**回滚完整性本身就是一种可验证的事实**：
+// 每个文件都记了 sha256，还原后逐一校对；只有全部对上才清 marker。
+// 这不是“多抄一遍”，“重新读版本”在旧内核上根本做不到 —— 旧内核没有
+// `--version`，而旧内核恰恰是最常见的回滚目标。
 func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, error) {
+	// ★ 调用方可以传 nil：内核在启动时 SetEventBus 注入过总线，
+	// 这里取回那份（插件不再需要持有 *events.Bus）。
+	bus = eventBusOr(bus)
+
 	newBin := FindFile(root, "homed")
 	if newBin == "" {
 		return nil, fmt.Errorf("包内无 homed")
+	}
+
+	// ── ★ 最前置的拒绝条件：没有 dataDir 就没有回滚能力 ──
+	//
+	// pending 标记、备份目录、坏二进制留档全落在 dataDir 下。空 dataDir
+	// 意味着标记写不进去 ⇒ 新内核起不来时没有任何人知道该回滚。
+	// 这种升级不是升级，是赌运气，赌输的代价是机器进崩溃循环。
+	if dataDir == "" {
+		return nil, fmt.Errorf("dataDir 为空，拒绝升级：无 pending 标记就无回滚能力")
+	}
+
+	// ── ★ 安装形态闸门：包管理器拥有的文件不允许直接替换 ──
+	//
+	// 「能写」不等于「该写」。dpkg/rpm 记录了受管文件的校验和，绕过它
+	// 替换的后果是下次 apt upgrade 覆盖回旧版，或 dpkg 拒绡后续升级。
+	capab := Detect(binPath, dataDir)
+	if !capab.CanWriteBin {
+		return nil, fmt.Errorf("本机不允许直接替换二进制（%s/%s）：%s\n"+
+			"建议改用包管理器升级：%s",
+			capab.Kind, capab.Variant, capab.Reason, capab.UpgradeCommand(""))
 	}
 
 	// ── 预检：新二进制必须能自报版本（说明它是可执行的、架构对的）──
@@ -280,18 +363,36 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 	publishProgress(bus, "kernel", "", "verify", "新内核可执行，版本 "+nv.Version)
 	fmt.Printf("\n== 预检通过 ==\n新内核 %s 可执行\n", nv.Version)
 
-	// ── 备份：只备本次会动的文件（不整目录拷贝，那是几百 MB）──
+	// ── 备份：只备本次会动的文件（不整目录拷贝，那是个几百 MB）──
+	//
+	// ★ 备份必须落在 dataDir 下，不能是 /root：服务以 ProtectSystem=strict
+	//   + 非 root 运行，对 /root 没有写权限 ⇒ MkdirAll 必 EACCES。
 	ts := NowStamp()
-	backup := filepath.Join("/root", "homed-upgrade-backup-"+ts)
+	backup := filepath.Join(dataDir, BackupDirPrefix+ts)
 	if err := os.MkdirAll(backup, 0755); err != nil {
 		return nil, fmt.Errorf("建备份目录: %w", err)
 	}
+
+	// targets 是本轮会动的**全部**文件。每个都记录 digest —— 回滚时那
+	// 一组 digest 就是“已完整还原”的判据。
 	targets := []string{binPath}
-	if dg := filepath.Join(filepath.Dir(binPath), "depgraph.bin"); FileExists(dg) {
-		targets = append(targets, dg)
+	dgPath := filepath.Join(filepath.Dir(binPath), "depgraph.bin")
+	// ★ hadDepGraph 必须在**备份之前**取：若原本没有、而新包带了，
+	//   回滚时必须把它删掉。留着会让旧 homed 的内嵌 digest 对不上，
+	//   而那时 marker 已清 ⇒ 进崩溃循环且无第二次自愈。
+	hadDepGraph := FileExists(dgPath)
+	if hadDepGraph {
+		targets = append(targets, dgPath)
 	}
+
+	digests := make(map[string]string, len(targets))
 	for _, t := range targets {
-		if err := CopyFile(t, filepath.Join(backup, filepath.Base(t))); err != nil {
+		sum, serr := sha256File(t)
+		if serr != nil {
+			return nil, fmt.Errorf("计算 %s 的 digest: %w", t, serr)
+		}
+		digests[t] = sum
+		if err := CopyFileAtomic(t, filepath.Join(backup, filepath.Base(t))); err != nil {
 			return nil, fmt.Errorf("备份 %s: %w", t, err)
 		}
 	}
@@ -300,61 +401,103 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 
 	// ── 写待确认升级标记（在替换**之前**）──
 	//
-	// 顺序很关键：先写标记再替换。若反过来（替换后才写），"替换成功但
-	// 没来得及写标记就崩了"会丢标记 ⇒ 下次启动不知道该回滚。
+	// 顺序很关键：先写标记再替换。若反过来（替换后才写），“替换成功但
+	// 没来得及写标记就崩了”会丢标记 ⇒ 下次启动不知道该回滚。
 	curVer := &BinVersion{}
 	if v, verr := ReadBinVersion(binPath); verr == nil {
 		curVer = v
 	}
-	if dataDir != "" {
-		if perr := MarkPendingUpgrade(dataDir, PendingRecord{
-			FromVer:    curVer.Version,
-			FromCommit: curVer.Commit,
-			ToVer:      nv.Version,
-			ToCommit:   nv.Commit,
-			BackupDir:  backup,
-		}); perr != nil {
-			// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力，
-			// 而不带回滚的升级等于赌运气。
-			return nil, fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
-		}
-		fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
+	if perr := MarkPendingUpgrade(dataDir, PendingRecord{
+		FromVer:     curVer.Version,
+		FromCommit:  curVer.Commit,
+		ToVer:       nv.Version,
+		ToCommit:    nv.Commit,
+		BackupDir:   backup,
+		HadDepGraph: hadDepGraph,
+		Digests:     digests,
+	}); perr != nil {
+		// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力。
+		return nil, fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
 	}
+	fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
+
+	// replaceState 记录“替换阶段已经动过哪些文件（以及新包是否带了 depgraph）”。
+	//
+	// ★ 为什么不用 targets/resources 推断：旧实现直接用 targets 还原，于是
+	//   “新包带了 depgraph、原机器没有”这种情况会多出一条无源可还原的项，
+	//   以及“原本有、新包没带”会被误删。动作记录才是事实。
+	var touchedDepGraph bool
 
 	// restore 在替换失败时把已动的文件还原（尚未重启，机器仍可启动）。
+	//
+	// ★ restore 完整才清 marker：旧实现先清 marker 再还原，于是“还原也
+	//   失败”时磁盘上可能是半新半旧、而 marker 已经没了 ⇒ 失去第二次自愈。
 	restore := func(cause error) (*Outcome, error) {
 		publishProgress(bus, "kernel", "", "rollback", cause.Error())
 		fmt.Printf("\n❌ %v\n== 就地还原（尚未重启，机器仍可启动）==\n", cause)
-		if dataDir != "" {
-			if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
-				fmt.Printf("  ⚠️ 清除升级确认标记失败: %v\n", cerr)
-			}
-		}
+
+		var failed []string
 		for _, t := range targets {
 			src := filepath.Join(backup, filepath.Base(t))
-			if err := CopyFile(src, t); err != nil {
-				fmt.Printf("  ⚠️ 还原 %s 失败: %v（需人工处理）\n", t, err)
+			// ★ 用 digest 判“已还原”：比“CopyFile 没报错”强。
+			//   CopyFileAtomic 成功只说明字节搬完了，不说明内容与当时一致
+			//   （备份本身可能已损坏）。
+			if err := CopyFileAtomic(src, t); err != nil {
+				failed = append(failed, fmt.Sprintf("%s: %v", t, err))
 				continue
 			}
-			fmt.Printf("  已恢复 %s\n", t)
+			if got, serr := sha256File(t); serr != nil || got != digests[t] {
+				failed = append(failed, fmt.Sprintf("%s: digest 不符", t))
+				continue
+			}
+			fmt.Printf("  已恢复并校验 %s\n", t)
+		}
+		// 新包装了 depgraph 而原机器没有 ⇒ 回滚时必须删掉它。
+		if touchedDepGraph && !hadDepGraph {
+			if err := os.Remove(dgPath); err != nil && !os.IsNotExist(err) {
+				failed = append(failed, fmt.Sprintf("%s: 删除失败 %v", dgPath, err))
+			} else {
+				fmt.Printf("  已移除新装上的 %s（原机器没有）\n", dgPath)
+			}
+		}
+
+		if len(failed) > 0 {
+			// ★ marker 保留：磁盘状态不确定，保留才能让下次启动再试。
+			publishResult(bus, "kernel", "", false, curVer.Version, nv.Version, false,
+				"替换失败且就地还原不完整: "+strings.Join(failed, "; "))
+			return nil, fmt.Errorf("替换失败且就地还原不完整（pending 标记已保留，下次启动会再试）: %w\n  未还原: %s",
+				cause, strings.Join(failed, "; "))
+		}
+
+		if cerr := ClearPendingUpgrade(dataDir); cerr != nil {
+			fmt.Printf("  ⚠️ 清除升级确认标记失败: %v\n", cerr)
 		}
 		publishResult(bus, "kernel", "", false, curVer.Version, nv.Version, true, cause.Error())
-		return nil, fmt.Errorf("替换失败已还原（未重启）: %w", cause)
+		return nil, fmt.Errorf("替换失败已完整还原（未重启，机器仍可启动）: %w", cause)
 	}
 
 	// ── 替换（depgraph 必须与 homed 同批，顺序无关但都要成）──
 	if newDG != "" {
-		dst := filepath.Join(filepath.Dir(binPath), "depgraph.bin")
-		if err := CopyFile(newDG, dst); err != nil {
+		touchedDepGraph = true
+		if err := CopyFileAtomic(newDG, dgPath); err != nil {
 			return restore(fmt.Errorf("替换 depgraph.bin: %w", err))
 		}
 		fmt.Println("已替换 depgraph.bin")
 	}
-	if err := CopyFile(newBin, binPath); err != nil {
+	if err := CopyFileAtomic(newBin, binPath); err != nil {
 		return restore(fmt.Errorf("替换 homed: %w", err))
 	}
 	fmt.Println("已替换 homed")
 	publishProgress(bus, "kernel", "", "ready", "新内核已就位，等待重启")
+
+	// ★ 成功路径也必须发 result 事件：
+	//   此前只有失败路径发，订阅方只能靠“进度停在最后一步且没看到 failed”
+	//   来猜成功，猜错的方向是“以为还在升级”。先发事件再返回：返回后
+	//   调用方可能立即重启，进程消失。
+	publishResult(bus, "kernel", "", true, curVer.Version, nv.Version, false, "")
+
+	// 备份必须 GC：旧注释写“确认稳定后可删”，但全仓从来没有一行删除逻辑。
+	PruneOldBackups(dataDir)
 
 	return &Outcome{
 		From:      curVer,
@@ -370,33 +513,13 @@ type Outcome struct {
 	BackupDir string      // 备份目录（确认稳定后可删）
 }
 
-func CopyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	st, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	tmp := dst + ".tmp-upgrade"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, st.Mode())
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	// 原子替换：先写临时文件再 rename，避免"写到一半进程在跑"
-	return os.Rename(tmp, dst)
-}
+// CopyFile 是**向后兼容的别名**，内部走 CopyFileAtomic（含 fsync）。
+//
+// ★ 保留它而不是删：旧调用点（含测试）仍在用这个名字，而旧实现在
+//
+//	rename 前**没有 fsync** —— 掉电后会留下半截文件。统一到原子实现，
+//	调用方无需改一行。
+func CopyFile(src, dst string) error { return CopyFileAtomic(src, dst) }
 
 func FileExists(p string) bool {
 	_, err := os.Stat(p)

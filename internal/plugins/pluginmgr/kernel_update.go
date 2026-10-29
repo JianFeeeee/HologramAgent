@@ -31,6 +31,7 @@ package pluginmgr
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -76,6 +77,25 @@ func (p *Plugin) kernelUpdateApply(pkgPath string, release bool) (interface{}, e
 		return map[string]interface{}{"error": err.Error()}, nil
 	}
 
+	// ★ 安装形态闸门：先判断“能不能自己升”，再决定要不要下载 880MB。
+	//
+	// deb/rpm 形态下文件归包管理器所有，直接替换会破坏数据库一致性；
+	// 容器内替换毫无意义（重启即还原）。这几种都要**明确告知走哪条通道**，
+	// 而不是先下载再在 Apply 里报一个难懂的错误。
+	capab := update.Detect(kernelBinPath(p), kernelDataDir(p))
+	plan := update.PlanUpgrade(capab, pkgPath)
+	if !plan.Executable {
+		return map[string]interface{}{
+			"applied":      false,
+			"channel":      string(plan.Channel),
+			"install_kind": string(capab.Kind),
+			"variant":      string(capab.Variant),
+			"error":        plan.Reason,
+			"commands":     plan.Commands,
+			"hint":         "本机安装形态不支持内核自替换；请执行 commands 中的命令完成升级",
+		}, nil
+	}
+
 	tmp, err := os.MkdirTemp("", "kernel-upgrade-*")
 	if err != nil {
 		return nil, fmt.Errorf("建临时目录: %w", err)
@@ -92,13 +112,9 @@ func (p *Plugin) kernelUpdateApply(pkgPath string, release bool) (interface{}, e
 		return map[string]interface{}{"error": "包内找不到 homed"}, nil
 	}
 
-	// 走事件总线：升级的每一步都让 WebUI 看得到。
-	var bus *events.Bus
-	if p.sdk != nil {
-		bus = p.sdk.EventBus()
-	}
-
-	out, err := update.Apply(root, kernelBinPath(p), newDG, kernelDataDir(p), bus)
+	// 升级每一步的事件由 internal/update 以**内核身份**发出，
+	// 插件不再需要（也不应该）持有事件总线。
+	out, err := update.Apply(root, kernelBinPath(p), newDG, kernelDataDir(p), nil)
 	if err != nil {
 		return map[string]interface{}{"error": err.Error()}, nil
 	}
@@ -140,35 +156,22 @@ func (p *Plugin) kernelUpdateApply(pkgPath string, release bool) (interface{}, e
 	return res, nil
 }
 
-// kernelDataDir 推导数据目录（升级确认标记的落点）。
+// kernelDataDir 返回内核**真实**的数据目录（ks.DataDir，来自 `-data`）。
 //
-// 从 pluginDir 反推：<dataDir>/plugins ⇒ 上一级即 dataDir。
-// 与内核 --data 的值一致，update 模块（第 0 层）才能读到同一个标记。
+// ★ 取注入值，不做任何推导。此前的三条路都错过：
+//
+//	① 从 pluginDir 反推（Dir(Dir(...))）→ 把 /x/plugins 算成 /，
+//	   标记落到 /kernel-upgrade-pending.json，第 0 层永远读不到
+//	② 环境变量 HOMEAGENT_DATA_DIR → 部署方未必设，设了也未必与 -data 一致
+//	③ 写死生产路径 → 目录/用户迁移后指向不存在的目录
+//
+// 三者后果相同：标记落到内核读不到的位置 ⇒ **升级失败静默不回滚**。
+//
+// 而“猜一个看起来合理的路径”比返回空更危险 —— 它让 Apply 的 dataDir
+// 空值守卫变成死代码。所以：拿不到就返回空串，由 Apply 拒绝升级并报错。
 func kernelDataDir(p *Plugin) string {
-	// <dataDir>/plugins ⇒ 上一级即 dataDir。
-	//
-	// ★ 只 Dir 一次。此前写成 Dir(Dir(...))，把 /home/newqqagent/plugins
-	// 算成 /home —— pending 标记落到 /home/kernel-upgrade-pending.json，
-	// 而第 0 层 update 模块从 ks.DataDir 读 ⇒ **永远读不到标记** ⇒
-	// agent 发起的升级一旦启动失败就**不会回滚**（静默失效）。
-	// ★ 不再写死生产路径（2026-10-26 迁移教训）：
-	// 硬编码 /home/newqqagent 在目录/用户迁移后会让 pending 标记落到一个
-	// **已经不存在的目录**，而第 0 层 update 从 ks.DataDir 读 ⇒ 永远读不到
-	// ⇒ agent 发起的升级失败时静默不回滚。
-	//
-	// 优先级：显式环境变量（部署方声明自己在哪）→ 从 pluginDir 反推 → 空。
-	// 空表示"不知道"，由调用方拒绝执行并报错，而不是猜一个路径。
-	if d := os.Getenv(dataDirEnv); d != "" {
-		return d
-	}
-	if p.pluginDir != "" {
-		return filepath.Dir(p.pluginDir)
-	}
-	return ""
+	return update.KernelDataDir()
 }
-
-// dataDirEnv 是部署方声明数据目录的环境变量（与 webui 侧同名）。
-const dataDirEnv = "HOMEAGENT_DATA_DIR"
 
 // currentKernelVersion 读本机 homed 自报版本（尽力而为）。
 func currentKernelVersion(p *Plugin) *update.BinVersion {
@@ -211,14 +214,23 @@ func (p *Plugin) onUpdateRequest(evt *events.Event) {
 	}
 	scope, _ := evt.Payload["scope"].(string)
 	name, _ := evt.Payload["name"].(string)
-	pkgPath, _ := evt.Payload["pkg"].(string)
-	release, _ := evt.Payload["release"].(bool)
 
 	go func() {
 		var err error
 		switch scope {
 		case "kernel":
-			_, err = p.kernelUpdateApply(pkgPath, release)
+			// ★ scope=kernel **不归插件管**（第 3 项：执行权归内核）。
+			//
+			// 内核侧有专用执行器（internal/update.AttachExecutor），它：
+			//   · 不会被 disable / auto_start:false 影响
+			//   · 不依赖插件进程活着（插件崩了请求就丢）
+			//   · 手里有 ks.DataDir 这个权威值
+			//
+			// 这里曾经也接 kernel（go 启动后再调 kernelUpdateApply），
+			// 后果是**两个执行者抢同一个请求**：两边同时写 pending、
+			// 互相覆盖备份目录。所以直接让位，并留下可诊断的日志。
+			log.Printf("[pluginmgr] update_request scope=kernel 已交给内核执行器处理（来源 %s）", evt.Source)
+			return
 		case "plugin":
 			if name == "" {
 				err = fmt.Errorf("plugin 更新请求缺 name")
@@ -231,7 +243,7 @@ func (p *Plugin) onUpdateRequest(evt *events.Event) {
 		}
 		if err != nil {
 			// 事件是单向的，没有返回值可取 ⇒ 失败必须留日志，
-			// 否则请求方看到的就是"发了、没反应"。
+			// 否则请求方看到的就是“发了、没反应”。
 			fmt.Fprintf(os.Stderr, "[pluginmgr] update_request (%s/%s) failed: %v\n", scope, name, err)
 		}
 	}()

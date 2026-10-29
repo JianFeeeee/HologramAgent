@@ -68,8 +68,20 @@ type ReleaseInfo struct {
 	Asset       string `json:"asset,omitempty"`        // 匹配到的资产名（tar.gz）
 	AssetURL    string `json:"asset_url,omitempty"`    // 资产下载地址
 	AssetDigest string `json:"asset_digest,omitempty"` // GitHub SHA-256 digest
-	HasUpdate   bool   `json:"has_update"`
-	Reason      string `json:"reason,omitempty"` // 查不到时的说明
+
+	// DeltaAsset / DeltaURL 是本版针对**当前本机版本**的差分资产（可选）。
+	//
+	// ★ 为何单独一字段而不是复用 Asset：
+	//   整包与 delta 是两条不同的取包路径，一条失败能退回另一条。
+	//   混在一个字段里就无法表达“有整包、但 delta 不适用”。
+	//
+	// 空串 = 该 release 没有为当前版本提供 delta（首次安装、跳版本、
+	// 或发布时判定不适合差分）⇒ 调用方直接走整包。
+	DeltaAsset string `json:"delta_asset,omitempty"`
+	DeltaURL   string `json:"delta_url,omitempty"`
+
+	HasUpdate bool   `json:"has_update"`
+	Reason    string `json:"reason,omitempty"` // 查不到时的说明
 }
 
 // CheckRelease 查 GitHub Release 并与本机版本比较。
@@ -111,6 +123,24 @@ func CheckRelease(current *BinVersion) *ReleaseInfo {
 			info.AssetURL = a.BrowserDownloadURL
 			info.AssetDigest = a.Digest
 			break
+		}
+	}
+
+	// 找针对**当前本机 commit** 的 delta（可选）。
+	//
+	// 命名约定：...-from-<oldCommit8>.delta。带上来源 commit 而不是
+	// “随便挑一个 delta”：差分只能对特定旧版本应用，挑错基线会静默产出一份
+	// 看起来正常的垃圾（大小结构都对、就是内容错）。
+	//
+	// 找不到就不填 —— 调用方直接走整包，不是错误。
+	if info.CurrentC != "" && info.CurrentC != "unknown" {
+		want := "from-" + ShortCommit(info.CurrentC) + ".delta"
+		for _, a := range rel.Assets {
+			if strings.HasSuffix(a.Name, want) {
+				info.DeltaAsset = a.Name
+				info.DeltaURL = a.BrowserDownloadURL
+				break
+			}
 		}
 	}
 

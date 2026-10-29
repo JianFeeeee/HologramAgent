@@ -42,6 +42,15 @@ func (Module) Provides() []string { return []string{FacilityVersion} }
 
 // Init 执行版本自检，必要时回滚上一次升级。
 func (Module) Init(ks *kernelboot.KernelState) error {
+	// ⓪ 把内核**真实**的 dataDir 注入 update 包。
+	//
+	// 必须最先做：pending 标记/备份/回滚验全都靠它。进程内调用方
+	// （pluginmgr / webui）用 upd.KernelDataDir() 取值，而不是自己推导。
+	//
+	// 推导必错（实测三类）：从 exe 推 → /usr/bin/data（只读，备份必挂）；
+	// 硬编码 → 迁移后指向不存在的目录；读 env → 未必与 -data 一致。
+	upd.SetKernelDataDir(ks.DataDir)
+
 	st := &upd.State{}
 	ks.Update = st
 
@@ -87,6 +96,22 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	// ④ 依赖图路径（真正的 digest 校验在 kernelboot 装载期，那里失败会拒绝启动）
 	if dg := filepath.Join(filepath.Dir(bin), "depgraph.bin"); upd.FileExists(dg) {
 		st.DepGraphPath = dg
+	}
+
+	// ⑤ 安装形态与升级能力**探测**（不改任何状态，只产出可读快照）。
+	//
+	// 为何放在第 0 层：它就是第 0 层自己的事实——“我能怎么升”。
+	// 而且它要读 dpkg/rpm 数据库与目录权限，这些在启动时只跑一次。
+	//
+	// ★ 探测失败不能阻断启动：它只是诊断信息。拿不到就报 Unknown，
+	//   Apply 会因 Unknown 拒绝自替换（失败方向是收紧）。
+	capab := upd.Detect(bin, ks.DataDir)
+	ks.UpdateCapabilities = &capab
+	log.Printf("[update] install kind=%s variant=%s channel=%s can_replace=%v",
+		capab.Kind, capab.Variant, capab.Channel(), capab.CanWriteBin)
+	if !capab.CanWriteBin {
+		// 不阻断启动，但必须响亮：否则用户以为“点一下就能升级”。
+		log.Printf("[update] 本机不支持自替换升级：%s", capab.Reason)
 	}
 
 	log.Printf("[update] subsystem ready (version=%s rolled_back=%v)", st.Version, st.RolledBack)

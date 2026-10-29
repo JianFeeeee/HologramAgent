@@ -70,16 +70,32 @@ func TestEventsPublishOwnNamespace(t *testing.T) {
 	}
 }
 
-// ④ 订阅只开只读事件；越界订阅报错。
+// ④ 订阅只开白名单事件；越界订阅报错。
+//
+// ★ 2026-10-28 语义变更：raw_input / agent_output 改为可订阅（与
+// security.EventPolicy 同步）。理由是它们是**通道出口的必需品**：
+// WebUI/CLI 的对话界面靠订阅它们渲染用户消息与 agent 回复；
+// 不开就等于“装监控把界面打瘫”。订阅是只读观测，真正需要收紧的是**发布**。
 func TestEventsSubscribeAllowlistedOnly(t *testing.T) {
 	e, bus := newTestEvents(t, "p1")
-	if _, err := e.Subscribe("tools_ready", func(map[string]interface{}) {}); err != nil {
-		t.Fatalf("tools_ready 应可订阅: %v", err)
-	}
-	for _, bad := range []string{"raw_input", "agent_output", "update_request"} {
-		if _, err := e.Subscribe(bad, func(map[string]interface{}) {}); err == nil {
-			t.Errorf("订阅 %q 应被拒绝", bad)
+	for _, ok := range []string{
+		"tools_ready", "security_ready", "device_ready",
+		"raw_input", "agent_output",
+		"tool_call", "stage", "reasoning", "terminal_output",
+	} {
+		if _, err := e.Subscribe(ok, func(map[string]interface{}) {}); err != nil {
+			t.Errorf("%q 应可订阅: %v", ok, err)
 		}
+	}
+
+	// ★ update_request 可订阅（e2e 实测：内核执行器靠它收请求，
+	// 不开会让升级请求静默丢失）。安全边界在**发布**侧。
+	if _, err := e.Subscribe("update_request", func(map[string]interface{}) {}); err != nil {
+		t.Errorf("update_request 应可订阅: %v", err)
+	}
+	// 完全不存在的事件名也要拒
+	if _, err := e.Subscribe("no_such_event", func(map[string]interface{}) {}); err == nil {
+		t.Error("订阅未登记事件应被拒绝")
 	}
 	// 解除订阅后不再收到
 	cancel, err := e.Subscribe("security_ready", func(map[string]interface{}) {})

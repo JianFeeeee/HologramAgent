@@ -175,6 +175,15 @@ type Handler func(event *Event)
 type Bus struct {
 	mu   sync.RWMutex
 	subs map[EventType][]Handler
+
+	// guard 是**总线闸门**（可 nil = 不设闸门）。
+	//
+	// ★ 放在总线上而不是适配层：在此之前，策略只存在于
+	// internal/sdk/events.go 那一条路径，而 s.EventBus() 和 s.Subscribe()
+	// 拿的是裸总线 —— 任何插件都能绕过它发任意事件（含伪造内核事件）。
+	//
+	// 现在：Publish / Subscribe 本身先问 guard，绕不过去。
+	guard Guard
 }
 
 func NewBus() *Bus {
@@ -183,7 +192,59 @@ func NewBus() *Bus {
 	}
 }
 
+// SetGuard 注入闸门（由装配方调用，通常一次）。
+//
+// 传 nil 等于"不设闸门"（开发/test 场景）。
+func (b *Bus) SetGuard(g Guard) {
+	b.mu.Lock()
+	b.guard = g
+	b.mu.Unlock()
+}
+
+// Guard 返回当前闸门（可能 nil）。
+func (b *Bus) Guard() Guard {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.guard
+}
+
+// Publish 以**内核身份**发布（等价于 PublishAs{Name: ""}）。
+//
+// 保留这个签名是为了不让几十个内核调用点全部改签名：内核模块本来就
+// 是可信主体，它们不需要授权判定。但**载荷脱敏照样执行**。
 func (b *Bus) Publish(evt *Event) {
+	_ = b.publishAs(Publisher{}, evt)
+}
+
+// PublishAs 以指定身份发布（**插件侧必须用这个**）。
+//
+// 返回 error：被拒时要让调用方知道，而不是静默丢弃。
+func (b *Bus) PublishAs(p Publisher, evt *Event) error {
+	return b.publishAs(p, evt)
+}
+
+func (b *Bus) publishAs(p Publisher, evt *Event) error {
+	if evt == nil {
+		return nil
+	}
+
+	b.mu.RLock()
+	g := b.guard
+	b.mu.RUnlock()
+
+	if g != nil {
+		// ① 授权
+		if allowed, reason := g.AllowPublish(p, evt.Type); !allowed {
+			log.Printf("[bus] publish denied: publisher=%q type=%q: %s",
+				p.Name, evt.Type, reason)
+			return &DeniedError{Publisher: p.Name, EventType: string(evt.Type), Reason: reason}
+		}
+		// ② 载荷脱敏（**内核身份也过**：内核也可能把敏感值拼进事件）
+		if evt.Payload != nil {
+			evt.Payload = g.ScrubPayload(evt.Type, evt.Payload)
+		}
+	}
+
 	b.mu.RLock()
 	allHandlers := make([]Handler, len(b.subs[EventAll]))
 	copy(allHandlers, b.subs[EventAll])
@@ -197,6 +258,7 @@ func (b *Bus) Publish(evt *Event) {
 	for _, h := range typeHandlers {
 		b.safeCall(h, evt)
 	}
+	return nil
 }
 
 func (b *Bus) safeCall(h Handler, evt *Event) {
@@ -208,7 +270,38 @@ func (b *Bus) safeCall(h Handler, evt *Event) {
 	h(evt)
 }
 
+// Subscribe 以**内核身份**订阅（内核模块用）。
 func (b *Bus) Subscribe(eventType EventType, handler Handler) func() {
+	fn, err := b.subscribeAs(Publisher{}, eventType, handler)
+	if err != nil {
+		// 内核身份不会被拒（策略只约束插件），但保留返回值以防将来收紧
+		log.Printf("[bus] kernel subscribe rejected: %v", err)
+	}
+	return fn
+}
+
+// SubscribeAs 以指定身份订阅（**插件侧必须用这个**）。
+func (b *Bus) SubscribeAs(p Publisher, eventType EventType, handler Handler) (func(), error) {
+	return b.subscribeAs(p, eventType, handler)
+}
+
+func (b *Bus) subscribeAs(p Publisher, eventType EventType, handler Handler) (func(), error) {
+	b.mu.RLock()
+	g := b.guard
+	b.mu.RUnlock()
+
+	// EventAll 是内部通配订阅，不做逐类型判定（只允许内核使用：
+	// 插件走 s.Events().Subscribe 时本来就限制了具体类型）。
+	if g != nil && eventType != EventAll {
+		if allowed, reason := g.AllowSubscribe(p, eventType); !allowed {
+			log.Printf("[bus] subscribe denied: publisher=%q type=%q: %s",
+				p.Name, eventType, reason)
+			return func() {}, &DeniedError{
+				Publisher: p.Name, EventType: string(eventType), Reason: reason, Subscribe: true,
+			}
+		}
+	}
+
 	b.mu.Lock()
 	b.subs[eventType] = append(b.subs[eventType], handler)
 	b.mu.Unlock()
@@ -223,5 +316,5 @@ func (b *Bus) Subscribe(eventType EventType, handler Handler) func() {
 				break
 			}
 		}
-	}
+	}, nil
 }

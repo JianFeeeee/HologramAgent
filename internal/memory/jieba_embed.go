@@ -45,16 +45,41 @@ var jiebaDictFiles = []string{
 	"stop_words.utf8",
 }
 
-// materializeJiebaDict 把内嵌词库落盘，返回目录路径。
+// materializeJiebaDict 返回可用的词库目录（gojieba 只接文件路径）。
 //
-// gojieba 的 C++ API 只接受**文件路径**（NewJieba 会对每个路径 os.Stat，
-// 缺失就 panic），所以必须先落盘再传路径。
+// ## 取值顺序（第 4 项：数据外置）
 //
-// 落盘位置与幂等性：
-//   - 用内容哈希命名目录：词库升级后不会复用旧文件（否则会出现「新旧词库混用」
-//     这种最难查的一类问题——分词结果与版本对不上）。
-//   - 已存在且大小一致就跳过写入：正常启动只做几次 stat。
-func materializeJiebaDict() (string, error) {
+//	① 部署目录 <DataDir>/jiebadict/（5 个文件齐备且非空）
+//	② 系统目录 /usr/share/hologram/jiebadict/
+//	③ 内嵌词库落盘（向下兼容：旧部署里二进制内就有）
+//
+// ## 为何要允许外置（这是 OTA 体积问题的根）
+//
+// 词库 12MB 是**数据**，不是代码。它 #go:embed 进二进制后：
+//
+//	· 二进制 88MB 里有 59MB 是模型+词库，改一行代码要重下 88MB
+//	· 而 patch 版本之间这两个目录**从未变过**（实测 v1.3.8→v1.3.13
+//	  的 git log 里零提交）
+//
+// 外置后：词库可以独立发版，二进制只剩代码；掉电风险也不受影响
+// （词库坏了只是分词变差，不阻断启动）。
+//
+// ★ 外置目录只要**文件齐备且非空**就用，不做哈希校验：
+// 词库是数据不是可执行代码，装错版本最多分词效果差；而哈希校验会让
+// “用户手工换了一份词库”直接不可用，那是不必要的刚性。
+func materializeJiebaDict(dataDirs ...string) (string, error) {
+	// ① ② 部署目录优先（带 DataDir 的调用方由 cut.go 传入）
+	for _, d := range append(dataDirs, "/usr/share/hologram") {
+		if d == "" {
+			continue
+		}
+		cand := filepath.Join(d, "jiebadict")
+		if externalJiebaDictComplete(cand) {
+			return cand, nil
+		}
+	}
+
+	// ③ 退回内嵌（保持旧行为，不破坏任何现有部署）
 	sum, err := jiebaDictDigest()
 	if err != nil {
 		return "", err
@@ -87,6 +112,20 @@ func materializeJiebaDict() (string, error) {
 		}
 	}
 	return dir, nil
+}
+
+// externalJiebaDictComplete 判断外部目录里的 5 个词库是否齐备且非空。
+//
+// ★ 只查“存在且非空”，不跟内嵌版本比大小：外置的意义就是允许
+// 词库独立升级，拿内嵌版本当基准会让升级永远不生效。
+func externalJiebaDictComplete(dir string) bool {
+	for _, name := range jiebaDictFiles {
+		st, err := os.Stat(filepath.Join(dir, name))
+		if err != nil || st.IsDir() || st.Size() == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // jiebaDictDigest 对全部内嵌词库内容求哈希，作为落盘目录名的一部分。

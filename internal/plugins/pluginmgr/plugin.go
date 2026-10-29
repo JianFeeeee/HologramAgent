@@ -520,8 +520,11 @@ func (p *Plugin) registerTools(s *sdk.PluginSDK) {
 	//
 	// 注意：内核升级的**重启**仍走既有 KernelControlAPI（restartCh → exit 42
 	// → guard 重拉），本订阅只负责"受理请求 + 执行替换"。
-	if bus := s.EventBus(); bus != nil {
-		p.unsubUpdateReq = bus.Subscribe(events.EventUpdateRequest, p.onUpdateRequest)
+	// ★ 订阅要带**插件身份**（原来拿裸总线，可不经任何授权订阅）。
+	if unsub, err := s.EventBus().Subscribe(events.EventUpdateRequest, p.onUpdateRequest); err == nil {
+		p.unsubUpdateReq = unsub
+	} else {
+		log.Printf("[pluginmgr] subscribe update_request denied: %v", err)
 	}
 
 	s.RegisterTool("kernel_update", sdk.ToolDef{

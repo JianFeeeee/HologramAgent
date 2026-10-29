@@ -5,6 +5,7 @@ SERVICE_NAME="hologramagent"
 HOMED_BIN="/usr/bin/homed"
 DATA_DIR="/var/lib/hologram"
 SETUP_SH="/usr/lib/hologram/setup.sh"
+SETUP_USER_SH="/usr/lib/hologram/setup-user.sh"
 
 # unit 由本包装到 /etc/systemd/system/，而旧 postinst 只查
 # /lib/systemd/system/（merged-usr 下等于 /usr/lib/systemd/system，那里没有
@@ -25,6 +26,18 @@ find_unit() {
 case "$1" in
   configure)
     if [ -f "$HOMED_BIN" ]; then
+      # ★ 先建用户/组：服务单元写死了 User=hologramagent。
+      # 缺用户时 systemd 会拒绕启动（响亮失败），但用户装完起不来同样是事故。
+      # 必须在 chown/mkdir 之前 —— 否则首次安装会把数据目录建成 root 所有。
+      if [ -x "$SETUP_USER_SH" ]; then
+        HOLOGRAM_DATA="$DATA_DIR" "$SETUP_USER_SH" || {
+          echo "E: 无法创建 hologramagent 用户 —— 服务将无法启动。" >&2
+          echo "E: 请手工执行：$SETUP_USER_SH" >&2
+        }
+      else
+        echo "W: 未找到 $SETUP_USER_SH，跳过用户创建（首次安装会因缺用户而启动失败）。" >&2
+      fi
+
       mkdir -p "$DATA_DIR"
 
       # 初始化凭据和数据库。

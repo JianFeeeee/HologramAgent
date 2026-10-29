@@ -58,17 +58,47 @@ func TestEventPolicyOwnNamespace(t *testing.T) {
 }
 
 // ④ 订阅只开只读事件。
+//
+// ★ 2026-10-28 语义变更：raw_input / agent_output 从“必须拒绝”改为“可订阅”。
+//
+// 旧判据把它们当提权口子，但实际它们是**通道出口的必需品**：
+// WebUI 与 CLI 的对话界面就靠订阅这两个事件渲染用户消息与 agent 回复。
+// 不开就等于“装监控把界面打瘫”—— 那是装监控造成的故障，比不装更糟。
+//
+// 订阅是只读观测：看得见不等于能改变什么。真正的边界在**发布**侧
+// （agent_output / stage / terminal_output 已按主体限定，见 PublisherAllow）。
+//
+// 仍然拒绝的两项：
+//
+//	· update_request —— 执行入口，不是通知
 func TestEventPolicySubscribeReadOnlyOnly(t *testing.T) {
 	p := DefaultEventPolicy()
-	for _, ok := range []string{"tools_ready", "security_ready", "device_ready"} {
+
+	// 通道出口与观测面：必须可订阅
+	for _, ok := range []string{
+		"tools_ready", "security_ready", "device_ready",
+		"raw_input", "agent_output", // 对话界面必需品
+		"tool_call", "stage", "reasoning", "reasoning_delta", "content_delta",
+		"terminal_output", "system", "scheduler", "memory_access", "agent_llm_chain",
+		"update_check", "update_progress", "update_result",
+	} {
 		if d := p.CheckEventSubscribe("p1", ok); !d.Allowed {
 			t.Errorf("%q 应可订阅: %s", ok, d.Reason)
 		}
 	}
-	for _, bad := range []string{"raw_input", "agent_output", "update_request"} {
-		if d := p.CheckEventSubscribe("p1", bad); d.Allowed {
-			t.Errorf("订阅 %q 应被拒绝", bad)
-		}
+
+	// ★ update_request 现在**可订阅**（e2e 实测发现必须开）：
+	// 内核侧升级执行器靠订阅它收请求，pluginmgr 也订阅它处理 plugin 范围。
+	// 不开的后果是“升级请求静默丢失”——比安全约束失守更直接的故障。
+	//
+	// 安全边界仍在**发布**侧：只有 webui/pluginmgr/cli 能发。
+	if d := p.CheckEventSubscribe("pluginmgr", EventUpdateRequest); !d.Allowed {
+		t.Errorf("pluginmgr 应可订阅 update_request: %s", d.Reason)
+	}
+
+	// 真正必须拒绝的：未登记的事件名
+	if d := p.CheckEventSubscribe("p1", "no_such_event"); d.Allowed {
+		t.Error("订阅未登记事件应被拒绝")
 	}
 }
 
