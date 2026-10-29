@@ -204,6 +204,20 @@ const (
 	MethodSecretsEncrypt   = "secrets.encrypt"   // 46
 	MethodSecretsDecrypt   = "secrets.decrypt"   // 47
 
+	// 安全策略**声明面**（插件声明命名档位；判定由内核 security 执行）。
+	//
+	// ★ 为什么是方法而不是事件：声明必须**同步**生效。
+	// 若走事件，插件可能在声明事件还在队列里时就用
+	// InjectOptions.SecurityProfile="qq.guest" 注入 —— 内核那时还没登记
+	// 该档位，会响亮报"未声明档位"（那是对的，但会让插件启动后头几个
+	// 请求必然失败）。RPC 的响应返回即登记完成。
+	//
+	// ★ 为什么放在插件模块（proc）而不是让插件直连 security：
+	// 插件是子进程，它唯一的通道就是本桥。而 Owner 必须由内核用
+	// **真实插件名**填（插件自报可伪造），这个判定点只能在宿主侧。
+	MethodSecurityDeclareProfile  = "security.declareProfile"  // 48
+	MethodSecurityDeclareProfiles = "security.declareProfiles" // 49
+
 	// LLM 源（原 case 19/20/37）
 	MethodLLMListSources   = "llm.listSources"   // 19
 	MethodLLMSetSource     = "llm.setSource"     // 20

@@ -98,6 +98,11 @@ type CoreSDK interface {
 	Settings() pubsdk.SettingsAPI
 	// Secrets 是**全进程共享**的变量库（非 per-plugin）。
 	Secrets() pubsdk.SecretsAPI
+	// Security 是**策略声明面**（插件声明命名档位；判定由内核执行）。
+	//
+	// ★ 只声明、不判定：本接口刻意没有 CheckTool 之类的方法 ——
+	// 那属于内核。插件自判会让策略分散、且插件崩溃即策略失效。
+	Security() pubsdk.SecurityAPI
 	Memory() pubsdk.MemoryAPI
 	TextMemory() pubsdk.TextMemoryAPI
 	DocMemory() pubsdk.DocMemoryAPI
@@ -186,6 +191,9 @@ func (h *coreHandler) Handle(method string, params json.RawMessage) (interface{}
 		MethodSettingsList, MethodSettingsDefs, MethodSettingsDump, MethodSettingsPlugins,
 		MethodSettingsDataDir:
 		return h.handleSettings(method, params)
+
+	case MethodSecurityDeclareProfile, MethodSecurityDeclareProfiles:
+		return h.handleSecurity(method, params)
 
 	case MethodLLMListSources, MethodLLMSetSource, MethodLLMCurrentSource:
 		return h.handleLLM(method, params)

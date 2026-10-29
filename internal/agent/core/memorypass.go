@@ -150,7 +150,7 @@ func (a *Agent) pruneByQuery(query string) int {
 		return 0
 	}
 	topK := a.contextTopK()
-	return a.context.PruneWithProtected(query, topK, a.docStore, a.effectiveProtectedCount())
+	return a.context.PruneWithProtected(query, topK, a.coldcontextStore, a.effectiveProtectedCount())
 }
 
 // pruneForResume 是按「指定保护条数」执行的裁剪，供任务恢复入口使用。
@@ -179,7 +179,7 @@ func (a *Agent) pruneForResume(query string, protected int) int {
 	// 这里按**本帧保护条数**重新推导：先算 token 预算能装几条，
 	// 再保证下限是 protected+1（否则 Prune 会把 protected 之外的裁光）。
 	topK := a.contextTopKForProtected(protected)
-	return a.context.PruneWithProtected(query, topK, a.docStore, protected)
+	return a.context.PruneWithProtected(query, topK, a.coldcontextStore, protected)
 }
 
 // contextTopKForProtected 是按**指定保护条数**推导保留条数的版本。

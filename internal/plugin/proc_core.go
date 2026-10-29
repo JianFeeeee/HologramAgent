@@ -42,6 +42,18 @@ func (c procCore) Secrets() pubsdk.SecretsAPI {
 	return nil
 }
 
+// Security 转发到内核的策略声明面。
+//
+// ★ 注意 Owner 的来源：真正的实现（internal/sdk/security_impl.go）
+// 用**内核侧真实插件名**填 Owner，不采信插件自报的值 ——
+// 所以这里如实转发即可，越权拒绝发生在那一层。
+func (c procCore) Security() pubsdk.SecurityAPI {
+	if v := c.sdk.Security(); v != nil {
+		return v
+	}
+	return nil
+}
+
 func (c procCore) Settings() pubsdk.SettingsAPI {
 	if s := c.sdk.Settings(); s != nil {
 		return s

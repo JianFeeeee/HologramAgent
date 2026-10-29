@@ -21,6 +21,3 @@ import (
 func Dispatch(h api.BuiltinToolHandlers, tc api.ToolCall, turnScenes []string) (string, bool) {
 	return toolroute.Dispatch(h, tc, turnScenes)
 }
-
-// IsBuiltinTool 报告某名字是否由内置路由处理。
-func IsBuiltinTool(name string) bool { return toolroute.IsBuiltinTool(name) }

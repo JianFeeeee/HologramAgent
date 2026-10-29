@@ -170,6 +170,17 @@ func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error
 
 	rt := sec.NewRuntime(store)
 	sec.SetRuntimeGlobal(rt)
+
+	// ★ 全局策略基线（部署方兵底，用户 2026-10-29 裁定选项 B）。
+	//
+	// 它必须在这里装（而不是等模块 Init）：`Prepare` 可能在 Group 0 被
+	// 提前调一次，而工具可能在那之后任意时刻被执行 —— 策略若晚一步生效，
+	// 就存在一个“工具已在跑、但黑名单还没上”的窗口。
+	//
+	// 注：配置里全空/全 false 时得到零值 Policy（不限制），
+	// 与加配置前的行为逐字一致。
+	ApplyPolicyFromConfig(rt, cfgReg)
+
 	log.Printf("[security] module enabled (key source %s, %d variables, config-at-rest encryption on)",
 		keySrc, store.Count())
 	return rt, nil

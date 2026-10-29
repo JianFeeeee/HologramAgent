@@ -6,6 +6,8 @@ import (
 	"log"
 	"math"
 	"sort"
+	"strings"
+	"time"
 )
 
 // 块节点的向量召回。
@@ -174,7 +176,49 @@ func (g *GraphDB) RecallBlocks(q BlockRecallQuery) ([]BlockHit, error) {
 	if len(hits) > topK {
 		hits = hits[:topK]
 	}
+
+	// ★ 记录召回时间（P6，2026-10-29）。
+	//
+	// 为什么必须记：回收判定看的是"这块记忆还有没有用"，而"被召回"
+	// 是有用的**唯一实证信号** —— 创建时间只说明它什么时候写进来。
+	// 不记的话，所有块看起来都"很久没用过"，回收就等于按入库时间瞎删。
+	//
+	// 为什么在解锁后做：本函数持 RLock，写库会撞锁（SQLite 单写）。
+	// 所以先把命中的 ID 复制出来，defer 到 RUnlock 之后再批量更新。
+	// 失败只记日志：召回本身已经成功，不能因为"记不上时间"就报错。
+	hitIDs := make([]string, len(hits))
+	for i := range hits {
+		hitIDs[i] = hits[i].Block.ID
+	}
+	if len(hitIDs) > 0 {
+		defer func() { g.markRecalled(hitIDs) }()
+	}
 	return hits, nil
+}
+
+// markRecalled 批量刷新 last_recalled_at。
+//
+// 单条 UPDATE ... IN (...) 而不是逐条：召回 topK=10~50，
+// 逐条就是 10~50 次独立写事务，在 SQLite 上会明显拖慢每轮对话。
+//
+// 失败只记日志：这是"统计信号"，不是正确性数据 ——
+// 记不上时间最多让回收判据偏保守（少删），绝不会删错。
+func (g *GraphDB) markRecalled(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	ph := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)+1)
+	args = append(args, time.Now())
+	for i, id := range ids {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	if _, err := g.db.Exec(
+		`UPDATE memory_blocks SET last_recalled_at = ?
+		 WHERE id IN (`+strings.Join(ph, ",")+`)`, args...); err != nil {
+		log.Printf("[graph] mark recalled failed (%d blocks): %v", len(ids), err)
+	}
 }
 
 // RecallBlocksWithArbitration 与 RecallBlocks 相同，但额外返回仲裁详情

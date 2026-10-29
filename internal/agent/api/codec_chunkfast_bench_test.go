@@ -14,7 +14,7 @@ import (
 var benchChunks = map[string]string{
 	"content_zh":    `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"这是一段来自真实流式响应的中文内容，用于测量解析开销。"},"finish_reason":null}]}`,
 	"content_ascii": `{"id":"chatcmpl-abc","choices":[{"index":0,"delta":{"content":"hello world this is a longer ascii content chunk"},"finish_reason":null}]}`,
-	"toolcall":      `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_9a","type":"function","function":{"name":"memory_recall","arguments":"{\"query\":\"用户偏好\",\"limit\":20}"}}]},"finish_reason":null}]}`,
+	"toolcall":      `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_9a","type":"function","function":{"name":"stablemem_recall","arguments":"{\"query\":\"用户偏好\",\"limit\":20}"}}]},"finish_reason":null}]}`,
 	"usage":         `{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}],"usage":{"prompt_tokens":3821,"completion_tokens":117,"total_tokens":3938,"prompt_cache_hit_tokens":3584,"prompt_cache_miss_tokens":237}}`,
 	"finish":        `{"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 }

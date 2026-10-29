@@ -87,5 +87,35 @@ func (g *eventGuard) ScrubPayload(eventType events.EventType, payload map[string
 	return out
 }
 
+// ScrubInbound 对**入向**载荷逐字段清洗（投递给订阅者之前）。
+//
+// 与 ScrubPayload 对称，但用的是 Inbound 方向：
+// 外部模块写进载荷的明文凭据在这里被换回别名。
+//
+// 为何必须在总线上做（而不是订阅方的适配层）：
+// 总线是**唯一的投递点**，而订阅入口有四五条。在适配层做就只好每条
+// 各自实现一遍（实际就是这么发生的：sdk 侧曾有一份 scrubIn），
+// 漏一条就是漏一条路径。安全模块持有总线 ⇒ 在这里做一次就覆盖全部。
+func (g *eventGuard) ScrubInbound(eventType events.EventType, payload map[string]interface{}) map[string]interface{} {
+	if g.rt == nil || payload == nil {
+		return payload
+	}
+	out := make(map[string]interface{}, len(payload))
+	for k, v := range payload {
+		if s, ok := v.(string); ok && s != "" {
+			clean, n := g.rt.ScrubInbound(Inspection{
+				Direction: DirectionInbound,
+				Stage:     "event:" + string(eventType),
+			}, s)
+			if n > 0 {
+				out[k] = clean
+				continue
+			}
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // 编译期确认实现了 events.Guard。
 var _ events.Guard = (*eventGuard)(nil)

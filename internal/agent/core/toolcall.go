@@ -12,7 +12,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
@@ -261,6 +261,33 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		return toolOutcome{Text: renderToolError(tc.Name, ve), Raw: ve}
 	}
 
+	// ★★ 安全策略闸（2026-10-29 接线）。
+	//
+	// ## 为什么在这里
+	//
+	// 这是**分派之前**最后一个公共点：再往下就分成 device 路由、io 工具、
+	// 插件工具、设备授权等多个 execute 分支，逐个加必然漏一个（与出向
+	// 脱敏同样的理由，那边用的是 defer；这里用前置闸，因为拒绝必须**阻止执行**）。
+	//
+	// ## 为什么参数校验在前、策略闸在后
+	//
+	// 两者关心的东西不同且不能互相顶替：
+	//   参数校验：这个调用写得对不对（模型可以自己改）
+	//   策略闸  ：这个工具准不准用（模型改参数也没用，必须换工具或报人）
+	// 先报参数错能给出更可执行的下一步；参数合法后才谈授权，避免
+	// "策略拒了但真实原因其实是参数写坏了"这种误导。
+	//
+	// ## 为什么 Reason 原样回给模型
+	//
+	// 拒绝必须可执行（policy.go 的纪律）：模型据此能改路径或换工具，
+	// 而不是反复重试同一条被拒的调用。
+	if d := a.securityDecisionFor(tc.Name); !d.Allowed {
+		log.Printf("[security] tool %s denied by policy: %s", tc.Name, d.Reason)
+		te := newToolError(ErrReasonDenied, "", fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
+			"This tool is blocked by security policy. Do not retry it with the same or different arguments; use another tool or report back to the user.")
+		return toolOutcome{Text: te.Error(), Raw: te}
+	}
+
 	// ★ 内置工具的路由交给 device 模块（`kernelmod/device.Dispatch`）。
 	//
 	// 为什么要搬：这张"前缀 → 族处理器"的表曾是工具面的**第二份事实来源**
@@ -390,9 +417,11 @@ func isToolNotFound(err error) bool { return agentIO.IsToolNotFound(err) }
 func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) string {
 	g := a.graphMem()
 	if g == nil {
-		if tc.Name == "memory_document_query" {
-			return a.executeDocTool(tc)
-		}
+		// ★ 此处曾有 `if tc.Name == "memory_document_query" { return a.executeDocTool(tc) }`
+		// （2026-10-29 删除）。它是改名前的残留：文档类工具早已改叫
+		// `coldcontext_*`，而 Dispatch 只把 `stablemem_` 前缀送到本函数，
+		// 所以这个分支**永远不可达**。留着它的唯一效果是让读代码的人
+		// 以为旧工具名还活着。
 		return "stable memory is unavailable"
 	}
 	// 整理类工具需要**完整内核**的记忆整理面（块/媒体/结构操作）。
@@ -410,7 +439,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			return "toolresult_read failed: " + err.Error()
 		}
 		return txt
-	case "memory_recall":
+	case "stablemem_recall":
 		query, _ := tc.Arguments["query_intent"].(string)
 		depth, _ := tc.Arguments["depth"].(float64)
 		if depth <= 0 {
@@ -492,7 +521,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		return strings.Join(parts, "\n")
 
-	case "memory_block_merge":
+	case "stablemem_block_merge":
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
@@ -511,7 +540,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		a.noMergeMu.Unlock()
 		return fmt.Sprintf("Marked \"%s\" and \"%s\" as not-mergeable for %d rounds", entityA, entityB, int(rounds))
 
-	case "memory_commit":
+	case "stablemem_commit":
 		triplesData, ok := tc.Arguments["triples"].([]interface{})
 		if !ok {
 			return "invalid arguments: triples must be an array"
@@ -638,7 +667,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		return fmt.Sprintf("Wrote %d memory blocks and %d relation edges", newBlocks, newEdges)
 
-	case "memory_introspect":
+	case "stablemem_introspect":
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
@@ -648,10 +677,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		return fmt.Sprintf("memory stats: %v", stats)
 
-	case "memory_document_query":
-		return a.executeDocTool(tc)
-
-	case "memory_merge":
+	case "stablemem_merge":
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
@@ -666,7 +692,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		return fmt.Sprintf("Merged \"%s\" into \"%s\": source deleted, %d relations redirected", source, target, count)
 
-	case "memory_delete_entity":
+	case "stablemem_delete_entity":
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
@@ -689,7 +715,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		return fmt.Sprintf("Deleted block \"%s\" and its %d relations (%d blocks)",
 			name, res.Edges, res.Blocks)
 
-	case "memory_purge":
+	case "stablemem_purge":
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
@@ -726,7 +752,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		}
 		return strings.Join(parts, "，")
 
-	case "memory_edit":
+	case "stablemem_edit":
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
@@ -1062,7 +1088,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 }
 
 func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
-	if a.docStore == nil {
+	if a.coldcontextStore == nil {
 		return "cold context is unavailable"
 	}
 	switch tc.Name {
@@ -1075,22 +1101,62 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		if query == "" {
 			return "query is required"
 		}
-		docs := a.docStore.Consume(query, topK)
+		// ★★ 两阶段：**先 Peek（只读），确认落地后才删 L2 副本**（2026-10-29 P4）。
+		//
+		// 原实现是 Consume（读+删一步）。删除是不可逆步骤，却发生在
+		// 「确认回灌真的成功」之前 —— 于是回灌路径上一旦失败（向量算错、
+		// panic、被中断），L1 没进、L2 已删，**三层都不在**，内容永久丢失。
+		// 这是 plan.md 记的第四个病。
+		//
+		// 现在：Peek → 逐条回灌 → 该条落进 L1 才 Remove 它。
+		// 失败的那条**留着**，下次还能再取（宁可重复回忆，不可静默丢失）。
+		docs := a.coldcontextStore.Peek(query, topK)
 		if len(docs) == 0 {
 			return "no relevant cold context found"
 		}
 
+		// ★★ 召回前**先估算**，超预算则按页相似度剔除（用户裁定，2026-10-29）
+		//
+		// 算法（逐字）：
+		//   召回过程中要先估算召回后的 token，如果整段召回不超预算，则直接召回，
+		//   若超了则对段内每一页算相似度，将最不相似的几个页标记为 inactive，
+		//   直到不超预算
+		//
+		// 为什么要"先估算"而不是"回灌完再裁"：
+		//   后者意味着先占满窗口、再剔除 —— 但那一步之前，
+		//   `formatMergedTimeline` 已经按预算把**更早的真实历史**丢掉了。
+		//   等于用"剔除刚召回的"去换"丢失原有的"，净亏。
+		//
+		// 预算取 ContextTokens 减去当前时间线已占用：召回内容与已有事件
+		// 要一起渲染，只看整窗会在"加上原有内容"后才发现爆了。
+		budget := a.recallBudget()
+		plan := a.context.planColdRecall(docs, query, budget)
+		if plan.Over {
+			log.Printf("[coldcontext] recall over budget: need %d tokens, budget %d — "+
+				"evicted %d page(s) across %d doc(s) by lowest similarity (now %d tokens)",
+				plan.OriginalNeed, plan.Budget, countPlanPages(plan.Evict),
+				len(plan.Evict), plan.Need)
+		}
+
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("Recalled %d cold-context documents; their original text is re-inserted into your timeline at its own original timestamps (not the current turn):\n", len(docs)))
+		if plan.Over {
+			b.WriteString(fmt.Sprintf("Recalled %d cold-context documents; their original text is re-inserted into your timeline at its own original timestamps (not the current turn). "+
+				"The recall was over the context budget, so the least relevant pages were marked inactive (not rendered): %d page(s) across %d document(s).\n",
+				len(docs), countPlanPages(plan.Evict), len(plan.Evict)))
+		} else {
+			b.WriteString(fmt.Sprintf("Recalled %d cold-context documents; their original text is re-inserted into your timeline at its own original timestamps (not the current turn):\n", len(docs)))
+		}
 
 		totalEvents := 0
+		kept := 0 // 回灌失败、保留在 L2 的篇数
 		for i, d := range docs {
 			// 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件。
 			//
 			// ARCHITECTURE「记忆流转」② Document 层：
 			//   coldcontext_query → Consume(读取并删除)
 			//             → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
-			n := a.restoreDocEvents(d)
+			n := a.restoreDocEvents(d, plan.Evict[d.ID])
+			restored := n > 0 // 是否真的落进了 L1
 			if n == 0 {
 				// 存量文档（无 Events）降级：整篇渲成一个事件。
 				// 不伪造成「有原始事件」—— 那时归档确实只有渲染视图。
@@ -1106,23 +1172,36 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 					NoMemory:  true, // 同上：回填不产生新记忆
 				})
 				n = 1
+				restored = true
 			}
 			totalEvents += n
+
+			// ② 确认：只有**真的落进 L1** 才删 L2 副本。
+			if restored {
+				a.coldcontextStore.Remove(d.ID)
+			} else {
+				kept++
+				log.Printf("[coldcontext] doc %s not restored (%d events), keeping L2 copy for retry", d.ID, n)
+			}
 
 			// ★ 每条给出「什么时候 + 谁说的 + 正文开头」，
 			//   让模型**立刻**能判断这笔召回有没有用。
 			//
 			// 旧返回只有「[1] 来自 1 个来源的 1 条对话 (agent) 涉及: ok」——
 			// jieba 词袋，零信息量，模型无法据此判断相关性。
-			b.WriteString(fmt.Sprintf("\n[%d] %s\n", i+1, docRecallHeadline(d, n)))
+			b.WriteString(fmt.Sprintf("\n[%d] %s\n", i+1, coldcontextRecallHeadline(d, n)))
 
 			// 附上少量真实正文行，供模型即时判断（完整原文在时序里）。
-			if preview := docRecallPreview(d, n, 3); preview != "" {
+			if preview := coldcontextRecallPreview(d, n, 3); preview != "" {
 				b.WriteString(preview)
 			}
 		}
 
 		b.WriteString(fmt.Sprintf("\n%d events backfilled in total. To quote details, read the timeline at those timestamps.", totalEvents))
+		if kept > 0 {
+			// 明说「有 N 篇没取出来」：否则模型会以为自己看到了全部相关记忆。
+			b.WriteString(fmt.Sprintf("\nNote: %d document(s) could not be restored this time and remain in cold storage (retry later).", kept))
+		}
 		return b.String()
 
 	case "coldcontext_commit":
@@ -1135,7 +1214,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			summary = truncateStr(content, 100)
 		}
 
-		doc := &document.Doc{
+		doc := &coldcontext.ColdDoc{
 			Summary: summary,
 			Content: content,
 			Source:  "manual",
@@ -1150,7 +1229,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			}
 		}
 
-		if err := a.docStore.Insert(doc); err != nil {
+		if err := a.coldcontextStore.Insert(doc); err != nil {
 			return fmt.Sprintf("cold context write failed: %v", err)
 		}
 		if n := len(doc.Blocks); n > 0 {
@@ -1332,7 +1411,7 @@ func (a *Agent) currentFingerprint() string {
 //
 //	coldcontext_query → Consume(读取并删除)
 //	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
-//	          → 文档以原始时间戳写入 context 时间线, 从 docStore 删除
+//	          → 文档以原始时间戳写入 context 时间线, 从 coldcontextStore 删除
 //
 // L1 与 L2 结构同构，召回是**迁移**：事件连同它持有的块从 L2 换到 L1，
 // 块 ID 与向量全程不变（不重建、不重算）。
@@ -1341,7 +1420,12 @@ func (a *Agent) currentFingerprint() string {
 //
 // Consume 已把文档从 L2 删掉，而块的字节只存在于那篇文档里。
 // 不回填块 = 块两层都不在 = 永久丢内容（生产实测这一敞口约 248MB）。
-func (a *Agent) restoreDocEvents(d *document.Doc) int {
+// restoreDocEvents 把一篇 L2 文档的事件逐条迁回 L1。
+//
+// inactivePages 是本篇要**剔除**（标注不渲染）的页序号。
+// 传 nil 表示整篇完整回灌。剔除是标注而非删除：数据全在，
+// 清空 InactivePages 即可恢复渲染。
+func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) int {
 	if a == nil || a.context == nil || d == nil || !d.HasEvents() {
 		return 0
 	}
@@ -1368,11 +1452,29 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 			ToolResults: func() []ToolResultItem {
 				var out []ToolResultItem
 				for _, tr := range ev.ToolResults {
-					out = append(out, ToolResultItem{Name: tr.Name, Output: tr.Output})
+					out = append(out, ToolResultItem{CallID: tr.CallID, Name: tr.Name, Output: tr.Output})
+				}
+				return out
+			}(),
+			// ★ 回填必须带上工具调用记录（含参数）。
+			//   漏了它，回灌后这一页的 call 侧是空的：
+			//   既无法配对校验，也无法按页渲染/页化。
+			ToolCalls: func() []ToolCallItem {
+				if len(ev.ToolCalls) == 0 {
+					return nil
+				}
+				out := make([]ToolCallItem, len(ev.ToolCalls))
+				for i, tc := range ev.ToolCalls {
+					out[i] = ToolCallItem{
+						CallID: tc.CallID, Name: tc.Name,
+						Arguments: tc.Arguments, RawArguments: tc.RawArguments,
+					}
 				}
 				return out
 			}(),
 			Blocks: append([]memory.MemoryBlock(nil), held...),
+			// 召回期剔除的页（裁剪预算用）：标注但数据保留
+			InactivePages: inactivePages,
 		})
 		n++
 		blocks += len(held)
@@ -1385,12 +1487,12 @@ func (a *Agent) restoreDocEvents(d *document.Doc) int {
 	return n
 }
 
-// docRecallHeadline 生成一条召回结果的首行：「时间跨度 · 来源 · 事件数 · 媒体数」。
+// coldcontextRecallHeadline 生成一条召回结果的首行：「时间跨度 · 来源 · 事件数 · 媒体数」。
 //
 // 为什么不用 Doc.Summary：那是 jieba 词袋（"来自 N 个来源的 M 条对话 涉及: ok"），
 // 零信息量。模型看到它无法判断这笔召回有没有用 —— 这正是 agent 几乎不用
 // coldcontext_query 的直接原因之一。
-func docRecallHeadline(d *document.Doc, eventCount int) string {
+func coldcontextRecallHeadline(d *coldcontext.ColdDoc, eventCount int) string {
 	if d == nil {
 		return ""
 	}
@@ -1440,11 +1542,11 @@ func docRecallHeadline(d *document.Doc, eventCount int) string {
 	return strings.Join(parts, " · ")
 }
 
-// docRecallPreview 取少量**真实正文**行，让模型即时判断相关性。
+// coldcontextRecallPreview 取少量**真实正文**行，让模型即时判断相关性。
 //
 // 只取前 maxLines 行、每行截短：完整原文已在对话时序里（restoreDocEvents 回填），
 // 这里只是"先给你看一眼是什么"，不是全文。
-func docRecallPreview(d *document.Doc, eventCount, maxLines int) string {
+func coldcontextRecallPreview(d *coldcontext.ColdDoc, eventCount, maxLines int) string {
 	if d == nil || maxLines <= 0 {
 		return ""
 	}

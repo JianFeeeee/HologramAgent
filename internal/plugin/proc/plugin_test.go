@@ -45,6 +45,8 @@ type fakeCoreSDK struct {
 	settingsAPI pubsdk.SettingsAPI
 	// secretsAPI 同理：变量库后端（端到端判据用）。
 	secretsAPI pubsdk.SecretsAPI
+	// securityAPI 是策略声明面的后端（声明类端到端判据用）。
+	securityAPI pubsdk.SecurityAPI
 }
 
 // knowledgeAPITest 是公开 SDK 的知识库契约（不含内核扩展方法）。
@@ -69,6 +71,7 @@ func newFakeCore() *fakeCoreSDK {
 func (f *fakeCoreSDK) PluginName() string                  { return "fake" }
 func (f *fakeCoreSDK) Settings() pubsdk.SettingsAPI        { return f.settingsAPI }
 func (f *fakeCoreSDK) Secrets() pubsdk.SecretsAPI          { return f.secretsAPI }
+func (f *fakeCoreSDK) Security() pubsdk.SecurityAPI        { return f.securityAPI }
 func (f *fakeCoreSDK) Memory() pubsdk.MemoryAPI            { return nil }
 func (f *fakeCoreSDK) TextMemory() pubsdk.TextMemoryAPI    { return nil }
 func (f *fakeCoreSDK) DocMemory() pubsdk.DocMemoryAPI      { return f.docMem }

@@ -103,10 +103,13 @@ type TaskFrame struct {
 	StageCtx *sdk.StageContext
 
 	// 跨轮次状态
-	Msgs               []agentAPI.Message
-	Tools              []interface{}
-	ToolsUsed          []string
-	ToolResults        []ToolResultItem
+	Msgs        []agentAPI.Message
+	Tools       []interface{}
+	ToolsUsed   []string
+	ToolResults []ToolResultItem
+	// ToolCalls 是每一次工具调用的完整记录（含参数）。与 ToolResults 通过
+	// CallID 配对；两者都由 appendToolCallRecord 同步追加，不各写一份。
+	ToolCalls          []ToolCallItem
 	Turn               int
 	LastBatchReplyOnly bool
 
@@ -578,6 +581,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 		Response:    f.Response,
 		ToolsUsed:   f.ToolsUsed,
 		ToolResults: f.ToolResults,
+		ToolCalls:   f.ToolCalls,
 	}
 	a.bindEventMedia(&turnEvt, a.drainMediaBlocks())
 	// ★ 明文拦截发生在 a.context.Append **内部**（见 context.go 的 Append），
@@ -657,7 +661,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 		budget.MaxContext, budget.TargetUsage, budget.FixedTokens, budget.MemoryTokens, budget.ContextTokens,
 		len(f.Tools), a.context.Len(),
 		a.personality != nil && a.personality.Content != "",
-		a.docStoreSize())
+		a.coldcontextStoreSize())
 
 	if a.runStage(sdk.StagePreAction, f.StageCtx) {
 		f.Response = *f.StageCtx.Response
@@ -956,7 +960,7 @@ func (a *Agent) stepToolBatch(f *TaskFrame) stepOutcome {
 		f.CurResult = r.text
 		f.CurRaw = r.raw
 		f.ToolIdx = i
-		f.ToolResults = append(f.ToolResults, ToolResultItem{Name: r.name, Output: r.text})
+		f.ToolResults = append(f.ToolResults, ToolResultItem{CallID: f.CurTool.ID, Name: r.name, Output: r.text})
 		if out := a.stepToolAfter(f); out != outcomeContinue {
 			return out
 		}
@@ -1034,7 +1038,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	}
 	tc := f.PendingTools[f.ToolIdx]
 
-	f.ToolsUsed = append(f.ToolsUsed, tc.Name)
+	f.appendToolCallRecord(tc)
 	pluginName := a.resolveToolPlugin(tc.Name)
 	log.Printf("[agent] executing tool: %s (plugin=%s, id=%s)", tc.Name, pluginName, tc.ID)
 	if tc.RawArguments != "" {
@@ -1096,6 +1100,41 @@ func denialResultText(ctx *sdk.StageContext, toolName string) string {
 	return fmt.Sprintf("工具 %s 已被插件拒绝", toolName)
 }
 
+// appendToolCallRecord 记录一次工具调用（名 + 参数 + 配对键）。
+//
+// ## 为什么必须与 ToolsUsed 同处维护
+//
+// ToolsUsed 是「用过的工具名」的便捷视图，ToolCalls 是配对/页化所需的
+// 事实源。两份数据若各自 append，任何一条路径漏写就出现
+// 「有结果没调用记录」或反之 —— 而那种破配对在渲染时是 400，
+// 在记忆里是「这一页永远配不上对」。
+//
+// ## 为什么要脱敏
+//
+// 参数由模型给出，正常是别名（sec_xxx），但插件工具可能被直接传明文
+// （实测：模型自己拼了一个 key 传进 enc_shell）。落盘后永久留存、
+// 且每轮被召回，所以必须过与 Input/Response 同一条闸。
+// 脱敏在 Append 内还会再走一次（scrubEventSecrets），这里是落 ToolCalls
+// 之前的第一道（因为 ToolCalls 是结构化的，Append 的文本闸看不到字段内部）。
+func (f *TaskFrame) appendToolCallRecord(tc agentAPI.ToolCall) {
+	if f == nil {
+		return
+	}
+	f.ToolsUsed = append(f.ToolsUsed, tc.Name)
+	// 原样记录；脱敏统一由 scrubEventSecrets 在 Append 内做（那里是唯一咽喉）。
+	//
+	// ★ 为什么不在这里就地脱敏：那会造出**第二处脱敏点**。
+	//   Input/Response/ToolResults/Blocks 都只在 scrubEventSecrets 一处洗，
+	//   多一个局部实现就多一个会漏的地方（本仓为此栽过多次）。
+	//   代价是参数里的明文会在内存里多存活一会儿，落盘前已被洗掉。
+	f.ToolCalls = append(f.ToolCalls, ToolCallItem{
+		CallID:       tc.ID,
+		Name:         tc.Name,
+		Arguments:    tc.Arguments,
+		RawArguments: tc.RawArguments,
+	})
+}
+
 // stepToolExec 执行工具。**临界区**：见设计文档 §4.3。
 func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	// 执行工具前先解析本轮场景：写侧要用它给记忆自动挂场景（主动+被动两条路），
@@ -1105,7 +1144,7 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	result := outcome.Text
 	f.CurResult = result
 	f.CurRaw = outcome.Raw
-	f.ToolResults = append(f.ToolResults, ToolResultItem{Name: f.CurTool.Name, Output: result})
+	f.ToolResults = append(f.ToolResults, ToolResultItem{CallID: f.CurTool.ID, Name: f.CurTool.Name, Output: result})
 	// ★ 工具输出可能含服务端回显的凭据（实测场景：enc_shell 跑 curl 拿 200，
 	// 响应体里带着上游 key 的完整值）。这一行以前原样打印。
 	log.Printf("[agent] tool %s result: %s", f.CurTool.Name,

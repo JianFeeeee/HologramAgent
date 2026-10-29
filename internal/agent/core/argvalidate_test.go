@@ -375,7 +375,7 @@ func TestToolParallelDeclarationsAudit(t *testing.T) {
 		"plugin_install", "plugin_remove", "plugin_restart",
 		"terminal_create", "terminal_write", "terminal_close",
 		"timer_set",
-		"memory_merge", "memory_delete_entity", "knowledge_create",
+		"stablemem_merge", "stablemem_delete_entity", "knowledge_create",
 	}
 	for _, n := range serialOnly {
 		if a.toolParallelSafe(n) {

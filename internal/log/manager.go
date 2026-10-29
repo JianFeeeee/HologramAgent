@@ -60,10 +60,45 @@ func (m *Manager) runLoop(ctx context.Context, name string, tickInterval time.Du
 	}
 }
 
+// applyRetention 执行一次归档清理。
+//
+// ## ★ 兜底值为什么必须是 n_months（2026-10-29 修正）
+//
+// `core.log.retention` 是用 `regMeta` 登记的（只登记、不播种），而
+// `defDefault` 要求 `seeded[key]` 为真才回退 `ConfigDef.Default` ——
+// 所以 **GetString 返回的永远是这里传的兜底值**，registry 里写的
+// Default="n_months" 对实际行为没有任何作用。
+//
+// 此前这里写的是 "forever"，后果是：压缩照做、**永不清理**。
+// 生产实测 /home/hologramagent/log 涨到 590MB / 504 个文件。
+// 而本包另一处注释还写着"每天一个文件，从不自动清理" ——
+// 注释描述了 bug，代码却没修。
+//
+// 现在兜底与 registry 的 Default 对齐（n_months / 3），两边由
+// `internal/kernelmod/security` 的同型判据哲学钉住：默认值只允许有一处事实来源。
 func (m *Manager) applyRetention() {
-	policy := RetentionPolicy(m.cfg.GetString("core.log.retention", "forever"))
+	policy := RetentionPolicy(m.cfg.GetString("core.log.retention", string(RetentionNMonths)))
 	months := m.cfg.GetInt("core.log.retention_months", 3)
+	// 未知策略值不静默当 forever 处理：那会让一个拼写错误（如 "weekly"）
+	// 永久关闭清理，而运维以为已经生效。回退到默认并响亮记录。
+	if !validRetentionPolicy(policy) {
+		log.Printf("[log manager] unknown core.log.retention=%q (expected this_week|this_month|n_months|forever); "+
+			"falling back to %s", string(policy), RetentionNMonths)
+		policy = RetentionNMonths
+	}
+	if months <= 0 {
+		months = 3
+	}
 	applyRetention(m.logDir, policy, months)
+}
+
+// validRetentionPolicy 报告策略值是否可识别。
+func validRetentionPolicy(p RetentionPolicy) bool {
+	switch p {
+	case RetentionThisWeek, RetentionThisMonth, RetentionNMonths, RetentionForever:
+		return true
+	}
+	return false
 }
 
 func (m *Manager) weeklyTick() time.Duration {

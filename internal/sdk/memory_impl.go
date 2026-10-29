@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
@@ -342,14 +342,14 @@ func (m *textMemoryImpl) Stats() map[string]interface{} {
 // ---------- 文档记忆（知识库） ----------
 
 type docMemoryImpl struct {
-	ds     *doc.Store
+	ds     *coldcontext.Store
 	plugin string
 }
 
-func NewDocMemory(ds *doc.Store) DocMemoryAPI { return &docMemoryImpl{ds: ds} }
+func NewDocMemory(ds *coldcontext.Store) DocMemoryAPI { return &docMemoryImpl{ds: ds} }
 
 // NewDocMemoryWithPlugin 创建带上报名的文档记忆包装。
-func NewDocMemoryWithPlugin(plugin string, ds *doc.Store) DocMemoryAPI {
+func NewDocMemoryWithPlugin(plugin string, ds *coldcontext.Store) DocMemoryAPI {
 	return &docMemoryImpl{ds: ds, plugin: plugin}
 }
 
@@ -374,7 +374,7 @@ func (m *docMemoryImpl) Query(text string, topK int) []*Doc {
 //
 // 唯一的来源是文档直接持有的一等记忆块：媒体不靠正文标记、
 // 也不靠任何生成的描述文本。
-func (m *docMemoryImpl) fillMedia(out *Doc, d *doc.Doc) {
+func (m *docMemoryImpl) fillMedia(out *Doc, d *coldcontext.ColdDoc) {
 	if d == nil {
 		return
 	}
@@ -421,7 +421,7 @@ func (m *docMemoryImpl) InsertWithMedia(d *Doc, attachments []MediaAttachment) e
 	if m.ds == nil || d == nil {
 		return nil
 	}
-	target := &doc.Doc{ID: d.ID, Summary: d.Title, Content: d.Content}
+	target := &coldcontext.ColdDoc{ID: d.ID, Summary: d.Title, Content: d.Content}
 	if target.Source == "" {
 		target.Source = "plugin:" + m.plugin
 	}

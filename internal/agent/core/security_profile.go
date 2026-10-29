@@ -49,9 +49,32 @@ func (a *Agent) activateSecurityProfile(payload map[string]interface{}) string {
 //
 // 工具执行前的统一检查点：调用方拿到 !Allowed 时应把 Reason 原样回给模型
 // （统一拒绝语义 —— 模型据此能修正，而不是反复重试同一调用）。
+//
+// ★ 2026-10-29：本函数此前是**死代码**（`a.security` 从未被赋值 ⇒ 永远
+// 走 nil 分支 ⇒ 永远放行），`Policy.CheckTool` 因此对工具执行链完全不生效。
+// 修复分两步：① 补 `SetSecurity` 注入通道；② 在 `executeToolCallInner`
+// 的**所有实际执行分支之前**调用本函数。
 func (a *Agent) securityDecisionFor(tool string) security.Decision {
 	if a == nil || a.security == nil {
 		return security.Decision{Allowed: true}
 	}
 	return a.security.CheckTool(tool)
+}
+
+// SetSecurity 注入安全运行时（装配期调用，幂等）。
+//
+// ## 为什么需要显式注入点
+//
+// `Agent.security` 曾经是**只有测试赋过值**的字段：生产装配链里没有任何
+// 地方写它，于是 `securityDecisionFor` 恒定放行。这不是"策略写错了"，
+// 而是"策略根本没接上"，而两种故障在日志上看起来一样（都是没有拒绝记录）。
+//
+// ## 为什么允许 nil
+//
+// 测试与独立工具（memgc 等）不需要安全模块；传 nil 表示显式不启用。
+func (a *Agent) SetSecurity(rt *security.Runtime) {
+	if a == nil {
+		return
+	}
+	a.security = rt
 }

@@ -1,4 +1,4 @@
-package document
+package coldcontext
 
 // L1 ↔ L2 同构协议的判据。
 //
@@ -34,7 +34,7 @@ func newDocTestStore(t *testing.T) *Store {
 
 // ① 正文完整性：归档后能逐条取回**完整**正文。
 //
-// 断点史：原实现 ContextToDoc 把每条事件拍平成一行，
+// 断点史：原实现 ContextToColdContext 把每条事件拍平成一行，
 // truncate(Response,100) / truncate(工具输出,200) —— 原文在落库那一刻就不见了。
 // 生产实测：1000 篇归档文档中 15.1% 的 response 段正好 103 字符。
 //
@@ -46,7 +46,7 @@ func TestL2_ArchivePreservesFullText(t *testing.T) {
 	longInput := strings.Repeat("这是用户的原始输入内容", 100) + "【输入哨兵K9】"
 	ts := time.Date(2026, 3, 4, 10, 11, 12, 345678901, time.UTC)
 
-	_, err := s.ContextToDoc("context_archived", []ContextEntry{{
+	_, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: ts,
 		Source:    "webui",
 		Content:   longInput,
@@ -60,8 +60,8 @@ func TestL2_ArchivePreservesFullText(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var d *Doc
-	for _, cand := range s.RecentDocs(10) {
+	var d *ColdDoc
+	for _, cand := range s.RecentColdContexts(10) {
 		d = cand
 	}
 	if d == nil {
@@ -113,7 +113,7 @@ func TestL2_InputAndResponseAreSeparateTextBlocks(t *testing.T) {
 		ID: memory.MediaBlockID("image/png", []byte("x")), Modality: memory.BlockImage,
 		Data: []byte("x"), MIME: "image/png", Size: 1,
 	}
-	_, err := s.ContextToDoc("context_archived", []ContextEntry{{
+	_, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: time.Now(),
 		Source:    "qq",
 		Content:   "用户问：紫蓝红三色带怎么配",
@@ -123,7 +123,7 @@ func TestL2_InputAndResponseAreSeparateTextBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 
 	var texts []memory.MemoryBlock
 	for _, b := range d.Events[0].Blocks {
@@ -172,10 +172,10 @@ func TestL2_KeepsEveryEventIndividually(t *testing.T) {
 			Response:  "第" + string(rune('0'+i)) + "条回答",
 		})
 	}
-	if _, err := s.ContextToDoc("context_archived", entries, nil, nil, nil, nil); err != nil {
+	if _, err := s.ContextToColdContext("context_archived", entries, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 
 	if len(d.Events) != 5 {
 		t.Fatalf("Events = %d，期望 5（逐条保留，不合并）", len(d.Events))
@@ -201,13 +201,13 @@ func TestL2_ContentIsRenderedViewNotSource(t *testing.T) {
 	s := newDocTestStore(t)
 	long := strings.Repeat("视图不该丢信息", 300) + "【视图哨兵】"
 
-	if _, err := s.ContextToDoc("context_archived", []ContextEntry{{
+	if _, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: time.Now(), Source: "webui",
 		Content: "输入", Response: long,
 	}}, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 
 	if !strings.Contains(d.Content, "【视图哨兵】") {
 		t.Error("Content 视图里丢了正文尾部 —— 视图也不该在存储层主动截断")
@@ -231,23 +231,23 @@ func TestL2_RepeatedArchiveIsIdempotent(t *testing.T) {
 		Timestamp: ts, Source: "qq", Content: "同一条输入", Response: "同一条回答",
 	}}
 
-	if _, err := s.ContextToDoc("context_archived", entries, nil, nil, nil, nil); err != nil {
+	if _, err := s.ContextToColdContext("context_archived", entries, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	first := s.RecentDocs(1)[0]
+	first := s.RecentColdContexts(1)[0]
 	id1 := first.Events[0].Blocks[0].ID
 
-	if _, err := s.ContextToDoc("context_archived", entries, nil, nil, nil, nil); err != nil {
+	if _, err := s.ContextToColdContext("context_archived", entries, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// 内容哈希相同 ⇒ 命中已有文档（不新建），事件列表被重写为同一份。
 	if n := len(s.Stats()); n == 0 {
 		t.Fatal("stats 异常")
 	}
-	if got := len(s.RecentDocs(10)); got != 1 {
+	if got := len(s.RecentColdContexts(10)); got != 1 {
 		t.Fatalf("重复归档产生了 %d 篇文档，期望 1（同内容应命中已有文档）", got)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 	if len(d.Events) != 1 {
 		t.Fatalf("重复归档后 Events=%d，期望 1（不应翻倍）", len(d.Events))
 	}
@@ -300,7 +300,7 @@ func writeFile(path string, data []byte) error { return os.WriteFile(path, data,
 
 // ⑦ 蒸馏/抽取必须基于原文，不能基于视图。
 //
-// 断点史：docToTriples 曾抽取 doc.Content —— 而 Content 在 Events 引入前
+// 断点史：coldDocToTriples 曾抽取 doc.Content —— 而 Content 在 Events 引入前
 // 是压缩渲染（Response 截 100 rune）。在被截断的句子上做依存句法分析，
 // 往往解析不出主谓宾，三元组抽取直接失败（生产日志里大量
 // 「三元组 N 条全被实体名校验拒绝」即与此相关）。
@@ -311,13 +311,13 @@ func TestL2_OriginalTextAvailableIndependentOfView(t *testing.T) {
 	s := newDocTestStore(t)
 
 	full := strings.Repeat("原文必须完整用于抽取与蒸馏", 500) + "【原文哨兵D2】"
-	if _, err := s.ContextToDoc("context_archived", []ContextEntry{{
+	if _, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: time.Now(), Source: "webui",
 		Content: "输入", Response: full,
 	}}, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 
 	// 刻意把视图弄坏：原文的权威来源必须是块，不是 Content。
 	d.Content = "视图被破坏了"
@@ -361,10 +361,10 @@ func TestL2_StressLargeArchive(t *testing.T) {
 		}
 	}
 
-	if _, err := s.ContextToDoc("context_archived", entries, nil, nil, nil, nil); err != nil {
+	if _, err := s.ContextToColdContext("context_archived", entries, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 	if len(d.Events) != n {
 		t.Fatalf("Events = %d，期望 %d", len(d.Events), n)
 	}
@@ -419,7 +419,7 @@ func TestL2_StressConcurrentQueryAndConsume(t *testing.T) {
 
 	const docs = 60
 	for i := 0; i < docs; i++ {
-		if _, err := s.ContextToDoc("context_archived", []ContextEntry{{
+		if _, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 			Timestamp: time.Now().Add(time.Duration(i) * time.Second),
 			Source:    "stress",
 			Content:   "并发查询目标 " + string(rune('A'+i%26)) + " 编号" + string(rune('0'+i%10)),
@@ -441,14 +441,14 @@ func TestL2_StressConcurrentQueryAndConsume(t *testing.T) {
 				case 1:
 					s.Consume("并发查询目标", 3)
 				case 2:
-					s.FindColdDocs(time.Hour, 10)
+					s.FindColdContexts(time.Hour, 10)
 				}
 			}
 		}(w)
 	}
 	wg.Wait()
 	// 只要不 panic / 不 -race 报错即通过；文档数只会因 Consume 减少。
-	if got := len(s.RecentDocs(1000)); got > docs {
+	if got := len(s.RecentColdContexts(1000)); got > docs {
 		t.Errorf("文档数异常增长: %d > %d", got, docs)
 	}
 }
@@ -461,13 +461,13 @@ func TestL2_StressLargePayloadRoundTrip(t *testing.T) {
 	s := newDocTestStore(t)
 
 	huge := strings.Repeat("大正文压测", 250000) + "【巨尾哨兵P8】" // ~1.25MB
-	if _, err := s.ContextToDoc("context_archived", []ContextEntry{{
+	if _, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: time.Now(), Source: "stress",
 		Content: "输入", Response: huge,
 	}}, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d := s.RecentDocs(1)[0]
+	d := s.RecentColdContexts(1)[0]
 	_, resp, _ := d.Events[0].InOut()
 	if len(resp) != len(huge) {
 		t.Fatalf("大正文往返长度不符: %d vs %d", len(resp), len(huge))

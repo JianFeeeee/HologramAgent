@@ -19,7 +19,7 @@ import (
 // 过滤，但它当年只挂在 doc→graph 上，换提取器时被整条摘掉，如今只剩测试调用。
 //
 // 这里把判定收敛到一处，供三个地方共用：
-//   - 自动填充路：docToTriples（冷文档归档）、extractKeyTriples（对话蒸馏）
+//   - 自动填充路：coldDocToTriples（冷文档归档）、extractKeyTriples（对话蒸馏）
 //   - 历史数据清理：GraphDB.PurgeNoise（老库里的存量垃圾）
 // ──────────────────────────────────────────────
 

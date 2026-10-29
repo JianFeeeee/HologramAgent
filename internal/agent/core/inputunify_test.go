@@ -8,7 +8,7 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
@@ -296,7 +296,7 @@ func TestDocCommit_StoresBlocks(t *testing.T) {
 	// coldcontext_commit with media stores blocks directly in cold context,
 	// 并随 doc 一起持久化（块自带字节，不靠外部引用保活）。
 	dir := t.TempDir()
-	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	ds := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestDocCommit_StoresBlocks(t *testing.T) {
 	b1 := mediaBlock("image/png", []byte("doc-one"))
 	b2 := mediaBlock("image/png", []byte("doc-two"))
 
-	doc := &document.Doc{ID: "doc_x", Summary: "s", Content: "c", Blocks: []memory.MemoryBlock{b1, b2}}
+	doc := &coldcontext.ColdDoc{ID: "doc_x", Summary: "s", Content: "c", Blocks: []memory.MemoryBlock{b1, b2}}
 	if err := ds.Insert(doc); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestBlockLabelsForDoc(t *testing.T) {
 	b := mediaBlock("image/png", []byte("ctx-bytes"))
 
 	t.Run("从文档持有的一等块渲染", func(t *testing.T) {
-		got := a.blockLabelsForDoc(&document.Doc{ID: "doc_1", Blocks: []memory.MemoryBlock{b}})
+		got := a.blockLabelsForDoc(&coldcontext.ColdDoc{ID: "doc_1", Blocks: []memory.MemoryBlock{b}})
 		if !strings.Contains(got, shortID(b.ID)) {
 			t.Errorf("标签应含短块 ID: %q", got)
 		}
@@ -340,7 +340,7 @@ func TestBlockLabelsForDoc(t *testing.T) {
 	})
 
 	t.Run("无块时为空", func(t *testing.T) {
-		if got := a.blockLabelsForDoc(&document.Doc{ID: "doc_x", Content: "普通正文"}); got != "" {
+		if got := a.blockLabelsForDoc(&coldcontext.ColdDoc{ID: "doc_x", Content: "普通正文"}); got != "" {
 			t.Errorf("应返回空串，实际 %q", got)
 		}
 	})
@@ -375,7 +375,7 @@ func newToolTestAgent(t *testing.T) *Agent {
 	}
 	t.Cleanup(func() { g.Close() })
 
-	ds := document.NewStore(filepath.Join(dir, "documents"), memory.TokenizeWords)
+	ds := coldcontext.NewStore(filepath.Join(dir, "documents"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatalf("doc store: %v", err)
 	}
@@ -383,10 +383,10 @@ func newToolTestAgent(t *testing.T) *Agent {
 
 	emb := memory.NewStaticEmbedder("")
 	a := &Agent{
-		id:       "tester",
-		memory:   g,
-		docStore: ds,
-		context:  NewRelevanceContext("", emb),
+		id:               "tester",
+		memory:           g,
+		coldcontextStore: ds,
+		context:          NewRelevanceContext("", emb),
 	}
 	return a
 }
@@ -400,7 +400,7 @@ func TestToolMemoryCommit_BindsMedia(t *testing.T) {
 	}
 
 	out := a.executeMemoryTool(agentAPI.ToolCall{
-		Name: "memory_commit",
+		Name: "stablemem_commit",
 		Arguments: map[string]interface{}{
 			"triples": []interface{}{
 				map[string]interface{}{
@@ -445,7 +445,7 @@ func TestToolMemoryCommit_BindsMedia(t *testing.T) {
 func TestToolMemoryCommit_WithoutMedia(t *testing.T) {
 	a := newToolTestAgent(t)
 	out := a.executeMemoryTool(agentAPI.ToolCall{
-		Name: "memory_commit",
+		Name: "stablemem_commit",
 		Arguments: map[string]interface{}{
 			"triples": []interface{}{
 				map[string]interface{}{"subject": "甲方", "relation": "签署", "object": "合同"},
@@ -464,7 +464,7 @@ func TestToolMemoryCommit_WithoutMedia(t *testing.T) {
 func TestToolMemoryCommit_CarriesSentenceText(t *testing.T) {
 	a := newToolTestAgent(t)
 	a.executeMemoryTool(agentAPI.ToolCall{
-		Name: "memory_commit",
+		Name: "stablemem_commit",
 		Arguments: map[string]interface{}{
 			"triples": []interface{}{
 				map[string]interface{}{
@@ -505,7 +505,7 @@ func TestToolDocCommit_BindsMedia(t *testing.T) {
 		t.Errorf("返回值应告知模型媒体已关联: %q", out)
 	}
 
-	docs := a.docStore.RecentDocs(5)
+	docs := a.coldcontextStore.RecentColdContexts(5)
 	if len(docs) == 0 {
 		t.Fatal("文档未写入")
 	}
@@ -563,7 +563,7 @@ func TestTools_UnknownRefDegrades(t *testing.T) {
 	a := newToolTestAgent(t)
 
 	out := a.executeMemoryTool(agentAPI.ToolCall{
-		Name: "memory_commit",
+		Name: "stablemem_commit",
 		Arguments: map[string]interface{}{
 			"triples": []interface{}{
 				map[string]interface{}{

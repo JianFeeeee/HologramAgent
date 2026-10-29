@@ -340,7 +340,7 @@ func waitForShutdown(ctx context.Context, dataDir string, restartCh chan struct{
 	//   路径 B（exit 42）：下面的 os.Exit(42) **跳过所有 defer** ✗
 	//
 	// 而路径 B 是**每次热更新都走**的。后果是这些写者从不 flush：
-	//   · docStore.Stop()  → flush()     文档索引可能陈旧
+	//   · coldcontextStore.Stop()  → flush()     文档索引可能陈旧
 	//   · distiller.Stop() → flush()     待蒸馏规则丢失
 	//   · textMem.Stop()   → Close()     文本记忆未落盘
 	//   · luaVM/multimodal → 资源未释放（靠进程退出兜底）

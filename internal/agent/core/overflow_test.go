@@ -29,7 +29,7 @@ func newOverflowAgent(window, maxContextSize int, events int, chunkChars int) *A
 		maxContextSize: maxContextSize,
 		context:        NewRelevanceContext("", nil),
 	}
-	// 固定向量，避免依赖稠密模型；也不进 docStore（nil ⇒ Prune 只重排不写盘）。
+	// 固定向量，避免依赖稠密模型；也不进 coldcontextStore（nil ⇒ Prune 只重排不写盘）。
 	for i := 0; i < events; i++ {
 		a.context.Append(ContextEvent{
 			Input:    fmt.Sprintf("第%d批输入", i) + strings.Repeat("x", chunkChars),
@@ -688,7 +688,7 @@ func TestOverflow_恢复裁剪保护本帧现场(t *testing.T) {
 	a.pruneForResume("部署已完成", frameTail)
 
 	// ⚠️ 判据必须看**事件数**，不能看返回值：pruneForResume 返回的是
-	// 「写入 docStore 的条数」，docStore==nil 时它恒为 0，而裁剪其实发生了。
+	// 「写入 coldcontextStore 的条数」，coldcontextStore==nil 时它恒为 0，而裁剪其实发生了。
 	// （handleContextOverflow 的注释里记过同一个坑。）
 	after := a.context.Len()
 	// 保留条数必须覆盖被保护的部分：裁剪后条数不得少于 protected。

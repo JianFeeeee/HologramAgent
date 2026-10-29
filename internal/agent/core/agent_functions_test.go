@@ -3,7 +3,7 @@ package core
 import (
 	"testing"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 func TestEntitySimilarity(t *testing.T) {
@@ -26,13 +26,13 @@ func TestEntitySimilarity(t *testing.T) {
 }
 
 func TestDocToTriples(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "用户喜欢编程",
 		Content: "用户提到喜欢Go和Python",
 		Source:  "context",
 	}
 
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	foundSummary := false
 	foundSource := false
@@ -54,18 +54,18 @@ func TestDocToTriples(t *testing.T) {
 }
 
 func TestDocToTriplesNil(t *testing.T) {
-	triples := docToTriples(nil, nil)
+	triples := coldDocToTriples(nil, nil)
 	if len(triples) != 0 {
 		t.Errorf("expected empty for nil doc, got %d", len(triples))
 	}
 }
 
 func TestDocToTriplesNoSource(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "无来源文档",
 		Content: "content",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 	for _, tr := range triples {
 		if tr.Relation == "来源" {
 			t.Error("should not have source triple when Source is empty")
@@ -74,13 +74,13 @@ func TestDocToTriplesNoSource(t *testing.T) {
 }
 
 func TestDocToTriplesTypes(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "测试三元组类型",
 		Content: "用于验证 SubjectType 和 ObjectType",
 		Source:  "test",
 	}
 
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	for _, tr := range triples {
 		if tr.Subject == "文档" {

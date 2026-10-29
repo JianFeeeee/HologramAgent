@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,14 +14,51 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
+// ToolResultItem 是一条工具调用结果。
+//
+// ★ 2026-10-29 补 CallID：此前只有 Name + Output，于是**同名工具的多次调用
+// 无法配对**（两个 qq_get_history 分不清谁是谁），而配对是渲染正确性的前提：
+// assistant(tool_calls=[c1..cn]) 后面必须紧跟配对齐全的 tool 消息，
+// 否则上游直接 400（insufficient tool messages）。
+//
+// 生产数据实证（改动前）：tool_results 的键只有 ["name","output"]，
+// 参数完全没有留存 —— 这意味着回灌后无法重建"当时到底调了什么"。
 type ToolResultItem struct {
+	// CallID 回指 ToolCall.ID，是 tool_call 与 tool_result 的配对键。
+	//
+	// 空值表示旧数据（未记录 CallID），渲染时按位置配对（既有行为）。
+	CallID string `json:"call_id,omitempty"`
 	Name   string `json:"name"`
 	Output string `json:"output"`
+}
+
+// ToolCallItem 是一次工具调用的**完整记录**（含参数）。
+//
+// ★ 为什么必须记录参数（2026-10-29 还技术债）
+//
+// 此前事件里只有 `ToolsUsed []string`（工具名列表）。后果：
+//
+//	· 回灌后无法知道"当时用**什么参数**调用的"，只能看到结果
+//	· 页化（段页式）无法实现 —— 「toolcall 与其 result 配对成一页」
+//	  要求 call 侧有完整内容，只有名字的话那页是半空的
+//	· 审计/复盘时"这个工具为什么返回这个"无从追溯
+//
+// 参数本身是模型给出的，正常是别名（sec_xxx），但仍可能被直接传明文
+// （插件工具），所以落盘前必须过 scrubEventSecrets（与 Input/Response 同一条闸）。
+type ToolCallItem struct {
+	// CallID 是本次调用的唯一标识（来自 provider，缺失时内核补一个）。
+	CallID string `json:"call_id,omitempty"`
+	Name   string `json:"name"`
+	// Arguments 是解析后的参数。
+	Arguments map[string]interface{} `json:"arguments,omitempty"`
+	// RawArguments 是模型给出的原始 JSON 字符串，保留它是为了诊断
+	// "参数解析失败/被截断"这类问题（Arguments 无法表达残缺）。
+	RawArguments string `json:"raw_arguments,omitempty"`
 }
 
 type ContextEvent struct {
@@ -35,6 +73,39 @@ type ContextEvent struct {
 	Response    string           `json:"response,omitempty"`
 	ToolsUsed   []string         `json:"tools_used,omitempty"`
 	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
+
+	// ToolCalls 是本次事件里**每一次**工具调用的完整记录（含参数与配对键）。
+	//
+	// 与 ToolsUsed 的关系：ToolsUsed 是「用过的工具名」的便捷视图（保留是为了
+	// 存量读取与统计），ToolCalls 才是配对与页化所需的事实源。
+	// 两者都由 appendTurnToolCall 同步维护，不手写其中一份。
+	ToolCalls []ToolCallItem `json:"tool_calls,omitempty"`
+
+	// InactivePages 是**本次渲染**中不参与渲染的页序号。
+	//
+	// ★ 它是渲染期状态，不是记忆属性（用户裁定，2026-10-29）：
+	//
+	//	"inactive 是在 context 渲染时的标记，被淘汰到 doc 后还保留干啥？
+	//	 甚至可以说 inactive 是每次 prune 后被重置的"
+	//
+	// 因此：
+	//   · **不持久化**（json:"-"）—— 重启后由本轮渲染重新判定
+	//   · **不迁移到 L2** —— 淘汰（归档）意味着整帧离开 L1，
+	//     剔除本来就是"在有限窗口里少渲染几页"的临时手段，
+	//     帧都走了再记着"它当时少渲染了哪页"毫无意义
+	//   · **每次 Prune 后清空** —— 新一轮窗口重新规划，旧标记失效
+	//
+	// 语义：剔除 = 标注，不是删除。数据仍在（ToolCalls/ToolResults/Blocks），
+	// 只是不渲染成消息。清空本列表即恢复渲染。
+	//
+	// 为什么最小单位是页而不是块：渲染时 `assistant(tool_calls)` 后面必须
+	// 紧跟**配对齐全**的 `tool` 消息，否则上游直接 400（task.go:160 有生产事故
+	// 记录）。所以只能整页剔除 —— 剔掉 call 却留下 result 就是造一个必崩的帧。
+	//
+	// 页序约定（与 coldcontext 的 DocEvent 分页一致）：
+	//   1        = llm_round（用户输入 ↔ 模型输出）
+	//   2..n+1   = tool_round（第 i 个 ToolCalls ↔ 配对结果）
+	InactivePages []int `json:"-"`
 
 	// ToolResultStores 是本事件捕获的「超大工具结果」落盘记录。
 	//
@@ -163,6 +234,480 @@ func (a *Agent) singleEventFitsBudget() bool {
 		avg = defaultAvgEventTokens
 	}
 	return avg <= a.computeTokenBudget().ContextTokens
+}
+
+// ──────────────────────────────────────────────
+// 段页式淘汰（P5，2026-10-29）
+// ──────────────────────────────────────────────
+
+// pageSimilarity 计算某一页与本轮输入的相似度。
+//
+// 页的相似度取**页内各侧的最大值**：call 侧里往往带着关键实体
+// （文件路径、命令、代码），而 result 侧是回显 —— 只看一侧会漏。
+func (c *RelevanceContext) pageSimilarity(e *ContextEvent, page int,
+	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
+
+	callText, resText := c.pageTexts(e, page)
+	best := math.Inf(-1)
+
+	score := func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		// 与事件评分同构：同一统一空间内才比稠密余弦。
+		if len(queryDense) > 0 && queryFP != "" && e.DenseFP == queryFP {
+			if v, ok := c.vectorForText(text); ok && len(v) == len(queryDense) {
+				if s := vector.DenseCosine(queryDense, v); s > best {
+					best = s
+				}
+				return
+			}
+		}
+		if s := vector.CosineSimilarity(queryVec, c.embedder.VectorizeClean(text)); s > best {
+			best = s
+		}
+	}
+	score(callText)
+	score(resText)
+	if math.IsInf(best, -1) {
+		return 0
+	}
+	return best
+}
+
+// vectorForText 尝试为任意文本取稠密向量（缓存优先）。
+//
+// 页内文本（工具参数/结果）不是一等块，没有预存向量；
+// 这里按需算，失败就返回 false 让调用方退回稀疏余弦。
+func (c *RelevanceContext) vectorForText(text string) ([]float64, bool) {
+	if c.denseSpace == nil || !c.denseSpace.Loaded() {
+		return nil, false
+	}
+	v, err := c.denseSpace.VectorizeDense(text)
+	if err != nil || len(v) == 0 {
+		return nil, false
+	}
+	return v, true
+}
+
+// pageTexts 取某页的 call 侧与 result 侧正文（与 docBlocksForEntry 同构）。
+func (c *RelevanceContext) pageTexts(e *ContextEvent, page int) (call, result string) {
+	if e == nil {
+		return "", ""
+	}
+	if page == 1 {
+		return e.Input, e.Response
+	}
+	idx := page - 2 // 第 1 页是 llm_round
+	if idx < 0 || idx >= len(e.ToolCalls) {
+		return "", ""
+	}
+	tc := &e.ToolCalls[idx]
+	call = tc.Name
+	if len(tc.Arguments) > 0 {
+		if b, err := json.Marshal(tc.Arguments); err == nil {
+			call = tc.Name + " " + string(b)
+		}
+	} else if tc.RawArguments != "" {
+		call = tc.Name + " " + tc.RawArguments
+	}
+	// 配对结果
+	if tc.CallID != "" {
+		for i := range e.ToolResults {
+			if e.ToolResults[i].CallID == tc.CallID {
+				return call, e.ToolResults[i].Output
+			}
+		}
+	}
+	for i := range e.ToolResults {
+		if e.ToolResults[i].Name == tc.Name {
+			return call, e.ToolResults[i].Output
+		}
+	}
+	return call, ""
+}
+
+// PageCount 返回本事件的页数（1 个 llm_round + N 个 tool_round）。
+func (c *RelevanceContext) PageCount(e *ContextEvent) int {
+	if e == nil {
+		return 0
+	}
+	return 1 + len(e.ToolCalls)
+}
+
+// evictPagesLocked 在单帧超预算时，按相似度剔除页（标注 inactive，不删数据）。
+//
+// ⚠️ 调用方**必须已持 c.mu**（它内部会 save/computeVector）。
+//
+// ## 用户裁定的规则
+//
+//	召回时对段内每个页计算相似度，单条段超限时，
+//	按相似度"剔除"相似度最低的页（toolcall 与其 result），
+//	实际标注为 inactive，不渲染为消息
+//
+// ## 三条不能违反的约束
+//
+//  1. **最小单位是页**：call 与 result 同进同出。只剔一侧会让渲染破配对，
+//     上游立刻 400（这不是洁癖，是硬协议要求）。
+//  2. **llm_round 永不剔除**：第 1 页是"用户说了什么 + 模型答了什么"。
+//     剔掉它，这一帧就只剩工具流水，模型无法理解上下文在讲什么。
+//  3. **剔除是标注**：数据留在原位，可随时恢复（InactivePages 清空即恢复）。
+//
+// 返回本次新剔除的页数。
+func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, query string) int {
+	if e == nil || budgetTokens <= 0 || query == "" {
+		return 0
+	}
+	evicted := 0
+	for {
+		total := eventTokens(*e)
+		if total <= budgetTokens {
+			break
+		}
+		// 候选：所有仍生效的工具页（第 1 页受保护）
+		type cand struct {
+			page  int
+			score float64
+		}
+		var cands []cand
+		for p := 2; p <= c.PageCount(e); p++ {
+			if containsInt(e.InactivePages, p) {
+				continue
+			}
+			cands = append(cands, cand{p, 0})
+		}
+		if len(cands) == 0 {
+			// 只剩 llm_round 仍超限 —— 不能靠剔页解决，
+			// 交给上层（按帧归档 / 超页恢复）。这里明确停手，不空转。
+			break
+		}
+
+		queryDense, queryFP := c.queryDenseFor(query)
+		queryVec := c.embedder.VectorizeClean(query)
+		for i := range cands {
+			cands[i].score = c.pageSimilarity(e, cands[i].page, queryDense, queryFP, queryVec)
+		}
+		sort.Slice(cands, func(i, j int) bool { return cands[i].score < cands[j].score })
+
+		victim := cands[0].page
+		e.InactivePages = append(e.InactivePages, victim)
+		sort.Ints(e.InactivePages)
+		evicted++
+		log.Printf("[context] frame %s over budget (%d > %d): evicted page %d "+
+			"(score=%.3f, %d pages remain active)",
+			e.ID, total, budgetTokens, victim, cands[0].score, c.PageCount(e)-len(e.InactivePages))
+	}
+	if evicted > 0 {
+		// 剔除改变了这一帧的渲染内容 ⇒ 向量必须重算。
+		// 不重算的话，下一轮召回仍按"整帧含被剔页"的向量打分，
+		// 剔除等于没生效（相似度还带着已隐藏内容的分量）。
+		c.computeVector(e)
+		c.save()
+	}
+	return evicted
+}
+
+// ──────────────────────────────────────────────
+// 召回期的「先估算、再剔除」（用户裁定，2026-10-29）
+// ──────────────────────────────────────────────
+
+// estimateColdEventTokens 估算一条 coldcontext（L2）记录回灌成事件后占多少 token。
+//
+// ★ 为什么按"渲染后"算而不是按 JSON 体积：
+// 回灌进 L1 的是**渲染出来的消息**（用户行 + 助手字 + 展开的工具行），
+// 而 L2 的存储形态（块、字段）与它并不等长。
+// 按存储体积估算会系统性偏离 —— 归档压缩过的文档会被低估，
+// 于是"以为装得下、实际装不下"。
+func estimateColdEventTokens(d *coldcontext.ColdDoc) int {
+	if d == nil {
+		return 0
+	}
+	if len(d.Events) == 0 {
+		// 存量文档（无 Events）回灌成一条降级事件
+		return EstimateTokens(d.Content) + 40
+	}
+	total := 0
+	for i := range d.Events {
+		ev := &d.Events[i]
+		input, response, _ := ev.InOut()
+		// 与 eventTokens 同构：input + response + 工具输出
+		n := EstimateTokens(input) + EstimateTokens(response) + 40
+		for _, tr := range ev.ToolResults {
+			n += EstimateTokens(tr.Output)
+		}
+		// 工具页的 call 侧（参数）也要渲染
+		for _, tc := range ev.ToolCalls {
+			n += EstimateTokens(tc.Name)
+			if len(tc.Arguments) > 0 {
+				if b, err := json.Marshal(tc.Arguments); err == nil {
+					n += EstimateTokens(string(b))
+				}
+			}
+		}
+		total += n
+	}
+	return total
+}
+
+// ColdRecallPlan 是 coldcontext 召回的执行计划：哪些整篇召回、哪些要剔页、剔哪些。
+type ColdRecallPlan struct {
+	// Docs 是本次要回灌的文档（按相关度降序）。
+	Docs []*coldcontext.ColdDoc
+	// Evict 记录每篇要剔除的页序号（key = 文档 ID）。
+	//
+	// 空 map 表示无需剔除（整批装得下）。
+	Evict map[string][]int
+	// OriginalNeed 是剔除**前**整批估算需要的 token（用于日志对比）。
+	OriginalNeed int
+	// Need 是剔除后（或无需剔除时）的 token 需求。
+	Need int
+	// Budget 是可用预算。
+	Budget int
+	// Over 表示是否发生了剔除。
+	Over bool
+}
+
+// planColdRecall 估算整批 coldcontext 召回的 token，超预算则按页相似度剔除。
+//
+// ## 用户裁定的算法（逐字）
+//
+//	召回过程中要先估算召回后的 token，如果整段召回不超预算，则直接召回，
+//	若超了则对段内每一页算相似度，将最不相似的几个页标记为 inactive，
+//	直到不超预算
+//
+// ## 三个要害
+//
+//  1. **先估算再动手**：装得下就一个字都不剔。剔除是有代价的
+//     （模型看到的是残缺上下文），不该在有余量时发生。
+//  2. **跨帧剔除，全局取舍**：不是"每篇自己管自己装不装得下"，
+//     而是把整批候选放在一个池子里，每次剔**全局最不相似**的那一页。
+//     否则会出现「A 篇剔得只剩骨架、B 篇一字未动」的荒谬结果。
+//  3. **第 1 页（llm_round）不参与剔除**：那是"用户说了什么+模型答了什么"，
+//     剔掉这一帧就只剩工具流水，模型无法理解它在讲什么。
+//
+// 返回的计划由调用方执行（本函数**不改任何状态**，纯计算）。
+func (c *RelevanceContext) planColdRecall(docs []*coldcontext.ColdDoc, query string, budget int) ColdRecallPlan {
+	plan := ColdRecallPlan{Docs: docs, Budget: budget, Evict: map[string][]int{}}
+
+	if len(docs) == 0 || budget <= 0 {
+		return plan
+	}
+	// ① 估算整批
+	for _, d := range docs {
+		plan.Need += estimateColdEventTokens(d)
+	}
+	plan.OriginalNeed = plan.Need
+	if plan.Need <= budget {
+		return plan // 装得下：一个字都不剔
+	}
+
+	// ② 超预算：把所有「可剔的页」摊到一个池子里
+	type pageCand struct {
+		docIdx   int
+		eventIdx int
+		page     int
+		tokens   int
+		score    float64
+	}
+	queryDense, queryFP := c.queryDenseFor(query)
+	queryVec := c.embedder.VectorizeClean(query)
+
+	var pool []pageCand
+	for di, d := range docs {
+		if d == nil || len(d.Events) == 0 {
+			continue // 存量文档没有页结构，无法剔
+		}
+		for ei := range d.Events {
+			ev := &d.Events[ei]
+			// 第 1 页（llm_round）永不可剔
+			for page := 2; page <= 1+len(ev.ToolCalls); page++ {
+				pool = append(pool, pageCand{
+					docIdx:   di,
+					eventIdx: ei,
+					page:     page,
+					tokens:   pageTokens(ev, page),
+				})
+			}
+		}
+	}
+	if len(pool) == 0 {
+		return plan // 没有可剔的页：交给上层（提示超限或整篇放弃）
+	}
+
+	// ③ 算相似度（只算一次，避免循环里重复向量化）
+	for i := range pool {
+		d := docs[pool[i].docIdx]
+		pool[i].score = coldPageSimilarity(c, d, pool[i].eventIdx, pool[i].page,
+			queryDense, queryFP, queryVec)
+	}
+
+	// ④ 从最不相似开始剔，直到装得下
+	sort.Slice(pool, func(i, j int) bool { return pool[i].score < pool[j].score })
+	need := plan.Need
+	for _, p := range pool {
+		if need <= budget {
+			break
+		}
+		d := docs[p.docIdx]
+		plan.Evict[d.ID] = append(plan.Evict[d.ID], p.page)
+		need -= p.tokens
+		plan.Over = true
+	}
+	plan.Need = need
+	return plan
+}
+
+// recallBudget 返回本次召回可用的 token 预算。
+//
+// 取 ContextTokens 减去**当前时间线已占用**：
+// 召回内容与已有事件要一起渲染进同一个窗口，
+// 只看整窗会在"加上原有内容"之后才发现爆了。
+//
+// 下限保护：至少给 1/4 的 ContextTokens。
+// 否则时间线已接近满窗时，预算变成 0 或负数 ——
+// 那样**任何**召回都会被判超预算而全部剔空，等于召不回来。
+func (a *Agent) recallBudget() int {
+	if a == nil || a.context == nil {
+		return 0
+	}
+	tb := a.computeTokenBudget()
+	avail := tb.ContextTokens - a.accumulatedTokens()
+	floor := tb.ContextTokens / 4
+	if avail < floor {
+		avail = floor
+	}
+	if avail < 0 {
+		avail = 0
+	}
+	return avail
+}
+
+// countPlanPages 统计计划里被剔除的页数。
+func countPlanPages(evict map[string][]int) int {
+	n := 0
+	for _, pages := range evict {
+		n += len(pages)
+	}
+	return n
+}
+
+// pageTokens 估算一页渲染后的 token（call 侧 + result 侧）。
+func pageTokens(ev *coldcontext.ColdEvent, page int) int {
+	if page == 1 {
+		in, resp, _ := ev.InOut()
+		return EstimateTokens(in) + EstimateTokens(resp)
+	}
+	idx := page - 2
+	if idx < 0 || idx >= len(ev.ToolCalls) {
+		return 0
+	}
+	tc := &ev.ToolCalls[idx]
+	n := EstimateTokens(tc.Name)
+	if len(tc.Arguments) > 0 {
+		if b, err := json.Marshal(tc.Arguments); err == nil {
+			n += EstimateTokens(string(b))
+		}
+	}
+	if res, ok := coldToolResult(ev, tc); ok {
+		n += EstimateTokens(res)
+	}
+	return n
+}
+
+// coldToolResult 按 CallID（退化到名字）配对工具结果。
+func coldToolResult(ev *coldcontext.ColdEvent, tc *coldcontext.ToolCallItem) (string, bool) {
+	if tc.CallID != "" {
+		for i := range ev.ToolResults {
+			if ev.ToolResults[i].CallID == tc.CallID {
+				return ev.ToolResults[i].Output, true
+			}
+		}
+	}
+	for i := range ev.ToolResults {
+		if ev.ToolResults[i].Name == tc.Name {
+			return ev.ToolResults[i].Output, true
+		}
+	}
+	return "", false
+}
+
+// coldPageSimilarity 算 coldcontext 某一页与查询的相似度（页内两侧取最大值）。
+//
+// ★ 页由 (eventIdx, pageSeq) 唯一确定，**不能只用 pageSeq**。
+//
+//	第一版只传 page 序号、遍历所有事件取最大值，于是同一文档里
+//	多个事件的"第 2 页"被混成一个分数（跨事件串味）。判据实测：
+//	6 个工具页拿到完全相同的 0.5774 —— 那是第 1 页 llm_round 的分数
+//	反复覆盖的结果，页与页之间完全没有区分度，剔除变成随机。
+func coldPageSimilarity(c *RelevanceContext, d *coldcontext.ColdDoc, eventIdx, page int,
+	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
+
+	if d == nil || eventIdx < 0 || eventIdx >= len(d.Events) {
+		return 0
+	}
+	ev := &d.Events[eventIdx]
+	best := math.Inf(-1)
+	score := func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		if len(queryDense) > 0 && queryFP != "" {
+			if v, ok := c.vectorForText(text); ok && len(v) == len(queryDense) {
+				if s := vector.DenseCosine(queryDense, v); s > best {
+					best = s
+				}
+				return
+			}
+		}
+		if s := vector.CosineSimilarity(queryVec, c.embedder.VectorizeClean(text)); s > best {
+			best = s
+		}
+	}
+	if page == 1 {
+		in, resp, _ := ev.InOut()
+		score(in)
+		score(resp)
+	} else {
+		idx := page - 2
+		if idx < 0 || idx >= len(ev.ToolCalls) {
+			return 0
+		}
+		tc := &ev.ToolCalls[idx]
+		score(tc.Name)
+		if len(tc.Arguments) > 0 {
+			if b, err := json.Marshal(tc.Arguments); err == nil {
+				score(string(b))
+			}
+		}
+		if res, ok := coldToolResult(ev, tc); ok {
+			score(res)
+		}
+	}
+	if math.IsInf(best, -1) {
+		return 0
+	}
+	return best
+}
+
+// queryDenseFor 取查询的稠密向量（与 PruneWithProtected 同构）。
+func (c *RelevanceContext) queryDenseFor(query string) ([]float64, string) {
+	if c.denseSpace == nil || !c.denseSpace.Loaded() {
+		return nil, ""
+	}
+	dv, err := c.denseSpace.VectorizeDense(query)
+	if err != nil || len(dv) == 0 {
+		return nil, ""
+	}
+	return dv, c.denseSpace.Fingerprint()
+}
+
+func containsInt(s []int, v int) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // ProtectedCount 返回配置给的保护条数**上限**（实际值见 effectiveProtectedCount）。
@@ -349,7 +894,7 @@ func (c *RelevanceContext) inputChannelClean(source, input string) string {
 }
 
 // channelCleanerForDoc 返回 ChannelCleaner，使 document 包在存档时能按来源查找 Cleaner。
-func (c *RelevanceContext) channelCleanerForDoc() document.ChannelCleaner {
+func (c *RelevanceContext) channelCleanerForDoc() coldcontext.ChannelCleaner {
 	if c.channelDefLookup == nil {
 		return nil
 	}
@@ -511,14 +1056,36 @@ type scoredEvent struct {
 
 // pCount <= 0 时用protectedCount 上限。调用方（pruneByQuery）传
 // effectiveProtectedCount，按预算收紧后的值。
-func (c *RelevanceContext) Prune(currentInput string, topK int, docStore *document.Store) int {
-	return c.PruneWithProtected(currentInput, topK, docStore, 0)
+func (c *RelevanceContext) Prune(currentInput string, topK int, coldcontextStore *coldcontext.Store) int {
+	return c.PruneWithProtected(currentInput, topK, coldcontextStore, 0)
+}
+
+// resetInactivePagesLocked 清空所有事件的剔除标记（调用方须持锁）。
+//
+// 剔除是渲染期的临时决定，不是记忆属性 —— 见 ContextEvent.InactivePages 的注释。
+func (c *RelevanceContext) resetInactivePagesLocked() {
+	for _, e := range c.events {
+		if e != nil && len(e.InactivePages) > 0 {
+			e.InactivePages = nil
+		}
+	}
 }
 
 // PruneWithProtected 是带显式保护条数的 Prune。
-func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, docStore *document.Store, pCount int) int {
+func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, coldcontextStore *coldcontext.Store, pCount int) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// ★ 每次 Prune 都重置剔除标记（用户裁定，2026-10-29）。
+	//
+	// 为什么必须重置：InactivePages 是"本次渲染在有限窗口里少渲染几页"的
+	// 临时决定，它依赖当时的**会话窗口状态**（哪些帧在做、查询是什么、
+	// 预算还剩多少）。Prune 之后这些都变了 —— 沿用旧标记就是把
+	// 上一轮的预算压力带到这一轮，于是某个帧"永久性"缺几页。
+	//
+	// 放在函数最前面（包括提前返回的那条路径之前）：只要 Prune 被调用，
+	// 就说明窗口被重新规划过，旧标记一律失效。
+	c.resetInactivePagesLocked()
 
 	if len(c.events) <= topK {
 		return 0
@@ -588,7 +1155,7 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 	})
 
 	archived := 0
-	if docStore != nil && len(archive) > 0 {
+	if coldcontextStore != nil && len(archive) > 0 {
 		// ★ 回填事件（NoMemory）**照常归档** —— 这是数据不丢的关键。
 		//
 		// 曾经在这里跳过它们（理由是"防自激"），那是错的：
@@ -598,19 +1165,20 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, doc
 		// 自激的入口不在"归档"这一侧，而在"重新计算向量"那一侧 ——
 		// 那已经由 textForVector 里 `if evt.NoMemory { return "" }` 挡住。
 	}
-	if docStore != nil && len(archive) > 0 {
-		entries := make([]document.ContextEntry, len(archive))
+	if coldcontextStore != nil && len(archive) > 0 {
+		entries := make([]coldcontext.ContextEntry, len(archive))
 		for i, s := range archive {
-			entries[i] = document.ContextEntry{
+			entries[i] = coldcontext.ContextEntry{
 				Timestamp:   s.event.Timestamp,
 				Source:      s.event.Source,
 				Content:     s.event.Input,
 				Response:    s.event.Response,
 				ToolResults: convertToolResults(s.event.ToolResults),
+				ToolCalls:   toolCallItemsToDoc(s.event.ToolCalls),
 				Blocks:      append([]memory.MemoryBlock(nil), s.event.Blocks...),
 			}
 		}
-		doc, err := docStore.ContextToDoc("context_archived", entries, c.embedder, nil, c.toolOutputClean, c.channelCleanerForDoc())
+		doc, err := coldcontextStore.ContextToColdContext("context_archived", entries, c.embedder, nil, c.toolOutputClean, c.channelCleanerForDoc())
 		if err == nil && doc != nil {
 			archived = len(entries)
 			// 一等记忆块的迁移：块随归档事件离开 L0、进入 L2。
@@ -715,13 +1283,51 @@ func (c *RelevanceContext) Len() int {
 	return len(c.events)
 }
 
-func convertToolResults(items []ToolResultItem) []document.ToolResultItem {
+// toolCallItemsToDoc 把 L1 的工具调用记录转成 L2 类型。
+//
+// ★ 名字刻意不与 process.go 的 convertToolCalls 冲突：那个是
+// api.ToolCall → sdk.ToolCall（跨进程边界），本函数是 L1 → L2（跨记忆层）。
+// 两者语义不同，共用名字会让调用点看错。
+//
+// 必须逐字段搬运（而不是忽略）：L2 缺参数的话，回灌后「这一页的 call 侧
+// 是空的」，段页式的配对校验与页化都失效。
+func toolCallItemsToDoc(in []ToolCallItem) []coldcontext.ToolCallItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]coldcontext.ToolCallItem, len(in))
+	for i, tc := range in {
+		out[i] = coldcontext.ToolCallItem{
+			CallID:       tc.CallID,
+			Name:         tc.Name,
+			Arguments:    tc.Arguments,
+			RawArguments: tc.RawArguments,
+		}
+	}
+	return out
+}
+
+// convertToolResults 把 L1 的工具结果转成 L2 类型。
+//
+// ★ CallID 必须搬（2026-10-29 修）。
+//
+// 此前只搬 Name/Output，于是**归档一次就永久丢掉配对键**：
+// 召回回填后 ToolResults 的 CallID 全空，页化与配对校验都失效
+// （端到端判据 TestSegPagingRoundTripsThroughL2 实测抓到了这个）。
+//
+// 这类错误的共同点是「加字段时只改结构、不改搬运函数」——
+// 结构体里字段看起来都在，真跑一遍才发现在某一段路上被丢了。
+func convertToolResults(items []ToolResultItem) []coldcontext.ToolResultItem {
 	if items == nil {
 		return nil
 	}
-	result := make([]document.ToolResultItem, len(items))
+	result := make([]coldcontext.ToolResultItem, len(items))
 	for i, item := range items {
-		result[i] = document.ToolResultItem{Name: item.Name, Output: item.Output}
+		result[i] = coldcontext.ToolResultItem{
+			CallID: item.CallID,
+			Name:   item.Name,
+			Output: item.Output,
+		}
 	}
 	return result
 }

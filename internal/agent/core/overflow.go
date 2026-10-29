@@ -273,7 +273,7 @@ func resumeQueryFrom(f *TaskFrame) string {
 // handleContextOverflow 执行「裁剪 + L4 打断」。
 //
 // 关键取舍：裁剪在**这里同步做完**，L4 只负责打断与告知。理由：
-//   - Prune 全路径无 IO、无 panic（打分→排序→重排→可选写 docStore），
+//   - Prune 全路径无 IO、无 panic（打分→排序→重排→可选写 coldcontextStore），
 //     把它放进 L4 任务里做只会多付一次完整任务调度开销；
 //   - 这样「L4 里 Prune 出错 → 再触发 L4」在结构上就不可能发生。
 //
@@ -292,6 +292,25 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 		return 0
 	}
 
+	// ★ 段页式：先试**最轻的一档** —— 按页剔除（P5，2026-10-29）。
+	//
+	// 剔除是标注（InactivePages），不是删除也不是跨层迁移：
+	//   · 数据全在原位，随时可恢复（清空 InactivePages 即还原渲染）
+	//   · 帧不动、层不动，只是这一帧少渲染几个工具往返
+	//
+	// 为什么排在"整帧归档"（L4 空中断）之前：
+	// 归档是不可逆的层间迁移，代价远大于"少渲染一页"。能靠剔除解决时
+	// 就不该动层 —— 这正是"段页式"相对"整段淘汰"的收益所在。
+	//
+	// 为什么只剔工具页、永不剔 llm_round：第 1 页是"用户说了什么+模型答了
+	// 什么"，剔掉它这一帧就只剩工具流水，模型无法理解上下文在讲什么。
+	// 详见 EvictPages 的注释。
+	if evicted, reduced := a.evictPagesToBudget(query); evicted > 0 && reduced {
+		log.Printf("[agent] context overflow: evicted %d page(s) across frames — "+
+			"trimmed (not archived), no layer migration", evicted)
+		return evicted
+	}
+
 	// ★ 只发空中断，**不在这里裁剪**（2026-10-25 按原始设计修正）。
 	//
 	// 原设计：L4 空中断把当前任务抢占下来 ⇒ 任务边界处做语义相关性裁剪。
@@ -306,6 +325,49 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 		ratio, before)
 	a.raiseContextOverflow(0)
 	return 0
+}
+
+// evictPagesToBudget 对**自身超预算的单个事件**做页级剔除。
+//
+// ## 触发条件
+//
+// 只处理"单条事件自己就超过预算"的情形（单条撑爆窗口）。
+// 全局超预算（很多条小事件加起来超）走 Prune/归档那条路 —— 那是对的：
+// 全局超限的病是"该遗忘的没忘"，而单条撑爆的病是"这一帧里有水页"，
+// 两者的药不同。
+//
+// ## 为什么 protected/预算取自 c.computeTokenBudget
+//
+// 剔除的唯一目的是让这一帧能被渲染进窗口。用与渲染同一套预算计算，
+// 避免"按 A 阈值剔除、按 B 阈值判定仍超"的自相矛盾。
+func (a *Agent) evictPagesToBudget(query string) (evicted int, reduced bool) {
+	if a == nil || a.context == nil || query == "" {
+		return 0, false
+	}
+	budget := a.computeTokenBudget().ContextTokens
+	if budget <= 0 {
+		return 0, false
+	}
+	a.context.mu.Lock()
+	defer a.context.mu.Unlock()
+	for _, e := range a.context.events {
+		if e == nil {
+			continue
+		}
+		if eventTokens(*e) <= budget {
+			continue
+		}
+		//
+		// EvictPages 内部会调 c.save()/computeVector，而它们都需要锁，
+		// 所以这里必须用已持锁的形态。为此 EvictPages 自身不取锁
+		// （见其注释：调用方负责持锁），这里正是那个调用方。
+		n := a.context.evictPagesLocked(e, budget, query)
+		evicted += n
+		if n > 0 {
+			reduced = true
+		}
+	}
+	return evicted, reduced
 }
 
 // markOverflowAborted 记录一次「超页但裁不出东西」的终止，供状态面观测。

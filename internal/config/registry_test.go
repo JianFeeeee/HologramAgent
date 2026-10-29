@@ -501,3 +501,62 @@ func TestMaybeCompactReclaimsFreePages(t *testing.T) {
 	}
 	r.Close()
 }
+
+// regMeta 的**真实契约**：可见，但**不提供**默认值。
+//
+// ## 这条判据是怎么来的（2026-10-29 记录一次真实的自我纠错）
+//
+// 我最初在这里断言「regMeta 的键在 GetXxx 上能读到 ConfigDef.Default」，
+// 然后它红了。查 `defDefault`：
+//
+//	if !r.seeded[key] { return "", false }   // ← 只对 registerDefLocked 播种过的键回退
+//
+// 而 `regMeta` 的实现是 `r.defs[d.Key] = &d`，**从不写 seeded**。
+// 于是 regMeta 的键（不只是老安装，**全新安装也一样**）GetXxx 会直接返回
+// 调用方传入的兜底值，Default 字段只是给 WebUI 展示用的。
+//
+// ## 为什么这个区别必须被钉住
+//
+// 如果装配代码（如 PolicyFromConfig）以为"配置有 Default 就够了"，
+// 它写 `GetBool("core.security.sandbox.enabled", false)` 恰好对，
+// 但若有人写 `GetBool(..., true)`（照抄别的键的习惯），
+// 就会在**所有机器上**读到一个与 ConfigDef.Default 不同的值 —— 而
+// `TestPolicyConfigDefaultsMatchRegistry` 存在的意义就是把这两处焊死。
+func TestRegMetaIsVisibleButProvidesNoDefault(t *testing.T) {
+	dir := t.TempDir()
+	r := NewConfigRegistry(filepath.Join(dir, "config.db"))
+	r.SeedDefaults(dir) // 用全新安装：证明这不是"老安装才这样"
+	defer r.Close()
+
+	// ① 可见性成立：WebUI 设置页靠 ListDefs 列出配置项。
+	var seen bool
+	for _, d := range r.ListDefs("core.security.") {
+		if d.Key == "core.security.tool_deny" {
+			seen = true
+			if d.Default != "" {
+				t.Fatalf("core.security.tool_deny 的 Default 应为空串，实际 %q", d.Default)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("core.security.tool_deny 未出现在 ListDefs —— WebUI 里看不到这个配置项")
+	}
+
+	// ② ★ 关键：GetXxx 返回的是**调用方兜底值**，不是 Def.Default。
+	//    这里传一个故意与 Default 相反的值，证明读到的就是它。
+	if got := r.GetBool("core.security.sandbox.enabled", true); !got {
+		t.Fatal("regMeta 的键应返回调用方兜底值 true —— 若这里读到 false，" +
+			"说明 defDefault 行为变了，PolicyFromConfig 的兜底假设必须重审")
+	}
+	if got := r.GetString("core.log.retention", "forever"); got != "forever" {
+		t.Fatalf("regMeta 的键应返回调用方兜底值 forever，实际 %q", got)
+	}
+
+	// ③ 显式写入后必须正常可读（regMeta 只是不提供默认，不是不可写）。
+	if err := r.Set("core.security.tool_deny", "cmd_*"); err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if got := r.GetString("core.security.tool_deny", ""); got != "cmd_*" {
+		t.Fatalf("写入后应读到 cmd_*，实际 %q", got)
+	}
+}

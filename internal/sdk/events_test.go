@@ -15,9 +15,28 @@ import (
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
+// newTestEvents 构造一个**已装上安全闸门**的受限事件面。
+//
+// ## ★ 为什么必须装 Guard（2026-10-29 收敛后）
+//
+// 此前 `sdk/events.go` 自己查策略（checkPublish/checkSubscribe/scrubOut），
+// 所以测试里的裸 bus 也能"看起来工作"。收敛后授权与脱敏全部归
+// `security.eventGuard`，而闸门是挂在总线上的 —— **测试不装 Guard，
+// 就等于在测一条没有执行者的策略**，于是判据会假绿。
+//
+// 这正好顺便钉住了生产装配要求：**总线必须带闸门**，否则策略不生效。
 func newTestEvents(t *testing.T, name string) (pubsdk.EventsAPI, *events.Bus) {
 	t.Helper()
 	bus := events.NewBus()
+	// 用当前全局 Runtime 造闸门（未装配时 NewRuntime(nil) 给 Disabled Runtime，
+	// 策略仍生效 —— 与生产同一条纪律：关闭凭据替换 ≠ 放开授权）。
+	rt := security.RuntimeGlobal()
+	if rt == nil {
+		rt = security.NewRuntime(nil)
+	}
+	if g := security.AsEventGuard(rt); g != nil {
+		bus.SetGuard(g)
+	}
 	return newEventsAPI(name, bus), bus
 }
 

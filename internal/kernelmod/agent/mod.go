@@ -3,7 +3,7 @@
 //
 // ## 依赖
 //
-// buildAgent 收 provider/providerMgr/iom/mem.db/mem.indexer/trk/docStore/
+// buildAgent 收 provider/providerMgr/iom/mem.db/mem.indexer/trk/coldcontextStore/
 // knowledge/mem.social/textMem/personality/pluginReg/embedder/
 // multimodalSpace/stageHost/evBus ⇒ 依赖除 supervisor 外的几乎全部下层模块。
 //
@@ -78,7 +78,7 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 	memDB := k.Memory.DB
 	memIdx := k.Memory.Indexer
 	trk := k.Tracker
-	docStore := k.DocStore
+	coldcontextStore := k.DocStore
 	ks := k.Knowledge
 	socialStore := k.Memory.Social
 	textMem := k.TextMemory
@@ -111,7 +111,7 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 		Memory:          memDB,
 		Indexer:         memIdx,
 		Tracker:         trk,
-		DocStore:        docStore,
+		DocStore:        coldcontextStore,
 		Knowledge:       ks,
 		SocialStore:     socialStore,
 		TextMemory:      textMem,
@@ -172,7 +172,7 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 	// ★ 为什么在这里接（而不是让各调用方自己发事件）：
 	//   图读写散在 26 个方法与 180+ 个 db 调用点上，各调用方自报必漏发；
 	//   而**图库自己就知道它碰了哪些块 ID**。星图此前只能靠工具名猜
-	//   节点（把 "memory_recall" 拆词去匹配中文实体名，实测命中 0），
+	//   节点（把 "stablemem_recall" 拆词去匹配中文实体名，实测命中 0），
 	//   于是每次都点亮同一批无关节点——这正是「星图没有读写反馈」的真身。
 	//
 	// ★ 只在 evBus 非 nil 时接：它把「内核进程」与「独立 CLI 工具」区分开

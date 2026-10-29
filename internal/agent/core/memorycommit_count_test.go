@@ -54,7 +54,7 @@ func TestMemoryCommitReportsRealCounts(t *testing.T) {
 	}
 
 	out := a.executeMemoryTool(agentAPI.ToolCall{
-		ID: "c1", Name: "memory_commit",
+		ID: "c1", Name: "stablemem_commit",
 		Arguments: map[string]interface{}{
 			"triples": []interface{}{
 				map[string]interface{}{
@@ -117,7 +117,7 @@ func TestMemoryCommitRejectsStillSaysRejected(t *testing.T) {
 
 	// 空主语 ⇒ 实体名校验必然拒绝 ⇒ 真的什么都没写。
 	out := a.executeMemoryTool(agentAPI.ToolCall{
-		ID: "c2", Name: "memory_commit",
+		ID: "c2", Name: "stablemem_commit",
 		Arguments: map[string]interface{}{
 			"triples": []interface{}{
 				map[string]interface{}{"subject": "", "relation": "等于", "object": "x"},

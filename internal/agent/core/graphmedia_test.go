@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // L3 图库媒体绑定测试（块 union 化之后）。
@@ -478,16 +478,16 @@ func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 	a, _ := newGraphMediaAgent(t)
 
 	dir := t.TempDir()
-	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	ds := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer ds.Stop()
-	a.docStore = ds
+	a.coldcontextStore = ds
 	a.embedder = memory.NewStaticEmbedder()
 
 	b := mediaBlock("image/png", []byte("image bytes"))
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		ID:          "doc_keep",
 		Summary:     strings.Repeat("超长摘要文本", 20), // >80 字触发长度门槛被跳过
 		Content:     "一段没有媒体标记的正文",
@@ -501,9 +501,9 @@ func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Insert 会把 LastAccess 覆写成 now、AccessCount 置 1，
-	// 于是 FindColdDocs(72h, 2) 一篇都找不到。插入后再改回来，
+	// 于是 FindColdContexts(72h, 2) 一篇都找不到。插入后再改回来，
 	// 让文档真正满足"冷"的条件——这是触发归档路径的前提。
-	for _, d := range ds.RecentDocs(10) {
+	for _, d := range ds.RecentColdContexts(10) {
 		if d.ID == doc.ID {
 			d.LastAccess = time.Now().Add(-200 * time.Hour)
 			d.AccessCount = 0
@@ -513,7 +513,7 @@ func TestArchiveColdDocs_KeepsDocWhenGraphWriteEmpty(t *testing.T) {
 
 	// 关键断言：块在、文档在
 	held := false
-	for _, d := range ds.RecentDocs(10) {
+	for _, d := range ds.RecentColdContexts(10) {
 		if d.ID == doc.ID && len(d.Blocks) > 0 {
 			held = true
 		}
@@ -529,16 +529,16 @@ func TestArchiveColdDocs_MigratesBlocksToGraph(t *testing.T) {
 	a, g := newGraphMediaAgent(t)
 
 	dir := t.TempDir()
-	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	ds := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer ds.Stop()
-	a.docStore = ds
+	a.coldcontextStore = ds
 	a.embedder = memory.NewStaticEmbedder()
 
 	b := mediaBlock("image/png", []byte("archived-image"))
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		ID:      "doc_arch",
 		Summary: "带图的冷文档",
 		Content: "张三把三色带图交给了李四。",
@@ -548,7 +548,7 @@ func TestArchiveColdDocs_MigratesBlocksToGraph(t *testing.T) {
 	if err := ds.Insert(doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range ds.RecentDocs(10) {
+	for _, d := range ds.RecentColdContexts(10) {
 		if d.ID == doc.ID {
 			d.LastAccess = time.Now().Add(-200 * time.Hour)
 			d.AccessCount = 0
@@ -731,14 +731,14 @@ func TestSentenceIDsFromRelations(t *testing.T) {
 func TestMediaBlocksHeldByDocumentSurviveDeletion(t *testing.T) {
 	// 文档持有的一等块把内容钉住；文档被删后块随之消失，字节随块同生灭。
 	dir := t.TempDir()
-	ds := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	ds := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer ds.Stop()
 
 	b := mediaBlock("image/png", []byte("doc image"))
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		ID: "doc_1", Summary: "带图的文档", Content: "正文",
 		Blocks: []memory.MemoryBlock{b},
 	}

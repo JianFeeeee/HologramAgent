@@ -22,7 +22,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -87,11 +87,11 @@ type Registry struct {
 	pluginAutoRestart map[string]bool
 	sdkRefs           map[string]*sdk.PluginSDK
 
-	iom      *agentIO.IOManager
-	evBus    *events.Bus
-	memDB    *memory.GraphDB
-	textMem  *text.Memory
-	docStore *doc.Store
+	iom              *agentIO.IOManager
+	evBus            *events.Bus
+	memDB            *memory.GraphDB
+	textMem          *text.Memory
+	coldcontextStore *coldcontext.Store
 	// CAS 已淘汰（块自带负载，见 plan.md）。本注册表不保留媒体存储字段：
 	// 留着会诱导后来者再接线，走回头路。媒体字节走 sdk.Memory().MediaBytes。
 	ks      *knowledge.Store
@@ -239,10 +239,10 @@ func (r *Registry) SetTextMemory(tm *text.Memory) {
 	defer r.mu.Unlock()
 	r.textMem = tm
 }
-func (r *Registry) SetDocStore(ds *doc.Store) {
+func (r *Registry) SetDocStore(ds *coldcontext.Store) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.docStore = ds
+	r.coldcontextStore = ds
 }
 func (r *Registry) SetKnowledge(ks *knowledge.Store) {
 	r.mu.Lock()
@@ -533,28 +533,28 @@ func (d *channelDevice) ChannelDef() agentIO.ChannelDef { return d.chDef }
 // 同一次 buildSDK 里拿到**互相不一致**的组合（比如 lua 已是新的、cfg 还是旧的）。
 // 一次 RLock 取齐既消灭竞争，也保证同一次 SDK 装配看到的是同一个状态。
 type sdkDeps struct {
-	plgDir    string
-	dataDir   string
-	cfgReg    *internalConfig.ConfigRegistry
-	iom       *agentIO.IOManager
-	evBus     *events.Bus
-	memDB     *memory.GraphDB
-	textMem   *text.Memory
-	docStore  *doc.Store
-	ks        *knowledge.Store
-	mgr       *agentAPI.ProviderManager
-	lua       *luaVM.VM
-	baseKey   string
-	regTool   sdk.ToolRegistrar
-	regStage  sdk.StageRegistrar
-	regAPI    sdk.APIRegistrar
-	status    sdk.StatusAPI
-	sup       sdk.SupervisorAPI
-	trk       *tracker.Tracker
-	cfg       *types.Config
-	stageHost sdk.ToolSource
-	idx       *memory.Indexer
-	kernelCtl sdk.KernelControlAPI
+	plgDir           string
+	dataDir          string
+	cfgReg           *internalConfig.ConfigRegistry
+	iom              *agentIO.IOManager
+	evBus            *events.Bus
+	memDB            *memory.GraphDB
+	textMem          *text.Memory
+	coldcontextStore *coldcontext.Store
+	ks               *knowledge.Store
+	mgr              *agentAPI.ProviderManager
+	lua              *luaVM.VM
+	baseKey          string
+	regTool          sdk.ToolRegistrar
+	regStage         sdk.StageRegistrar
+	regAPI           sdk.APIRegistrar
+	status           sdk.StatusAPI
+	sup              sdk.SupervisorAPI
+	trk              *tracker.Tracker
+	cfg              *types.Config
+	stageHost        sdk.ToolSource
+	idx              *memory.Indexer
+	kernelCtl        sdk.KernelControlAPI
 }
 
 // snapshotDeps 在一次 RLock 内取走 buildSDK 需要的全部依赖。
@@ -562,28 +562,28 @@ func (r *Registry) snapshotDeps() sdkDeps {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return sdkDeps{
-		plgDir:    r.plgDir,
-		dataDir:   r.dataDir,
-		cfgReg:    r.cfgReg,
-		iom:       r.iom,
-		evBus:     r.evBus,
-		memDB:     r.memDB,
-		textMem:   r.textMem,
-		docStore:  r.docStore,
-		ks:        r.ks,
-		mgr:       r.mgr,
-		lua:       r.lua,
-		baseKey:   r.baseKey,
-		regTool:   r.regTool,
-		regStage:  r.regStage,
-		regAPI:    r.regAPI,
-		status:    r.status,
-		sup:       r.sup,
-		trk:       r.trk,
-		cfg:       r.cfg,
-		stageHost: r.stageHost,
-		idx:       r.idx,
-		kernelCtl: r.kernelCtl,
+		plgDir:           r.plgDir,
+		dataDir:          r.dataDir,
+		cfgReg:           r.cfgReg,
+		iom:              r.iom,
+		evBus:            r.evBus,
+		memDB:            r.memDB,
+		textMem:          r.textMem,
+		coldcontextStore: r.coldcontextStore,
+		ks:               r.ks,
+		mgr:              r.mgr,
+		lua:              r.lua,
+		baseKey:          r.baseKey,
+		regTool:          r.regTool,
+		regStage:         r.regStage,
+		regAPI:           r.regAPI,
+		status:           r.status,
+		sup:              r.sup,
+		trk:              r.trk,
+		cfg:              r.cfg,
+		stageHost:        r.stageHost,
+		idx:              r.idx,
+		kernelCtl:        r.kernelCtl,
 	}
 }
 
@@ -743,13 +743,17 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		// 插件名仅用于日志溯源（哪个插件写的块）。
 		Memory:     sdk.NewGraphMemoryWithPlugin(name, deps.memDB),
 		TextMemory: sdk.NewTextMemoryWithPlugin(name, deps.textMem),
-		DocMemory:  sdk.NewDocMemoryWithPlugin(name, deps.docStore),
+		DocMemory:  sdk.NewDocMemoryWithPlugin(name, deps.coldcontextStore),
 		Knowledge:  sdk.NewKnowledge(deps.ks),
 		LLM:        sdk.NewLLM(deps.mgr, deps.cfgReg, deps.lua, deps.baseKey),
 		Settings:   sett,
 		// ★ 变量库：桥接到进程级 security.Global()（**不另建存储**）。
 		// 内核未启用安全模块时它 Available()==false（不是 nil）。
 		Secrets: sdk.NewSecretsAPI(),
+		// ★ 策略声明面：插件**声明**档位（qq.owner / qq.guest…），
+		// 判定仍在内核 security.Runtime。Owner 由内核用真实插件名填，
+		// 插件无法伪造身份（见 internal/sdk/security_impl.go）。
+		Security: sdk.NewSecurityAPI(name),
 		// ★ 随包资源：读 <插件目录>/rawfile/，可写目录 <插件目录>/work/。
 		// 内置插件（无独立目录）拿到的路径不存在，Read 会明确报错 ——
 		// 那是对的：它们本来就没有随包资源。
@@ -778,7 +782,7 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		Tracker:    deps.trk,
 		Config:     sdk.NewConfig(deps.cfg),
 		Tool:       sdk.NewTool(deps.stageHost, deps.iom),
-		Indexer:    sdk.NewIndexerWithDocs(deps.idx, deps.docStore),
+		Indexer:    sdk.NewIndexerWithDocs(deps.idx, deps.coldcontextStore),
 	})
 }
 

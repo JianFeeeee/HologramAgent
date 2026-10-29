@@ -61,7 +61,7 @@ func TestBuiltinToolGatingRespected(t *testing.T) {
 	a := newPreemptAgent(t, newPreemptProvider()) // 无 memory / knowledge
 	api := toolAPIOf(t, a)
 
-	if api.ToolDefByName("memory_merge") != nil {
+	if api.ToolDefByName("stablemem_merge") != nil {
 		t.Error("未接 memory 却声称有 memory_merge —— 门控语义被破坏")
 	}
 	if api.ToolDefByName("knowledge_list") != nil {

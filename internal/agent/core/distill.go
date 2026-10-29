@@ -9,7 +9,7 @@ import (
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 )
@@ -22,7 +22,7 @@ type ConsolidationTask struct {
 
 func (a *Agent) enqueueConsolidationTask(task ConsolidationTask) {
 	msg := fmt.Sprintf(
-		"【记忆整理任务】\n类型: %s\n说明: %s\n\n注意：\n1. 仅使用 memory_merge 合并实体，或使用 memory_block_merge 标记不合并\n2. 不要使用 memory_commit 写入新的三元组\n3. 不要从这段任务文本中提取任何信息写入图库\n4. 只需要做出合并/不合并的判断并执行对应工具",
+		"【记忆整理任务】\n类型: %s\n说明: %s\n\n注意：\n1. 仅使用 stablemem_merge 合并实体，或使用 stablemem_block_merge 标记不合并\n2. 不要使用 stablemem_commit 写入新的三元组\n3. 不要从这段任务文本中提取任何信息写入图库\n4. 只需要做出合并/不合并的判断并执行对应工具",
 		task.Type, task.Reason,
 	)
 	a.injectSelf(msg)
@@ -42,7 +42,7 @@ func (a *Agent) distillLoop() {
 			go a.distillLoop()
 		}
 	}()
-	if a.docStore == nil {
+	if a.coldcontextStore == nil {
 		return
 	}
 	ticker := time.NewTicker(a.distillInterval)
@@ -144,12 +144,12 @@ func (a *Agent) reviewLoop() {
 // ──────────────────────────────────────────────
 
 func (a *Agent) distillContext() {
-	if a.docStore == nil {
+	if a.coldcontextStore == nil {
 		return
 	}
 	n := a.context.Len()
 	if n > a.maxContextSize*2 {
-		archived := a.context.Prune("", a.maxContextSize, a.docStore)
+		archived := a.context.Prune("", a.maxContextSize, a.coldcontextStore)
 		if archived > 0 {
 			log.Printf("[agent] distill: pruned %d low-relevance events to document memory (total=%d)", archived, n)
 		}
@@ -157,7 +157,7 @@ func (a *Agent) distillContext() {
 }
 
 // ──────────────────────────────────────────────
-// 冷文档归档：docStore → GraphDB (L3→L4)
+// 冷文档归档：coldcontextStore → GraphDB (L3→L4)
 // ──────────────────────────────────────────────
 
 func (a *Agent) archiveColdDocs() {
@@ -165,7 +165,7 @@ func (a *Agent) archiveColdDocs() {
 		return
 	}
 
-	log.Printf("[agent] cold doc archival start")
+	log.Printf("[agent] coldcontext archival start")
 
 	if a.indexer != nil {
 		if err := a.indexer.Sync(); err != nil {
@@ -186,14 +186,14 @@ func (a *Agent) archiveColdDocs() {
 		}
 	}
 
-	if a.docStore != nil {
-		a.docStore.Reindex()
+	if a.coldcontextStore != nil {
+		a.coldcontextStore.Reindex()
 	}
 
-	if a.docStore != nil {
-		coldDocs := a.docStore.FindColdDocs(72*time.Hour, 2)
-		for _, doc := range coldDocs {
-			triples := docToTriples(doc, a.embedder)
+	if a.coldcontextStore != nil {
+		coldDocs := a.coldcontextStore.FindColdContexts(72*time.Hour, 2)
+		for _, coldDoc := range coldDocs {
+			triples := coldDocToTriples(coldDoc, a.embedder)
 			if len(triples) == 0 {
 				continue
 			}
@@ -203,11 +203,11 @@ func (a *Agent) archiveColdDocs() {
 			// 「有没有真的写进图库」只剩块数这一个信号。
 			blocksBefore, err := a.memory.MemoryBlockCount()
 			if err != nil {
-				log.Printf("[agent] doc->graph: %s failed to read block count, keeping doc: %v", doc.ID, err)
+				log.Printf("[agent] coldcontext->graph: %s failed to read block count, keeping doc: %v", coldDoc.ID, err)
 				continue
 			}
 
-			ec, rc, blocks, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, doc.Blocks)
+			ec, rc, blocks, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
 			if err != nil {
 				log.Printf("[agent] doc→graph archival error: %v", err)
 				continue
@@ -234,13 +234,13 @@ func (a *Agent) archiveColdDocs() {
 			// ★★ 不能用 blocks 判据（2026-10-04 修正）
 			//
 			// 我第一版改成 `if blocks == 0 { 保留文档 }`，结果文档永不被删
-			// —— 因为 **blocks 恒为 0**：docToTriples 产出的三元组
+			// —— 因为 **blocks 恒为 0**：coldDocToTriples 产出的三元组
 			// 没有 SentenceText（也没有 MediaDigests），
 			// 而 blocks 只统计「按原句挂接的媒体块」。
 			// 文档的媒体块走的是下面的 linkBlocksToDocument，不是这条路。
 			//
 			// ★ 真正的判据在下面：linkBlocksToDocument 的绑定数。
-			//   本文档没有块时（len(doc.Blocks) == 0），
+			//   本文档没有块时（len(coldDoc.Blocks) == 0），
 			//   「三元组有没有写进图库」才是唯一的问题 ——
 			//   而那要看**块侧**有没有新增节点。
 			//
@@ -257,14 +257,14 @@ func (a *Agent) archiveColdDocs() {
 			//
 			//	blocks 只统计 attachBlocksToSentenceBlock（按原句挂接媒体块），
 			//	而归档路径上的媒体块**设计上就不走那条路**：
-			//	docToTriples 明确不把媒体放进三元组
+			//	coldDocToTriples 明确不把媒体放进三元组
 			//	（见其注释「媒体不再参与三元组」—— 那是准确的设计，不是遗留），
 			//	媒体由 linkBlocksToDocument 以 document --contains--> block
 			//	写入 L3。所以 blocks 在归档路径上**本来就该是 0**。
 			//
 			// ★★ 记一笔我在这里犯的错（2026-10-04）：
 			//   我把那句准确的设计注释读成「过时注释」，
-			//   于是去查「docToTriples 的三元组没有 SentenceText」，
+			//   于是去查「coldDocToTriples 的三元组没有 SentenceText」，
 			//   把它当成「媒体块无处挂接的功能缺口」。
 			//   —— 而没有 SentenceText 正是设计本意。
 			//   更糟的是我把这个错误判断写进了本注释，
@@ -272,34 +272,34 @@ func (a *Agent) archiveColdDocs() {
 			//
 			// ★ 可靠信号是**块总数是否增长**。三条路径任一成功都会加块：
 			//
-			//	doc.Blocks         → linkBlocksToDocument（媒体块）
+			//	coldDoc.Blocks         → linkBlocksToDocument（媒体块）
 			//	triples 的实体名   → putTripleBlocksTx（subject/object 块）
 			//	triples 的原句     → 原句块
 			//
 			blocksAfter, err := a.memory.MemoryBlockCount()
 			if err != nil {
-				log.Printf("[agent] doc->graph: %s failed to read block count, keeping doc: %v", doc.ID, err)
+				log.Printf("[agent] coldcontext->graph: %s failed to read block count, keeping doc: %v", coldDoc.ID, err)
 				continue
 			}
 			if blocksAfter == blocksBefore {
-				log.Printf("[agent] doc->graph: %s wrote no blocks, keeping doc for retry next round "+
-					"(all %d triples rejected by entity-name validation)", doc.ID, len(triples))
+				log.Printf("[agent] coldcontext->graph: %s wrote no blocks, keeping doc for retry next round "+
+					"(all %d triples rejected by entity-name validation)", coldDoc.ID, len(triples))
 				continue
 			}
-			log.Printf("[agent] doc->graph: %s -> added %d blocks (%d triples, "+
+			log.Printf("[agent] coldcontext->graph: %s -> added %d blocks (%d triples, "+
 				"%d media attachments, legacy table counters disabled ec=%d rc=%d)",
-				doc.ID, blocksAfter-blocksBefore, len(triples), blocks, ec, rc)
+				coldDoc.ID, blocksAfter-blocksBefore, len(triples), blocks, ec, rc)
 
 			// 文档持有的一等块写入 L3，并以 document --contains--> block 边关联；
 			// 块 ID 原样保留（迁移而非重建）。块迁走后删除文档即完成迁移。
-			if len(doc.Blocks) > 0 {
-				if bound := a.linkBlocksToDocument(doc.ID, doc.Blocks, memory.ChannelScene(doc.Source)); bound != len(doc.Blocks) {
-					log.Printf("[agent] doc->graph: %s block migration incomplete (%d/%d), keeping doc for retry next round",
-						doc.ID, bound, len(doc.Blocks))
+			if len(coldDoc.Blocks) > 0 {
+				if bound := a.linkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source)); bound != len(coldDoc.Blocks) {
+					log.Printf("[agent] coldcontext->graph: %s block migration incomplete (%d/%d), keeping doc for retry next round",
+						coldDoc.ID, bound, len(coldDoc.Blocks))
 					continue
 				}
 			}
-			a.docStore.Remove(doc.ID)
+			a.coldcontextStore.Remove(coldDoc.ID)
 		}
 	}
 }
@@ -438,7 +438,7 @@ func (a *Agent) reviewRelations() {
 		a.enqueueConsolidationTask(ConsolidationTask{
 			Type: "relation_review",
 			Reason: fmt.Sprintf(
-				"【关系复审】原始句子: '%s'\n当前三元组: (%s → %s → %s) 置信度 %.2f\n请判断是否需要修正（如相对引用未解析、主宾颠倒、噪音三元组等），如需修正请用 memory_edit 工具",
+				"【关系复审】原始句子: '%s'\n当前三元组: (%s → %s → %s) 置信度 %.2f\n请判断是否需要修正（如相对引用未解析、主宾颠倒、噪音三元组等），如需修正请用 stablemem_edit 工具",
 				rel.SentenceText, rel.SourceName, rel.RelationType, rel.TargetName, rel.Confidence,
 			),
 			Data: map[string]interface{}{
@@ -524,30 +524,30 @@ func entitySimilarity(a, b string) float64 {
 	return float64(intersect) / float64(union)
 }
 
-func docToTriples(doc *document.Doc, embedder nlp.Vectorizer) []memory.Triple {
+func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer) []memory.Triple {
 	var triples []memory.Triple
-	if doc == nil {
+	if coldDoc == nil {
 		return triples
 	}
 
-	if doc.Source == "graph" || doc.Source == "" {
+	if coldDoc.Source == "graph" || coldDoc.Source == "" {
 		return nil
 	}
 
 	// 文档归档的知识是有**来源场面**的：来自 QQ 的对话归档，其三元组就该
 	// 钉在 chan:qq 上。这样「又来一条 QQ 消息」时，这批知识靠场景就能取回，
 	// 不必指望本轮措辞与它们字面重合。
-	docScene := memory.ChannelScene(doc.Source)
+	docScene := memory.ChannelScene(coldDoc.Source)
 
-	isArchivedContext := doc.Meta != nil && doc.Meta["is_archived_context"] == "true"
+	isArchivedContext := coldDoc.Meta != nil && coldDoc.Meta["is_archived_context"] == "true"
 
 	// 文档元数据:仅当 summary 合理(非空、非模板化、长度适中)时才写「主题」
-	if !isArchivedContext && doc.Summary != "" && len([]rune(doc.Summary)) < 80 && !isTemplateSummary(doc.Summary) {
+	if !isArchivedContext && coldDoc.Summary != "" && len([]rune(coldDoc.Summary)) < 80 && !isTemplateSummary(coldDoc.Summary) {
 		triples = append(triples, memory.Triple{
 			Subject:     "文档",
 			SubjectType: "Concept",
 			Relation:    "主题",
-			Object:      doc.Summary,
+			Object:      coldDoc.Summary,
 			ObjectType:  "Topic",
 			Confidence:  1.0,
 			Scene:       docScene,
@@ -562,7 +562,7 @@ func docToTriples(doc *document.Doc, embedder nlp.Vectorizer) []memory.Triple {
 	//
 	// ★ 输入必须是**原文**，不能是视图。
 	//
-	// 旧代码抽的是 doc.Content —— 那在 Events 引入前是对事件的压缩渲染
+	// 旧代码抽的是 coldDoc.Content —— 那在 Events 引入前是对事件的压缩渲染
 	// （Response 截 100 rune、工具输出截 200）。拿压缩过的文本做三元组抽取，
 	// 等于在丢失的信息上再丢一次：句子被截断后依存句法往往解析不出主谓宾。
 	//
@@ -571,7 +571,7 @@ func docToTriples(doc *document.Doc, embedder nlp.Vectorizer) []memory.Triple {
 	if embedder != nil {
 		e.SetEmbedder(embedder)
 	}
-	result := e.Extract(documentOriginalText(doc))
+	result := e.Extract(coldcontextOriginalText(coldDoc))
 	if result != nil {
 		for _, nt := range result.Triples {
 			mt := nlp.ToMemoryTriple(nt)
@@ -583,12 +583,12 @@ func docToTriples(doc *document.Doc, embedder nlp.Vectorizer) []memory.Triple {
 	}
 
 	// 仅当来源非归档上下文且非空时写「来源」——归档文档写死模板三元组属于垃圾
-	if doc.Source != "" && doc.Source != "context_archived" {
+	if coldDoc.Source != "" && coldDoc.Source != "context_archived" {
 		triples = append(triples, memory.Triple{
 			Subject:     "文档",
 			SubjectType: "Concept",
 			Relation:    "来源",
-			Object:      doc.Source,
+			Object:      coldDoc.Source,
 			ObjectType:  "Source",
 			Confidence:  1.0,
 			Scene:       docScene,
@@ -644,19 +644,19 @@ func (a *Agent) processConsolidation(evt *agentIO.InputEvent, input string) {
 	log.Printf("[agent] consolidation done (%dms, tools=%v)", time.Since(start).Milliseconds(), toolsUsed)
 }
 
-// documentOriginalText 取文档的**原文**用于抽取/蒸馏。
+// coldcontextOriginalText 取文档的**原文**用于抽取/蒸馏。
 //
 // 有 Events 时按事件顺序拼正文（原文来自文本块）；存量文档退回 Content 视图。
 // 这是「视图不是记忆」在蒸馏侧的落地：抽取必须基于原文。
-func documentOriginalText(doc *document.Doc) string {
-	if doc == nil {
+func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc) string {
+	if coldDoc == nil {
 		return ""
 	}
-	if !doc.HasEvents() {
-		return doc.Content
+	if !coldDoc.HasEvents() {
+		return coldDoc.Content
 	}
 	var b strings.Builder
-	for _, ev := range doc.Events {
+	for _, ev := range coldDoc.Events {
 		in, resp, _ := ev.InOut()
 		if in != "" {
 			b.WriteString(in)

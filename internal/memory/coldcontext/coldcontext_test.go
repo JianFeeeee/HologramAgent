@@ -1,4 +1,4 @@
-package document
+package coldcontext
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ func TestInsertAndQuery(t *testing.T) {
 	}
 	defer s.Stop()
 
-	doc := &Doc{
+	doc := &ColdDoc{
 		Summary: "用户喜欢喝咖啡",
 		Content: "用户提到他每天早上都会喝一杯黑咖啡",
 		Source:  "manual",
@@ -53,9 +53,9 @@ func TestQuery(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	s.Insert(&Doc{Summary: "咖啡是一种饮品", Content: "咖啡因提神", Source: "manual"})
-	s.Insert(&Doc{Summary: "茶叶也有咖啡因", Content: "茶和咖啡都提神", Source: "manual"})
-	s.Insert(&Doc{Summary: "今天天气很好", Content: "适合出去散步", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "咖啡是一种饮品", Content: "咖啡因提神", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "茶叶也有咖啡因", Content: "茶和咖啡都提神", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "今天天气很好", Content: "适合出去散步", Source: "manual"})
 
 	results := s.Query("咖啡", 5)
 	if len(results) == 0 {
@@ -83,7 +83,7 @@ func TestContextToDoc(t *testing.T) {
 		{Timestamp: time.Now(), Source: "user", Content: "特别是Go语言", Response: "Go很棒"},
 	}
 
-	doc, err := s.ContextToDoc("test", entries, nil, nil, nil, nil)
+	doc, err := s.ContextToColdContext("test", entries, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,19 +109,19 @@ func TestFindColdDocs(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	hot := &Doc{Summary: "常用的信息", Content: "经常被查询", Source: "manual"}
+	hot := &ColdDoc{Summary: "常用的信息", Content: "经常被查询", Source: "manual"}
 	hot.AccessCount = 10
 	hot.LastAccess = time.Now()
 	s.Insert(hot)
 
-	cold := &Doc{Summary: "很久没用的信息", Content: "几乎不被访问", Source: "manual"}
+	cold := &ColdDoc{Summary: "很久没用的信息", Content: "几乎不被访问", Source: "manual"}
 	s.Insert(cold)
 	// Insert 会重置 LastAccess，手动改为过去的
 	cold.LastAccess = time.Now().Add(-100 * time.Hour)
 	cold.AccessCount = 1
 
 	// 应该只找到 cold（72h 前未访问且访问 ≤ 2）
-	coldDocs := s.FindColdDocs(72*time.Hour, 2)
+	coldDocs := s.FindColdContexts(72*time.Hour, 2)
 	if len(coldDocs) != 1 {
 		t.Fatalf("expected 1 cold doc, got %d", len(coldDocs))
 	}
@@ -141,11 +141,11 @@ func TestRecentDocs(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	s.Insert(&Doc{Summary: "第一条", Content: "a", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "第一条", Content: "a", Source: "manual"})
 	time.Sleep(time.Millisecond)
-	s.Insert(&Doc{Summary: "第二条", Content: "b", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "第二条", Content: "b", Source: "manual"})
 
-	recent := s.RecentDocs(1)
+	recent := s.RecentColdContexts(1)
 	if len(recent) != 1 {
 		t.Fatalf("expected 1 recent doc, got %d", len(recent))
 	}
@@ -165,7 +165,7 @@ func TestReindex(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	s.Insert(&Doc{Summary: "测试重索引", Content: "验证索引重建", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "测试重索引", Content: "验证索引重建", Source: "manual"})
 	s.Reindex()
 
 	results := s.Query("重索引", 5)
@@ -232,7 +232,7 @@ func TestInsertEmptyDoc(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	doc := &Doc{Summary: "", Content: "", Source: "manual"}
+	doc := &ColdDoc{Summary: "", Content: "", Source: "manual"}
 	if err := s.Insert(doc); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestPersistence(t *testing.T) {
 	// 写
 	s1 := NewStore(dir, memory.TokenizeWords)
 	s1.Start()
-	s1.Insert(&Doc{Summary: "持久化测试", Content: "应该被保存到磁盘", Source: "manual"})
+	s1.Insert(&ColdDoc{Summary: "持久化测试", Content: "应该被保存到磁盘", Source: "manual"})
 	s1.Stop()
 
 	// 读
@@ -304,8 +304,8 @@ func TestRemove(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	s.Insert(&Doc{Summary: "会被删除", Content: "a", Source: "manual"})
-	s.Insert(&Doc{Summary: "会保留", Content: "b", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "会被删除", Content: "a", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "会保留", Content: "b", Source: "manual"})
 
 	// 删除前应该有 2 个
 	stats := s.Stats()
@@ -350,7 +350,7 @@ func TestRemoveNonexistent(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	s.Insert(&Doc{Summary: "一个文档", Content: "x", Source: "manual"})
+	s.Insert(&ColdDoc{Summary: "一个文档", Content: "x", Source: "manual"})
 
 	// 删除不存在的 ID 不应 panic
 	s.Remove("nonexistent_id")
@@ -387,7 +387,7 @@ func TestContextToDocContentPreservesRawToolOutput(t *testing.T) {
 	cleaner := func(name, output string) string {
 		return "天气 温度"
 	}
-	doc, err := s.ContextToDoc("test", entries, nil, nil, cleaner, nil)
+	doc, err := s.ContextToColdContext("test", entries, nil, nil, cleaner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestBuildDenseIndexPersistsAcrossRestart(t *testing.T) {
 	for i := range stale {
 		stale[i] = 0.01
 	}
-	if err := s1.Insert(&Doc{ID: "doc_persist", Summary: "迁移", Content: "落盘",
+	if err := s1.Insert(&ColdDoc{ID: "doc_persist", Summary: "迁移", Content: "落盘",
 		DenseVec: stale, DenseFP: "space-OLD-999"}); err != nil {
 		t.Fatal(err)
 	}
@@ -461,10 +461,10 @@ func TestBuildDenseIndexPersistsAcrossRestart(t *testing.T) {
 	if loaded == nil {
 		t.Fatal("重启后文档不见了")
 	}
-	if len(loaded.DenseVec) != 8 || loaded.DenseFP != sp.fp+"|"+docVectorAlgoVersion {
+	if len(loaded.DenseVec) != 8 || loaded.DenseFP != sp.fp+"|"+coldcontextVectorAlgoVersion {
 		t.Fatalf("迁移结果未落盘：期望 dim=8 fp=%q，实际 dim=%d fp=%q"+
 			"（后果：每次启动都重算同一批文档，磁盘状态永不收敛）",
-			sp.fp+"|"+docVectorAlgoVersion, len(loaded.DenseVec), loaded.DenseFP)
+			sp.fp+"|"+coldcontextVectorAlgoVersion, len(loaded.DenseVec), loaded.DenseFP)
 	}
 	// 已对齐 → 一次向量计算都不该发生
 	sp2 := &fakeSpace{fp: sp.fp, dim: 8}
@@ -495,7 +495,7 @@ func TestDenseForIgnoresBlockWithMismatchedDim(t *testing.T) {
 	for i := range good {
 		good[i] = 0.5
 	}
-	doc := &Doc{ID: "doc_bad", Summary: "坏块", Content: "文本向量应当生效",
+	doc := &ColdDoc{ID: "doc_bad", Summary: "坏块", Content: "文本向量应当生效",
 		Blocks: []memory.MemoryBlock{
 			{ID: "blk_bad", Vector: bad, Fingerprint: sp.fp},   // 指纹对、维度错 → 必须忽略
 			{ID: "blk_good", Vector: good, Fingerprint: sp.fp}, // 指纹与维度都对 → 参与融合
@@ -542,7 +542,7 @@ func TestLoadAllLoadsCustomID(t *testing.T) {
 	if err := s1.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s1.Insert(&Doc{ID: "my-notes", Summary: "自定义 ID", Content: "内容"}); err != nil {
+	if err := s1.Insert(&ColdDoc{ID: "my-notes", Summary: "自定义 ID", Content: "内容"}); err != nil {
 		t.Fatal(err)
 	}
 	s1.Stop()
@@ -564,7 +564,7 @@ func TestStopFlushesDirtyDocs(t *testing.T) {
 	if err := s1.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s1.Insert(&Doc{ID: "doc_flush", Summary: "关停落盘", Content: "内容"}); err != nil {
+	if err := s1.Insert(&ColdDoc{ID: "doc_flush", Summary: "关停落盘", Content: "内容"}); err != nil {
 		t.Fatal(err)
 	}
 	// 直接改内存并置脏，模拟「只在内存里发生的变更」
@@ -586,7 +586,7 @@ func TestStopFlushesDirtyDocs(t *testing.T) {
 
 // TestQueryScoredConcurrentAndDirty 锁死两点：
 //  1. QueryScored 更新访问计数必须离开读锁（旧实现在 RLock 下写，-race 会报）；
-//  2. 更新后必须置脏，否则优雅关停也不落盘、FindColdDocs 的冷度判据跨重启失真。
+//  2. 更新后必须置脏，否则优雅关停也不落盘、FindColdContexts 的冷度判据跨重启失真。
 func TestQueryScoredConcurrentAndDirty(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir, memory.TokenizeWords)
@@ -602,7 +602,7 @@ func TestQueryScoredConcurrentAndDirty(t *testing.T) {
 		if i < 3 {
 			summary, content = "并发检索目标", "并发内容"
 		}
-		if err := s.Insert(&Doc{ID: fmt.Sprintf("d%d", i), Summary: summary, Content: content}); err != nil {
+		if err := s.Insert(&ColdDoc{ID: fmt.Sprintf("d%d", i), Summary: summary, Content: content}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -618,7 +618,7 @@ func TestQueryScoredConcurrentAndDirty(t *testing.T) {
 			defer wg.Done()
 			for k := 0; k < 30; k++ {
 				s.QueryScored("并发检索目标", 5)
-				s.FindColdDocs(72*time.Hour, 2)
+				s.FindColdContexts(72*time.Hour, 2)
 			}
 		}()
 	}

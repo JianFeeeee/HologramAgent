@@ -28,7 +28,7 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 	// 删除，两者状态不同，必须显式告知。
 	//
 	// 注意不能直接用 injected.Relations：BuildContext 刻意把它置为 nil
-	//（自动注入只给实体索引以省 token，细节留给 memory_recall）。
+	//（自动注入只给实体索引以省 token，细节留给 stablemem_recall）。
 	// 因此这里用命中的实体名再查一次关系，只为拿到 sentence_id。
 	if mc := a.mediaContextForInjectedEntities(injected); mc != "" {
 		if s != "" {
@@ -47,7 +47,7 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 	//（2026-10-27 现场：头天晚上讲的冷笑话第二天早上完全唤不回）。
 	//
 	// 放进本函数后：输入路用输入文本、工具路用工具正文，两条路都能召回 L2 摘要。
-	if a.docStore != nil {
+	if a.coldcontextStore != nil {
 		if md := a.crossModalMarkdown(a.retrieveCrossModal(input, 3, a.fusionCfg)); md != "" {
 			if s != "" {
 				s += "\n"
@@ -213,7 +213,7 @@ func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
 	// ★ 但有一件事必须说：coldcontext_query 会把历史事件**插回时序**，而不是返回
 	//   一段摘要 —— 这与模型对"检索工具"的默认预期相反，不说就会误用。
 	prompt = appendPromptBlock(prompt, "[Memory] Recent turns are above. For older conversations use `coldcontext_query` - it **re-inserts them into your timeline at their original timestamps**, so read them there, not in the return value. "+
-		"Facts and relations: `memory_recall`. Written knowledge: `knowledge_search`.")
+		"Facts and relations: `stablemem_recall`. Written knowledge: `knowledge_search`.")
 
 	// 记忆维护：具体选哪个工具、各有什么副作用，都写在 memory_* 的工具描述里
 	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
@@ -437,7 +437,7 @@ type toolDefOptions struct {
 	// 原文仍留在上下文可读。语义与 ToolDef.NoMemory 一致。
 	//
 	// ★ 注意：coldcontext_query 的 noMemory **不写在这里**，而是由 init() 里的
-	//   显式名单登记。原因：工具表是按需构造的（受 `if a.docStore != nil`
+	//   显式名单登记。原因：工具表是按需构造的（受 `if a.coldcontextStore != nil`
 	//   之类条件控制），而 textForVector 可能在构造之前被调用 ——
 	//   靠构造时登记会让声明"时有时无"。声明是静态事实，init 期定死。
 	//
@@ -524,7 +524,7 @@ func init() {
 	//
 	// ★ 必须在这里显式登记，不能只靠 toolDefWith 构造时登记：
 	//   工具表是**按需构造**的（buildToolDefs 每轮重建，且受
-	//   `if a.docStore != nil` 之类的条件分支控制），而 textForVector
+	//   `if a.coldcontextStore != nil` 之类的条件分支控制），而 textForVector
 	//   在工具被构造之前也可能被调用 ⇒ 声明会"时有时无"。
 	//   声明是静态事实，就该在 init 期定死（与上面 parallel 同一理由）。
 	//
@@ -607,25 +607,25 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	if a.memory != nil {
-		tools = append(tools, toolDef("memory_merge", "【记忆清理】合并两个同义实体。将所有关系从 source 重定向到 target，然后彻底删除 source。注意：实体删除后不可恢复，合并前请确认语义一致。", map[string]interface{}{
+		tools = append(tools, toolDef("stablemem_merge", "【记忆清理】合并两个同义实体。将所有关系从 source 重定向到 target，然后彻底删除 source。注意：实体删除后不可恢复，合并前请确认语义一致。", map[string]interface{}{
 			"source": map[string]interface{}{"type": "string", "description": "被合并的实体名（合并后消失）"},
 			"target": map[string]interface{}{"type": "string", "description": "保留的实体名"},
 		}, "source", "target"))
-		tools = append(tools, toolDef("memory_delete_entity", "【记忆清理】删除指定名称的记忆块及其所有关联关系。name 必须是**块文本**（端点名），不是关系文本；按精确匹配定位，不会连带删掉名字相近的其他块。要按子串批量清理改用 memory_purge（subject_contains）。用于清理无用的噪音块、distiller 自动产生的垃圾节点、确认无用的旧数据。此操作不可恢复。", map[string]interface{}{
+		tools = append(tools, toolDef("stablemem_delete_entity", "【记忆清理】删除指定名称的记忆块及其所有关联关系。name 必须是**块文本**（端点名），不是关系文本；按精确匹配定位，不会连带删掉名字相近的其他块。要按子串批量清理改用 stablemem_purge（subject_contains）。用于清理无用的噪音块、distiller 自动产生的垃圾节点、确认无用的旧数据。此操作不可恢复。", map[string]interface{}{
 			"name": map[string]interface{}{"type": "string", "description": "要删除的实体名称"},
 		}, "name"))
-		tools = append(tools, toolDef("memory_block_merge", "【记忆清理】标记两个实体在指定轮次内不尝试合并，用于阻止误判。当 LLM 判断两个实体虽然相似但不是同一事物时，使用此工具阻止后续心跳自动推送合并候选。每次心跳扫描双方计数各减一，归零后恢复候选资格。", map[string]interface{}{
+		tools = append(tools, toolDef("stablemem_block_merge", "【记忆清理】标记两个实体在指定轮次内不尝试合并，用于阻止误判。当 LLM 判断两个实体虽然相似但不是同一事物时，使用此工具阻止后续心跳自动推送合并候选。每次心跳扫描双方计数各减一，归零后恢复候选资格。", map[string]interface{}{
 			"entity_a": map[string]interface{}{"type": "string", "description": "第一个实体名"},
 			"entity_b": map[string]interface{}{"type": "string", "description": "第二个实体名"},
 			"rounds":   map[string]interface{}{"type": "integer", "description": "阻止轮次数（每次心跳各减一，归零后恢复）"},
 		}, "entity_a", "entity_b", "rounds"))
-		tools = append(tools, toolDef("memory_purge", "【记忆清理】删除记忆库中符合条件的垃圾关系和数据。当用户要求整理记忆时，用 memory_introspect 发现低质量实体后，用此工具批量删除。如 @merged 后缀的残留实体、mentionCount=0 的孤立实体、distiller 自动生成的噪音关系等。支持软删（soft）和物理删除（hard）。", map[string]interface{}{
+		tools = append(tools, toolDef("stablemem_purge", "【记忆清理】删除记忆库中符合条件的垃圾关系和数据。当用户要求整理记忆时，用 stablemem_introspect 发现低质量实体后，用此工具批量删除。如 @merged 后缀的残留实体、mentionCount=0 的孤立实体、distiller 自动生成的噪音关系等。支持软删（soft）和物理删除（hard）。", map[string]interface{}{
 			"subject_contains": map[string]interface{}{"type": "string", "description": "主体名包含的关键词，如 '@merged' 可清理已合并残留"},
 			"relation_type":    map[string]interface{}{"type": "string", "description": "关系类型，如 '提及'、'回应'"},
 			"target_contains":  map[string]interface{}{"type": "string", "description": "客体名包含的关键词"},
 			"mode":             map[string]interface{}{"type": "string", "description": "soft（标记删除）/ hard（物理删除）", "default": "soft"},
 		}))
-		tools = append(tools, toolDef("memory_edit", "【记忆清理】编辑单条记忆关系：删除旧的 relation 并写入新的。用于修正错误的实体名或关系类型。", map[string]interface{}{
+		tools = append(tools, toolDef("stablemem_edit", "【记忆清理】编辑单条记忆关系：删除旧的 relation 并写入新的。用于修正错误的实体名或关系类型。", map[string]interface{}{
 			"old_subject":  map[string]interface{}{"type": "string", "description": "旧主体名"},
 			"old_relation": map[string]interface{}{"type": "string", "description": "旧关系类型"},
 			"old_object":   map[string]interface{}{"type": "string", "description": "旧客体名"},
@@ -678,12 +678,12 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}, "name"))
 	}
 
-	if a.docStore != nil {
+	if a.coldcontextStore != nil {
 		// The public tool name remains coldcontext_query for compatibility. Its description
 		// uses "cold context" so the model does not mistake replayable conversation
 		// history for a user-authored document.
 		tools = append(tools, toolDefWith("coldcontext_query",
-			"Retrieve earlier conversation turns that are no longer in the current context. Use this when the user refers to a past episode, asks what was said or done, or you remember an event but need its exact details. For current facts or entity relations, use `memory_recall` instead.\n\n"+
+			"Retrieve earlier conversation turns that are no longer in the current context. Use this when the user refers to a past episode, asks what was said or done, or you remember an event but need its exact details. For current facts or entity relations, use `stablemem_recall` instead.\n\n"+
 				"The full matching turns are restored into your conversation timeline at their original timestamps (they are inserted back into the timeline, not returned as a summary); read them there. This is consuming: retrieved material leaves cold context.",
 			map[string]interface{}{
 				"query": map[string]interface{}{"type": "string", "description": "查询内容，用当时可能出现的词描述"},
@@ -691,14 +691,14 @@ func (a *Agent) buildToolDefs() []interface{} {
 			}, []string{"query"}, parallelOpts()))
 
 		tools = append(tools, toolDef("coldcontext_commit",
-			"Write a durable episode or conclusion into cold context (older conversation history). Use this for a complete process, investigation trail, or decision rationale. For a single fact or relation use `memory_commit`; for reusable written knowledge use `knowledge_create`.",
+			"Write a durable episode or conclusion into cold context (older conversation history). Use this for a complete process, investigation trail, or decision rationale. For a single fact or relation use `stablemem_commit`; for reusable written knowledge use `knowledge_create`.",
 
 			map[string]interface{}{
 				"content": map[string]interface{}{"type": "string", "description": "文档内容（完整正文，不要自己截断）"},
 				"summary": map[string]interface{}{"type": "string", "description": "一句话摘要（可选，留空则由正文首行生成）"},
 				"media_digests": map[string]interface{}{
 					"type":        "array",
-					"description": "可选：这篇文档关联的媒体 digest（对话或 memory_recall 的「关联媒体」里显示的十六进制串，短的即可）。填了以后检索到这篇文档就能看到并取回原图/音频。",
+					"description": "可选：这篇文档关联的媒体 digest（对话或 stablemem_recall 的「关联媒体」里显示的十六进制串，短的即可）。填了以后检索到这篇文档就能看到并取回原图/音频。",
 					"items":       map[string]interface{}{"type": "string"},
 				},
 			}, "content"))

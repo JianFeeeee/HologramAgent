@@ -9,7 +9,7 @@ import (
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
@@ -87,7 +87,7 @@ func collectKernelStatus(
 	pluginReg *plugin.Registry,
 	memDB *memory.GraphDB,
 	ks interface{ List() []string },
-	docStore *document.Store,
+	coldcontextStore *coldcontext.Store,
 	textMem *text.Memory,
 	socialStore *social.SocialStore,
 	trk *tracker.Tracker,
@@ -198,9 +198,9 @@ func collectKernelStatus(
 	}
 
 	// Documents
-	if docStore != nil {
+	if coldcontextStore != nil {
 		status.Documents.Available = true
-		stats := docStore.Stats()
+		stats := coldcontextStore.Stats()
 		if dc, ok := stats["doc_count"].(int); ok {
 			status.Documents.DocCount = dc
 		}
@@ -281,7 +281,7 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 		a.pluginReg,
 		a.memory,
 		knowledgeLister,
-		a.docStore,
+		a.coldcontextStore,
 		textMem,
 		socialStore,
 		trk,

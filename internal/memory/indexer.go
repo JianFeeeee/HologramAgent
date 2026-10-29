@@ -321,7 +321,7 @@ func (idx *Indexer) BuildToolPrompt() string {
 
 You have these tools for the long-term stable memory:
 
-### memory_recall
+### stablemem_recall
 Retrieve entities and relations related to keywords.
 Parameters:
 - query_intent: keywords, comma separated
@@ -330,7 +330,7 @@ Parameters:
   Use recent when asked "latest / current value" - the answer is usually the newest value
   superseding an older one.
 
-### memory_commit
+### stablemem_commit
 Write triples into stable memory.
 Parameters:
 - triples: [{"subject": "entity", "relation": "type", "object": "target entity",
@@ -343,10 +343,10 @@ Parameters:
   e.g. the QQ reply format -> scene="chan:qq".
 - scene: default scene key for this batch (optional; per-triple scene wins).
 
-### memory_introspect
+### stablemem_introspect
 Show memory statistics.
 
-### memory_purge
+### stablemem_purge
 Delete or fix memories.
 Parameters:
 - criteria: {"subject_contains": "...", "relation_type": "..."}
@@ -547,7 +547,7 @@ func (idx *Indexer) GetToolDefinitions() []map[string]interface{} {
 		{
 			"type": "function",
 			"function": map[string]interface{}{
-				"name": "memory_recall",
+				"name": "stablemem_recall",
 				"description": "检索图记忆。输入查询意图关键词，返回相关实体和关系。" +
 					"问『某个具体东西是什么/是多少』用默认相关性排序；" +
 					"问『最近/最新/现在是什么』必须传 sort=recent —— " +
@@ -578,7 +578,7 @@ func (idx *Indexer) GetToolDefinitions() []map[string]interface{} {
 		{
 			"type": "function",
 			"function": map[string]interface{}{
-				"name":        "memory_commit",
+				"name":        "stablemem_commit",
 				"description": "写入图记忆。将三元组列表写入长期记忆。",
 				"parameters": map[string]interface{}{
 					"type": "object",
@@ -617,7 +617,7 @@ func (idx *Indexer) GetToolDefinitions() []map[string]interface{} {
 		{
 			"type": "function",
 			"function": map[string]interface{}{
-				"name":        "memory_introspect",
+				"name":        "stablemem_introspect",
 				"description": "查看图记忆统计信息：实体数量、关系数量、热点实体。",
 				"parameters": map[string]interface{}{
 					"type":       "object",

@@ -59,10 +59,9 @@ func (a *Agent) autoReloadPlugins() {
 // 根本不是插件，靠规则永远猜不对。
 var builtinToolOwner = map[string]string{
 	// 记忆子系统（内核能力，不是插件）
-	"memory_recall": "core", "memory_commit": "core", "memory_merge": "core",
-	"memory_purge": "core", "memory_edit": "core", "memory_delete_entity": "core",
-	"memory_block_merge": "core", "memory_introspect": "core",
-	"memory_document_query": "core", "memory_document_commit": "core",
+	"stablemem_recall": "core", "stablemem_commit": "core", "stablemem_merge": "core",
+	"stablemem_purge": "core", "stablemem_edit": "core", "stablemem_delete_entity": "core",
+	"stablemem_block_merge": "core", "stablemem_introspect": "core",
 	// 知识库
 	"knowledge_search": "core", "knowledge_create": "core", "knowledge_list": "core",
 	"knowledge_delete": "core", "knowledge_import_dir": "core",

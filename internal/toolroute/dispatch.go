@@ -36,7 +36,7 @@ func Dispatch(h api.BuiltinToolHandlers, tc api.ToolCall, turnScenes []string) (
 	switch {
 	case tc.Name == "persona_set":
 		return h.ExecutePersonaTool(tc), true
-	case strings.HasPrefix(tc.Name, "memory_"):
+	case strings.HasPrefix(tc.Name, "stablemem_"):
 		return h.ExecuteMemoryTool(tc, turnScenes), true
 	case strings.HasPrefix(tc.Name, "social_"):
 		return h.ExecuteSocialTool(tc), true
@@ -72,21 +72,13 @@ func Dispatch(h api.BuiltinToolHandlers, tc api.ToolCall, turnScenes []string) (
 	return "", false
 }
 
-// IsBuiltinTool 报告某名字是否会由 Dispatch 处理（供诊断与提示词使用）。
+// ★ 已删除 IsBuiltinTool（2026-10-29）。
 //
-// ★ 与 Dispatch 共用同一套前缀常量，避免"两套语义"（历史上出现过
-// "模型看得到但插件查不到"的漂移）。
-func IsBuiltinTool(name string) bool {
-	switch {
-	case name == "persona_set", name == "output_list_channels", name == "input_channels",
-		name == "resident_agents", name == "notify_parent", name == "inputch_note",
-		name == "plgreload", name == "get_plugin_tools":
-		return true
-	}
-	for _, p := range []string{"memory_", "social_", "knowledge_", "coldcontext_", "doc_", "secret_", "output_send__"} {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
-}
+// 它曾是 Dispatch 之外**第二份**前缀表，注释还写着"与 Dispatch 共用同一套
+// 前缀常量" —— 但实际上是手抄的平行清单，两处都要人肉同步。
+// 实测：全仓零调用方（唯一的 device.IsBuiltinTool 包装器同样零调用），
+// 却在改名时制造了真实故障：改了 Dispatch 的 stablemem_，漏了这份表，
+// 于是"看起来在维护事实来源"的代码变成了误导。
+//
+// 需要判"某名字会不会被处理"时，**直接调 Dispatch** —— 它的
+// (string, bool) 第二个返回值就是权威答案。别再引入平行表。

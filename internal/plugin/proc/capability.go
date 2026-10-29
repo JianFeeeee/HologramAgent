@@ -124,6 +124,11 @@ var methodCapability = map[string]Capability{
 	MethodSecretsFill:         CapCore,
 	MethodSecretsEncrypt:      CapCore,
 	MethodSecretsDecrypt:      CapCore,
+	// 策略声明是 CapCore：任何插件都只能声明**自己名下**的档位
+	//（Owner 由内核填），所以它不构成越权面；限制在"声明别人的档位"
+	// 那一层由 internal/sdk/security_impl.go 拒绝。
+	MethodSecurityDeclareProfile:  CapCore,
+	MethodSecurityDeclareProfiles: CapCore,
 	// 生命周期自述（插件声明自己是否可自动重启）
 	MethodLifecycleAutoRestart: CapCore,
 	// 多模态内容块注入是工具返回值的一部分，不越权

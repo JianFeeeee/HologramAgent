@@ -612,6 +612,7 @@ type PluginSDK struct {
 	sett           SettingsAPI
 	social         SocialAPI
 	secrets        SecretsAPI
+	security       SecurityAPI
 	rawFiles       RawFilesAPI
 	events         EventSubscriber
 	plgMgr         PluginMgrAPI
@@ -713,6 +714,16 @@ func (s *PluginSDK) Secrets() SecretsAPI {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()
 	return s.secrets
+}
+
+// Security 返回**策略声明面**（插件声明安全档位；判定由内核执行）。
+//
+// ★ 只声明、不判定：本接口没有 CheckTool 之类的方法 —— 那属于内核。
+// 插件自判会让策略分散到每个插件、且插件崩溃即策略失效。
+func (s *PluginSDK) Security() SecurityAPI {
+	s.apiMu.RLock()
+	defer s.apiMu.RUnlock()
+	return s.security
 }
 
 func (s *PluginSDK) Social() SocialAPI {
@@ -930,6 +941,13 @@ func (s *PluginSDK) SetRawFilesAPI(v RawFilesAPI) {
 func (s *PluginSDK) SetSecretsAPI(v SecretsAPI) {
 	s.apiMu.Lock()
 	s.secrets = v
+	s.apiMu.Unlock()
+}
+
+// SetSecurityAPI 由内核注入策略声明面的实现（插件不调用）。
+func (s *PluginSDK) SetSecurityAPI(v SecurityAPI) {
+	s.apiMu.Lock()
+	s.security = v
 	s.apiMu.Unlock()
 }
 

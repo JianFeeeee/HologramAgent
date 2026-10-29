@@ -1,4 +1,4 @@
-package document
+package coldcontext
 
 // 检索质量判据 —— 这一层是「结构判据」的补位。
 //
@@ -133,7 +133,7 @@ func buildStore(t *testing.T, cases []topicCase) *Store {
 
 	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
 	for i, c := range cases {
-		_, err := s.ContextToDoc("context_archived", []ContextEntry{{
+		_, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 			Timestamp: base.Add(time.Duration(i) * time.Hour),
 			Source:    "test",
 			Content:   "用户提问：" + c.query,
@@ -238,7 +238,7 @@ func TestRetrieval_VectorInputIsBodyNotSummary(t *testing.T) {
 	s.SetDenseSpace(ds)
 
 	const sentinel = "量子纠缠态退相干时间测量"
-	_, err := s.ContextToDoc("context_archived", []ContextEntry{{
+	_, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: time.Now(),
 		Source:    "test",
 		Content:   "用户问了个问题",
@@ -248,7 +248,7 @@ func TestRetrieval_VectorInputIsBodyNotSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 与哨兵完全无关的干扰文档（越长越能测出"摘要被当成内容"）
-	_, _ = s.ContextToDoc("context_archived", []ContextEntry{{
+	_, _ = s.ContextToColdContext("context_archived", []ContextEntry{{
 		Timestamp: time.Now().Add(time.Minute),
 		Source:    "test",
 		Content:   "另一条用户消息",
@@ -310,7 +310,7 @@ func TestRetrieval_SummaryNoiseMustNotPolluteVector(t *testing.T) {
 	}
 	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
 	for i, b := range bodies {
-		if _, err := s.ContextToDoc("context_archived", []ContextEntry{{
+		if _, err := s.ContextToColdContext("context_archived", []ContextEntry{{
 			Timestamp: base.Add(time.Duration(i) * time.Hour),
 			Source:    "src", // ★ 同一来源 ⇒ Summary 更同质，与生产一致
 			Content:   "用户提问",
@@ -321,7 +321,7 @@ func TestRetrieval_SummaryNoiseMustNotPolluteVector(t *testing.T) {
 	}
 	s.BuildDenseIndex(ds)
 
-	docs := s.RecentDocs(10)
+	docs := s.RecentColdContexts(10)
 	if len(docs) != 4 {
 		t.Fatalf("文档数 = %d，期望 4", len(docs))
 	}
@@ -401,7 +401,7 @@ func TestRetrieval_AlgoVersionChangeForcesRecompute(t *testing.T) {
 	// 模拟旧算法留下的状态：指纹是**纯空间指纹**（无 |v2 后缀）
 	legacyVec := make([]float64, ds.Dim())
 	legacyVec[0] = 1
-	if err := s.Insert(&Doc{
+	if err := s.Insert(&ColdDoc{
 		ID: "doc_legacy_vec", Summary: "旧向量", Content: "旧算法的向量",
 		DenseVec: legacyVec, DenseFP: ds.Fingerprint(), // ← 无算法版本
 	}); err != nil {

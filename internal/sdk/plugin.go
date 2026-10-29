@@ -329,15 +329,19 @@ type AudioURL = pubsdk.AudioURL
 
 // SDKConfig holds all dependencies for creating a PluginSDK.
 type SDKConfig struct {
-	IOManager      *agentIO.IOManager
-	EventBus       *events.Bus
-	Memory         MemoryAPI
-	TextMemory     TextMemoryAPI
-	DocMemory      DocMemoryAPI
-	Knowledge      KnowledgeAPI
-	LLM            LLMAPI
-	Settings       SettingsAPI
-	Secrets        pubsdk.SecretsAPI
+	IOManager  *agentIO.IOManager
+	EventBus   *events.Bus
+	Memory     MemoryAPI
+	TextMemory TextMemoryAPI
+	DocMemory  DocMemoryAPI
+	Knowledge  KnowledgeAPI
+	LLM        LLMAPI
+	Settings   SettingsAPI
+	Secrets    pubsdk.SecretsAPI
+	// Security 是**策略声明面**（插件声明安全档位；判定由内核执行）。
+	//
+	// ★ 只声明、不判定：本接口没有 CheckTool 之类的方法 —— 那属于内核。
+	Security       pubsdk.SecurityAPI
 	RawFiles       pubsdk.RawFilesAPI
 	RegTool        ToolRegistrar
 	RegStage       StageRegistrar
@@ -362,6 +366,9 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	base := pubsdk.New(name, cfg.Settings, cfg.RegTool, cfg.RegStage, cfg.RegAPI, cfg.RegOutput)
 	if cfg.Secrets != nil {
 		base.SetSecretsAPI(cfg.Secrets)
+	}
+	if cfg.Security != nil {
+		base.SetSecurityAPI(cfg.Security)
 	}
 	if cfg.RawFiles != nil {
 		base.SetRawFilesAPI(cfg.RawFiles)

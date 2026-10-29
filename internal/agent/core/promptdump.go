@@ -23,6 +23,26 @@ import (
 //
 // 每行一条 JSON：时间、通道、模型、完整 messages（role + content）。
 // 文件权限 0600 —— 内容是用户隐私。
+// promptDump 是 opt-in 的**一次性诊断**手段，不是常驻功能。
+//
+// ## 生命周期约定（2026-10-29 教训）
+//
+// 这个开关原本只为一次排查而加（"抓一轮真实提示词，确认 coldcontext
+// 预填充到底注入了什么"）。但当时的注释写着"排查完应删除本 drop-in 并删文件"，
+// 而**没有人执行那一步**：它在生产上挂了两天，`prompt.jsonl` 涨到 531MB。
+//
+// 这次为此加过"大小上限"（`HOMED_PROMPT_DUMP_MAX_MB`），但那其实是把
+// 临时手段往"长期功能"上推 —— 方向错了。正确做法就是照它自己写明的
+// 处置步骤做掉：删 drop-in、删文件。上限机制已随之移除。
+//
+// ## 若要再用一次
+//
+// 一次性诊断的正确姿势：
+//
+//	HOMED_PROMPT_DUMP=/tmp/prompt-$(date +%s).jsonl homed ...   # 不要写进 systemd
+//	# 看几轮就停，看完立刻删。
+//
+// 不要写进 drop-in —— 那会让"临时"变成"永久"，且没有任何人记得删。
 const promptDumpEnv = "HOMED_PROMPT_DUMP"
 
 var promptDumpMu sync.Mutex
@@ -59,6 +79,7 @@ func dumpPrompt(channel string, req *agentAPI.CompletionRequest) {
 
 	promptDumpMu.Lock()
 	defer promptDumpMu.Unlock()
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return

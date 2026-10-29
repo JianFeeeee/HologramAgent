@@ -14,7 +14,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
@@ -162,7 +162,7 @@ type KernelState struct {
 	BaseAPIKey string
 
 	// DocStore 是文档记忆（doc-store 模块产出）。
-	DocStore *document.Store
+	DocStore *coldcontext.Store
 
 	// Knowledge 是知识库（knowledge-store 模块产出）。
 	Knowledge *knowledge.Store

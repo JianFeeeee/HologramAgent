@@ -264,8 +264,8 @@ func TestGetToolDefinitions(t *testing.T) {
 func TestBuildToolPrompt(t *testing.T) {
 	idx := NewIndexer(nil)
 	prompt := idx.BuildToolPrompt()
-	if !contains(prompt, "memory_recall") {
-		t.Errorf("expected prompt to mention memory_recall, got %q", prompt)
+	if !contains(prompt, "stablemem_recall") {
+		t.Errorf("expected prompt to mention stablemem_recall, got %q", prompt)
 	}
 }
 

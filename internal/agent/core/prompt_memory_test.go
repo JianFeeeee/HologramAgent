@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // ① coldcontext_query 的描述必须覆盖五项，且与真实行为一致。
@@ -27,7 +27,7 @@ func TestDocQueryDescriptionCoversRealBehavior(t *testing.T) {
 		"past episode",
 		"original timestamps",
 		"inserted back into the timeline",
-		"memory_recall",
+		"stablemem_recall",
 		"consuming",
 	}
 	for _, sub := range mustHave {
@@ -46,7 +46,7 @@ func TestDocCommitDescriptionExplainsScope(t *testing.T) {
 	a := newToolTestAgent(t)
 	desc := findToolDescription(t, a, "coldcontext_commit")
 
-	for _, sub := range []string{"complete process", "single fact", "memory_commit", "knowledge_create"} {
+	for _, sub := range []string{"complete process", "single fact", "stablemem_commit", "knowledge_create"} {
 		if !strings.Contains(desc, sub) {
 			t.Errorf("cold context commit description is missing %q: %s", sub, desc)
 		}
@@ -70,7 +70,7 @@ func TestSystemPromptExplainsThreeLayers(t *testing.T) {
 	for _, sub := range []string{
 		"[Memory]",
 		"coldcontext_query",
-		"memory_recall",
+		"stablemem_recall",
 		"knowledge_search",
 	} {
 		if !strings.Contains(prompt, sub) {
@@ -144,14 +144,14 @@ func findToolParams(t *testing.T, a *Agent, name string) map[string]interface{} 
 // 统计描述，没有任何内容，也没有一个字提示可以取全文。
 // 生产日志里 agent 从不使用预填充给的信息，直接原因就是这个。
 //
-// ★ 用**真实归档路径**（ContextToDoc）构造文档，不手工拼 DocEvent：
+// ★ 用**真实归档路径**（ContextToColdContext）构造文档，不手工拼 DocEvent：
 //
 //	块 ID 由 entryTextBlockID 派生，手工拼的 ID 不匹配会被判为非本事件块，
 //	那样测的是"我拼的数据对不对"，不是生产过程。
 func TestPrefillMarkdownCarriesContentAndGuide(t *testing.T) {
 	a := newToolTestAgent(t)
 
-	if _, err := a.docStore.ContextToDoc("context_archived", []document.ContextEntry{{
+	if _, err := a.coldcontextStore.ContextToColdContext("context_archived", []coldcontext.ContextEntry{{
 		Timestamp: time.Date(2026, 7, 8, 9, 10, 0, 0, time.UTC),
 		Source:    "webui",
 		Content:   "配色方案怎么定？",
@@ -159,7 +159,7 @@ func TestPrefillMarkdownCarriesContentAndGuide(t *testing.T) {
 	}}, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	doc := a.docStore.RecentDocs(1)[0]
+	doc := a.coldcontextStore.RecentColdContexts(1)[0]
 
 	md := a.crossModalMarkdown([]CrossModalHit{{Doc: doc, DocScore: 0.8, Fused: 0.8}})
 

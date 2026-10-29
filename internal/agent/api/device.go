@@ -47,7 +47,7 @@ type DeviceSurface interface {
 // ## 为什么用族的粒度而不是逐工具
 //
 // 族内工具共享同一批依赖（memory 族要 graph、knowledge 族要 store、
-// coldcontext 族要 docStore…）。按族传接口，device 的分发层就能
+// coldcontext 族要 coldcontextStore…）。按族传接口，device 的分发层就能
 // 在不认识 Agent 内部字段的前提下完整接管**路由**：
 //
 //	device.Dispatch(tc) → 选族 → handler.ExecuteMemoryTool(tc)

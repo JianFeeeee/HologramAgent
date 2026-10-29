@@ -15,6 +15,16 @@ const (
 	ErrReasonUnauthorized = "unauthorized"
 	ErrReasonTimeout      = "timeout"
 	ErrReasonNotFound     = "not_found"
+
+	// ErrReasonDenied 是**安全策略拒绝**（不是参数问题，也不是插件没授权）。
+	//
+	// ★ 必须与 ErrReasonUnauthorized 分开：两者对模型的可执行指令不同。
+	//
+	//	unauthorized：这个工具你要不到权限 —— 去找用户要，或换途径
+	//	denied      ：策略明确禁止这个工具 —— 用户给了权限也没用，**换工具**
+	//
+	// 合并成一个码会让模型对策略性禁止反复重试（它以为只是缺授权）。
+	ErrReasonDenied = "denied"
 )
 
 // newToolError 构造一个结构化失败。

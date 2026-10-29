@@ -100,7 +100,7 @@ func TestSituationFeaturesFor(t *testing.T) {
 	}
 
 	// 无事件时不 panic，且只有工具特征时也成立
-	if feats := a.situationFeaturesFor(nil, "", "memory_recall"); len(feats) != 1 {
+	if feats := a.situationFeaturesFor(nil, "", "stablemem_recall"); len(feats) != 1 {
 		t.Errorf("仅工具场景应有 1 个特征: %+v", feats)
 	}
 }

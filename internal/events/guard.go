@@ -52,11 +52,33 @@ type Guard interface {
 	AllowPublish(p Publisher, eventType EventType) (allowed bool, reason string)
 	// AllowSubscribe 判定能否订阅。
 	AllowSubscribe(p Publisher, eventType EventType) (allowed bool, reason string)
-	// ScrubPayload 对出向载荷做脱敏（凭据闸门）。
+	// ScrubPayload 对**出向**载荷做脱敏（凭据闸门）。
 	//
 	// 内核内部发布者同样要过：内核也可能把敏感值拼进事件
 	//（例如把 api_key 放进 Stage 事件里）。
 	ScrubPayload(eventType EventType, payload map[string]interface{}) map[string]interface{}
+
+	// ScrubInbound 对**入向**载荷做清洗（投递给订阅者之前）。
+	//
+	// ## 为什么入向必须在总线上做（用户 2026-10-29 指正）
+	//
+	// 原先入向清洗在 `internal/sdk/events.go` 的订阅回调里手工做（scrubIn），
+	// 而那条路径只盖住了 `s.Events().Subscribe` —— 其余路径
+	//（`s.EventBus()`、`s.Subscribe`、内核模块自己的 Subscribe）
+	// 拿到的都是**原始载荷**。同一个事件，订阅者看到的脏净程度取决于
+	// 它当初用的是哪个入口 —— 策略存在两份口径，迟早漂移。
+	//
+	// 安全模块既然持有总线、而**投递本身就在总线内部**，
+	// 入向清洗就该在那里做一次，而不是让每个适配层各做一遍。
+	//
+	// ## 与 ScrubPayload 的对称性
+	//
+	//	出向（发布时）：发布者 → [ScrubPayload] → 总线
+	//	入向（投递时）：总线 → [ScrubInbound] → 每个订阅者
+	//
+	// 两者都是“凭据闸门”，与身份无关：内核发出的载荷也要洗，
+	// 因为它同样可能拼进敏感值。
+	ScrubInbound(eventType EventType, payload map[string]interface{}) map[string]interface{}
 }
 
 // DeniedError 表示事件操作被闸门拒绝。

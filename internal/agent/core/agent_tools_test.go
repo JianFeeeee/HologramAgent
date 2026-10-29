@@ -119,7 +119,7 @@ func TestBuildToolDefsOutputToolsWithDevice(t *testing.T) {
 		name: "screen",
 		caps: agentIO.CapText,
 	})
-	a := &Agent{io: io, knowledge: nil, docStore: nil, pluginReg: nil}
+	a := &Agent{io: io, knowledge: nil, coldcontextStore: nil, pluginReg: nil}
 	tools := a.buildToolDefs()
 
 	foundSend := false

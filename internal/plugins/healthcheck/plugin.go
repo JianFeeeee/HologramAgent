@@ -850,8 +850,8 @@ func (p *Plugin) collectToolDefsForLLM(s *sdk.PluginSDK, pluginFilter string) []
 func isSafeReadonlyTool(name string) bool {
 	// 明确只读的查询/列表类工具
 	readonlyExact := map[string]bool{
-		"memory_recall":        true,
-		"memory_introspect":    true,
+		"stablemem_recall":     true,
+		"stablemem_introspect": true,
 		"coldcontext_query":    true,
 		"knowledge_search":     true,
 		"knowledge_list":       true,

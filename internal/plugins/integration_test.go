@@ -14,7 +14,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	cli "github.com/JianFeeeee/HologramAgent/internal/plugins/cli"
 	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
@@ -22,14 +22,14 @@ import (
 )
 
 type testPluginEnv struct {
-	tmpDir    string
-	stageHost *agentCore.StageHost
-	iom       *agentIO.IOManager
-	pluginReg *plugin.Registry
-	memDB     *memory.GraphDB
-	ks        *knowledge.Store
-	docStore  *doc.Store
-	cfgReg    *internalConfig.ConfigRegistry
+	tmpDir           string
+	stageHost        *agentCore.StageHost
+	iom              *agentIO.IOManager
+	pluginReg        *plugin.Registry
+	memDB            *memory.GraphDB
+	ks               *knowledge.Store
+	coldcontextStore *coldcontext.Store
+	cfgReg           *internalConfig.ConfigRegistry
 }
 
 func setupIntegration(t *testing.T) *testPluginEnv {
@@ -107,15 +107,15 @@ func setupIntegrationWithProvider(t *testing.T, pm *agentAPI.ProviderManager) *t
 		t.Fatal(err)
 	}
 
-	docStore := doc.NewStore(filepath.Join(tmpDir, "documents"), memory.TokenizeWords)
-	if err := docStore.Start(); err != nil {
+	coldcontextStore := coldcontext.NewStore(filepath.Join(tmpDir, "documents"), memory.TokenizeWords)
+	if err := coldcontextStore.Start(); err != nil {
 		t.Fatal(err)
 	}
 
 	pluginReg.SetStageHost(stageHost)
 	pluginReg.SetProviderManager(pm)
 	pluginReg.SetKnowledge(ks)
-	pluginReg.SetDocStore(docStore)
+	pluginReg.SetDocStore(coldcontextStore)
 
 	cli.DefaultSocket = filepath.Join(tmpDir, "cli.sock")
 
@@ -154,14 +154,14 @@ func setupIntegrationWithProvider(t *testing.T, pm *agentAPI.ProviderManager) *t
 	}
 
 	return &testPluginEnv{
-		tmpDir:    tmpDir,
-		stageHost: stageHost,
-		iom:       iom,
-		pluginReg: pluginReg,
-		memDB:     memDB,
-		ks:        ks,
-		docStore:  docStore,
-		cfgReg:    cfgReg,
+		tmpDir:           tmpDir,
+		stageHost:        stageHost,
+		iom:              iom,
+		pluginReg:        pluginReg,
+		memDB:            memDB,
+		ks:               ks,
+		coldcontextStore: coldcontextStore,
+		cfgReg:           cfgReg,
 	}
 }
 
@@ -169,7 +169,7 @@ func (e *testPluginEnv) cleanup() {
 	e.pluginReg.StopAll()
 	e.memDB.Close()
 	e.ks.Stop()
-	e.docStore.Stop()
+	e.coldcontextStore.Stop()
 	os.RemoveAll(e.tmpDir)
 }
 

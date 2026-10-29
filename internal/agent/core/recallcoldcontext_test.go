@@ -6,7 +6,7 @@ package core
 //
 //	coldcontext_query → Consume(读取并删除)
 //	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
-//	          → 文档以原始时间戳写入 context 时间线, 从 docStore 删除
+//	          → 文档以原始时间戳写入 context 时间线, 从 coldcontextStore 删除
 //
 // 三条不变量：
 //   ① 逐条：N 条事件回到时间线，不是 1 条合成事件
@@ -20,7 +20,7 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // archiveEvents 走生产路径（Prune）把一批事件归档进 L2。
@@ -40,7 +40,7 @@ func archiveEvents(t *testing.T, a *Agent, target []ContextEvent) {
 			Response:  "好的。",
 		})
 	}
-	if n := a.context.Prune("当前输入", 2, a.docStore); n == 0 {
+	if n := a.context.Prune("当前输入", 2, a.coldcontextStore); n == 0 {
 		t.Fatal("Prune 未归档任何事件")
 	}
 }
@@ -154,7 +154,7 @@ func TestRecallByDoc_MigratesBlocksBackToContext(t *testing.T) {
 		t.Errorf("迁回的块字节被改动: %q", string(back.Data))
 	}
 	// 迁移而非复制。
-	for _, d := range a.docStore.RecentDocs(50) {
+	for _, d := range a.coldcontextStore.RecentColdContexts(50) {
 		for _, db := range d.Blocks {
 			if db.ID == b.ID {
 				t.Error("块同时留在 L2 与 L1 —— 这是复制，违反单层不变量")
@@ -205,7 +205,7 @@ func TestRecallByDoc_TextIsNotTruncatedOnTheWayBack(t *testing.T) {
 func TestRecallByDoc_LegacyDocDegrades(t *testing.T) {
 	a := newToolTestAgent(t)
 
-	if err := a.docStore.Insert(&document.Doc{
+	if err := a.coldcontextStore.Insert(&coldcontext.ColdDoc{
 		Summary: "紫蓝红三色带的旧格式文档",
 		Content: "[10:00] legacy: 这是 Events 引入之前归档的正文视图",
 		Source:  "context_archived",
@@ -338,7 +338,7 @@ func TestRecallByDoc_ReturnValueCarriesRealContent(t *testing.T) {
 // ⑦ 旧格式文档的召回也要给出可判断的信息（降级路径不能退化成无内容）。
 func TestRecallByDoc_LegacyReturnAlsoCarriesContent(t *testing.T) {
 	a := newToolTestAgent(t)
-	if err := a.docStore.Insert(&document.Doc{
+	if err := a.coldcontextStore.Insert(&coldcontext.ColdDoc{
 		Summary: "旧格式摘要",
 		Content: "[10:00] legacy: 旧格式文档里的真实正文在这里",
 		Source:  "context_archived",

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
@@ -18,7 +18,7 @@ import (
 //  3. 媒体块挂到正确的 owner 上，删除时随之释放；
 //  4. 块身份是内容派生（blk_media_<sha256(mime+data)>），同内容同块。
 
-func newTestStores(t *testing.T) (*memory.GraphDB, *doc.Store, *text.Memory) {
+func newTestStores(t *testing.T) (*memory.GraphDB, *coldcontext.Store, *text.Memory) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -28,7 +28,7 @@ func newTestStores(t *testing.T) (*memory.GraphDB, *doc.Store, *text.Memory) {
 	}
 	t.Cleanup(func() { g.Close() })
 
-	ds := doc.NewStore(filepath.Join(dir, "documents"), memory.TokenizeWords)
+	ds := coldcontext.NewStore(filepath.Join(dir, "documents"), memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatalf("doc store start: %v", err)
 	}

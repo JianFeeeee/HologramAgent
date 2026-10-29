@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 func needJieba() bool {
@@ -12,12 +12,12 @@ func needJieba() bool {
 }
 
 func TestDocToTriplesEmpty(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "empty doc",
 		Content: "",
 		Source:  "test",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 	if len(triples) < 2 {
 		t.Fatalf("expected at least 2 triples (主题+来源), got %d", len(triples))
 	}
@@ -33,12 +33,12 @@ func TestDocToTriplesEmpty(t *testing.T) {
 }
 
 func TestDocToTriplesConversation(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "测试对话 (qq) 涉及: 天气",
 		Content: "[15:04] qq: 今天天气怎么样\n[15:05] agent: 今天天气很好",
 		Source:  "qq",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	if len(triples) < 2 {
 		t.Errorf("expected at least 2 triples (主题+来源), got %d", len(triples))
@@ -55,12 +55,12 @@ func TestDocToTriplesConversation(t *testing.T) {
 }
 
 func TestDocToTriplesMultiLine(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "多轮对话",
 		Content: "[10:00] user: 你好\n[10:01] agent: 你好，有什么可以帮助你的\n[10:02] user: 今天天气如何\n[10:03] agent: 今天天气很好",
 		Source:  "qq",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 	if len(triples) < 2 {
 		t.Fatalf("expected at least 2 triples, got %d", len(triples))
 	}
@@ -75,12 +75,12 @@ func TestDocToTriplesMultiLine(t *testing.T) {
 }
 
 func TestDocToTriplesEmptyContent(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "空内容",
 		Content: "",
 		Source:  "test",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 	if len(triples) != 2 {
 		t.Fatalf("expected exactly 2 triples (主题+来源) for empty content, got %d", len(triples))
 	}
@@ -88,13 +88,13 @@ func TestDocToTriplesEmptyContent(t *testing.T) {
 
 // Phase 2: 归档上下文文档不得产出模板垃圾（context_archived 来源/主题模板三元组）
 func TestDocToTriplesArchivedContext(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "来自 2 个来源的 5 条对话 (qq, webui) 涉及: 天气, 测试",
 		Content: "[15:04] qq: 今天天气怎么样\n[15:05] agent: 今天天气很好",
 		Source:  "context_archived",
 		Meta:    map[string]string{"is_archived_context": "true"},
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	for _, tr := range triples {
 		if tr.Subject == "文档" && tr.Relation == "来源" && tr.Object == "context_archived" {
@@ -108,12 +108,12 @@ func TestDocToTriplesArchivedContext(t *testing.T) {
 
 // Phase 2: 模板化摘要（summarizeEntries 生成）不得作为主题写入
 func TestDocToTriplesTemplateSummary(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "来自 3 个来源的 10 条对话 (a, b, c) 涉及: 关键词1, 关键词2, 关键词3",
 		Content: "[10:00] a: 你好",
 		Source:  "manual",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	for _, tr := range triples {
 		if tr.Subject == "文档" && tr.Relation == "主题" {
@@ -138,12 +138,12 @@ func TestDocToTriplesLongSummary(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		long += "很长的摘要内容片段重复拼接"
 	}
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: long,
 		Content: "[10:00] a: 你好",
 		Source:  "test",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 	for _, tr := range triples {
 		if tr.Subject == "文档" && tr.Relation == "主题" {
 			t.Errorf("overlong summary must not be written as 主题 triple")
@@ -244,16 +244,16 @@ func TestGetFloatInt(t *testing.T) {
 // 实测生产库里因此攒下「文档 --主题--> 来自 N 个来源的 M 条对话 …」这类
 // 模板回声，以及 context_archived 这个内部标记。
 func TestDocToTriplesDropsNoiseEntities(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "来自 1 个来源的 2 条对话 (agent) 涉及: qq, 通道",
 		Content: "",
 		Source:  "context_archived",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	for _, tr := range triples {
 		if memory.IsNoiseEntity(tr.Subject) || memory.IsNoiseEntity(tr.Object) {
-			t.Errorf("docToTriples 漏出噪音实体: %+v", tr)
+			t.Errorf("coldDocToTriples 漏出噪音实体: %+v", tr)
 		}
 	}
 
@@ -270,12 +270,12 @@ func TestDocToTriplesDropsNoiseEntities(t *testing.T) {
 
 // TestDocToTriplesKeepsTemplateAnchors 保证闸门没把正常的模板三元组一起误杀。
 func TestDocToTriplesKeepsTemplateAnchors(t *testing.T) {
-	doc := &document.Doc{
+	doc := &coldcontext.ColdDoc{
 		Summary: "多轮对话",
 		Content: "",
 		Source:  "qq",
 	}
-	triples := docToTriples(doc, nil)
+	triples := coldDocToTriples(doc, nil)
 
 	var hasTopic, hasSource bool
 	for _, tr := range triples {

@@ -42,7 +42,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -134,11 +134,11 @@ func livePNG(t *testing.T, w, h int, colors [][3]byte) []byte {
 
 // liveEnv 是一套完整但完全独立的 agent 运行环境。
 type liveEnv struct {
-	agent    *Agent
-	io       *agentIO.IOManager
-	docStore *document.Store
-	graph    *memory.GraphDB
-	dir      string
+	agent            *Agent
+	io               *agentIO.IOManager
+	coldcontextStore *coldcontext.Store
+	graph            *memory.GraphDB
+	dir              string
 }
 
 // newLiveEnv 构造真 Agent：真 provider、真图库、真文档库。
@@ -174,11 +174,11 @@ func newLiveEnv(t *testing.T, c liveCfg) *liveEnv {
 	}
 	t.Cleanup(func() { graph.Close() })
 
-	docStore := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
-	if err := docStore.Start(); err != nil {
+	coldcontextStore := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	if err := coldcontextStore.Start(); err != nil {
 		t.Fatalf("doc store: %v", err)
 	}
-	t.Cleanup(docStore.Stop)
+	t.Cleanup(coldcontextStore.Stop)
 
 	io := agentIO.NewIOManager()
 
@@ -189,7 +189,7 @@ func newLiveEnv(t *testing.T, c liveCfg) *liveEnv {
 		ProviderManager: pm,
 		IO:              io,
 		Memory:          graph,
-		DocStore:        docStore,
+		DocStore:        coldcontextStore,
 		StageHost:       NewStageHost(),
 		MaxContextSize:  3, // 故意压低：第二轮就能触发 Prune 归档
 		InputProcessing: types.InputProcessingConfig{},
@@ -206,7 +206,7 @@ func newLiveEnv(t *testing.T, c liveCfg) *liveEnv {
 		}
 	}()
 
-	return &liveEnv{agent: a, io: io, docStore: docStore, graph: graph, dir: dir}
+	return &liveEnv{agent: a, io: io, coldcontextStore: coldcontextStore, graph: graph, dir: dir}
 }
 
 // TestMediaLive_AutoTriggerChain 全自动触发链：只注入事件，不手工调任何一步。
@@ -311,14 +311,14 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 			Response:  "好的。",
 		})
 	}
-	archived := a.context.Prune("当前输入", a.maxContextSize-1, env.docStore)
+	archived := a.context.Prune("当前输入", a.maxContextSize-1, env.coldcontextStore)
 	t.Logf("Prune 归档 %d 条事件", archived)
 	if archived == 0 {
 		t.Fatal("Prune 未归档任何事件，无法验证引用转移")
 	}
 
 	docRefsFound := ""
-	for _, d := range env.docStore.RecentDocs(20) {
+	for _, d := range env.coldcontextStore.RecentColdContexts(20) {
 		for _, b := range d.Blocks {
 			if b.ID == blockID {
 				docRefsFound = d.ID
@@ -340,10 +340,10 @@ func TestMediaLive_AutoTriggerChain(t *testing.T) {
 
 	// ── 阶段 5：archiveColdDocs 自动把块连到 L3 文档节点 ──
 	//
-	// FindColdDocs(72h, 2) 要求文档足够"冷"，测试里新建的文档不满足，
+	// FindColdContexts(72h, 2) 要求文档足够"冷"，测试里新建的文档不满足，
 	// 因此把 LastAccess 往前推——这是为了触发生产代码路径，
 	// 而不是替代它（commitTriplesWithMedia/linkBlocksToDocument 全由它自己调）。
-	for _, d := range env.docStore.RecentDocs(20) {
+	for _, d := range env.coldcontextStore.RecentColdContexts(20) {
 		if d.ID == docRefsFound {
 			d.LastAccess = time.Now().Add(-100 * time.Hour)
 			d.AccessCount = 0

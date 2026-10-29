@@ -81,7 +81,7 @@ func TestToolAPIPathIgnoresNonDeviceTools(t *testing.T) {
 	a := newPreemptAgent(t, newPreemptProvider())
 	a.allowedOutputs = []string{"device/ok-1"} // 收窄到只给一台设备
 
-	for _, name := range []string{"cmd_run", "knowledge_search", "memory_recall", "output_list_channels"} {
+	for _, name := range []string{"cmd_run", "knowledge_search", "stablemem_recall", "output_list_channels"} {
 		if !toolAPIOf(t, a).CanUse(name, map[string]interface{}{}) {
 			t.Errorf("非设备工具 %q 被设备授权闸拦了 —— 闸的作用域过宽", name)
 		}
@@ -255,7 +255,7 @@ func TestBuiltinParallelDeclaredWhereDefined(t *testing.T) {
 
 	// 写类工具绝不能出现在聚合表的可并发集合里
 	for _, n := range []string{
-		"memory_merge", "memory_delete_entity", "knowledge_create", "coldcontext_commit",
+		"stablemem_merge", "stablemem_delete_entity", "knowledge_create", "coldcontext_commit",
 		"persona_set", "person_set_trait", "llm_set_source", "spawn_child",
 	} {
 		if concurrencySafeOf(n) {

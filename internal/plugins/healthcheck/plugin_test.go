@@ -10,7 +10,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	doc "github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -322,14 +322,14 @@ func TestHealthcheckWithDocStore(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	ds := doc.NewStore(tmpDir, memory.TokenizeWords)
+	ds := coldcontext.NewStore(tmpDir, memory.TokenizeWords)
 	if err := ds.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer ds.Stop()
 
 	// 预置一篇生产文档，验证 healthcheck 自检后不触碰它
-	if err := ds.Insert(&doc.Doc{ID: "prod_doc", Summary: "生产文档", Content: "这是生产文档，不应被健康检查破坏"}); err != nil {
+	if err := ds.Insert(&coldcontext.ColdDoc{ID: "prod_doc", Summary: "生产文档", Content: "这是生产文档，不应被健康检查破坏"}); err != nil {
 		t.Fatal(err)
 	}
 	before := len(ds.Query("生产文档", 10))
@@ -398,7 +398,7 @@ func TestLLMReportCollection(t *testing.T) {
 func TestSafeReadonlyTool(t *testing.T) {
 	// 只读：应放行
 	readonly := []string{
-		"memory_recall", "memory_introspect", "coldcontext_query",
+		"stablemem_recall", "stablemem_introspect", "coldcontext_query",
 		"knowledge_search", "knowledge_list", "person_query",
 		"person_network", "llm_list_sources", "output_list_channels",
 		"terminal_list", "files_list",
@@ -411,8 +411,8 @@ func TestSafeReadonlyTool(t *testing.T) {
 
 	// 写/删/改/副作用：应被拒绝
 	mutating := []string{
-		"memory_commit", "memory_edit", "memory_purge", "memory_delete_entity",
-		"memory_merge", "memory_block_merge",
+		"stablemem_commit", "stablemem_edit", "stablemem_purge", "stablemem_delete_entity",
+		"stablemem_merge", "stablemem_block_merge",
 		"knowledge_create", "knowledge_delete",
 		"coldcontext_commit", "doc_delete",
 		"person_set_trait", "person_relate",
@@ -436,8 +436,8 @@ func TestCollectToolDefsForLLMNoMutating(t *testing.T) {
 	// 构造一个包含写类工具的 ToolDef 集合，注入工具注册表
 	stage := agentCore.NewStageHost()
 	defs := []sdk.ToolDef{
-		{Name: "memory_recall", Plugin: "memory", Description: "recall"},
-		{Name: "memory_commit", Plugin: "memory", Description: "commit"},
+		{Name: "stablemem_recall", Plugin: "memory", Description: "recall"},
+		{Name: "stablemem_commit", Plugin: "memory", Description: "commit"},
 		{Name: "coldcontext_query", Plugin: "coldcontext", Description: "query"},
 		{Name: "coldcontext_commit", Plugin: "coldcontext", Description: "commit doc"},
 		{Name: "knowledge_search", Plugin: "knowledge", Description: "search"},
@@ -465,13 +465,13 @@ func TestCollectToolDefsForLLMNoMutating(t *testing.T) {
 	}
 
 	// 只读工具应被包含
-	for _, name := range []string{"memory_recall", "coldcontext_query", "knowledge_search", "files_list"} {
+	for _, name := range []string{"stablemem_recall", "coldcontext_query", "knowledge_search", "files_list"} {
 		if !allowed[name] {
 			t.Errorf("expected readonly tool %q in LLM selftest set, missing", name)
 		}
 	}
 	// 写类/副作用工具绝不能被交给 LLM
-	for _, name := range []string{"memory_commit", "coldcontext_commit", "knowledge_create", "cmd_run"} {
+	for _, name := range []string{"stablemem_commit", "coldcontext_commit", "knowledge_create", "cmd_run"} {
 		if allowed[name] {
 			t.Errorf("mutating tool %q must NOT be in LLM selftest set", name)
 		}
@@ -484,8 +484,8 @@ func TestCollectToolDefsForLLMPluginFilter(t *testing.T) {
 
 	stage := agentCore.NewStageHost()
 	defs := []sdk.ToolDef{
-		{Name: "memory_recall", Plugin: "memory", Description: "recall"},
-		{Name: "memory_commit", Plugin: "memory", Description: "commit"},
+		{Name: "stablemem_recall", Plugin: "memory", Description: "recall"},
+		{Name: "stablemem_commit", Plugin: "memory", Description: "commit"},
 		{Name: "coldcontext_query", Plugin: "coldcontext", Description: "query"},
 		{Name: "coldcontext_commit", Plugin: "coldcontext", Description: "commit doc"},
 		{Name: "knowledge_search", Plugin: "knowledge", Description: "search"},
@@ -514,14 +514,14 @@ func TestCollectToolDefsForLLMPluginFilter(t *testing.T) {
 	if len(got) != 1 || !allowed["files_list"] {
 		t.Fatalf("expected only files_list for files plugin, got %v", allowed)
 	}
-	for _, name := range []string{"memory_recall", "coldcontext_query", "knowledge_search", "files_write"} {
+	for _, name := range []string{"stablemem_recall", "coldcontext_query", "knowledge_search", "files_write"} {
 		if allowed[name] {
 			t.Errorf("tool %q must NOT be in files-filtered set", name)
 		}
 	}
 
 	gotMemory := p.collectToolDefsForLLM(s, "memory")
-	if len(gotMemory) != 1 || gotMemory[0].Name != "memory_recall" {
+	if len(gotMemory) != 1 || gotMemory[0].Name != "stablemem_recall" {
 		t.Fatalf("expected only memory_recall for memory plugin, got %v", gotMemory)
 	}
 

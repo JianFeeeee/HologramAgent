@@ -86,7 +86,7 @@ func TestChunkFast_ProtocolForms(t *testing.T) {
 		`{"id":"c1","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`,
 		`{"id":"c1","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."},"finish_reason":null}]}`,
 		`{"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":null}]}`,
-		`{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"memory_recall","arguments":"{\"query\":\"x\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"stablemem_recall","arguments":"{\"query\":\"x\"}"}}]},"finish_reason":null}]}`,
 		`{"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
 		`{"id":"c1","usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}`,
 		`{"usage":{"prompt":1,"completion":2,"total":3}}`,
@@ -160,7 +160,7 @@ func TestChunkFast_ProtocolForms(t *testing.T) {
 func TestChunkFast_Realistic(t *testing.T) {
 	cases := []string{
 		`{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":"这是一段来自真实流式响应的中文内容，用于测量解析开销。"},"finish_reason":null}]}`,
-		`{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_9a","type":"function","function":{"name":"memory_recall","arguments":"{\"query\":\"用户偏好\",\"limit\":20}"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_9a","type":"function","function":{"name":"stablemem_recall","arguments":"{\"query\":\"用户偏好\",\"limit\":20}"}}]},"finish_reason":null}]}`,
 		`{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1727000000,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"content":""},"finish_reason":null}],"usage":{"prompt_tokens":3821,"completion_tokens":117,"total_tokens":3938,"prompt_cache_hit_tokens":3584,"prompt_cache_miss_tokens":237}}`,
 		// 流式续传：name 不重发但 function.arguments 继续
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":"}}]},"finish_reason":null}]}`,

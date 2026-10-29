@@ -55,7 +55,7 @@ const (
 	// EventMemoryAccess 是**图记忆读写事件**：谁读了/写了哪几个记忆块。
 	//
 	// 为什么需要它（2026-10-08）：星图此前的「跟随 agent 活动」靠**工具名猜节点**
-	// （把 "memory_recall" 拆成词元去匹配实体名）。而图谱里的实体名是中文概念
+	// （把 "stablemem_recall" 拆成词元去匹配实体名）。而图谱里的实体名是中文概念
 	// （小宅/对话/待命），与英文工具名永不交集 —— 实测每个工具名命中 0 个节点，
 	// 于是每次都回退到「按 mention_count 取前 8 个」，即每次工具调用点亮的都是
 	// **同一批无关节点**。
@@ -243,6 +243,16 @@ func (b *Bus) publishAs(p Publisher, evt *Event) error {
 		if evt.Payload != nil {
 			evt.Payload = g.ScrubPayload(evt.Type, evt.Payload)
 		}
+	}
+
+	// ③ 入向清洗（投递前，**一次覆盖全部订阅者**）。
+	//
+	// 与出向的差别：出向洗的是「发布者拼进去的东西」，入向洗的是
+	// 「这个载荷在到订阅者手上之前是否还带明文凭据」。两者都做不是重复：
+	// 发布时洗过的载荷中间可能被转发/改写（例如中继模块重新组包），
+	// 而订阅者看到的东西必须是安全的。
+	if g != nil && evt.Payload != nil {
+		evt.Payload = g.ScrubInbound(evt.Type, evt.Payload)
 	}
 
 	b.mu.RLock()

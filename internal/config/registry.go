@@ -937,6 +937,65 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	reg(ConfigDef{Key: "core.knowledge.path", Default: filepath.Join(dataDir, "knowledge"), Type: "string", DisplayName: "知识库路径", Description: "知识库存储目录", Category: "paths"})
 	reg(ConfigDef{Key: "core.log.path", Default: filepath.Join(dataDir, "log"), Type: "string", DisplayName: "日志目录", Description: "日志文件输出目录", Category: "paths"})
 
+	// ---- 日志保留策略（2026-10-29 补：此前两个键都没注册，策略一直在空转）----
+	//
+	// ## 曾经的缺陷
+	//
+	// `internal/log/manager.go` 读 `core.log.retention`，但注册表里**从未**有
+	// 这个键 ⇒ GetString 总是返回调用方传的兜底值 "forever" ⇒ 压缩照做、
+	// **永不清理**。生产实测：log/ 目录 590MB / 504 个文件，485 个是当月
+	// 未被归档的 homed_*.log。而 `core/log_scrub.go` 的注释还写着
+	// “每天一个文件，从不自动清理” —— 注释描述了 bug，代码没修。
+	//
+	// ## 为何默认 n_months 而不是 forever
+	//
+	// forever 让磁盘无界增长，而日志的价值随时间快速衰减（排障看最近几周）。
+	// 3 个月是一个既够事后回看、又不至于涨到不可控的默认。
+	regMeta(ConfigDef{Key: "core.log.retention", Default: "n_months", Type: "string", DisplayName: "日志保留策略",
+		Description: "归档后的日志保留多久：this_week（只留本周）/ this_month（只留本月）/ n_months（保留近 N 个月）/ forever（永不删除）。注意：本项影响的是**压缩归档**的清理，当月的原始 homed_*.log 在跨月归档前不会被删。", Category: "paths"})
+	regMeta(ConfigDef{Key: "core.log.retention_months", Default: "3", Type: "int", DisplayName: "日志保留月数",
+		Description: "当 core.log.retention=n_months 时保留的月数", Category: "paths"})
+
+	// ---- 安全策略（2026-10-29 补：此前只有 enabled 一个键被读）----
+	//
+	// ## 曾经的缺陷
+	//
+	// `security.Policy`（工具黑白名单 + 沙箱）机制完整且有 12 条判据，
+	// 但**没有任何配置入口**：`core.security.*` 全仓只读一个 `enabled`，
+	// `SetPolicy` 零调用方。运维即使想开沙箱也无从下手。
+	//
+	// ## 为何全部用 regMeta（只登记、不播种）
+	//
+	// 安全策略属于「默认关、要收紧的人自己开」。若给老安装注入默认值，
+	// 升级即悄悄改变其安全行为 —— 与 core.agent.offload_enabled 同一纪律。
+	//
+	// ★★ 重要语义（2026-10-29 实测确认，别被名字骗了）：
+	//
+	// `regMeta` = **只登记、不播种**。而 `defDefault` 要求 `seeded[key]`
+	// 为真才回退到 `ConfigDef.Default` —— 因此 regMeta 的键在
+	// **全新安装上也读不到 Default**，GetXxx 会直接返回调用方传入的兜底值。
+	//
+	// 后果与要求：
+	//   · WebUI 看得到这些键（ListDefs 遍历 r.defs）—— 这一半成立
+	//   · 但“读不到 Default”⇒ **装配代码必须自己写兜底值**，
+	//     且兜底值必须与这里的 Default **逐字一致**，否则两边会静默分叉。
+	//
+	// 这就是为什么 `kernelmod/security/policy_config.go` 里每个 GetXxx
+	// 的兜底值都与本处 Default 相同，并由
+	// `TestPolicyConfigDefaultsMatchRegistry` 钉住两边不漂移。
+	regMeta(ConfigDef{Key: "core.security.tool_deny", Default: "", Type: "string", DisplayName: "工具黑名单",
+		Description: "明确禁止的工具名，逗号分隔，支持 `*` 后缀前缀匹配（如 cmd_*,files_write）。deny 永远优先于 allow。留空=不禁任何工具。改动需重启生效。", Category: "defaults"})
+	regMeta(ConfigDef{Key: "core.security.tool_allow", Default: "", Type: "string", DisplayName: "工具白名单",
+		Description: "只允许这些工具，逗号分隔，支持 `*` 后缀匹配。留空=不限制（默认）。非空时不在名单里的工具一律拒绝——白名单是“只有这些”的语义。改动需重启生效。", Category: "defaults"})
+	regMeta(ConfigDef{Key: "core.security.sandbox.enabled", Default: "false", Type: "bool", DisplayName: "启用沙箱约束",
+		Description: "启用后按读写根与网络开关约束工具执行。默认关闭（保持既有行为）。只放**可判定**的事实（路径前缀、是否允许网络），不做“看起来危险”的猜测式判定。改动需重启生效。", Category: "defaults"})
+	regMeta(ConfigDef{Key: "core.security.sandbox.read_roots", Default: "", Type: "string", DisplayName: "允许读取的路径根",
+		Description: "逗号分隔的路径前缀；留空=不限制读。启用沙箱后不在此列下的读取会被拒绝。", Category: "defaults"})
+	regMeta(ConfigDef{Key: "core.security.sandbox.write_roots", Default: "", Type: "string", DisplayName: "允许写入的路径根",
+		Description: "逗号分隔的路径前缀；留空=不限制写。拒绝 `..` 逃逸（先求绝对值再比前缀）。", Category: "defaults"})
+	regMeta(ConfigDef{Key: "core.security.sandbox.allow_network", Default: "true", Type: "bool", DisplayName: "允许网络访问",
+		Description: "启用沙箱后为 false 则拒绝带 URL/网络意图的调用。默认 true（不施加网络约束）。", Category: "defaults"})
+
 	reg(ConfigDef{Key: "core.agent.max_tool_turns", Default: "10", Type: "int", DisplayName: "最大工具轮次", Description: "单次请求允许的最大工具调用轮数", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.offload_enabled", Default: "false", Type: "bool", DisplayName: "积压任务自动转投", Description: "主 agent 长时间忙时，把积压任务自动转投给内核拉起的驻留子（需重启生效）", Category: "agent"})
 	// 1m 而非 5m：实测本机正常任务最长 1.2 分钟，5 分钟的阈值意味着

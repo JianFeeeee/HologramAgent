@@ -154,7 +154,7 @@ type Store struct {
 	// dense 是多模态稠密空间（可选）。与 vectorizer 是**两层不同的东西**：
 	//   vectorizer 把文本变成稀疏特征（TF-IDF/词向量），供**退化路径**使用；
 	//   dense 把 text/image 投到同一个稠密坐标系，让「按图搜知识」
-	//   「按文搜含图知识」成立。文档记忆（docStore）走的就是后者。
+	//   「按文搜含图知识」成立。文档记忆（coldcontextStore）走的就是后者。
 	//
 	// 为何不把稠密向量塞进 s.vec：vector.Store 是稀疏倒排结构
 	// （feature → {docID: weight}），稠密向量会把倒排表退化成全量特征桶，
@@ -230,7 +230,7 @@ func (s *Store) denseEnabled() bool {
 //
 // 只有与当前空间**同指纹且同维度**的媒体向量才参与融合。只比指纹不够：
 // 指纹相同但维度不同的向量会被 FuseVectors 按最大维度拼成错维度结果，
-// 而它下次又被当成"已对齐"，就永远错下去（docStore 里踩过同一个坑）。
+// 而它下次又被当成"已对齐"，就永远错下去（coldcontextStore 里踩过同一个坑）。
 //
 // 返回 nil 表示本条目在当前空间下无向量（检索侧会跳过它）。
 func (s *Store) denseFor(k *Knowledge) []float64 {
@@ -302,7 +302,7 @@ func (s *Store) ReindexDense() (built, skipped int) {
 		built++
 	}
 	// 落盘，否则磁盘缓存永远对不上当前空间，判定条件永远成立 ——
-	// 每次启动都重算同一批（docStore 的 BuildDenseIndex 踩过这个坑）。
+	// 每次启动都重算同一批（coldcontextStore 的 BuildDenseIndex 踩过这个坑）。
 	if built > 0 {
 		s.denseDirty = true
 	}
@@ -1237,7 +1237,7 @@ func shortFP(fp string) string {
 // flushDenseLocked 把脏的稠密缓存落盘（调用方须持写锁）。
 //
 // 为何在 Add 当场落盘而不是等 Stop：进程可能被 kill -9，那时没有任何
-// 优雅关停钩子可跑，这批向量的计算就白费了（docStore 的 BuildDenseIndex
+// 优雅关停钩子可跑，这批向量的计算就白费了（coldcontextStore 的 BuildDenseIndex
 // 出于同样理由选择当场写盘）。
 func (s *Store) flushDenseLocked() error {
 	if !s.denseDirty {

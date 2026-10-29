@@ -18,6 +18,38 @@ const (
 	BlockAudio BlockModality = "audio"
 )
 
+// PageKind 是「页」的类型：一页 = 一次完整往返。
+//
+// 用户裁定（2026-10-29）：
+//
+//	对 toolcall 来说，页 = toolcall 与其对应的 toolresult
+//	对文本来说，    页 = llm 的 input 与其对应的 llm output
+//
+// 这两类是**渲染正确性的最小单位**：整页留下或整页剔除，
+// 永远不会产生"有 call 没 result"的破帧。
+type PageKind string
+
+const (
+	// PageLLMRound 是一次模型往返（input → output）。
+	PageLLMRound PageKind = "llm_round"
+	// PageToolRound 是一次工具往返（call → result），靠 CallID 配对。
+	PageToolRound PageKind = "tool_round"
+)
+
+// BlockRole 是块在**页内**的角色。
+//
+// 每页拆成 request / response 两块（而不是合成一块）的理由：
+// 用户的提问与模型的回答语义常常不同，合成一块后只能有一个向量，
+// 检索时无法单独命中"用户问的"或"模型答的"。
+type BlockRole string
+
+const (
+	// RoleRequest 是页的请求端：llm 的 input，或 tool 的 call（含参数）。
+	RoleRequest BlockRole = "request"
+	// RoleResponse 是页的响应端：llm 的 output，或 tool 的 result。
+	RoleResponse BlockRole = "response"
+)
+
 // MemoryBlock 是 Context、Document、Graph 三层共同使用的记忆块值。
 //
 // 它不携带 Layer、Owner 或 RefCount：块当前由哪个层的容器持有，哪个层就是
@@ -62,9 +94,72 @@ type MemoryBlock struct {
 	// ★ 2026-10-04 加入。此前 Triple 标注的类型只写旧表，块侧完全没有 ——
 	//   判据 TestGraphCommit_CarriesAllFields 抓到：
 	//   Commit 标注的 (Person, Animal) 读回来是 ("block","block")。
-	SemanticType string    `json:"semantic_type,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	SemanticType string `json:"semantic_type,omitempty"`
+
+	// ─────────── 段页式身份（2026-10-29）───────────
+	//
+	// ## 为什么需要这三个字段
+	//
+	// 设计约束（用户裁定）：**淘汰/渲染的最小单位必须是"移除后上下文仍渲染正确"**。
+	// 而"渲染正确"的硬性要求是 OpenAI 协议那条：assistant(tool_calls)
+	// 后面必须紧跟配对齐全的 tool 消息。所以最小单位不是单块，而是**页**。
+	//
+	//	段 Frame = 一次完整任务（一个 FrameTS）
+	//	  └─ 页 Page = 一次完整往返
+	//	       ├─ llm_round  : llm_input  ──→ llm_output
+	//	       └─ tool_round : tool_call  ──配对(CallID)──→ tool_result
+	//
+	// ## 为什么用时间戳而不是自增帧号
+	//
+	// 用户裁定：帧号**直接用时间戳**，不另造自增编号。理由：
+	//   · 时间戳在 L1/L2/L3 三层天然一致，不需要额外的编号分配器
+	//   · 跨进程/跨层迁移时无需协调（自增号需要中心分配，重启即冲突）
+	//   · 天然可排序（渲染时序直接按它排）
+	//
+	// ## 为什么不跨帧
+	//
+	// 同一 FrameTS 的块不管走到哪层，**整批待在同一层**。原因不是洁癖：
+	// 帧是最小可渲染单元，拆开就会出现"有 call 没 result"的破帧。
+	// 判据见 §C7。
+	//
+	// ★ 旧数据（FrameTS 为零值）视为"独立帧"，各自成帧、不参与配对校验。
+	//   这是迁移的兼容路径：不能因为它们没有帧号就拒绝写入或丢弃。
+	FrameTS time.Time `json:"frame_ts,omitempty"`
+	// PageSeq 是帧内的**页序号**（从 1 开始，连续不减）。
+	//
+	// 与 FrameTS 一起构成页的身份：`(FrameTS, PageSeq)`。
+	// 同一页内的块（request/response，或 call/result）靠它归组。
+	PageSeq int `json:"page_seq,omitempty"`
+	// PageKind 标记这一页是哪种往返。
+	PageKind PageKind `json:"page_kind,omitempty"`
+	// BlockRole 是块在页内的角色（request 端 / response 端）。
+	BlockRole BlockRole `json:"block_role,omitempty"`
+	// CallID 是 tool_round 的**配对键**：tool_call 块与它的 tool_result 块
+	// 必须同 CallID。llm_round 的页此字段为空。
+	//
+	// ★ 为什么不靠 (FrameTS, PageSeq) 配对：并行工具调用时，
+	//   一页里有 N 个 call（assistant 一次声明多个），它们共用 PageSeq
+	//   但各自配对不同的 result —— 必须有 CallID 才分得清。
+	CallID string `json:"call_id,omitempty"`
+	// Inactive 标记该页**不参与渲染**（但仍可回读、仍在原层）。
+	//
+	// 用户裁定：段超预算时按相似度**剔除**低分页 —— 实际是标注 inactive，
+	// 不渲染为消息。数据不删、层不迁、随时可读回，因此不是"静默丢失"。
+	// 渲染时必须在原位置留下提示行，让模型知道"这里省略了内容"。
+	Inactive bool `json:"inactive,omitempty"`
+
+	// LastRecalledAt 是最近一次被召回的时间（P6 回收判定）。
+	//
+	// ★ 为什么用「被召回」而不是「被创建」判死活：
+	//   判断一块记忆有没有用，看它有没有被想起来，不是什么时候写进来的。
+	//   旧块若一直命中查询，它是活的 —— 不能因为"老"就回收。
+	//
+	// 零值 = 从未被召回（回收候选）；非零 = 至少用过一次（按时间窗判定）。
+	// 两者刻意分开：从不被召回 与 很久没被召回 是不同的病。
+	LastRecalledAt time.Time `json:"last_recalled_at,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // MemoryBlockEdge 是 L3 中连接一等记忆节点的结构化语义边。
@@ -134,8 +229,10 @@ func (g *GraphDB) PutMemoryBlocks(blocks []MemoryBlock) error {
 		}
 		_, err = tx.Exec(`INSERT INTO memory_blocks (
 			id, modality, text_content, data, mime, size, width, height,
-			vector, fingerprint, source, tool, scene, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			vector, fingerprint, source, tool, scene, created_at, updated_at,
+			frame_ts, page_seq, page_kind, block_role, call_id, inactive,
+			last_recalled_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			modality = excluded.modality,
 			text_content = excluded.text_content,
@@ -158,10 +255,37 @@ func (g *GraphDB) PutMemoryBlocks(blocks []MemoryBlock) error {
 			--   后写的三元组往往不带类型（Triple.SubjectType 可选），
 			--   若让它覆盖已有类型，一次不带标注的写入就会抹掉语义类别。
 			semantic_type = CASE WHEN excluded.semantic_type != '' THEN excluded.semantic_type ELSE memory_blocks.semantic_type END,
+			-- ★ 段页式字段一律「空值不覆盖」：轻量读取路径（lean 列 SELECT）
+			--   取回的块不带这些字段，写回时若直接覆盖会抹掉页身份。
+			--   页身份一旦被抹，块就再也归不回原来的页 —— 渲染会破配对。
+			frame_ts = CASE WHEN excluded.frame_ts IS NOT NULL AND excluded.frame_ts != ''
+				THEN excluded.frame_ts ELSE memory_blocks.frame_ts END,
+			page_seq = CASE WHEN excluded.page_seq > 0 THEN excluded.page_seq ELSE memory_blocks.page_seq END,
+			page_kind = CASE WHEN excluded.page_kind != '' THEN excluded.page_kind ELSE memory_blocks.page_kind END,
+			block_role = CASE WHEN excluded.block_role != '' THEN excluded.block_role ELSE memory_blocks.block_role END,
+			call_id = CASE WHEN excluded.call_id != '' THEN excluded.call_id ELSE memory_blocks.call_id END,
+			-- ★ inactive 是「标注」，所以要能被**显式改回 false**（回读后恢复渲染）。
+			--   因此它不能走「空值不覆盖」——false 是合法值，必须照写。
+			inactive = excluded.inactive,
+			-- ★ 召回时间只**前进不后退**（P6）。
+			--
+			-- 轻量读取路径拿回的块不带 last_recalled_at（零值），
+			-- 若直接覆盖就把"曾经被召回过"抹成"从未被召回" ——
+			-- 于是这块活数据在回收时被误判为死块删掉。
+			-- 保留两者的较大值：NULL/零值不会覆盖已有时间。
+			last_recalled_at = CASE
+				WHEN excluded.last_recalled_at IS NULL THEN memory_blocks.last_recalled_at
+				WHEN memory_blocks.last_recalled_at IS NULL THEN excluded.last_recalled_at
+				WHEN excluded.last_recalled_at > memory_blocks.last_recalled_at
+					THEN excluded.last_recalled_at
+				ELSE memory_blocks.last_recalled_at END,
 			updated_at = excluded.updated_at`,
 			block.ID, block.Modality, block.Text, block.Data, block.MIME,
 			block.Size, block.Width, block.Height, string(vectorJSON), block.Fingerprint,
-			block.Source, block.Tool, block.Scene, block.CreatedAt, now)
+			block.Source, block.Tool, block.Scene, block.CreatedAt, now,
+			frameTSArg(block.FrameTS), block.PageSeq, string(block.PageKind),
+			string(block.BlockRole), block.CallID, block.Inactive,
+			frameTSArg(block.LastRecalledAt))
 		if err != nil {
 			return fmt.Errorf("put memory block %s: %w", block.ID, err)
 		}
@@ -304,19 +428,40 @@ func (g *GraphDB) MemoryBlocks() ([]MemoryBlock, error) {
 // 但负载**按需加载**（见 BlockData）——这与被淘汰的 CAS 有本质区别：
 // 那里字节归另一个存储层所有，这里归块自己。
 const blockColumns = `id, modality, text_content, mime, size, width, height,
-			vector, fingerprint, source, tool, scene, semantic_type, created_at, updated_at`
+			vector, fingerprint, source, tool, scene, semantic_type, created_at, updated_at,
+			frame_ts, page_seq, page_kind, block_role, call_id, inactive, last_recalled_at`
 
 func scanBlockRow(rows *sql.Rows) (MemoryBlock, error) {
 	var b MemoryBlock
 	var vectorJSON string
 	var scene sql.NullString
+	// 段页式字段一律用 Null* 扫：存量行的 frame_ts 是 NULL、其余有 DEFAULT，
+	// 直接扫进零值类型会在 NULL 上报错（sql: Scan error on column "frame_ts"）。
+	var frameTS sql.NullTime
+	var pageSeq sql.NullInt64
+	var pageKind, blockRole, callID sql.NullString
+	var inactive sql.NullInt64
+	var lastRecalled sql.NullTime
 	if err := rows.Scan(&b.ID, &b.Modality, &b.Text,
 		&b.MIME, &b.Size, &b.Width, &b.Height, &vectorJSON,
 		&b.Fingerprint, &b.Source, &b.Tool, &scene, &b.SemanticType,
-		&b.CreatedAt, &b.UpdatedAt); err != nil {
+		&b.CreatedAt, &b.UpdatedAt,
+		&frameTS, &pageSeq, &pageKind, &blockRole, &callID, &inactive,
+		&lastRecalled); err != nil {
 		return b, err
 	}
+	if lastRecalled.Valid {
+		b.LastRecalledAt = lastRecalled.Time
+	}
 	b.Scene = scene.String
+	if frameTS.Valid {
+		b.FrameTS = frameTS.Time
+	}
+	b.PageSeq = int(pageSeq.Int64)
+	b.PageKind = PageKind(pageKind.String)
+	b.BlockRole = BlockRole(blockRole.String)
+	b.CallID = callID.String
+	b.Inactive = inactive.Int64 != 0
 	if vectorJSON != "" && vectorJSON != "null" {
 		if err := json.Unmarshal([]byte(vectorJSON), &b.Vector); err != nil {
 			return b, fmt.Errorf("decode memory block %s vector: %w", b.ID, err)
@@ -830,4 +975,16 @@ func (g *GraphDB) MemoryEdgeCount() (int, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+// frameTSArg 把零值 FrameTS 写成 NULL 而不是 "0001-01-01"。
+//
+// 为什么必须区分：零值表示「旧数据/未分帧」，与真实时间戳不是一回事。
+// 若写成 "0001-01-01"，迁移脚本会把它们当成一个真实的极早帧聚到一起，
+// 于是所有存量块被错误地归入同一页。
+func frameTSArg(t time.Time) interface{} {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

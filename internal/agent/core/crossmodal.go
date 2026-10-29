@@ -9,7 +9,7 @@ import (
 	"unicode"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // CrossModalHit 是跨模态检索融合后的一条候选。
@@ -21,11 +21,11 @@ import (
 // memory.RecallBlocks（读块自己的向量），因此不存在「召回已无处可归的
 // 内容」这回事——能召回的必然是被某层持有的块。
 type CrossModalHit struct {
-	Doc        *document.Doc       // 文本路命中的文档；视觉路命中时为 nil
-	Media      *memory.MemoryBlock // 视觉路命中的媒体块；文本路命中时也可能带关联块
-	MediaScore float64             // 视觉路原始 cosine（无则 0）
-	DocScore   float64             // 文本路原始 cosine（无则 0）
-	Fused      float64             // 归一化加权融合分，供最终排序
+	Doc        *coldcontext.ColdDoc // 文本路命中的文档；视觉路命中时为 nil
+	Media      *memory.MemoryBlock  // 视觉路命中的媒体块；文本路命中时也可能带关联块
+	MediaScore float64              // 视觉路原始 cosine（无则 0）
+	DocScore   float64              // 文本路原始 cosine（无则 0）
+	Fused      float64              // 归一化加权融合分，供最终排序
 	// 该媒体同时被两路命中时 DoubleHit=true —— 双信号确认，应排在只被
 	// 一路命中的候选之前。
 	DoubleHit bool
@@ -88,8 +88,8 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 
 	// ---- 文本路 ----
 	var textHits []CrossModalHit
-	if a.docStore != nil {
-		for _, dh := range a.docStore.QueryScored(query, per) {
+	if a.coldcontextStore != nil {
+		for _, dh := range a.coldcontextStore.QueryScored(query, per) {
 			hit := CrossModalHit{Doc: dh.Doc, DocScore: dh.Score}
 			// 命中文档若持有一等记忆块，把首个媒体块一并带上（用于双命中标记）。
 			for i := range dh.Doc.Blocks {
@@ -322,7 +322,7 @@ func (a *Agent) crossModalMarkdown(hits []CrossModalHit) string {
 // firstRealSource 取事件里第一个非内部标记的来源。
 //
 // `context_archived` 是内核归档动作的标记，不是"谁说的"，对模型无意义。
-func firstRealSource(events []document.DocEvent) string {
+func firstRealSource(events []coldcontext.ColdEvent) string {
 	for _, ev := range events {
 		if ev.Source != "" && ev.Source != "context_archived" && ev.Source != "cold_storage" {
 			return ev.Source
@@ -342,7 +342,7 @@ func firstRealSource(events []document.DocEvent) string {
 // 顺序：事件正文（块里的文本）→ 工具回执 → 文档 Content。
 // 摘要行（"已回复…"）不在这里出现——它由 docHeadlineForPrompt 负责，
 // 两者互补：一个说"发生了什么"，一个说"内容是什么"。
-func docBodyExcerptForPrompt(d *document.Doc, n int) string {
+func docBodyExcerptForPrompt(d *coldcontext.ColdDoc, n int) string {
 	if d == nil {
 		return ""
 	}
@@ -438,7 +438,7 @@ func collectJSONStrings(v interface{}, depth int) []string {
 	return out
 }
 
-func docHeadlineForPrompt(d *document.Doc) string {
+func docHeadlineForPrompt(d *coldcontext.ColdDoc) string {
 	if d == nil {
 		return ""
 	}

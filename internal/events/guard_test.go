@@ -21,6 +21,7 @@ type fakeGuard struct {
 	allowPublish   map[string]bool
 	allowSubscribe map[string]bool
 	scrubCalls     int
+	inboundCalls   int
 }
 
 func (g *fakeGuard) AllowPublish(p Publisher, t EventType) (bool, string) {
@@ -50,6 +51,25 @@ func (g *fakeGuard) ScrubPayload(_ EventType, payload map[string]interface{}) ma
 		for k, v := range payload {
 			if k == "secret" {
 				out[k] = "@{redacted}"
+				continue
+			}
+			out[k] = v
+		}
+		return out
+	}
+	return payload
+}
+
+// ScrubInbound 模拟入向清洗：把 secret 字段换成 [inbound]。
+//
+// 计数器与出向分开，便于判据区分“洗了几次、洗的哪个方向”。
+func (g *fakeGuard) ScrubInbound(_ EventType, payload map[string]interface{}) map[string]interface{} {
+	g.inboundCalls++
+	if _, ok := payload["secret"]; ok {
+		out := map[string]interface{}{}
+		for k, v := range payload {
+			if k == "secret" {
+				out[k] = "[inbound]"
 				continue
 			}
 			out[k] = v
@@ -112,6 +132,14 @@ func TestGuardAllowsKernelPublish(t *testing.T) {
 // ④ 内核身份**也要过载荷脱敏**。
 //
 // 凭据闸门与身份无关：内核把 api_key 拼进事件，和插件拼进去一样危险。
+//
+// ★ 2026-10-29 加入入向清洗后，本判据要区分两个方向：
+//
+//	出向（发布时）：secret "sk-123" → "@{redacted}"（别名）
+//	入向（投递前）：再把载荷洗一遍 → "[inbound]"（本测试替身的标记）
+//
+// 所以**订阅者看到的是入向结果**，而不是出向结果。这不是回归：
+// 两面都必须发生，旧的断言只钉了第一面，现在两面都钉。
 func TestGuardScrubsKernelPayload(t *testing.T) {
 	bus := NewBus()
 	g := &fakeGuard{allowPublish: map[string]bool{}}
@@ -124,11 +152,46 @@ func TestGuardScrubsKernelPayload(t *testing.T) {
 	if got == nil {
 		t.Fatal("应收到事件")
 	}
-	if got.Payload["secret"] != "@{redacted}" {
-		t.Errorf("★ 内核载荷也必须脱敏，实际 %v", got.Payload["secret"])
-	}
+
+	// 出向跑过（原文不再以明文到达订阅者）
 	if g.scrubCalls == 0 {
-		t.Error("ScrubPayload 应被调用")
+		t.Error("ScrubPayload（出向）应被调用 —— 内核载荷同样要过凭据闸门")
+	}
+	// 入向也跑过（投递前再洗一次）
+	if g.inboundCalls == 0 {
+		t.Error("ScrubInbound（入向）应被调用 —— 投递前必须清洗")
+	}
+	// 订阅者拿到的不能是原文
+	if got.Payload["secret"] == "sk-123" {
+		t.Fatalf("★ 订阅者收到了明文凭据（出向/入向都没生效）: %v", got.Payload["secret"])
+	}
+}
+
+// ④b 入向清洗对**所有订阅入口**生效。
+//
+// 这正是把清洗从 sdk 适配层搬到总线上的理由：
+// 以前只有 s.Events().Subscribe 那条路会洗，其余入口拿到原始载荷。
+func TestGuardScrubsInboundForAllSubscribers(t *testing.T) {
+	bus := NewBus()
+	g := &fakeGuard{allowPublish: map[string]bool{}, allowSubscribe: map[string]bool{"system": true}}
+	bus.SetGuard(g)
+
+	// 三种不同身份的订阅者：内核（Subscribe）、插件 A（SubscribeAs）。
+	var kernelGot, pluginGot *Event
+	bus.Subscribe(EventSystem, func(e *Event) { kernelGot = e })
+	if _, err := bus.SubscribeAs(Publisher{Name: "qq"}, EventSystem, func(e *Event) { pluginGot = e }); err != nil {
+		t.Fatalf("订阅应放行: %v", err)
+	}
+
+	bus.Publish(&Event{Type: EventSystem, Payload: map[string]interface{}{"secret": "sk-999"}})
+
+	for name, ev := range map[string]*Event{"kernel": kernelGot, "plugin": pluginGot} {
+		if ev == nil {
+			t.Fatalf("%s 订阅者应收到事件", name)
+		}
+		if ev.Payload["secret"] == "sk-999" {
+			t.Errorf("★ %s 订阅者收到了明文 —— 入向清洗未覆盖该入口", name)
+		}
 	}
 }
 

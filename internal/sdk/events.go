@@ -96,44 +96,46 @@ func (e *eventsAPI) EventPolicy() security.EventPolicy {
 	return security.DefaultEventPolicy()
 }
 
+// Publish 以**本插件身份**发布事件。
+//
+// ## ★ 为什么必须走 PublishAs（2026-10-29 收敛）
+//
+// 此前这里调的是 `bus.Publish`，而它的实现是 `publishAs(Publisher{}, ...)` ——
+// 空 Publisher 的 `IsKernel()` 为真，于是 security 的 `AllowPublish`
+// **第一行就直接放行**。也就是说：总线上的事件策略对这条路径从未生效过，
+// 它之所以“安全”，只是因为本函数自己又查了一遍策略。
+//
+// 后果是**同一条策略有两份实现**（本文件 + security.eventGuard），
+// 一旦口径漂移就会出现“总线放行、适配层拦截”或反之的分裂。
+//
+// 现在只保留一份：
+//
+//	e.bus.PublishAs(Publisher{Name: e.pluginName}, ...)
+//	  → security.eventGuard.AllowPublish   （授权，唯一一处）
+//	  → security.eventGuard.ScrubPayload   （出向脱敏）
+//	  → 投递时 security.eventGuard.ScrubInbound（入向清洗）
+//
+// 本文件只剩“把身份如实告诉总线”这一件职责 —— 插件模块不再持有策略判断
+// （用户裁定：所有安全部分归安全模块）。
 func (e *eventsAPI) Publish(eventType string, payload map[string]interface{}) error {
 	if e.unavailable != "" {
 		return fmt.Errorf("events: %s", e.unavailable)
 	}
-	if d := e.checkPublish(eventType); !d.Allowed {
-		return fmt.Errorf("%s", d.Reason)
-	}
 	if payload == nil {
 		payload = map[string]interface{}{}
 	}
+	// 载荷键数上限仍在这里判：它是**当前唯一实现**（eventGuard.AllowPublish
+	// 只拿到 eventType、看不到 payload，故无法在那里做）。
+	// 删掉它 = 直接失去这项保护，所以不属“重复”而不应一并丢弃。
 	if d := e.checkSize(len(payload)); !d.Allowed {
 		return fmt.Errorf("%s", d.Reason)
 	}
-
-	// ★ 载荷出向审查：事件载荷会被其他订阅者（含 WebUI/状态面）读到，
-	// 插件顺手把凭据放进去就等于绕过凭据闸门。
-	e.bus.Publish(&events.Event{
+	return e.bus.PublishAs(events.Publisher{Name: e.pluginName}, &events.Event{
 		Type:    events.EventType(eventType),
 		Source:  e.pluginName,
-		Payload: e.scrubOut(eventType, payload),
+		Payload: payload,
 	})
-	return nil
 }
-
-func (e *eventsAPI) checkPublish(t string) security.Decision {
-	if e.sec != nil {
-		return e.sec.CheckEventPublish(e.pluginName, t)
-	}
-	return security.DefaultEventPolicy().CheckEventPublish(e.pluginName, t)
-}
-
-func (e *eventsAPI) checkSubscribe(t string) security.Decision {
-	if e.sec != nil {
-		return e.sec.CheckEventSubscribe(e.pluginName, t)
-	}
-	return security.DefaultEventPolicy().CheckEventSubscribe(e.pluginName, t)
-}
-
 func (e *eventsAPI) checkSize(keys int) security.Decision {
 	if e.sec != nil {
 		return e.sec.CheckEventPayloadSize(keys)
@@ -141,64 +143,24 @@ func (e *eventsAPI) checkSize(keys int) security.Decision {
 	return security.DefaultEventPolicy().CheckEventPayloadSize(keys)
 }
 
-// scrubOut 对载荷做一次出向脱敏（安全模块未装配时原样返回）。
-func (e *eventsAPI) scrubOut(eventType string, payload map[string]interface{}) map[string]interface{} {
-	if e.sec == nil {
-		return payload
-	}
-	out := make(map[string]interface{}, len(payload))
-	for k, v := range payload {
-		if s, ok := v.(string); ok {
-			if clean, n := e.sec.PrepareOutbound(security.Inspection{
-				Direction: security.DirectionOutbound,
-				Stage:     "event:" + eventType,
-				Source:    e.pluginName,
-			}, s); n > 0 {
-				out[k] = clean
-				continue
-			}
-		}
-		out[k] = v
-	}
-	return out
-}
-
 func (e *eventsAPI) Subscribe(eventType string, handler func(map[string]interface{})) (func(), error) {
 	if e.unavailable != "" {
 		return nil, fmt.Errorf("events: %s", e.unavailable)
 	}
-	if d := e.checkSubscribe(eventType); !d.Allowed {
-		return nil, fmt.Errorf("%s", d.Reason)
-	}
 	if handler == nil {
 		return nil, fmt.Errorf("events: handler must not be nil")
 	}
-	unsub := e.bus.Subscribe(events.EventType(eventType), func(evt *events.Event) {
-		handler(e.scrubIn(eventType, evt.Payload))
-	})
+	// 走 SubscribeAs：授权交给 security.eventGuard.AllowSubscribe（唯一一处），
+	// 入向清洗已由总线在投递前统一执行 —— 这里不再自己洗一遍。
+	unsub, err := e.bus.SubscribeAs(events.Publisher{Name: e.pluginName},
+		events.EventType(eventType), func(evt *events.Event) {
+			handler(evt.Payload)
+		})
+	if err != nil {
+		return nil, err
+	}
 	e.unsubs = append(e.unsubs, unsub)
 	return unsub, nil
-}
-
-// scrubIn 对入向载荷做清洗（事件可能带其他模块写进来的内容）。
-func (e *eventsAPI) scrubIn(eventType string, p map[string]interface{}) map[string]interface{} {
-	if e.sec == nil || p == nil {
-		return p
-	}
-	out := make(map[string]interface{}, len(p))
-	for k, v := range p {
-		if s, ok := v.(string); ok {
-			if clean, n := e.sec.ScrubInbound(security.Inspection{
-				Direction: security.DirectionInbound,
-				Stage:     "event:" + eventType,
-			}, s); n > 0 {
-				out[k] = clean
-				continue
-			}
-		}
-		out[k] = v
-	}
-	return out
 }
 
 // stop 解除本插件建立的全部订阅（插件卸载时由宿主调用）。

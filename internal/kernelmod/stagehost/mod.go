@@ -2,7 +2,7 @@
 //
 // ## 依赖
 //
-// 收 iom/evBus/mem.db/textMem/docStore/knowledge/providerMgr
+// 收 iom/evBus/mem.db/textMem/coldcontextStore/knowledge/providerMgr
 // ⇒ 声明 kernel-io / memory / textmem / docmem / knowledge / llm。
 //
 // ★ 顺序上它在 llm 之后（providerMgr 是它的参数）—— 这不是"刻意安排"，

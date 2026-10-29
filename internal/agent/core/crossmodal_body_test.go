@@ -12,17 +12,17 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 func TestDocBodyExcerptPicksToolResult(t *testing.T) {
-	d := &document.Doc{
-		Events: []document.DocEvent{{
+	d := &coldcontext.ColdDoc{
+		Events: []coldcontext.ColdEvent{{
 			Timestamp: time.Now(),
 			Blocks: []memory.MemoryBlock{
 				{Modality: "text", Text: "已回复老大：原来是这个谐音梗。"},
 			},
-			ToolResults: []document.ToolResultItem{
+			ToolResults: []coldcontext.ToolResultItem{
 				{Name: "qq_get_message", Output: `{"content":"因为魔芋爽","message_id":123}`},
 			},
 		}},

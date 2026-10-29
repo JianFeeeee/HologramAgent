@@ -511,11 +511,11 @@ func convertBackToolCalls(tcs []sdk.ToolCall) []agentAPI.ToolCall {
 	return result
 }
 
-func (a *Agent) docStoreSize() int {
-	if a.docStore == nil {
+func (a *Agent) coldcontextStoreSize() int {
+	if a.coldcontextStore == nil {
 		return 0
 	}
-	s := a.docStore.Stats()
+	s := a.coldcontextStore.Stats()
 	if n, ok := s["doc_count"]; ok {
 		if ni, ok := n.(int); ok {
 			return ni
@@ -582,8 +582,28 @@ func (a *Agent) formatMergedTimeline(maxTokens int) string {
 		}
 		// 工具结果在 context 中**展开**（全文，不截断）。
 		// 只有**超长**结果按工具环设计折叠成句柄，模型用 toolresult_read 按区间读回。
-		for _, line := range a.timelineToolLines(e) {
+		//
+		// ★ 段页式淘汰（P5）：InactivePages 里的页不渲染，但在**原位**留一行提示。
+		//
+		// "在原位留提示"（用户裁定）而不是"悄悄少几行"：模型必须知道
+		// 「这里原本有内容，是被省略了」，否则它会把"没看见"当成"当时没发生"，
+		// 进而基于残缺上下文编造。这也是项目一贯的"不静默降级"原则。
+		//
+		// 提示里带上页序号与恢复手段：模型可据此用 coldcontext_query 找回。
+		lines := a.timelineToolLines(e)
+		pageOf := toolResultPageIndex(e)
+		dropped := 0
+		for i, line := range lines {
+			if len(e.InactivePages) > 0 && i < len(pageOf) && containsInt(e.InactivePages, pageOf[i]) {
+				dropped++
+				continue
+			}
 			sb.WriteString(fmt.Sprintf("[%s] %s\n", e.Timestamp.Format("15:04:05"), line))
+		}
+		if dropped > 0 {
+			sb.WriteString(fmt.Sprintf("[%s] （本帧有 %d 个工具往返因超出上下文预算被省略；"+
+				"内容仍在记忆中，可用 coldcontext_query 按需找回）\n",
+				e.Timestamp.Format("15:04:05"), dropped))
 		}
 	}
 	return sb.String()
@@ -652,6 +672,38 @@ func chatUtteranceFromResults(trs []ToolResultItem) string {
 //
 // 为什么不能截断普通结果：截断会让模型拿到残缺信息且不知情（本仓
 // "静默降级"同族），而历史里工具结果正是消解指代的依据。
+// toolResultPageIndex 返回每个 ToolResults 项所属的**页序号**。
+//
+// 页序约定与 document.docBlocksForEntry 一致：第 1 页是 llm_round，
+// 第 i 个 ToolCalls 占第 i+1 页。ToolResults 与 ToolCalls 按 CallID 配对，
+// 因此这里用同样的配对顺序（并行调用时位置未必一一对应）。
+//
+// 长度与 e.ToolResults 对齐；无法配对的项记 0（永不命中 InactivePages，
+// 即"配不上页就不剔除"—— 宁可多显示，不可猜错）。
+func toolResultPageIndex(e *ContextEvent) []int {
+	if e == nil || len(e.ToolResults) == 0 {
+		return nil
+	}
+	out := make([]int, len(e.ToolResults))
+	for i := range e.ToolResults {
+		out[i] = 0
+		for j := range e.ToolCalls {
+			tc := &e.ToolCalls[j]
+			hit := false
+			if tc.CallID != "" && e.ToolResults[i].CallID != "" {
+				hit = tc.CallID == e.ToolResults[i].CallID
+			} else {
+				hit = tc.Name == e.ToolResults[i].Name
+			}
+			if hit {
+				out[i] = j + 2 // 第 1 页是 llm_round
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (a *Agent) timelineToolLines(e *ContextEvent) []string {
 	if e == nil || len(e.ToolResults) == 0 {
 		return nil

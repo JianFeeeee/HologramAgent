@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // memoryPass 是「裁剪」与「召回」的唯一入口：两根正交轴，但共用同一份 query。
@@ -90,10 +90,10 @@ func TestBuildTaskMemoryContext_UsesCleanInput(t *testing.T) {
 func newMemoryPassAgent(t *testing.T) *Agent {
 	t.Helper()
 	return &Agent{
-		context:        newPruneableContext(15),
-		maxContextSize: 4,
-		indexer:        newTestIndexer(t, "咖啡", "张三"),
-		docStore:       document.NewStore(filepath.Join(t.TempDir(), "docs"), memory.TokenizeWords),
+		context:          newPruneableContext(15),
+		maxContextSize:   4,
+		indexer:          newTestIndexer(t, "咖啡", "张三"),
+		coldcontextStore: coldcontext.NewStore(filepath.Join(t.TempDir(), "docs"), memory.TokenizeWords),
 	}
 }
 

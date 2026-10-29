@@ -42,7 +42,7 @@ func TestResolveToolPlugin_NoPhantomPlugins(t *testing.T) {
 	// 这些内置工具的名字都含下划线，按旧规则会被截成假插件名。
 	for _, name := range []string{
 		"ocr_image", "describe_image", "transcribe_audio",
-		"memory_commit", "memory_recall", "coldcontext_query",
+		"stablemem_commit", "stablemem_recall", "coldcontext_query",
 		"knowledge_search", "person_set_trait", "spawn_child",
 	} {
 		got := a.resolveToolPlugin(name)
@@ -144,7 +144,7 @@ func TestGetPluginTools_CoreFilterWorks(t *testing.T) {
 //	    不在表里），把「条件不满足」误报成「名字拼错了」。
 //	第 2 版：扫源码里的 toolDef("…") 字面量
 //	  ⇒ 也错。memory_recall 是由 internal/memory/indexer.go:442 **动态注入**的，
-//	    源码里根本没有 toolDef("memory_recall" 这段文本。
+//	    源码里根本没有 toolDef("stablemem_recall" 这段文本。
 //
 // ⇒ 正确的基准是：**归属表的名字必须是内核真的会产出的工具名**。
 //

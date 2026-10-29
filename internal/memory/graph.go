@@ -316,29 +316,7 @@ func (g *GraphDB) initSchema() error {
 			FOREIGN KEY (target_id) REFERENCES entities(id),
 			UNIQUE(source_id, target_id, relation_type, session_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS memory_blocks (
-			id TEXT PRIMARY KEY,
-			modality TEXT NOT NULL,
-			text_content TEXT DEFAULT '',
-			-- data 是媒体块的负载（union 的另一半）：文本块用 text_content，
-			-- 媒体块用 data。字节随块同生同灭，块外不存在独立的字节存储层。
-			data BLOB,
-			mime TEXT DEFAULT '',
-			size INTEGER DEFAULT 0,
-			width INTEGER DEFAULT 0,
-			height INTEGER DEFAULT 0,
-			vector TEXT DEFAULT '',
-			fingerprint TEXT DEFAULT '',
-			source TEXT DEFAULT '',
-			tool TEXT DEFAULT '',
-			scene TEXT DEFAULT '',
-			-- semantic_type 是实体的语义类别（Person / Animal / Concept），
-			-- 对应旧 entities.type。2026-10-04 加入：social 层靠它
-			-- 区分人物与特质，检索层靠它区分「谁」与「什么」。
-			semantic_type TEXT DEFAULT '',
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)`,
+		ddlMemoryBlocks,
 		`CREATE TABLE IF NOT EXISTS memory_block_edges (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			source_kind TEXT NOT NULL,
@@ -487,6 +465,24 @@ func (g *GraphDB) initSchema() error {
 		{"memory_block_edges", "confidence", "REAL DEFAULT 0"},
 		{"memory_block_edges", "session_id", "TEXT DEFAULT ''"},
 		{"memory_block_edges", "turn_id", "INTEGER DEFAULT 0"},
+		// 段页式字段（2026-10-29）：存量库补列，幂等。
+		// 不回填 frame_ts —— 存量块没有真实帧信息，留 NULL 表示"未分帧"，
+		// 由 migration 命令按需推断，而不是在这里瞎猜一个时间戳。
+		{"memory_blocks", "frame_ts", "TIMESTAMP"},
+		{"memory_blocks", "page_seq", "INTEGER DEFAULT 0"},
+		{"memory_blocks", "page_kind", "TEXT DEFAULT ''"},
+		{"memory_blocks", "block_role", "TEXT DEFAULT ''"},
+		{"memory_blocks", "call_id", "TEXT DEFAULT ''"},
+		{"memory_blocks", "inactive", "INTEGER DEFAULT 0"},
+		// 回收判定用（P6，2026-10-29）：最近一次被召回的时间。
+		//
+		// ★ 用「被召回」而不是「被创建」判死活：判断一块记忆是否有用，
+		//   看的是它有没有被想起来，不是它什么时候写进来的。
+		//   旧块若一直被召回，说明它是活的（不能因为"老"就回收）。
+		//
+		// 留 NULL 表示"从未被召回"—— 与"被召回过但很久以前"是两回事：
+		// 前者是候选回收对象，后者要看时间窗。用零值时间会混淆两者。
+		{"memory_blocks", "last_recalled_at", "TIMESTAMP"},
 		{"memory_block_edges", "status", "TEXT DEFAULT ''"},
 		{"memory_block_edges", "merged_into", "TEXT DEFAULT ''"},
 	} {
@@ -1092,9 +1088,6 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 	// ══════════════════════════════════════════════════════════
 
 	// entityIDs 的键从 int64 变成**块 ID 字符串**。
-	var bScratch MemoryBlock
-	var vecJSON string
-	var sceneNull sql.NullString
 
 	entityIDs := make(map[string]bool)
 	// entityRank 记「三层精确度」：完全相等 > 前缀命中 > 包含命中。
@@ -1134,18 +1127,22 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 		}
 
 		for rows.Next() {
-			var rank int
-			// rank 是第 1 列，先扫掉，剩下 15 列正好对上 scanBlockRow。
-			if err := rows.Scan(&rank, &bScratch.ID, &bScratch.Modality,
-				&bScratch.Text, &bScratch.MIME,
-				&bScratch.Size, &bScratch.Width, &bScratch.Height, &vecJSON,
-				&bScratch.Fingerprint, &bScratch.Source, &bScratch.Tool,
-				&sceneNull, &bScratch.SemanticType,
-				&bScratch.CreatedAt, &bScratch.UpdatedAt); err != nil {
+			// ★★ 不再手写 Scan（2026-10-29 第二次踩同一个坑）。
+			//
+			// 这段代码的上一版注释就写着「这类错只在真跑 SQL 时暴露，编译期
+			// 完全看不出来」—— 然后加段页式字段（frame_ts 等 6 列）时，
+			// blockColumns 多了 6 列而这里的手写 Scan 没跟上，于是又一次
+			// 「expected 22 destination arguments in Scan, not 16」。
+			//
+			// 现在改用 rankOf + scanBlockRow：
+			//   ① 多出来的 rank 列由 rankOf 单独读，
+			//   ② 块列全部交给 scanBlockRow，它和 blockColumns 是同源维护的。
+			// 这样下次加列只需改 blockColumns + scanBlockRow 两处（它们本就绑在一起）。
+			rank, b, err := scanBlockRowWithRank(rows)
+			if err != nil {
 				rows.Close()
 				return nil, err
 			}
-			b := bScratch
 			seq++
 			e := Entity{
 				ID:        int64(seq),
@@ -1674,22 +1671,19 @@ func (g *GraphDB) GraphData() (map[string]interface{}, error) {
 	defer brows.Close()
 	var blocks []MemoryBlock
 	for brows.Next() {
-		var block MemoryBlock
-		var vectorJSON string
-		// ★ 这条 Scan 历史上就少扫了 scene（SELECT 用 blockConstants 改了，
-		//   Scan 却没跟上）—— 与 semantic_type 是同一类错，
-		//   报错形如「expected 16 destination arguments in Scan, not 14」。
-		if err := brows.Scan(&block.ID, &block.Modality, &block.Text,
-			&block.MIME, &block.Size, &block.Width, &block.Height, &vectorJSON,
-			&block.Fingerprint, &block.Source, &block.Tool, &block.Scene,
-			&block.SemanticType, &block.CreatedAt,
-			&block.UpdatedAt); err != nil {
+		// ★ 改为复用 scanBlockRow（2026-10-29）。
+		//
+		// 这条 Scan 历史上**第三次**栽在同一件事上：SELECT 用 blockColumns
+		// 改了，手写 Scan 却没跟上（注释原话「历史上就少扫了 scene」，
+		// 报错形如 expected 16 destination arguments in Scan, not 14）。
+		// 这次加段页式 6 列又复现了一次。
+		//
+		// 根因不是粗心，而是**两份平行清单**：列清单在一处、Scan 目标在另一处，
+		// 加列必然漏改其中一处，且只在真跑 SQL 时暴露。
+		// 现在只保留 blockColumns + scanBlockRow 这一对，不再手写。
+		block, err := scanBlockRow(brows)
+		if err != nil {
 			return nil, err
-		}
-		if vectorJSON != "" && vectorJSON != "null" {
-			if err := json.Unmarshal([]byte(vectorJSON), &block.Vector); err != nil {
-				return nil, fmt.Errorf("decode memory block %s vector: %w", block.ID, err)
-			}
 		}
 		blocks = append(blocks, block)
 	}
@@ -2526,3 +2520,95 @@ func bestSpecificRank(rank int, name string, keywords []string) int {
 	}
 	return best
 }
+
+// scanBlockRowWithRank 读「首列 int + 其余同 blockColumns」的行。
+//
+// 用于那些在块列**前面**多带一列的查询（如关键词精确度的 0/1/2 排序键）。
+//
+// 存在的唯一目的：让这类查询**不必手写 20+ 个 Scan 目标**。
+// 手写清单与 blockColumns 是两份平行事实来源，加列时必漏一处 ——
+// 本仓为此在同一处栽过两次（见调用点注释）。
+func scanBlockRowWithRank(rows *sql.Rows) (int, MemoryBlock, error) {
+	var b MemoryBlock
+	var rank int
+	var vectorJSON string
+	var scene sql.NullString
+	var frameTS sql.NullTime
+	var pageSeq, inactive sql.NullInt64
+	var pageKind, blockRole, callID sql.NullString
+	var lastRecalled sql.NullTime
+	if err := rows.Scan(&rank, &b.ID, &b.Modality, &b.Text,
+		&b.MIME, &b.Size, &b.Width, &b.Height, &vectorJSON,
+		&b.Fingerprint, &b.Source, &b.Tool, &scene, &b.SemanticType,
+		&b.CreatedAt, &b.UpdatedAt,
+		&frameTS, &pageSeq, &pageKind, &blockRole, &callID, &inactive,
+		&lastRecalled); err != nil {
+		return rank, b, err
+	}
+	if lastRecalled.Valid {
+		b.LastRecalledAt = lastRecalled.Time
+	}
+	b.Scene = scene.String
+	if frameTS.Valid {
+		b.FrameTS = frameTS.Time
+	}
+	b.PageSeq = int(pageSeq.Int64)
+	b.PageKind = PageKind(pageKind.String)
+	b.BlockRole = BlockRole(blockRole.String)
+	b.CallID = callID.String
+	b.Inactive = inactive.Int64 != 0
+	if vectorJSON != "" && vectorJSON != "null" {
+		if err := json.Unmarshal([]byte(vectorJSON), &b.Vector); err != nil {
+			return rank, b, fmt.Errorf("decode memory block %s vector: %w", b.ID, err)
+		}
+	}
+	return rank, b, nil
+}
+
+// ddlMemoryBlocks 是 memory_blocks 表的**唯一 DDL 定义**。
+//
+// 抽成常量的理由（2026-10-29）：此前测试侧有一份手抄副本
+// （migrate_testhelp_test.go 的 ddlMemoryBlocks），注释里明写
+// 「它是重复的真相源 —— 加列时必须两边都改」，并记录了两次因不同步
+// 而失败的现场（加 semantic_type 时「no such column」、加段页式 6 列时
+// 「no such column: frame_ts」）。
+//
+// 现在生产 DDL 与测试重建都用这一份，加列只需改这里。
+const ddlMemoryBlocks = `CREATE TABLE IF NOT EXISTS memory_blocks (
+			id TEXT PRIMARY KEY,
+			modality TEXT NOT NULL,
+			text_content TEXT DEFAULT '',
+			-- data 是媒体块的负载（union 的另一半）：文本块用 text_content，
+			-- 媒体块用 data。字节随块同生同灭，块外不存在独立的字节存储层。
+			data BLOB,
+			mime TEXT DEFAULT '',
+			size INTEGER DEFAULT 0,
+			width INTEGER DEFAULT 0,
+			height INTEGER DEFAULT 0,
+			vector TEXT DEFAULT '',
+			fingerprint TEXT DEFAULT '',
+			source TEXT DEFAULT '',
+			tool TEXT DEFAULT '',
+			scene TEXT DEFAULT '',
+			-- semantic_type 是实体的语义类别（Person / Animal / Concept），
+			-- 对应旧 entities.type。2026-10-04 加入：social 层靠它
+			-- 区分人物与特质，检索层靠它区分「谁」与「什么」。
+			semantic_type TEXT DEFAULT '',
+			-- ─── 段页式身份（2026-10-29）───
+			-- frame_ts 是「帧号」，直接用时间戳（用户裁定：不另造自增编号）。
+			-- 同一 frame_ts 的块必须整批待在同一层（不跨帧），见 MemoryBlock 的说明。
+			frame_ts TIMESTAMP,
+			-- page_seq 是帧内页序号（1..n）；与 frame_ts 一起构成页身份。
+			page_seq INTEGER DEFAULT 0,
+			-- page_kind: llm_round | tool_round
+			page_kind TEXT DEFAULT '',
+			-- block_role: request | response
+			block_role TEXT DEFAULT '',
+			-- call_id 是 tool_round 的配对键（tool_call ↔ tool_result）
+			call_id TEXT DEFAULT '',
+			-- inactive=1 表示该页不参与渲染（但仍可回读、仍在原层）
+			inactive INTEGER DEFAULT 0,
+			last_recalled_at TIMESTAMP,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`

@@ -99,7 +99,7 @@ func TestContextPruneWithDocStore(t *testing.T) {
 
 	archived := ctx.Prune("天气", 10, nil)
 	if archived != 0 {
-		t.Errorf("with nil docStore, archived should be 0, got %d", archived)
+		t.Errorf("with nil coldcontextStore, archived should be 0, got %d", archived)
 	}
 }
 

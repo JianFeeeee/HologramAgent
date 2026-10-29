@@ -86,7 +86,7 @@ func TestLightProfile_MemoryFaceWiring(t *testing.T) {
 
 	// ③ 读是并集：主库的实体与 temp 的实体都要看得到。
 	got := a.executeMemoryTool(agentAPI.ToolCall{
-		ID: "c1", Name: "memory_recall",
+		ID: "c1", Name: "stablemem_recall",
 		Arguments: map[string]interface{}{"query_intent": "主记忆实体,子独有实体"},
 	}, nil)
 	if !strings.Contains(got, "主记忆实体") {
@@ -110,8 +110,8 @@ func TestLightProfile_OrganizeToolsAbsentAndRefused(t *testing.T) {
 	// ① 整理类工具不进子的工具表（不是进去再报不可用）。
 	names := toolNames(a)
 	for _, banned := range []string{
-		"memory_merge", "memory_delete_entity", "memory_block_merge",
-		"memory_purge", "memory_edit",
+		"stablemem_merge", "stablemem_delete_entity", "stablemem_block_merge",
+		"stablemem_purge", "stablemem_edit",
 	} {
 		if hasTool(names, banned) {
 			t.Fatalf("轻量内核不该声明整理类工具 %s：%v", banned, names)
@@ -124,8 +124,8 @@ func TestLightProfile_OrganizeToolsAbsentAndRefused(t *testing.T) {
 
 	// ② 纵深防御：即便被直调，整理类操作也必须明确报"轻量内核不支持"。
 	for _, tool := range []string{
-		"memory_merge", "memory_delete_entity", "memory_block_merge",
-		"memory_purge", "memory_edit", "memory_introspect",
+		"stablemem_merge", "stablemem_delete_entity", "stablemem_block_merge",
+		"stablemem_purge", "stablemem_edit", "stablemem_introspect",
 	} {
 		got := a.executeMemoryTool(agentAPI.ToolCall{
 			ID: "x", Name: tool,
@@ -163,7 +163,7 @@ func TestFullProfile_KeepsOrganizeFace(t *testing.T) {
 		t.Fatal("根 agent 必须有图记忆共同面")
 	}
 	names := toolNames(a)
-	if !hasTool(names, "memory_merge") {
+	if !hasTool(names, "stablemem_merge") {
 		t.Fatalf("根 agent 应保留整理类工具：%v", names)
 	}
 }

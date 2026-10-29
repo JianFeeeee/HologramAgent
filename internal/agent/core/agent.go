@@ -13,7 +13,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
@@ -69,7 +69,7 @@ type Agent struct {
 	cancel         context.CancelFunc
 
 	// 文档记忆（第二层）
-	docStore *document.Store
+	coldcontextStore *coldcontext.Store
 
 	// 知识库
 	knowledge *knowledge.Store
@@ -272,7 +272,7 @@ type AgentConfig struct {
 	Indexer     *memory.Indexer
 	Tracker     *tracker.Tracker
 
-	DocStore    *document.Store
+	DocStore    *coldcontext.Store
 	Knowledge   *knowledge.Store
 	SocialStore *social.SocialStore
 	TextMemory  *text.Memory
@@ -412,27 +412,27 @@ func New(cfg AgentConfig) *Agent {
 	}
 
 	a := &Agent{
-		id:              cfg.ID,
-		startTime:       time.Now(),
-		provider:        cfg.Provider,
-		providerManager: cfg.ProviderManager,
-		io:              cfg.IO,
-		memory:          cfg.Memory,
-		graph:           graphMemoryOf(cfg),
-		kernelSource:    cfg.KernelSource,
-		parentID:        cfg.ParentID,
-		taskPrompt:      cfg.TaskPrompt,
-		dataDir:         cfg.DataDir,
-		indexer:         cfg.Indexer,
-		tracker:         cfg.Tracker,
-		context:         rc,
-		systemPrompt:    cfg.SystemPrompt,
-		ctx:             ctx,
-		cancel:          cancel,
-		docStore:        cfg.DocStore,
-		knowledge:       cfg.Knowledge,
-		social:          cfg.SocialStore,
-		textMem:         cfg.TextMemory,
+		id:               cfg.ID,
+		startTime:        time.Now(),
+		provider:         cfg.Provider,
+		providerManager:  cfg.ProviderManager,
+		io:               cfg.IO,
+		memory:           cfg.Memory,
+		graph:            graphMemoryOf(cfg),
+		kernelSource:     cfg.KernelSource,
+		parentID:         cfg.ParentID,
+		taskPrompt:       cfg.TaskPrompt,
+		dataDir:          cfg.DataDir,
+		indexer:          cfg.Indexer,
+		tracker:          cfg.Tracker,
+		context:          rc,
+		systemPrompt:     cfg.SystemPrompt,
+		ctx:              ctx,
+		cancel:           cancel,
+		coldcontextStore: cfg.DocStore,
+		knowledge:        cfg.Knowledge,
+		social:           cfg.SocialStore,
+		textMem:          cfg.TextMemory,
 		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
 		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
 		personality:       cfg.Personality,

@@ -58,7 +58,7 @@ func (s fixedSpace) Close() {}
 func callRecall(t *testing.T, a *Agent, q string) string {
 	t.Helper()
 	return a.executeMemoryTool(api.ToolCall{
-		ID: "c1", Name: "memory_recall",
+		ID: "c1", Name: "stablemem_recall",
 		Arguments: map[string]interface{}{"query_intent": q},
 	}, nil)
 }

@@ -102,7 +102,7 @@ func TestSelfExcite_RestoredEventsNotReArchived(t *testing.T) {
 	}
 
 	// ② L1 是唯一副本（L2 已被 Consume 删除）——确认这一点
-	for _, d := range a.docStore.RecentDocs(1000) {
+	for _, d := range a.coldcontextStore.RecentColdContexts(1000) {
 		if !d.HasEvents() {
 			continue
 		}
@@ -123,10 +123,10 @@ func TestSelfExcite_RestoredEventsNotReArchived(t *testing.T) {
 			Response:  "好。",
 		})
 	}
-	a.context.Prune("当前输入", 2, a.docStore)
+	a.context.Prune("当前输入", 2, a.coldcontextStore)
 
 	var foundInL2 bool
-	for _, d := range a.docStore.RecentDocs(1000) {
+	for _, d := range a.coldcontextStore.RecentColdContexts(1000) {
 		if !d.HasEvents() {
 			continue
 		}

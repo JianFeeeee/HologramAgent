@@ -59,17 +59,31 @@ var (
 	// SDKName 是 SDK 名称。
 	SDKName = "HologramAgent SDK"
 
-	// SDKModule 是本 SDK 仓当前的 Go module path。
+	// SDKModule 是本 SDK 仓**当前**的 Go module path。
 	//
-	// ★ 2026-10-08 随托管地迁移：`gitcode.com/JianFeeeee/homeagent-sdk`
-	//   → `github.com/JianFeeeee/homeagentsdk`（仓库迁到 GitHub）。
+	// ★ 演进史（三次）：`gitcode.com/JianFeeeee/homeagent-sdk`
+	//   → `github.com/JianFeeeee/homeagentsdk`（迁到 GitHub）
+	//   → `github.com/JianFeeeee/hologramagentsdk`（与仓名统一，2026-10）
 	//
-	// ❗已有插件的 go.mod 里写的仍是旧路径（本机实测 qq/vanblog/mcquery/
-	//   fileproc/mail-bridge 五个插件工作区全是 gitcode.com/...）。
-	//   因此凡是要「识别 SDK 模块」的判定必须**两种都接受**
-	//   （见 hmapdev 的 sdkModulePath 助手），不能只认新名——
-	//   只认新名会让旧插件被当成「不是 SDK 模块」而静默走错分支。
-	SDKModule = "github.com/JianFeeeee/homeagentsdk"
+	// ★★ 本常量**必须与 go.mod 的 module 行逐字一致**（2026-10-29 实测缺陷）：
+	//
+	//   它此前停在中间名 `github.com/JianFeeeee/homeagentsdk`，而 go.mod 已
+	//   推进到 `...hologramagentsdk`。后果不是"显示错"，而是**模板工程编不出**：
+	//
+	//     · hmapdev 用本常量生成插件 go.mod 的 require/replace
+	//     · 而 SDK 内部（如 proc_main 运行时模板）引用的是 go.mod 的真名
+	//     ⇒ 两个模块名并存，`go build` 报
+	//       "no required module provides package .../sdk"
+	//     ⇒ 用户照提示 `go get` 只会**再拉一份** SDK，问题依旧。
+	//
+	//   因此凡改 module 名，必须同时改 go.mod 与本常量。判据见
+	//   `meta/meta_module_test.go`（钉住"与 go.mod 一致"，仅认改名后的新名）。
+	//
+	// ❗存量插件的 go.mod 里仍可能是更早的名字，所以「识别 SDK 模块」的判定
+	//   必须**所有历史名都接受**（见 hmapdev 的 sdkModuleNames）——
+	//   只认最新名会让旧插件被当成「不是 SDK 模块」而静默走错分支。
+	//   注意区分：**识别**要宽容，**生成**要精确（就是本常量）。
+	SDKModule = "github.com/JianFeeeee/hologramagentsdk"
 
 	// LegacySDKModule 是迁移前的 SDK module path，仍需被识别。
 	LegacySDKModule = "gitcode.com/JianFeeeee/homeagent-sdk"

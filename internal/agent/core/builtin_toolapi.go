@@ -1,8 +1,6 @@
 package core
 
 import (
-	"strings"
-
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
@@ -122,16 +120,11 @@ func (a *Agent) installBuiltinProvider() {
 	sdk.SetBuiltinProvider(builtinProvider{a: a})
 }
 
-// isBuiltinToolName 粗判某名字是否可能是内置工具（供提示词/文档用）。
-// 真正的判定以 ToolAPI 查询为准（带门控）。
-func isBuiltinToolName(name string) bool {
-	for _, p := range []string{
-		"memory_", "knowledge_", "doc_", "person_",
-		"output_", "input_", "resident_", "notify_parent", "persona_set",
-	} {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
-}
+// ★ 已删除 isBuiltinToolName（2026-10-29）。
+//
+// 它自称"供提示词/文档用"，实测**零生产调用方**，是 Dispatch 之外
+// 又一份手抄前缀表。改名时改了 Dispatch（stablemem_）却漏了这里，
+// 于是它成了"看起来是事实来源、实际只是过期副本"的第三种状态。
+//
+// 真需要判"是不是内置工具"时调 toolroute.Dispatch：它返回的 bool
+// 就是权威答案（handled=false 表示应继续走插件/设备路径）。

@@ -60,6 +60,31 @@ func scrubEventSecrets(evt *ContextEvent) {
 			logEvtHits("上下文工具结果 "+evt.ToolResults[i].Name, evts)
 		}
 	}
+	// 工具调用参数：由模型给出，正常是别名，但插件工具可能被直接传明文。
+	//
+	// ★ 2026-10-29 补：ToolCalls 是新增的结构化字段，它不在 Input/Response/
+	//   ToolResults 那条文本闸的覆盖范围内 —— 不加这段就会**绕过整层脱敏**
+	//   直接落盘。这正是「新增字段必须显式过闸」的典型例子。
+	for i := range evt.ToolCalls {
+		tc := &evt.ToolCalls[i]
+		for k, v := range tc.Arguments {
+			str, ok := v.(string)
+			if !ok || str == "" {
+				continue
+			}
+			if out, evts := s.Replace(str, "ctx_toolargs:"+tc.Name+"."+k, security.Patterns); len(evts) > 0 {
+				tc.Arguments[k] = out
+				logEvtHits("上下文工具参数 "+tc.Name+"."+k, evts)
+			}
+		}
+		if tc.RawArguments != "" {
+			if out, evts := s.Replace(tc.RawArguments, "ctx_toolargs_raw:"+tc.Name, security.Patterns); len(evts) > 0 {
+				tc.RawArguments = out
+				logEvtHits("上下文工具原始参数 "+tc.Name, evts)
+			}
+		}
+	}
+
 	// 一等记忆块：**文本**块同样可能带凭据（截图描述、文档正文、转写稿）。
 	// 媒体块（image/video/audio 的 Data）不处理 —— 那是二进制负载，
 	// 正则扫它既无意义也会损坏数据。

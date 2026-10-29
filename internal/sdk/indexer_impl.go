@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // indexerImpl 桥接 memory.Indexer 到中立的 IndexerAPI。
 type indexerImpl struct {
 	idx  *memory.Indexer
-	docs *document.Store // 可选：给「上下文」诊断面提供 L2 那一路
+	docs *coldcontext.Store // 可选：给「上下文」诊断面提供 L2 那一路
 }
 
 func NewIndexer(idx *memory.Indexer) IndexerAPI {
@@ -20,7 +20,7 @@ func NewIndexer(idx *memory.Indexer) IndexerAPI {
 }
 
 // NewIndexerWithDocs 让诊断面同时覆盖 L2 冷上下文与 L3 图记忆（双路召回）。
-func NewIndexerWithDocs(idx *memory.Indexer, docs *document.Store) IndexerAPI {
+func NewIndexerWithDocs(idx *memory.Indexer, docs *coldcontext.Store) IndexerAPI {
 	return &indexerImpl{idx: idx, docs: docs}
 }
 
@@ -81,14 +81,14 @@ func (i *indexerImpl) queryDocs(q string, limit int) []DocSnippet {
 			when = h.Doc.Events[0].Timestamp.Format(time.DateTime)
 		}
 		// 正文在事件的**文本块**里（DocEvent 只有 Blocks，没有 Input/Response）。
-		text := docFirstText(h.Doc)
+		text := coldcontextFirstText(h.Doc)
 		out = append(out, DocSnippet{ID: h.Doc.ID, When: when, Text: truncateRunes(text, 120), Score: h.Score})
 	}
 	return out
 }
 
-// docFirstText 取文档可用于展示的首段正文（跳过媒体块）。
-func docFirstText(d *document.Doc) string {
+// coldcontextFirstText 取文档可用于展示的首段正文（跳过媒体块）。
+func coldcontextFirstText(d *coldcontext.ColdDoc) string {
 	if d == nil {
 		return ""
 	}

@@ -10,7 +10,7 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/document"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // 媒体记忆接线测试（块 union 化之后）：验证媒体从对话进入块、挂到 L0 事件、
@@ -211,8 +211,8 @@ func TestPrune_NilDocStoreStillArchives(t *testing.T) {
 	// 归档链路不依赖任何外部媒体存储：块随事件走，归档时整体迁移。
 	dir := t.TempDir()
 	emb := memory.NewStaticEmbedder()
-	docStore := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
-	if err := docStore.Start(); err != nil {
+	coldcontextStore := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	if err := coldcontextStore.Start(); err != nil {
 		t.Fatal(err)
 	}
 	rc := NewRelevanceContext(filepath.Join(dir, "context.json"), emb)
@@ -224,7 +224,7 @@ func TestPrune_NilDocStoreStillArchives(t *testing.T) {
 			Input:     "内容",
 		})
 	}
-	if n := rc.Prune("查询", 5, docStore); n == 0 {
+	if n := rc.Prune("查询", 5, coldcontextStore); n == 0 {
 		t.Fatal("无媒体参与时归档也应正常")
 	}
 }
@@ -275,8 +275,8 @@ func TestPruneMigratesBlocksToDocument(t *testing.T) {
 	// 这条路径不依赖任何引用账本。
 	dir := t.TempDir()
 	emb := memory.NewStaticEmbedder()
-	docStore := document.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
-	if err := docStore.Start(); err != nil {
+	coldcontextStore := coldcontext.NewStore(filepath.Join(dir, "docs"), memory.TokenizeWords)
+	if err := coldcontextStore.Start(); err != nil {
 		t.Fatal(err)
 	}
 	rc := NewRelevanceContext(filepath.Join(dir, "context.json"), emb)
@@ -296,7 +296,7 @@ func TestPruneMigratesBlocksToDocument(t *testing.T) {
 		})
 	}
 
-	if n := rc.Prune("完全不相关的查询", 5, docStore); n == 0 {
+	if n := rc.Prune("完全不相关的查询", 5, coldcontextStore); n == 0 {
 		t.Fatal("应有事件被归档")
 	}
 
@@ -305,8 +305,8 @@ func TestPruneMigratesBlocksToDocument(t *testing.T) {
 	// ★ 2026-10-22 更新：L2 与 L1 同构后，事件正文也各自成为文本块
 	// （Input 一块、Response 一块），所以这里不能再假设「文档只有 1 个块」。
 	// 要断言的是**媒体块原样迁移**，而不是块总数。
-	var found *document.Doc
-	for _, d := range docStore.RecentDocs(20) {
+	var found *coldcontext.ColdDoc
+	for _, d := range coldcontextStore.RecentColdContexts(20) {
 		for _, b := range d.Blocks {
 			if b.ID == block.ID {
 				found = d
