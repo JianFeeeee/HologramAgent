@@ -33,7 +33,6 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/update"
 )
 
@@ -70,6 +69,30 @@ func (h *Handler) handleKernelUpdateApply(w http.ResponseWriter, r *http.Request
 	}
 
 	binPath := update.KernelBinaryPath()
+	dataDir := dataDirOf(binPath)
+
+	// ★ 安装形态闸门：先判断“本机能不能自己升”，再决定要不要下载 880MB。
+	//
+	// deb/rpm 形态下文件归包管理器所有，直接替换会让 dpkg/rpm 数据库与
+	// 实际内容不一致（下次 apt upgrade 覆盖回旧版，或 dpkg 拒绝后续升级）。
+	// 此时必须明确告知走包管理器，**而不是**先下载再在 Apply 里失败。
+	//
+	// 容器同理：文件系统随销毁还原，自替换毫无意义。
+	capab := update.Detect(binPath, dataDir)
+	plan := update.PlanUpgrade(capab, body.Pkg)
+	if !plan.Executable {
+		// ★ 用 409（Conflict）而不是 500：这不是“服务器坏了”，
+		// 而是“这个请求在本机形态下不适用”，并且带着可执行指引。
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"applied":      false,
+			"channel":      string(plan.Channel),
+			"install_kind": string(capab.Kind),
+			"variant":      string(capab.Variant),
+			"error":        plan.Reason,
+			"commands":     plan.Commands,
+		})
+		return
+	}
 
 	tmp, err := os.MkdirTemp("", "kernel-upgrade-*")
 	if err != nil {
@@ -85,13 +108,13 @@ func (h *Handler) handleKernelUpdateApply(w http.ResponseWriter, r *http.Request
 	}
 	newDG := update.FindFile(root, "depgraph.bin")
 
-	// WebUI 侧天然有总线（它就是 SSE 的上游）：升级每一步都让界面看得到
-	var bus *events.Bus
-	if h.sdk != nil {
-		bus = h.sdk.EventBus()
-	}
-
-	out, err := update.Apply(root, binPath, newDG, dataDirOf(binPath), bus)
+	// ★ 不再自己取总线：进度事件由 internal/update 以**内核身份**发出
+	// （内核在启动时 SetEventBus 注入了总线）。
+	//
+	// 之前这里从 sdk 拿 *events.Bus 再传给 Apply —— 那既是"安全监控可被
+	// 绕过"的根源（插件持有裸总线就能伪造任意事件），也让插件依赖了
+	// 一个它本不该有的能力。
+	out, err := update.Apply(root, binPath, newDG, dataDir, nil)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -140,15 +163,16 @@ func currentKernelVersion() *update.BinVersion {
 	return v
 }
 
-// dataDirOf 推导数据目录（升级确认标记的落点）。
+// dataDirOf 返回内核**真实**的数据目录（升级确认标记的落点）。
 //
-// 与内核 `--data` 必须一致，否则第 0 层 update 模块读不到 pending 标记。
-// 优先用环境变量显式指定（部署方知道自己在哪），否则退回本机生产路径。
+// ★ 取内核注入值（ks.DataDir），不做任何推导：pending 标记落在哪，
+// 第 0 层 update 模块就从哪读；两边一漂移，升级失败时就**静默不回滚**。
+// 而“猜一个看起来合理的路径”会让 Apply 的空值守卫变成死代码。
+//
+// 拿不到就返回空串，由 Apply 拒绝升级并报错。
+//
+// ⚠️ 不要再加 HOMEAGENT_DATA_DIR 回退：部署方可能不设，而设了也未必
+// 与内核实际的 -data 一致 —— 那正是“看起来在工作”的一类错误。
 func dataDirOf(binPath string) string {
-	if d := os.Getenv("HOMEAGENT_DATA_DIR"); d != "" {
-		return d
-	}
-	// ★ 不写死生产路径：迁移后它会指向一个不存在的目录，
-	// 让升级 pending 标记落错地方（静默不回滚）。返回空由调用方报错。
-	return ""
+	return update.KernelDataDir()
 }

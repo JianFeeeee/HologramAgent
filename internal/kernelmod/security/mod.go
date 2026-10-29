@@ -63,6 +63,24 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		return err
 	}
 	ks.Security = rt
+
+	// ★ 把安全策略注入**总线本体**（用户 2026-10-28 指正：「eventbus 上所有
+	// 事件都要接受安全模块的监控」）。
+	//
+	// 为何必须在总线上而不是只在 internal/sdk/events.go：
+	// 后者只盖住了 s.Events() 那**一条**路径，而插件还有 s.Publish /
+	// s.Subscribe / s.EventBus() 三条能拿裸总线的路。不装在这里，
+	// “安全监控”就只对合规者生效。
+	//
+	// ★ rt 为 nil 或未 enable 时**仍然装**：enable=false 关掉的是凭据替换，
+	// “插件不许发 raw_input”这类授权与密钥无关（见 EventPolicy 头注释）。
+	// 不装就等于默认放行全部事件，方向错误。
+	if ks.EventBus != nil {
+		if g := sec.AsEventGuard(rt); g != nil {
+			ks.EventBus.SetGuard(g)
+		}
+	}
+
 	if ks.EventBus != nil && rt.Enabled() {
 		ks.EventBus.Publish(secReadyEvent(rt))
 	}

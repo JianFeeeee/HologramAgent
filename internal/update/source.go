@@ -87,6 +87,30 @@ func (s Source) Resolve(workDir string) (root string, rel *ReleaseInfo, err erro
 		return root, nil, err
 
 	case FromRelease:
+		// ★ 先试差分（第 4 项）：只需下载几十 KB 的 delta，用本地旧二进制
+		// 重建新二进制，不用下 88MB 整包。
+		//
+		// 差分是**优化**，不是可用性前提：任何一步不可用就退回整包。
+		// 实测量级：改一行逻辑只差 80 字节，1MB 文件小改的补丁占 0.8%。
+		//
+		// 为何先取 info 再决定：delta 是否可用取决于**当前本机 commit**
+		// 能否在 release 资产里找到匹配的 `-from-<commit>.delta`。
+		// 为何传 current 而不是 nil：delta 的匹配需要**本机 commit**
+		// （命名里的 `-from-<commit8>`）。传 nil 会让 CurrentC 为空，
+		// 于是永远匹配不到 delta —— 那会让整条差分路径静默失效。
+		preInfo := CheckRelease(currentVersionForDelta())
+		if preInfo.DeltaURL != "" {
+			if ok, derr := TryDeltaUpgrade(workDir, KernelBinaryPath(), preInfo.Latest, preInfo); ok {
+				root := filepath.Join(workDir)
+				if FindFile(root, "homed") != "" {
+					return root, preInfo, nil
+				}
+			} else if derr != nil {
+				// 不当作失败：记录后走整包。不向上抛，避免“差分失败→升级失败”。
+				preInfo.Reason = "差分不可用，退回整包：" + derr.Error()
+			}
+		}
+
 		pkgPath := filepath.Join(workDir, "release.tar.gz")
 		info, derr := DownloadLatestRelease(pkgPath)
 		if derr != nil {

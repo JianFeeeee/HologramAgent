@@ -540,10 +540,18 @@ SCRIPT
 stage_setup() {
   local staging="$1"
   local setup_src="$PROJECT_ROOT/deploy/packaging/linux/setup.sh"
+  local user_src="$PROJECT_ROOT/deploy/packaging/linux/setup-user.sh"
   if [ -f "$setup_src" ]; then
     mkdir -p "$staging/usr/lib/hologram"
     cp "$setup_src" "$staging/usr/lib/hologram/setup.sh"
     chmod 755 "$staging/usr/lib/hologram/setup.sh"
+  fi
+  # 服务单元以 User=hologramagent 运行；用户创建是安装契约的一部分，
+  # 不能只靠现场 drop-in。三种包形态共用同一份幂等 helper。
+  if [ -f "$user_src" ]; then
+    mkdir -p "$staging/usr/lib/hologram"
+    cp "$user_src" "$staging/usr/lib/hologram/setup-user.sh"
+    chmod 755 "$staging/usr/lib/hologram/setup-user.sh"
   fi
 }
 
@@ -710,6 +718,52 @@ build_deb() {
 }
 
 # ---- create combined .tar.gz (all binaries, no variant split) ----
+# ---- generate binary delta (optional) ----
+#
+# 差分 OTA：发布时针对**上一版已发布的 homed** 生成本版的补丁资产。
+#
+# 为何需要外部传入旧二进制（PREVIOUS_HOMED）：上一版的产物不在本次
+# 构建目录里，而“取上一版”意味着下载历史 release。那一步留给发布者
+# 决定（CI 可以 gh release download 上一 tag 再传进来）。
+#
+# 未设置 PREVIOUS_HOMED 时**静默跳过**：首次发布、跳版本、或发布者
+# 选择只发整包时都是正常情形。差分是优化，不是可用性前提。
+#
+# 实测量级（2026-10-28，88MB 内核）：
+#   改一趟逻辑的补丁 ≈ 77KB（0.09%）
+build_delta() {
+  local previous="${PREVIOUS_HOMED:-}"
+  local new_bin="$BUILD_DIR/homed_linux_${ARCH}"
+
+  if [ -z "$previous" ] || [ ! -f "$previous" ]; then
+    echo ">>> Skip binary delta: 未提供 PREVIOUS_HOMED（上一版 homed 路径）"
+    return 0
+  fi
+  if [ ! -f "$new_bin" ]; then
+    echo ">>> Skip binary delta: 缺 $new_bin"
+    return 0
+  fi
+
+  local prev_commit
+  prev_commit="$("$previous" --version 2>/dev/null | sed -n 's/^commit=//p' | head -1)"
+  if [ -z "$prev_commit" ] || [ "$prev_commit" = "unknown" ]; then
+    echo ">>> Skip binary delta: 读不出上一版的 commit（老内核无 --version？）"
+    return 0
+  fi
+  local short="${prev_commit:0:8}"
+  local out="${DIST_DIR}/hologramagent-${PKG_VERSION}-linux-${ARCH}-from-${short}.delta"
+
+  echo ">>> Building binary delta (from commit $short)"
+  if "$BUILD_DIR/homed-upgrade" -make-delta \
+       -delta-old "$previous" -delta-new "$new_bin" -delta-out "$out" 2>&1; then
+    echo "  Created: $out ($(du -h "$out" | cut -f1))"
+  else
+    # ★ 不当作失败（set -e 下靠 || true）：delta 不可用不影响整包发布
+    echo "  WARN: delta 生成失败，本次只发整包"
+    rm -f "$out"
+  fi
+}
+
 build_tar() {
   local tar_dir="${DIST_DIR}/tar"
   mkdir -p "$tar_dir"
@@ -817,19 +871,36 @@ build_rpm() {
     export RPM_CONFIGDIR="$rpmbuild_dir/usr/lib/rpm"
   fi
 
-  echo ">>> Building .rpm via fpm: $pkg_name"
-  "$fpm_bin" -s dir -t rpm \
-    -n "hologramagent-${variant}" \
-    -v "$VERSION" \
-    --iteration 1 \
-    -a "$RPM_ARCH" \
-    --description "HologramAgent ${variant^} package" \
-    --url "https://github.com/trueagent/HologramAgent" \
-    --license "AGPL-3.0-only" \
-    -C "$staging" \
-    -p "$rpm_dir/$pkg_name" \
-    . 2>&1
-  echo "  Created: $rpm_dir/$pkg_name"
+	echo ">>> Building .rpm via fpm: $pkg_name"
+	# ★ 必须带 --after-install（实测缺口，2026-10-28 补）：
+	#
+	# 原先 fpm 调用只有 `-C "$staging"`，**没有**任何一个 script 参数 ⇒
+	# rpm 装完不会建 hologramagent 用户，而单元里写死了 User=hologramagent
+	# ⇒ systemd 拒绕启动。deb 侧有 postinst 所以一直正常，rpm 侧静默缺失。
+	#
+	# 脚本复用 deb 的 postinst：两条安装路径共用一份，不另写一套。
+	local postinst_src="$PACKAGE_ROOT/deb/postinst"
+	local fpm_args=()
+	if [ -f "$postinst_src" ]; then
+	  fpm_args+=(--after-install "$postinst_src")
+	  if [ -f "$PACKAGE_ROOT/deb/prerm" ]; then
+	    fpm_args+=(--before-remove "$PACKAGE_ROOT/deb/prerm")
+	  fi
+	fi
+
+	"$fpm_bin" -s dir -t rpm \
+	  -n "hologramagent-${variant}" \
+	  -v "$VERSION" \
+	  --iteration 1 \
+	  -a "$RPM_ARCH" \
+	  --description "HologramAgent ${variant^} package" \
+	  --url "https://github.com/trueagent/HologramAgent" \
+	  --license "AGPL-3.0-only" \
+	  "${fpm_args[@]}" \
+	  -C "$staging" \
+	  -p "$rpm_dir/$pkg_name" \
+	  . 2>&1
+	echo "  Created: $rpm_dir/$pkg_name"
 }
 
 # ---- main ----
@@ -882,6 +953,12 @@ main() {
     all|tar) build_tar ;;
   esac
 
+  # 差分资产（可选，需 PREVIOUS_HOMED）。必须在 SHA256SUMS 计算之前 ——
+  # 否则 delta 不会进校验和清单，下载方无法验它。
+  case "$ACTION" in
+    all|tar|deb) build_delta ;;
+  esac
+
   echo ""
   echo "=== Done! Packages in: $DIST_DIR ==="
   echo ""
@@ -889,7 +966,11 @@ main() {
   # 只列**本批**产物：dist/ 会跨多次构建累积，用 find 全目录会让清单／SHA256SUMS
   # 带上历史版本的文件名——用户下载那种清单后 `sha256sum -c` 必然报缺失。
   # （v1.2.2 构建时就出现过：清单里混进了 1.2.0/1.2.1 的包名。）按本批版本号过滤。
-  mapfile -t release_files < <(find "$DIST_DIR" -type f \( -name "*${PKG_VERSION}*.deb" -o -name "hologramagent_${PKG_VERSION}_*.tar.gz" -o -name "*${PKG_VERSION}*.rpm" \) 2>/dev/null | sort)
+  #
+  # ★ 必须包含 .delta：差分资产也要进校验和清单。
+  # 否则下载方无法验它的完整性 —— 而 delta 是会被直接喂给 ApplyDelta 的
+  # 输入，未校验的补丁等于未校验的二进制。
+  mapfile -t release_files < <(find "$DIST_DIR" -type f \( -name "*${PKG_VERSION}*.deb" -o -name "hologramagent_${PKG_VERSION}_*.tar.gz" -o -name "*${PKG_VERSION}*.rpm" -o -name "*${PKG_VERSION}*.delta" \) 2>/dev/null | sort)
   for f in "${release_files[@]}"; do
     echo "  $(du -h "$f" | cut -f1)  $f"
   done

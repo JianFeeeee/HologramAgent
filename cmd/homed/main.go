@@ -4,11 +4,13 @@ import (
 	"context"
 	"log"
 	"path/filepath"
+	"strings"
 
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/pluginhost"
 	securitymod "github.com/JianFeeeee/HologramAgent/internal/kernelmod/security"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	// ★ 内置插件统一走 internal/plugins 的清单（all.go），**不要**在这里
 	// 单独导入某个插件：
@@ -17,6 +19,7 @@ import (
 	//   · 想增删内置插件请改 all.go。
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins"
 	"github.com/JianFeeeee/HologramAgent/internal/systemd"
+	updatepkg "github.com/JianFeeeee/HologramAgent/internal/update"
 
 	// 空白导入内置 provider：它们各自在 init 里注册到 pkg/embedding。
 	// 想把核心换成自己的模型，只需替换这一行（或另建一个发行版 main）。
@@ -81,6 +84,16 @@ func main() {
 
 	agentWorkDir := ensureDataDirs(opt.dataDir)
 
+	// ★ 数据外置接线（第 4 项）：告诉分词器去哪里找外置词库。
+	//
+	// 词库 12MB + ONNX 模型 47MB 是**数据**而不是代码，却 //go:embed 进了
+	// 二进制（88MB 里 59MB 是它们）。外置后：
+	//   · 词库/模型可独立发版，不必重下整个二进制
+	//   · 而 patch 版本之间这两个目录实际从未变过
+	//
+	// 必须在 GetJieba() 首次调用之前设：首次调用会初始化单例并固定目录。
+	memory.SetJiebaDataDir(opt.dataDir)
+
 	// ---- 配置中心（SQLite 持久化，唯一配置源） ----
 	//
 	// 必须早于 initMemoryStack：蒸馏的生成侧 provider 由配置决定
@@ -89,6 +102,34 @@ func main() {
 	cfgReg := internalConfig.NewConfigRegistry(filepath.Join(opt.dataDir, "config.db"))
 	defer cfgReg.Close()
 	cfgReg.SeedDefaults(opt.dataDir)
+
+	// ========================================================================
+	// ★ 数据目录**权威源**：数据库优先，命令行次之
+	//
+	// 用户 2026-10-28 裁定：`core.daemon.data_dir` 有值时以它为准，没有时
+	// 才用 `-data`。理由是这个键是**运维可改的**（WebUI 就能改），而 `-data`
+	// 写在 systemd 单元里、改它要碰部署配置。让可改的那个赢，才符合直觉。
+	//
+	// ## 为什么必须在 cfgReg 之后、一切重型初始化之前
+	//
+	// 它决定 logDir / cli.sock / 心跳文件 / 各存储的落点。晚一步就出现
+	// "日志已经写进 A、数据写进 B"的分裂。
+	//
+	// ## 为什么只做一次
+	//
+	// cfgReg 是从 <cliDataDir>/config.db 打开的，而它读出的 data_dir 可能是
+	// 另一个目录 —— 那个目录下**也有** config.db。若再次打开去读它，就成了
+	// 自我引用的无限链。所以：库只开一次，键只读一次。
+	// ========================================================================
+	if dbDir := strings.TrimSpace(cfgReg.GetString("core.daemon.data_dir", "")); dbDir != "" {
+		if clean := filepath.Clean(dbDir); clean != filepath.Clean(opt.dataDir) {
+			log.Printf("[homed] data dir: 以数据库 core.daemon.data_dir 为准 → %s（原 -data %s）", clean, opt.dataDir)
+		}
+		opt.dataDir = filepath.Clean(dbDir)
+	}
+	if opt.cliSocket == "" || !filepath.IsAbs(opt.cliSocket) {
+		opt.cliSocket = filepath.Join(opt.dataDir, "cli.sock")
+	}
 	// LLM 配置写前留档（config_set 写 core.llm.* 前自动快照），guard 恢复用基线
 	// ★ 锚点：本块必须在 SetLLMSnapshotFile / ToConfig 之前（两者都会读 core.llm.*）。
 	// ========================================================================
@@ -196,6 +237,22 @@ func main() {
 		log.Fatalf("[homed] kernel assembly failed: %v", err)
 	}
 	defer ks.CloseAll()
+
+	// ★ 挂载内核侧升级执行器（第 3 项：执行权归内核）。
+	//
+	// 为何在这里而不是在 update 模块的 Init 里：update 模块必须在第 0 层
+	// （回滚判定要早于一切模块），而事件总线由 kernelapi 层产出 ——
+	// 第 0 层时它还不存在。所以分两段：Init 做回滚与探测，此处订阅
+	// update_request 并接管“scope=kernel”的执行。
+	//
+	// 为何执行权必须在内核而不是插件：插件可以被 disable / auto_start:false，
+	// 而升级内核这件事不能依赖一个可被禁用的部件。
+	// ★ 注入事件总线（升级进度/结果都要发出去）。
+	//
+	// 注入后 internal/update 以内核身份发事件，**插件不再需要持有 *events.Bus**
+	// —— 那正是“安全监控可被绕过”的根源（拿裸总线就能伪造任意事件）。
+	updatepkg.SetEventBus(ks.EventBus)
+	defer updatepkg.AttachExecutor(ks.EventBus, ks.DataDir)()
 
 	cfg := ks.Cfg
 	luaVM := ks.LuaVM

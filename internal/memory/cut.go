@@ -42,7 +42,33 @@ var contentPOS = map[string]bool{
 var (
 	jiebaOnce sync.Once
 	jiebaInst *gojieba.Jieba
+
+	// jiebaDataDir 是内核数据目录（供外置词库查找，第 4 项）。
+	//
+	// 为何用包级变量而不是给 GetJieba() 加参数：它是**全局单例**
+	// （jiebaOnce），调用方散布在 memory/indexer/knowledge 多处，
+	// 加参数会让每个调用点都要传一遍 dataDir，而那些地方未必拿得到。
+	//
+	// 未设置时为空 ⇒ 只查系统目录与内嵌词库（与旧行为一致）。
+	jiebaDataDirMu sync.RWMutex
+	jiebaDataDir   string
 )
+
+// SetJiebaDataDir 由内核启动时注入数据目录（供外置词库覆盖）。
+//
+// **必须在 GetJieba() 首次调用之前调**：首次调用会初始化单例并
+// 固定词库目录，之后再改不会生效。
+func SetJiebaDataDir(dir string) {
+	jiebaDataDirMu.Lock()
+	defer jiebaDataDirMu.Unlock()
+	jiebaDataDir = dir
+}
+
+func jiebaDataDirValue() string {
+	jiebaDataDirMu.RLock()
+	defer jiebaDataDirMu.RUnlock()
+	return jiebaDataDir
+}
 
 func GetJieba() *gojieba.Jieba {
 	jiebaOnce.Do(func() {
@@ -68,11 +94,11 @@ func GetJieba() *gojieba.Jieba {
 }
 
 func jiebaDictDir() string {
-	// 首选内嵌词库：它是产物的一部分，与二进制同版本、不依赖宿主环境。
+	// 首选外置词库（DataDir 与系统目录）→ 退回内嵌词库落盘。
 	//
 	// 以前这里只猜 GOMODCACHE/GOPATH/~/go/pkg/mod，部署机上通常没有 Go 模块缓存，
 	// 于是分词与关键词提取会**静默退回空列表**（详见 jieba_embed.go 的说明）。
-	if dir, err := materializeJiebaDict(); err == nil && dir != "" {
+	if dir, err := materializeJiebaDict(jiebaDataDirValue()); err == nil && dir != "" {
 		return dir
 	}
 	log.Printf("[jieba] writing embedded dictionary failed, falling back to module cache lookup (embedded failure usually means cache dir is not writable)")

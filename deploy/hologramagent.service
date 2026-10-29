@@ -27,6 +27,22 @@ Wants=network-online.target
 # exec() 真正成功才继续，凭据目录与 ExecStartPost 的顺序才是确定的。
 Type=exec
 
+# ★ 降权运行（2026-10-28 落定）。
+#
+# 此前本单元**没有** User= ⇒ 以 root 运行。生产实例之所以是
+# hologramagent，完全靠现场手工 drop-in —— 也就是说发行物里并没有
+# 落实降权，装到新机器上就是 root。
+#
+# 配套要求：用户与组由包脚本（deb postinst / rpm %pre / install.sh）创建。
+# 缺失时 systemd 会因 User= 不存在而拒绕启动 —— 这是**响亮失败**，
+# 比默默用 root 好。
+#
+# ⚠️ 降权后 `Apply` 无法替换 /usr/bin/homed（属主 root、目录不可写）。
+#    这不是缺陷，是设计：是否允许自替换由 update.Capabilities 判定，
+#    deb/rpm 形态一律走包管理器（见 internal/update/install.go）。
+User=hologramagent
+Group=hologramagent
+
 # ★ guard 模式（与本机生产实例一致）。
 #   数据目录默认 /var/lib/hologram（Debian 惯例）；迁移到别的目录时
 #   必须**同时**改这里和 core.daemon.data_dir —— 两者不等价，见 README。

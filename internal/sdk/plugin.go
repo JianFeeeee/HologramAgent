@@ -170,6 +170,13 @@ type PluginManager interface {
 
 type PluginSDK struct {
 	*pubsdk.PluginSDK
+
+	// name 是本插件的名字（同时是事件发布者身份）。
+	//
+	// ★ 为何必须存下来：总线闸门要判断“这个插件能不能发这个事件”，
+	// 而之前三条路径（Publish / Subscribe / EventBus）都不带身份 ——
+	// 不带身份会被当成内核内部而一律放行，等于给所有插件开了伪造后门。
+	name     string
 	settings SettingsAPI
 	memory   MemoryAPI
 	textMem  TextMemoryAPI
@@ -381,6 +388,7 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	}
 	return &PluginSDK{
 		PluginSDK: base,
+		name:      name,
 		settings:  cfg.Settings,
 		memory:    cfg.Memory,
 		textMem:   cfg.TextMemory,
@@ -506,25 +514,77 @@ func (s *PluginSDK) ListChannels() []agentIO.ChannelInfo {
 	return nil
 }
 
+// Publish 以**本插件身份**发布事件。
+//
+// ★ 必须带身份（pluginName）：总线的闸门要判断“这个插件能不能发这个
+// 事件”。不带身份会被当成内核内部而一律放行 —— 那等于给所有插件
+// 开了伪造系统事件的后门。
 func (s *PluginSDK) Publish(evt *events.Event) {
-	if s.eventBus != nil {
-		s.eventBus.Publish(evt)
+	if s.eventBus == nil {
+		return
+	}
+	if err := s.eventBus.PublishAs(events.Publisher{Name: s.name}, evt); err != nil {
+		// 被拒时不能静默：插件否则以为“发了、没反应”
+		log.Printf("[sdk] %s publish %q denied: %v", s.name, evt.Type, err)
 	}
 }
 
 // EventBus 返回内核事件总线（nil 表示该部署未接总线）。
 //
-// ★ 为什么需要 getter 而不只用 Publish：有些能力要**把总线本身传下去**，
-// 例如 update 子系统的升级闭环（internal/update.DoUpgradeBus）——
-// 它在替换二进制、重启进程的长过程中持续发进度事件。
-// 只给 Publish 的话，那类长流程就得在每个调用点手动转发一遍。
-func (s *PluginSDK) EventBus() *events.Bus { return s.eventBus }
+// ## ★ 为什么它仍然返回裸总线（但不再是一个漏洞）
+//
+// 有些能力要**把总线本身传下去**（例如升级闭环在替换二进制期间持续
+// 发进度事件）。但裸总线本身不再能绕过策略：
+//
+//	闸门挂在 Bus.Publish / Bus.Subscribe 上（见 internal/events/bus.go）。
+//	拿到 *Bus 的调用方直接 Publish，仍然会被当作**内核身份**吗？
+//	不会——因为他们拿到的是同一个 *Bus，而 Bus.Publish 用空身份。
+//
+// ★★ 所以这里返回的是一个**带身份的视图**：订阅/发布都绑定本插件名。
+//
+//	之前返回 *events.Bus 的后果是任何插件都能调 bus.Publish(伪造事件)
+//	而不经任何授权 —— 那正是“安全监控可被绕过”的根源。
+type BusHandle struct {
+	bus  *events.Bus
+	name string
+}
 
-func (s *PluginSDK) Subscribe(eventType events.EventType, handler events.Handler) func() {
-	if s.eventBus != nil {
-		return s.eventBus.Subscribe(eventType, handler)
+// Publish 以插件身份发布。
+func (h BusHandle) Publish(evt *events.Event) error {
+	if h.bus == nil {
+		return nil
 	}
-	return func() {}
+	return h.bus.PublishAs(events.Publisher{Name: h.name}, evt)
+}
+
+// Subscribe 以插件身份订阅（被拒时返回 error）。
+func (h BusHandle) Subscribe(eventType events.EventType, handler events.Handler) (func(), error) {
+	if h.bus == nil {
+		return func() {}, nil
+	}
+	return h.bus.SubscribeAs(events.Publisher{Name: h.name}, eventType, handler)
+}
+
+// EventBus 返回**带本插件身份**的总线视图。
+//
+// 拿到它也不能绕过闸门：Publish/Subscribe 都会带上插件名去过策略。
+func (s *PluginSDK) EventBus() BusHandle { return BusHandle{bus: s.eventBus, name: s.name} }
+
+// Subscribe 以**本插件身份**订阅事件。
+//
+// ★ 之前这里调的是裸 Bus.Subscribe —— 不查策略、不报错。
+// 现在走 SubscribeAs，被拒时会记日志（不能用 error：旧调用点习惯
+// 只拿一个 unsub 函数，改签名会波及几十处）。
+func (s *PluginSDK) Subscribe(eventType events.EventType, handler events.Handler) func() {
+	if s.eventBus == nil {
+		return func() {}
+	}
+	unsub, err := s.eventBus.SubscribeAs(events.Publisher{Name: s.name}, eventType, handler)
+	if err != nil {
+		log.Printf("[sdk] %s subscribe %q denied: %v", s.name, eventType, err)
+		return func() {}
+	}
+	return unsub
 }
 
 // SetToolBlocks 桥接到 IOManager：插件工具注入多模态块，process.go 消费。

@@ -57,10 +57,14 @@ hologram-gui (desktop GUI). Connects to a remote HologramAgent server.
 mkdir -p %{buildroot}%{_bindir}
 mkdir -p %{buildroot}%{_unitdir}
 mkdir -p %{buildroot}%{_varlibdir}
+mkdir -p %{buildroot}/usr/lib/hologram
 
 %if "%{variant}" == "full" || "%{variant}" == "server"
 install -m 755 %{_sourcedir}/homed %{buildroot}%{_bindir}/homed
 install -m 644 %{_sourcedir}/hologramagent.service %{buildroot}%{_unitdir}/hologramagent.service
+# 服务单元写死了 User=hologramagent，用户创建是安装契约的一部分。
+# 与 deb 的 postinst 共用同一份幂等 helper，不另写一套。
+install -m 755 %{_sourcedir}/setup-user.sh %{buildroot}/usr/lib/hologram/setup-user.sh
 %endif
 
 # waiter 三个变体都要：server 也含 CLI（对齐 deb 的 stage_variant
@@ -79,6 +83,7 @@ cp -r %{_sourcedir}/hologram-gui-linux-*/* %{buildroot}%{_datadir}/hologram-gui/
 %{_bindir}/homed
 %{_unitdir}/hologramagent.service
 %dir %{_varlibdir}
+/usr/lib/hologram/setup-user.sh
 %endif
 
 %{_bindir}/waiter
@@ -90,6 +95,13 @@ cp -r %{_sourcedir}/hologram-gui-linux-*/* %{buildroot}%{_datadir}/hologram-gui/
 
 %post
 %if "%{variant}" == "full" || "%{variant}" == "server"
+# ★ 先建用户/组：单元里是 User=hologramagent。
+# 缺用户时 systemd 会拒绕启动（响亮失败），但装完起不来同样是事故。
+# 必须在 mkdir/chown 之前 —— 否则首次安装会把数据目录建成 root 所有。
+if [ -x /usr/lib/hologram/setup-user.sh ]; then
+  HOLOGRAM_DATA=%{_varlibdir} /usr/lib/hologram/setup-user.sh || \
+    echo "warning: 无法创建 hologramagent 用户，服务将无法启动" >&2
+fi
 mkdir -p %{_varlibdir}
 %systemd_post hologramagent.service
 %endif
