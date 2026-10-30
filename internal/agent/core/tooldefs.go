@@ -843,6 +843,18 @@ func (a *Agent) buildToolDefs() []interface{} {
 				"system_prompt": map[string]interface{}{"type": "string", "description": "create：系统提示词（留空用内置的实时通话提示词）"},
 				"max_tools":     map[string]interface{}{"type": "number", "description": "create：单轮最多几批工具调用（0=不限，rt 默认不限）"},
 				"text":          map[string]interface{}{"type": "string", "description": "send：要注入的输入（会打断当前轮）"},
+				// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
+				//
+				// 描述里必须说清“这是限制”而不是“这是授权”：模型很容易把
+				// allowed_tools 误读成“额外授予”。留空 = 不作额外限制（沿用全局策略）。
+				"allowed_tools": map[string]interface{}{
+					"type":        "string",
+					"description": "create：**你为它声明**的工具白名单（逗号分隔，支持 cmd_* 这类通配）。留空=不额外限制（沿用全局策略）。只能收窄，不能扩大。",
+				},
+				"deny_tools": map[string]interface{}{
+					"type":        "string",
+					"description": "create：**你为它声明**的追加禁止（逗号分隔，支持通配）。你能用但不给它用的工具写这里。与 allowed_tools 同时给时两者同时生效（deny 优先）。",
+				},
 			},
 			[]string{"action"}, parallelOpts()))
 	}
@@ -881,7 +893,17 @@ func (a *Agent) buildToolDefs() []interface{} {
 			"allowed_outputs": map[string]interface{}{"type": "string", "description": "create：授权的输出通道（逗号分隔；留空=完整授权）"},
 			"capacity":        map[string]interface{}{"type": "number", "description": "create：划入 inputch 的队列容量"},
 			"temp_path":       map[string]interface{}{"type": "string", "description": "create：temp 图记忆路径（留空则用 data_dir/residents/<id>/graph.db）"},
-			"text":            map[string]interface{}{"type": "string", "description": "send：要发给子 agent 的消息"},
+			// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
+			// 描述必须点明“声明限制”而非“授予”：模型很容易把白名单误读成授权。
+			"allowed_tools": map[string]interface{}{
+				"type":        "string",
+				"description": "create：**你为它声明**的工具白名单（逗号分隔，支持 cmd_* 这类通配）。留空=不额外限制（沿用全局策略）。只能收窄，不能扩大。",
+			},
+			"deny_tools": map[string]interface{}{
+				"type":        "string",
+				"description": "create：**你为它声明**的追加禁止（逗号分隔，支持通配）。你能用但不给它用的工具写这里。与 allowed_tools 同时给时两者同时生效（deny 优先）。",
+			},
+			"text": map[string]interface{}{"type": "string", "description": "send：要发给子 agent 的消息"},
 			"residual": map[string]interface{}{
 				"type": "string",
 				"description": "reclaim/destroy：该子手头**未处理消息**的处置。" +

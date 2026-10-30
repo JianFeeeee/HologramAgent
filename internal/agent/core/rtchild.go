@@ -368,6 +368,13 @@ type RTChildOptions struct {
 	// 与 `spawn_child` 的 max_turns 同义，但默认值必须是 0（不限）：
 	// rt 是**常驻对话**而非一次性任务，跑满就结束是错的。
 	MaxTools int
+	// AllowedTools / DenyTools 是**父为这个 rtchild 声明**的工具策略。
+	//
+	// 与驻留子同理（见 ResidentOptions.AllowedTools）。rt 流不禁工具（用户裁定 R3），
+	// 但 R3 说的是“内核不拔工具”，不是“父不能收窄”—— 通话场景下
+	// 把 cmd_run 这类高危工具从子手里拿掉是合理且必要的。
+	AllowedTools []string
+	DenyTools    []string
 }
 
 // rtChildDefaultPrompt 是 rtchild 的默认系统提示词。
@@ -584,6 +591,18 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		return "", fmt.Errorf("划入 outputch(rt) %q: %w", opts.Output, err)
 	}
 
+	// ★ 父为这个 rtchild **声明主体策略**（用户裁定 2026-10-30）。
+	//
+	// 位置在这一步（通道已划好、rtLoop 尚未起）：子一旦开始跑就会执行工具，
+	// 那时策略必须已在内核里，否则存在一个“无约束执行”的窗口。
+	//
+	// 声明失败要回滚：一个“本该受限却无限”的执行体比创建失败危险得多。
+	if err := a.declareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
+		cancel()
+		rollback()
+		return "", fmt.Errorf("为 rtchild %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
+	}
+
 	a.rtMu.Lock()
 	a.rtChildren[opts.ID] = rc
 	// ★ 这里**不**清留档（与一个曾被写错一版的修复相反，记录以示后人）。
@@ -624,6 +643,12 @@ func (a *Agent) StopRTChild(id string) error {
 	if !ok {
 		return fmt.Errorf("rtchild %s 不存在", id)
 	}
+	// ★ 撤销父为它声明的主体策略（与 StopRTChild 同时）。
+	//
+	// 与 resident 同理：主体表以调用方给的名字为键，同名重建会继承旧策略。
+	// 而且若不撤销，`rt_children create id=x` → `stop x` → `create id=x`
+	// 这个循环会让策略表持续增长且语义错误。
+	a.revokeChildPolicy(id)
 	rc.mu.Lock()
 	rc.stopped = true
 	rc.mu.Unlock()
@@ -675,6 +700,11 @@ func (a *Agent) StopRTChildren() int {
 		rc.mu.Lock()
 		rc.stopped = true
 		rc.mu.Unlock()
+		// ★ 撤销主体策略（必须与单数路径对称）。
+		//
+		// 这里曾漏过一步（入站登记未注销），与今天修的 StopRTChildren
+		// 不对称是同一类缺陷形态 —— 所以两处必须逐字对齐。
+		a.revokeChildPolicy(rc.id)
 		rc.agent.cancel()
 		_, _, _ = rc.slot.Take()
 		// 注销入站登记（与 StopRTChild 的单数路径逐字一致）。
@@ -1503,6 +1533,9 @@ func (a *Agent) executeRTChildren(tc agentAPI.ToolCall) string {
 			Output:       output,
 			SystemPrompt: strArg(tc, "system_prompt"),
 			MaxTools:     rtIntArg(tc, "max_tools", 0),
+			// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
+			AllowedTools: splitArg(strArg(tc, "allowed_tools")),
+			DenyTools:    splitArg(strArg(tc, "deny_tools")),
 		})
 		if err != nil {
 			return fmt.Sprintf("创建 rtchild 失败: %v\n%s", err, a.listRTChannels())

@@ -94,6 +94,28 @@ func (r *principalRegistry) SetByTag(tag string, p PrincipalPolicy) {
 	r.mu.Unlock()
 }
 
+// RemoveByID 撤销某个主体的策略声明。
+//
+// ## 为什么必须有它（2026-10-30）
+//
+// 主体 ID 对**子 agent** 来说是脚本给的（`ring_agents create id="bot1"`）。
+// 子被回收后同名重建是常规操作，而若旧策略留在表里：
+//
+//	新一代用**上一代父当时留的约束**运行 —— 而那个父可能已经不在了。
+//
+// 这与今天修的 rtchild 留档串线（`rtClosedTranscripts` 以模型给的名字为键）
+// 是**同一种形态**：以调用方给的名称为键的表，必须在生命周期结束时清理。
+//
+// 不清理还会单调增长（每建一个不同名字的子就多一条永不释放的 Polciy）。
+func (r *principalRegistry) RemoveByID(id string) {
+	if r == nil || strings.TrimSpace(id) == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.byID, id)
+	r.mu.Unlock()
+}
+
 // lookup 取出与主体相关的全部策略（ID + 每个标签）。
 func (r *principalRegistry) lookup(p Principal) []PrincipalPolicy {
 	if r == nil {
@@ -132,6 +154,32 @@ func (r *Runtime) DeclarePrincipalPolicy(scope, key string, p PrincipalPolicy) e
 		return &policyErr{"security: principal scope must be \"id\" or \"tag\", got " + scope}
 	}
 	return nil
+}
+
+// RevokePrincipalPolicy 撤销一个按 ID 声明的主体策略（合规性：子 agent 销毁时调）。
+//
+// 只支持 scope="id"：标签策略属于**部署级**声明（如 tag=external），
+// 它们的生命周期不跟随某个具体执行体，撤销只能由声明方自己做。
+func (r *Runtime) RevokePrincipalPolicy(scope, key string) error {
+	if r == nil || r.principals == nil {
+		return errNoRuntime
+	}
+	if scope != "id" {
+		return &policyErr{"security: revoke only supports scope=\"id\" (tag policies are deployment-level), got " + scope}
+	}
+	r.principals.RemoveByID(key)
+	return nil
+}
+
+// HasPrincipalPolicy 报告某 ID 是否已声明主体策略（诊断/状态面用）。
+func (r *Runtime) HasPrincipalPolicy(id string) bool {
+	if r == nil || r.principals == nil {
+		return false
+	}
+	r.principals.mu.RLock()
+	defer r.principals.mu.RUnlock()
+	_, ok := r.principals.byID[id]
+	return ok
 }
 
 // CheckToolFor 按**主体**判定工具是否可用。

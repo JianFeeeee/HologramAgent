@@ -29,9 +29,11 @@ import (
 	"strings"
 	"testing"
 
+	agentcore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // ───────────────── 判据 1：agent 模块**声明**了 security 依赖 ─────────────────
@@ -143,58 +145,6 @@ func TestAgentAssemblyWiresSecurity(t *testing.T) {
 	}
 }
 
-// ───────────────── 判据 3：子 agent 继承闸门 ─────────────────
-
-// ★★★ 判据：驻留子 / rtchild 的 AgentConfig **必须**带 Security。
-//
-// ## 为什么单列一条
-//
-// 子 agent 各自 `New(AgentConfig{...})`，不走 buildAgent 那条路。
-// 只修主 agent 的话，两类子 agent 会**静默失去闸门**，而它们恰恰是
-// 最需要闸门的执行体：
-//
-//	驻留子：长期挂着、自己跑调度器、长时间无人审阅
-//	rtchild：通话中一边听一边执行工具，没有人工复核窗口
-//
-// 这类"父修好了、子还是坏的"在本仓已有先例：`StopRTChildren` 漏注销
-// 入站登记（与单数路径不对称）、resident 与 rtchild 各拼一次通道名。
-// 不对称是这套代码的主要缺陷形态。
-//
-// ## 为什么用源码断言而不是行为断言
-//
-// 创建真驻留子需要完整记忆栈 + temp 图库；创建 rtchild 需要真实 rt 通道。
-// 两者都会把本判据变成"前置不满足就 skip"，而 skip 的判据等于没有。
-// 本仓已有同型先例：TestHiddenDependencyOnnxDeclared 就是读 textmem/mod.go
-// 源码断言 FacONNX 声明 —— 因为"层号断言"在那里会假绿。
-//
-// ★ 这条判据**能被变异咬住**：删掉任一 `Security: a.security` 行即红。
-func TestSubAgentsInheritSecurity(t *testing.T) {
-	cases := []struct {
-		file string
-		why  string
-	}{
-		{"../../agent/core/resident.go",
-			"驻留子是长期挂着、无人盯的执行体，自己跑调度器、接自己的输入 —— 无闸门等于策略对它完全无效"},
-		{"../../agent/core/rtchild.go",
-			"rtchild 在通话中一边听用户说话一边执行工具，没有任何人工复核窗口"},
-	}
-	for _, c := range cases {
-		src := readMod(t, c.file)
-		if !strings.Contains(src, "Security:") {
-			t.Errorf("★ %s 里没有 `Security:` 字段 —— %s。\n"+
-				"  修法：该处 New(AgentConfig{...}) 加 `Security: a.security`（继承父的）。",
-				c.file, c.why)
-			continue
-		}
-		if !strings.Contains(src, "Security:   a.security") &&
-			!strings.Contains(src, "Security: a.security") {
-			t.Errorf("★ %s 里有 `Security:` 但它不是 `a.security` —— "+
-				"子 agent 必须继承**父的那一个实例**，另建一个会让策略在两处分叉",
-				c.file)
-		}
-	}
-}
-
 // ───────────────── 判据 4：装配失败时响亮，而不是静默放行 ─────────────────
 
 // ★★★ 判据：`ks.Security == nil` 时 agent 模块必须**拒绝装配**。
@@ -265,5 +215,138 @@ func TestAgentAssemblyRefusesNilSecurity(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "security") {
 		t.Fatalf("失败信息必须点名缺失的设施（便于运维一眼定位），实际: %v", err)
+	}
+}
+
+// ───────────────── 判据 4：父为子**声明**策略，而不是子继承父的权限 ─────────────────
+
+// ★★★ 判据：父创建子 agent 时，父声明的工具策略必须**真的限制住那个子**，
+// 且**只影响那个子**（不是全局）。
+//
+// ## 为什么这版取代了上一版（用户裁定 2026-10-30）
+//
+// 上一版的判据断言「子继承父的 `a.security`」—— 那只保证了**机制**到位，
+// 却把权限模型写错成了「子 = 父的完整权限」。
+//
+// 正确模型是 **父为子声明策略**：
+//
+//	父：能调全部工具（受全局策略约束）
+//	子：父在创建时决定它能调什么 —— 内核持有并执行，子不能自己扩大
+//
+// 这不是新机制：`security.CheckToolFor(Principal, tool)` 与
+// `PrincipalPolicy{AllowTools, DenyTools}` 早就在树里，只是**零生产调用方**
+// （与工具策略闸、ScanContent 同型：机制完整、接线缺失）。
+//
+// ## 本判据钉三件事
+//
+//	① 父声明的 deny 真的拦住**子**
+//	② 同一条策略**不影响父**（不是全局策略）
+//	③ 子销毁后策略被撤销（同名重建不能继承上一代父的约束）
+func TestParentDeclaresChildPolicy(t *testing.T) {
+	rt := security.NewRuntime(nil)
+
+	// 父：parentID 为空 ⇒ 走 CheckTool（只受全局策略约束）。
+	const forbidden = "resident_denied_tool"
+	parent := agentcore.New(agentcore.AgentConfig{
+		ID:       "main",
+		Provider: nil,
+		Security: rt,
+	})
+	if d := parent.ProbeSecurityDecision(forbidden); !d.Allowed {
+		t.Fatalf("父不应受限（它是内核自身，此工具不受任何全局策略限制）: %s", d.Reason)
+	}
+
+	// 父为子声明策略：允许 probe_ok_*，禁止 forbidden。
+	childID := "policy-probe-child"
+	if err := parent.ProbeDeclareChildPolicy(childID, []string{"probe_ok_*"}, []string{forbidden}); err != nil {
+		t.Fatalf("父为子声明策略失败: %v", err)
+	}
+
+	// ① 子被判住：子 parentID 非空 ⇒ 走 CheckToolFor(Principal{self})
+	child := agentcore.New(agentcore.AgentConfig{
+		ID:       types.AgentID(childID),
+		ParentID: "main",
+		Provider: nil,
+		Security: rt, // 同一个 Runtime 实例（它只是机制，权限靠主体声明）
+	})
+	if d := child.ProbeSecurityDecision(forbidden); d.Allowed {
+		t.Fatalf("★ 父已为子 %q 声明禁止 %q，子的判定却仍是 Allowed —— "+
+			"主体策略没有被工具执行链读到（CheckToolFor 未接线）", childID, forbidden)
+	}
+	if d := child.ProbeSecurityDecision("other_tool"); d.Allowed {
+		t.Fatal("★ 父给了 probe_ok_* 白名单，other_tool 却仍被放行 —— 白名单未生效")
+	}
+	if d := child.ProbeSecurityDecision("probe_ok_1"); !d.Allowed {
+		t.Fatalf("白名单内的工具被误拒（%q）—— 判定逻辑坏了，不是接线问题", d.Reason)
+	}
+
+	// ② 同一条策略不影响父（主体隔离）。
+	if d := parent.ProbeSecurityDecision(forbidden); !d.Allowed {
+		t.Fatal("★ 子策略泄漏成了全局策略 —— 父也被禁了。主体隔离失效")
+	}
+
+	// ③ 撤销后子恢复（同名重建不能继承上一代父的约束）。
+	parent.ProbeRevokeChildPolicy(childID)
+	if d := child.ProbeSecurityDecision(forbidden); !d.Allowed {
+		t.Fatal("★ 策略已撤销，子却仍被禁 —— 主体表以调用方给的名字为键，" +
+			"不清理就会让同名重建的新一代继承上一代父的约束（与 rtchild 留档串线同型）")
+	}
+}
+
+// ★★★ 判据：**销毁路径必须撤销策略**（两处对称：单数与复数）。
+//
+// 这条单列，因为本仓反复吃亏在"单数路径改了、复数路径漏了"：
+// `StopRTChild` 注销入站登记而 `StopRTChildren` 漏了，就是这么来的。
+//
+// 用源码断言：真销毁需要完整记忆栈/rt 通道，而"前置不满足就 skip"
+// 的判据等于没有（本仓已有同型先例：TestHiddenDependencyOnnxDeclared）。
+func TestChildTeardownRevokesPolicy(t *testing.T) {
+	cases := []struct{ file, fn, why string }{
+		{"../../agent/core/resident.go", "func (a *Agent) teardownResidentWith(",
+			"驻留子销毁必须撤销父为它声明的策略"},
+		{"../../agent/core/rtchild.go", "func (a *Agent) StopRTChild(",
+			"rtchild 单数停止必须撤销策略"},
+		{"../../agent/core/rtchild.go", "func (a *Agent) StopRTChildren(",
+			"rtchild 批量停止必须与单数路径对称地撤销策略"},
+	}
+	for _, c := range cases {
+		src := readMod(t, c.file)
+		i := strings.Index(src, c.fn)
+		if i < 0 {
+			t.Fatalf("%s 里找不到 %s —— 符号改名了？判据需要跟着改", c.file, c.fn)
+		}
+		body := src[i:]
+		if end := strings.Index(body, "\n}\n"); end > 0 {
+			body = body[:end]
+		}
+		if !strings.Contains(body, "revokeChildPolicy") {
+			t.Errorf("★ %s 里没有 revokeChildPolicy —— %s。\n"+
+				"  后果：主体表以调用方给的名字为键，回收后同名重建会继承\n"+
+				"  上一代父留下的约束（而那个父可能已经不在了），且表单调增长。",
+				c.fn, c.why)
+		}
+	}
+}
+
+// ★★★ 判据：创建路径必须在**子开始执行前**声明策略。
+//
+// 顺序错（比如在 go carrier.rtLoop 之后声明）会留下一个"无约束执行"窗口：
+// 子一接到输入就会跑工具，那时策略可能还没进内核。
+func TestPolicyDeclaredBeforeChildStarts(t *testing.T) {
+	cases := []struct{ file, declAnchor, startAnchor, name string }{
+		{"../../agent/core/resident.go", "declareChildPolicy(opts.ID", "child.Start()", "驻留子"},
+		{"../../agent/core/rtchild.go", "declareChildPolicy(opts.ID", "go carrier.rtLoop(rc)", "rtchild"},
+	}
+	for _, c := range cases {
+		src := readMod(t, c.file)
+		di := strings.Index(src, c.declAnchor)
+		si := strings.Index(src, c.startAnchor)
+		if di < 0 || si < 0 {
+			t.Fatalf("%s: 找不到锚点（decl=%v start=%v）", c.file, di >= 0, si >= 0)
+		}
+		if di > si {
+			t.Errorf("★ %s：策略声明在 `%s` **之后** —— 存在一个「子已开始执行、策略尚未生效」的窗口",
+				c.name, c.startAnchor)
+		}
 	}
 }
