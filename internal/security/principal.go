@@ -27,24 +27,84 @@ import (
 	"sync"
 )
 
+// PrincipalKind 是主体**类别**。内核侧固定枚举，不接受自由字符串。
+//
+// ## 为什么必须是枚举而不是 string（2026-10-31 收敛）
+//
+// 原先 `Principal.Kind` 是裸 `string`，而实际填充点只有一处：
+// `agent/core/security_profile.go` 里写死的 `Kind: "resident"`。
+// 那意味着：
+//
+//	① **判定逻辑散在两侧**：`IsInternal()` 在 security 里靠字符串比较，
+//	   而“我该算哪一类”由调用方（agent）决定 —— 调用方说自己是内部，
+//	   就享受内部主体的豁免（不过 HardPrivateTools）。那是提权口子。
+//	② **拼错不报错**：写成 "residnet" ⇒ IsInternal 为 false ⇒
+//	   静默升级成用户主体语义（反方向）或静默降级。
+//
+// 收敛后：类别由**security 自己根据可信事实决定**（谁在调、有没有父），
+// 调用方只能传事实，不能传结论。
+type PrincipalKind string
+
+const (
+	// KindUnset 表示未分类。**不要**用它做任何判定 —— 它是零值，
+	// 只用于“调用方没给”这一情形，由 security 自己补全。
+	KindUnset PrincipalKind = ""
+	// KindInternal 是内核自身发起的调用（模块、内置定时任务）。
+	KindInternal PrincipalKind = "internal"
+	// KindSubAgent 是内核派出的子执行体（驻留子 / rtchild / 工作式子）。
+	//
+	// ★ 与 KindInternal 的区别：子执行体**是**内部委派（不该被
+	// HardPrivateTools 拦），但它们是长期自主运行的 —— 父可以在创建时
+	// 为它们**收窄**权限（AllowTools / DenyTools），而内核自身不受收窄。
+	KindSubAgent PrincipalKind = "subagent"
+	// KindUser 是终端用户（通过插件通道进来的真实用户）。
+	KindUser PrincipalKind = "user"
+	// KindGroup 是群/频道类主体。
+	KindGroup PrincipalKind = "group"
+)
+
+// ParsePrincipalKind 把外部字符串解析成枚举（仅用于默认实现兼容）。
+//
+// 未识别的值返回 KindUnset 与 false：**不静默回退到某个默认类别** ——
+// 那会让拼写错误变成权限语义漂移（与“未知档位名不静默放行”同一条纪律）。
+func ParsePrincipalKind(s string) (PrincipalKind, bool) {
+	switch PrincipalKind(s) {
+	case KindInternal, KindSubAgent, KindUser, KindGroup:
+		return PrincipalKind(s), true
+	// 兼容旧调用方写过的 "resident"：语义等价于 KindSubAgent。
+	case "resident":
+		return KindSubAgent, true
+	}
+	return KindUnset, false
+}
+
 // Principal 是一次调用的**主体**：谁在请求。
 type Principal struct {
 	// ID 是主体标识（QQ 用户 id、群 id、驻留子 id、内部标记）。
 	ID string
-	// Kind 是主体类别（"user" / "group" / "internal" / "resident" …）。
+	// Kind 是主体类别（固定枚举，见上方常量）。
 	//
-	// ★ 为什么不只看 ID：内部委派与用户请求的 ID 可能相同
-	//（驻留子继承父的输入事件），但**权限模型完全不同** ——
-	// 这正是 QQ 那条 `isInternalToolCall` 分支存在的原因。
-	Kind string
+	// ★ 为何不只看 ID：内部委派与用户请求的 ID 可能相同
+	//（驻留子继承父的输入事件），但**权限模型完全不同**。
+	Kind PrincipalKind
 	// Tags 是附加标签（如 "admin"、"trusted"），策略可按标签授予。
 	Tags []string
 }
 
-// IsInternal 报告是否内部主体（agent 体系自己发起）。
+// IsInternal 报告是否内部主体（内核自身或内核派出的子执行体）。
+//
+// 语义：内部主体**不受** HardPrivateTools 限制 —— 那条规则防的是
+// “用户偷看私人数据”，而内部委派本就有完整权限（QQ 的实测教训：
+// 再拦一次等于“机器人自己派出去的活被自己拦住”）。
 func (p Principal) IsInternal() bool {
-	return p.Kind == "internal" || p.Kind == "resident"
+	return p.Kind == KindInternal || p.Kind == KindSubAgent
 }
+
+// IsSubAgent 报告是否内核派出的子执行体。
+//
+// 与 IsInternal 分开的理由：子执行体**可以**被父收窄（Allow/Deny），
+// 而内核自身不受收窄。两者共用 HardPrivateTools 豁免，但不共用收窄语义。
+func (p Principal) IsSubAgent() bool { return p.Kind == KindSubAgent }
 
 // PrincipalPolicy 是某个主体的能力策略。
 type PrincipalPolicy struct {

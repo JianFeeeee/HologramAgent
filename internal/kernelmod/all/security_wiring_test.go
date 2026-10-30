@@ -350,3 +350,130 @@ func TestPolicyDeclaredBeforeChildStarts(t *testing.T) {
 		}
 	}
 }
+
+// ───────────────── 判据 5：策略语义只能在 security 内部 ─────────────────
+
+// ★★★ 判据：`agent/core` **不得**再做策略决策。
+//
+// ## 收敛前它做了什么（2026-10-31）
+//
+//	security_profile.go 里 214 行，其中绝大部分是策略逻辑：
+//	  · 自己从 payload 抠 `security_profile` 字段
+//	  · 自己判断 "parentID != "" → 走 CheckToolFor，否则 CheckTool"
+//	  · 自己拼 `PrincipalPolicy{AllowTools:…, DenyTools:…}` 字面量
+//	  · 自己写 `Kind: "resident"` **声明自己的主体类别**
+//
+// 最后一条是提权口子：调用方说自己是内部主体，就享受内部豁免
+// （不过 HardPrivateTools）。类别必须由 security 从**事实**推出。
+//
+// ## 本判据用什么钉
+//
+// 源码断言（跨包行为断言做不到"禁止某种写法"）。三类越界各一条正则：
+//
+//	① `payload["security_profile"]` 出现在 agent/core ⇒ 解析回落调用方
+//	② `Kind:` 字面量出现在 agent/core 的安全文件 ⇒ 调用方声明类别
+//	③ `CheckTool(` / `CheckToolFor(` 直接出现在 agent/core ⇒ 越级选链
+//
+// ★ 例外：`security_profile.go` 的**注释**里会提到这些名字（解释历史）。
+// 所以逐行判断，跳过纯注释行。
+func TestAgentCoreHoldsNoPolicySemantics(t *testing.T) {
+	src := readMod(t, "../../agent/core/security_profile.go")
+
+	// 会被禁止的代码形态（不含注释）。
+	banned := []struct{ pattern, why string }{
+		{`payload["security_profile"]`,
+			"档位字段名是 security 的协议，解析必须留在 security.BeginRound"},
+		{`Kind:`,
+			"主体类别必须由 security 从事实（有无父）推出，调用方不得声明"},
+		{`.CheckToolFor(`,
+			"选哪条判定链是策略决策，调用方只该调 Round.CheckTool"},
+		{`PrincipalPolicy{`,
+			"策略结构由 security 组装，调用方只该传 allow/deny 列表"},
+	}
+	for _, b := range banned {
+		for i, line := range strings.Split(src, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue // 注释里解释历史是允许的
+			}
+			if strings.Contains(line, b.pattern) {
+				t.Errorf("★ agent/core/security_profile.go:%d 出现 %q —— %s\n\t%s",
+					i+1, b.pattern, b.why, trimmed)
+			}
+		}
+	}
+}
+
+// ★★★ 判据：主体类别由 security 从**事实**推出，且**不信**调用方声明。
+//
+// 收敛前 `Kind: "resident"` 由 agent 写死 —— 它同时意味着"我是内部"
+// 与"我不受收窄"，把两件不同的事绑在一个字符串上。现在分类规则只有一处
+// （`classifyPrincipal`），本判据钉住三条映射。
+func TestPrincipalKindIsDerivedBySecurity(t *testing.T) {
+	rt := security.NewRuntime(nil)
+
+	// ① 有父 ⇒ 子执行体（内部豁免，但可被父收窄）
+	if p := rt.ClassifyPrincipalForTest(security.RoundInput{AgentID: "kid", IsChild: true}); p.Kind != security.KindSubAgent {
+		t.Fatalf("有父的执行体应归为 KindSubAgent，实际 %q", p.Kind)
+	} else if !p.IsInternal() || !p.IsSubAgent() {
+		t.Fatal("KindSubAgent 必须同时满足 IsInternal（豁免 HardPrivate）与 IsSubAgent（可被收窄）")
+	}
+
+	// ② 无 id ⇒ 内核自身
+	if p := rt.ClassifyPrincipalForTest(security.RoundInput{}); p.Kind != security.KindInternal {
+		t.Fatalf("无 id 应归为 KindInternal，实际 %q", p.Kind)
+	}
+
+	// ③ 有 id 无父 ⇒ 用户
+	if p := rt.ClassifyPrincipalForTest(security.RoundInput{AgentID: "qq-user-1"}); p.Kind != security.KindUser {
+		t.Fatalf("经插件通道进来的应归为 KindUser，实际 %q", p.Kind)
+	}
+
+	// ④ 枚举不接受自由字符串：拼错必须能被识别（而不是静默变成用户主体）
+	if _, ok := security.ParsePrincipalKind("residnet"); ok {
+		t.Fatal("★ 拼错的主体类别被当成合法值 —— 拼写错误会静默漂移权限语义")
+	}
+	if k, ok := security.ParsePrincipalKind("resident"); !ok || k != security.KindSubAgent {
+		t.Fatal("旧值 resident 应兼容映射为 KindSubAgent（不破坏既有调用方）")
+	}
+}
+
+// ★★★ 判据：轮次边界在**全部输入路径**上都被声明。
+//
+// 收敛把判定逻辑收到了一处，但"一轮何时开始/结束"只有各路径自己知道。
+// 本仓已有三条独立输入路径，漏一条就是"那类 agent 永远没有档位"：
+//
+//	主 agent + 驻留子  → runInputTask（驻留子有自己的 Agent 实例）
+//	rtchild           → rtRunOnce（不走调度器，单独一条）
+//
+// 用源码断言：真跑三条路径需要完整记忆栈/rt 通道，
+// 而"前置不满足就 skip"的判据等于没有（与 TestChildTeardownRevokesPolicy 同一理由）。
+func TestEveryInputPathDeclaresRound(t *testing.T) {
+	cases := []struct{ file, fn, why string }{
+		{"../../agent/core/task.go", "func (a *Agent) runInputTask(",
+			"主 agent 与驻留子共用的输入入口"},
+		{"../../agent/core/rtchild.go", "func (a *Agent) rtRunOnce(",
+			"rtchild 不走调度器、不经过 runInputTask，是独立的一条输入路径"},
+	}
+	for _, c := range cases {
+		src := readMod(t, c.file)
+		i := strings.Index(src, c.fn)
+		if i < 0 {
+			t.Fatalf("%s 里找不到 %s —— 符号改名了？判据需要跟着改", c.file, c.fn)
+		}
+		body := src[i:]
+		if end := strings.Index(body, "\n}\n"); end > 0 {
+			body = body[:end]
+		}
+		if !strings.Contains(body, "beginSecurityRound(") {
+			t.Errorf("★ %s 里没有 beginSecurityRound —— %s 缺少安全轮次边界。\n"+
+				"  后果：这条路径上的输入永远不会激活插件声明的档位，\n"+
+				"  而它在**其他**路径上是生效的 ⇒ 表现为「时灵时不灵」，最难查。",
+				c.fn, c.why)
+		}
+		if !strings.Contains(body, "End()") {
+			t.Errorf("★ %s 里没有 End() —— 档位会在轮次结束后泄漏到下一轮，"+
+				"guest 的收窄误伤后续输入（方向相反就是提权）", c.fn)
+		}
+	}
+}

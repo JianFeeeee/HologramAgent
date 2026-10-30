@@ -326,6 +326,18 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 	// interceptLoop 读它来决定“能不能取消”，因此必须是原子的。
 	defer a.sched.setCritical(false)
 
+	// ★ 安全轮次边界（2026-10-31 收敛）。
+	//
+	// 一条输入 = 一个安全轮次。这里把**原始事实**交给 security，
+	// 由它自己解析档位、自己判定主体类别；本 agent 不参与任何策略判断。
+	//
+	// ★ defer End() 而非在末尾调：一条输入可能经过多个 return 出口
+	// （跳过 / 短路 / 挂起 / 正常），逐个加必然漏一个 —— 与
+	// `executeToolCallOutcome` 的入向脱敏用 defer 同一理由。
+	round := a.beginSecurityRound(evt.Payload, evt.Source)
+	defer round.End()
+	_ = round // 句柄随后续轮次上下文下沉使用；当前先保证激活/归位正确
+
 	f, term := a.prepareInputTask(evt)
 	switch term {
 	case terminalSkipped, terminalStageShortCircuit, terminalConsolidation:

@@ -850,6 +850,19 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		return
 	}
 
+	// ★ 安全轮次边界（rtchild 路径）。
+	//
+	// rtchild 不走 `runInputTask`（它没有调度器、不吃队列，见 plan.md 十一.三 D），
+	// 所以这是一条**独立**的输入路径。收敛前 agent 侧的档位激活只写在
+	// `prepareInputTask` 里，rtchild 根本不会经过那里 —— 若只接一条，
+	// rtchild 就永远没有档位。
+	//
+	// 这是“每多一条输入路径就要多接一次”的典型代价。收敛后，
+	// 判定逻辑在 security 内部只剩一份，但**轮次边界仍得每条路径自己声明** ——
+	// 因为只有该路径知道一轮何时开始/结束。
+	secRound := a.beginSecurityRound(evt.Payload, evt.Source)
+	defer secRound.End()
+
 	rc.mu.Lock()
 	rc.round++
 	round := rc.round
