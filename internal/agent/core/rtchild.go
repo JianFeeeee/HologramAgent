@@ -174,6 +174,21 @@ func newRTSlot() *rtSlot {
 	return &rtSlot{wake: make(chan struct{}, 1)}
 }
 
+// ── 同名复用的清理纪律 ──
+//
+// rtchild 的两张表都以 **id 字符串**为键，而 id 由调用方（模型）给。
+// 于是同一个 id 被回收后重建（反复"拨同一通电话"）时，上一代留下的
+// 东西会被当成这一代的。两个具体的串线点（都有判据钉住）：
+//
+//	① rtClosedTranscripts[id] —— CloseRTChild 写入，读侧原本"先查留档、
+//	   命中即返回" ⇒ 同名重建后新实例的 rt_transcript 返回上一代已回收的原文。
+//	   修法：RTTranscript 改为**在跑实例优先**（留档只在没有活实例时才用）。
+//	② inboundChannelName(id) —— StopRTChildren（复数）漏了注销，
+//	   与 StopRTChild（单数）不对称。
+//	   修法：复数路径补上同一步注销。
+//
+// 两处都修在真正出错的那一侧（一个在读、一个在停），**不引入代际号**
+// 之类的额外抽象：问题本身只需两句定位准确的改动。
 // Push 覆盖写入一条输入，返回本次的 seq。
 //
 // 旧值**直接丢弃**（不是排队、不是补偿）—— 这正是契约 1/3 的实现。
@@ -564,6 +579,22 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 
 	a.rtMu.Lock()
 	a.rtChildren[opts.ID] = rc
+	// ★ 这里**不**清留档（与一个曾被写错一版的修复相反，记录以示后人）。
+	//
+	// 我一度在这里加过 `delete(a.rtClosedTranscripts, opts.ID)`，理由是
+	// "同名重开就该让旧留档失效"。实测后撤回，两个原因：
+	//
+	//  ① **它治的不是那个病**。串线的真因在**读取顺序**（RTTranscript
+	//     曾先查留档、命中即返回），已在那边修好。把这里改回保留留档，
+	//     判据 TestRTChild_ReuseAfterCloseKeepsTranscriptsApart 仍然绿
+	//     —— 反证它不解决问题。
+	//  ② **它本身有害**。留档的全部意义就是"回收后、主 agent 按需取回
+	//     原文"（交接 = 推信号 + 拉状态两步）。在 Spawn 时删掉，等于在
+	//     父还没拉之前就把上一通的正文抹了 —— 正是 CloseRTChild 注释里
+	//     反复强调要避免的"推了信号但拉不到正文"。
+	//
+	// 现在的语义：留档只在**下一次 CloseRTChild 写同名键**时被覆写
+	// （自然淘汰），在那之前一直可取。
 	a.rtMu.Unlock()
 
 	go carrier.rtLoop(rc)
@@ -618,6 +649,13 @@ func (a *Agent) StopRTChild(id string) error {
 }
 
 // StopRTChildren 停止全部 rtchild（父退出时必须；不留孤儿）。
+//
+// ★ 必须与 StopRTChild（单数）**行为对称**：那个会注销入站登记
+// （child/rt-<id>），本函数曾漏了这一步。
+//
+// 漏的后果与驻留子那边记录的是同一个形态：登记表是共享的、按 name 全局唯一，
+// 残留随 create/destroy 次数**单调累积**，而外部没有任何工具能单独注销
+// 一条 inputch —— 只能重启 homed 清。
 func (a *Agent) StopRTChildren() int {
 	a.rtMu.Lock()
 	all := make([]*rtChild, 0, len(a.rtChildren))
@@ -632,6 +670,15 @@ func (a *Agent) StopRTChildren() int {
 		rc.mu.Unlock()
 		rc.agent.cancel()
 		_, _, _ = rc.slot.Take()
+		// 注销入站登记（与 StopRTChild 的单数路径逐字一致）。
+		//
+		// 不碰插件声明的 rt 通道本身（那两条销毁后**悬空**，用户裁定）：
+		// 这里只摘本内核自己建的 child/rt-<id>。
+		if a.io != nil {
+			if reg := a.io.ChannelRegistry(); reg != nil {
+				reg.Unregister(inboundChannelName("rt/" + rc.id))
+			}
+		}
 	}
 	if len(all) > 0 {
 		log.Printf("[rtchild] stopped all %d instance(s)", len(all))
@@ -1238,6 +1285,9 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 	}
 
 	// ① 先取全文规模（此时实例还活着，history 完整）。
+	//
+	// ★ 必须在 Stop 之前取：Stop 会把实例从登记表摘掉，之后
+	//   RTTranscript 就只能走留档分支了。
 	transcript, _ := a.RTTranscript(id)
 	text := FormatRTTranscript(transcript)
 	n, chars := len(transcript), len(text)
@@ -1252,8 +1302,11 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 
 	// ③ 推 L4 信号（contextfull 同款），正文留在 RTTranscript 里等按需拉取。
 	//
-	// ★ 实例已出登记表，但原文必须仍可取 —— 所以把 transcript 存进
-	//   a.rtTranscripts 留档（见 RTTranscript 的读取顺序）。
+	// ★ 实例已出登记表，但原文必须仍可取 —— 所以留档（见 RTTranscript 的读取顺序）。
+	//
+	// ★★ 同名键在这里**自然覆写**（2026-10-30）：留档以 id 为键，同名回收
+	//   会替换掉上一次的留档。串线问题不在写侧而在**读侧**（见 RTTranscript
+	//   的"在跑实例优先"），所以这里不需要额外清理动作。
 	a.rtMu.Lock()
 	if a.rtClosedTranscripts == nil {
 		a.rtClosedTranscripts = map[string][]agentAPI.Message{}
@@ -1268,29 +1321,37 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 
 // RTTranscript 返回一个 rtchild 的**完整**上下文原文（不过窗口裁剪）。
 //
-// 读顺序：先查**已回收留档**（CloseRTChild 保存的），再查在用实例的 history。
-// 后者保证"通话进行中也能看"，前者保证"回收之后仍能取" —— 两者缺一，
-// 「回收时向主 agent 展示全部上下文」就会在某些时序下拿不到原文。
+// ## 读顺序（2026-10-30 修：留档不得遮蔽**在跑的新一代**）
+//
+// 原实现是「先查留档，有就返回」，于是同名重建后**新实例的对话永远读不到**：
+// 留档一直命中，`rt_transcript` 返回的是上一代已回收的原文（实测复现：
+// 新实例读出的第一条是上一通的对话）。现在按**在跑实例优先**：
+//
+//	在跑实例存在  ⇒ 返回它的 history（通话进行中也能看）
+//	否则查留档    ⇒ 返回该代留档（回收之后仍能取）
+//
+// 两条都保留，缺一条就会在某个时序下拿不到原文。二者的先后由
+// "实例还在不在" 决定，而不是由"留档里有没有" 决定。
 func (a *Agent) RTTranscript(id string) ([]agentAPI.Message, bool) {
 	a.rtMu.Lock()
-	archived, hasArchived := a.rtClosedTranscripts[id]
 	rc := a.rtChildren[id]
+	archived := a.rtClosedTranscripts[id]
 	a.rtMu.Unlock()
 
-	if hasArchived {
+	if rc != nil {
+		rc.mu.Lock()
+		// 深拷贝：调用方可能长期持有，不能被后续轮次 append 影响。
+		out := make([]agentAPI.Message, len(rc.history))
+		copy(out, rc.history)
+		rc.mu.Unlock()
+		return out, true
+	}
+	if archived != nil {
 		out := make([]agentAPI.Message, len(archived))
 		copy(out, archived)
 		return out, true
 	}
-	if rc == nil {
-		return nil, false
-	}
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	// 深拷贝：调用方可能长期持有，不能被后续轮次 append 影响。
-	out := make([]agentAPI.Message, len(rc.history))
-	copy(out, rc.history)
-	return out, true
+	return nil, false
 }
 
 // ── rt_transcript：主 agent 按需拉取 rtchild 的完整上下文 ──

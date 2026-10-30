@@ -77,6 +77,14 @@ type Agent struct {
 	// 为什么必须留档：交接是「推信号 + 拉状态」两步（见 CloseRTChild），
 	// 推完中断后实例已出登记表 —— 若不留档，主 agent 收到"可调用 rt_transcript
 	// 取回原文"的提示时，原文已经取不到了。
+	//
+	// ★ 键是 id，所以**同名复用会撞键**。串线的真因在读侧：RTTranscript 曾
+	// "先查留档、命中即返回"，于是新实例读到的永远是上一通已回收的原文
+	// （2026-10-30 实测复现）。现在改为**在跑实例优先**（见 RTTranscript）。
+	//
+	// ★ 刻意**不**在 Spawn 时 delete 这份留档：留档存在的意义就是"回收后
+	// 主 agent 按需取回原文"，提前删掉等于让推了信号却拉不到正文。
+	// 同名键只在下一次 CloseRTChild 写入时被自然覆写。
 	rtClosedTranscripts map[string][]agentAPI.Message
 	// rtSlot 是**本 agent 作为 rtchild 时**的输入槽（作为父时无用）。
 	rtSlot *rtSlot
