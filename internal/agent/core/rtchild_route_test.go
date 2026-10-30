@@ -381,9 +381,16 @@ func TestRTChildrenTool_FullLifecycle(t *testing.T) {
 	if !strings.Contains(out, "打断") {
 		t.Fatalf("send 没说明打断语义：%q", out)
 	}
-	waitFor(t, "rtchild 跑了一轮", func() bool {
-		st, ok := host.RTChildStats("call-1")
-		return ok && st.Rounds >= 1
+	// ★ 必须等**历史入账**，不能等 Rounds。
+	//
+	// Rounds 在 ChatStream **被调用时**就自增（请求刚构建完），而 assistant
+	// 那条消息是**流结束后**才追加进 history 的。等 Rounds 的话，随后的
+	// stop 可能读到 n==0，于是走"本次通话没有上下文需要交接"分支 ——
+	// 判据就会怪 stop 没提示 rt_transcript，而其实是它自己等早了。
+	// （同 rtchild_r7b_test 的坑，实测约 1/12 概率。）
+	waitFor(t, "rtchild 跑了一轮并写入历史", func() bool {
+		tr, ok := host.RTTranscript("call-1")
+		return ok && len(tr) > 0
 	})
 
 	// ④ stop：回收并交接
