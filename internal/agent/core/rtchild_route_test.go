@@ -437,3 +437,103 @@ func TestRTChildrenTool_NotVisibleToChild(t *testing.T) {
 		t.Fatal("rtchild 自己能看到 rt_children —— 会形成无界自我复制")
 	}
 }
+
+// TestRTChildrenTool_WrongParamNameIsRejectedNotSilent 钉住一次**真实事故**。
+//
+// ## 事故现场（2026-10-30，生产实例 e2e）
+//
+// 我用 `rt_children action="create" input="rtvoice-in" output="rtvoice"`
+// 创建 rtchild —— 参数名写成了 `input`/`output`，而工具声明的是
+// `inputch`/`outputch`。
+//
+// 结果：`strArg(tc,"inputch")` 拿到空串，本应报"必须成对给出"，
+// **但它成功了**，而且 `rtvoice`（输出通道）被划给了新 rtchild。
+// 随后 `rtvoice_say` 往 `rtvoice-in` 灌语音，rtchild 轮次永远是 0 ——
+// 症状是"通道注册了、插件活着、推送 ok，但子没反应"，
+// 与真因（参数名拼错）隔了三层。
+//
+// ## 本条判据钉什么
+//
+// **参数名写错必须失败，且错误信息要能让人改对**：
+// 指出缺哪个参数名，并列出当前可用的 rt 通道。
+//
+// 只断言"返回里有错"不够 —— 那可能只是碰巧提到"创建失败"。
+// 所以同时断言：
+//  ① 返回里出现正确的参数名（inputch / outputch），让人知道该写什么
+//  ② **没有**创建出 rtchild（不能半成功后失败）
+//  ③ 通道归属没被改动（不能"创建失败但通道已经被占了"）
+func TestRTChildrenTool_WrongParamNameIsRejectedNotSilent(t *testing.T) {
+	p := &rtCountingProvider{}
+	host, _ := newRTHost(t, p)
+	registerRTPair(t, host, "voice-in", "voice")
+
+	// 参数名照抄我当时的错误写法：input/output 而不是 inputch/outputch。
+	out := host.executeRTChildren(agentAPI.ToolCall{
+		Name: "rt_children",
+		Arguments: map[string]interface{}{
+			"action":   "create",
+			"id":       "typo-child",
+			"input":    "voice-in", // ← 错的参数名
+			"output":   "voice",    // ← 错的参数名
+		},
+	})
+
+	// ① 必须报错，且指名正确参数名
+	if !strings.Contains(out, "inputch") || !strings.Contains(out, "outputch") {
+		t.Fatalf("参数名写错时必须指出正确的参数名（inputch/outputch），实际：%q", out)
+	}
+	// ② 不能创建出来
+	if got := host.RTChildren(); len(got) != 0 {
+		t.Fatalf("参数名写错却创建成功了：%v —— 这会得到一个收不到输入的哑子", got)
+	}
+
+	// ③ 通道归属不能被改动（"失败了但通道已被占"是最难查的那种）
+	reg := host.io.ChannelRegistry()
+	for _, name := range []string{"voice-in", "voice"} {
+		ch, ok := reg.Lookup(name)
+		if !ok {
+			t.Fatalf("通道 %s 不见了", name)
+		}
+		if ch.Owner != "" {
+			t.Fatalf("创建失败后通道 %s 的归属被改成了 %q —— 失败必须无副作用",
+				name, ch.Owner)
+		}
+	}
+}
+
+// TestRTChildrenTool_PairAssignmentIsAtomic 钉住成对分配的原子性：
+// 第二个通道分配失败时，第一个必须回滚。
+//
+// 依据是 rtchild.go 里那句 `rollback() // 把已经划上的 Input 也恢复回去，别留半残`。
+// 没有本条判据的话，那个 rollback 是死代码 —— 改坏了也没人知道。
+func TestRTChildrenTool_PairAssignmentIsAtomic(t *testing.T) {
+	p := &rtCountingProvider{}
+	host, _ := newRTHost(t, p)
+	// 只注册 rt 输入通道，**故意不给** outputch —— 第二个分配必定失败。
+	if err := host.io.ChannelRegistry().Register(agentIO.InputChannel{
+		Name: "only-in", Plugin: "test",
+		Capabilities: agentIO.CapText | agentIO.CapRT,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := host.executeRTChildren(agentAPI.ToolCall{
+		Name: "rt_children",
+		Arguments: map[string]interface{}{
+			"action": "create", "id": "half",
+			"inputch": "only-in", "outputch": "no-such-channel",
+		},
+	})
+	if !strings.Contains(out, "创建 rtchild 失败") {
+		t.Fatalf("应当创建失败，实际：%q", out)
+	}
+	// ★ 关键：第一个通道必须被回滚，不能留半残。
+	ch, ok := host.io.ChannelRegistry().Lookup("only-in")
+	if !ok {
+		t.Fatal("only-in 不见了")
+	}
+	if ch.Owner != "" {
+		t.Fatalf("成对分配失败后 only-in 仍归 %q —— 回滚没生效，留下半残绑定",
+			ch.Owner)
+	}
+}
