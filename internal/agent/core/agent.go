@@ -369,6 +369,31 @@ type AgentConfig struct {
 	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
 	// 父 agent 创建驻留子时用它收窄子的输出能力。
 	AllowedOutputs []string
+	// Security 是安全防火墙运行时（security 模块产出，可 nil）。
+	//
+	// ## 为什么它是**装配期字段**而不是事后 Set
+	//
+	// 这个字段曾经只能靠 `SetSecurity()` 注入，而生产装配链里**没有任何
+	// 地方调用它** —— 唯一的调用方是 4 条测试。于是 `securityDecisionFor`
+	// 在生产中恒走 nil 分支、恒放行，而策略表本身完全正确：这是
+	// 「机制 ≠ 接线」的教科书样本（GUI 无拒绝记录，看起来像"没人违规"）。
+	//
+	// ★ 根因在**依赖图**，不在这行赋值：`agent.Requires()` 没声明
+	//   `FacSecurity`，图就没有理由把 security 的产物交给 agent（只有声明了
+	//   的 device 拿到了）。所以修复必须同时改三处：
+	//     ① kernelmod/agent 的 Requires() 加 FacSecurity
+	//     ② 这里加字段 + New() 赋值 + buildAgent 传 k.Security
+	//     ③ 装配级判据（删 ① 或 ② 必须红）
+	//   只做 ②不做 ① 会让代码读 `k.Security` 而图不保证它已就绪 ——
+	//   今天恰好对（security 在第 1 层）是运气，不是设计。
+	//
+	// ## 子 agent 必须继承
+	//
+	// 驻留子 / rtchild 各自 `New(AgentConfig{...})`，不继承就等于子 agent
+	// 完全没有闸门（而它们恰是"能指挥设备、能写记忆"的高风险执行体）。
+	// 见 resident.go / rtchild.go 里 `Security: a.security`。
+	Security *security.Runtime
+
 	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，plan.md 十一）。
 	//
 	// 置 true 后：
@@ -539,8 +564,11 @@ func New(cfg AgentConfig) *Agent {
 		embeddingProvider: cfg.EmbeddingProvider,
 		embeddingError:    cfg.EmbeddingError,
 		fusionCfg:         cfg.FusionCfg,
-		noMergeMarkers:    make(map[string]int),
-		lastInput:         make(map[string]time.Time),
+		// ★ 安全运行时在**构造期**落位（不再依赖事后 SetSecurity）。
+		//   为 nil 表示调用方显式不启用（独立工具/单测），不是"忘了接线"。
+		security:       cfg.Security,
+		noMergeMarkers: make(map[string]int),
+		lastInput:      make(map[string]time.Time),
 	}
 
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent

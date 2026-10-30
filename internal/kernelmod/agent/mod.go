@@ -36,7 +36,25 @@ func (Module) Name() string { return "agent" }
 func (Module) Requires() []string {
 	return []string{kernelmod.FacLLM, kernelmod.FacMemory, kernelmod.FacTracker,
 		kernelmod.FacDocStore, kernelmod.FacKnowledge, kernelmod.FacTextMem,
-		kernelmod.FacStageHost}
+		kernelmod.FacStageHost,
+		// ★ FacSecurity（2026-10-30 补）：这是**真实存在**的依赖，
+		// 之前只是没在图上声明。
+		//
+		// 为什么它必须在这里而不是“反正 security 在第 1 层、agent 在第 4 层”：
+		//
+		//  1. 图是**唯一**保证顺序的地方。不声明 => `buildAgent` 读 `ks.Security`
+		//     就是读一个“恰好已被别人填好”的字段，那是隐式顺序依赖，
+		//     正是本模块化设计要消灭的东西（见 kernelboot.Module 的 Requires 注释）。
+		//  2. 如果将来 security 因为新依赖被推到第 5 层，本模块的
+		//     `ks.Security == nil` 检查会**在运行期**报错 —— 而声明了依赖，
+		//     图会直接把它排后，运行期不会发生。
+		//  3. 判据 TestAgentDeclaresSecurityDependency 钉住它（删掉必红）。
+		//
+		// 是否应该反过来把工具执行完全迁进 device，让 agent 不持有 security？
+		// 那是 device 第二阶段的事（见 device/mod.go 包注释）。当前阶段 toolcall
+		// 仍在 core，所以依赖是真实的，就该如实声明。
+		kernelmod.FacSecurity,
+	}
 }
 func (Module) Provides() []string { return []string{kernelmod.FacAgent} }
 
@@ -49,6 +67,18 @@ func (Module) Init(k *kernelboot.KernelState) error {
 	}
 	if k.PluginRegistry == nil {
 		return errMissing("agent", kernelmod.FacStageHost)
+	}
+	// ★ FacSecurity 已声明在 Requires 里，到这里它必须非 nil。
+	//
+	// 为何在这里“响亮失败”而不让 nil 传给 Agent：nil 会让
+	// `securityDecisionFor` 恒放行，而策略表本身完全正确 —— 结果是
+	// “配置里写了黑名单、日志里一条拒绝都没有”，看起来像没人违规。
+	// 这种静默降级比启动失败难查得多。
+	//
+	// 注意区分：**配置显式关闭**时 security 模块装的是 Disabled Runtime
+	// （非 nil，零成本透传），所以这里报错只可能是装配顺序错了。
+	if k.Security == nil {
+		return errMissing("agent", kernelmod.FacSecurity)
 	}
 	k.Agent = buildAgent(k)
 
@@ -89,6 +119,7 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 	mmErr := k.MultimodalErr
 	stageHost := k.StageHost
 	evBus := k.EventBus
+	secRT := k.Security
 
 	personality := loadPersonality(cfg, cfgReg)
 
@@ -165,8 +196,16 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 		EmbeddingError:     mmErr,
 		StageHost:          stageHost,
 		EventBus:           evBus,
-		ThinkingEnabled:    cfg.LLM.ThinkingEnabled,
-		InputProcessing:    cfg.InputProcessing,
+		// ★ 安全运行时必须在**构造期**传入（2026-10-30）。
+		//
+		// 依赖链：security.Init → ks.Security → 这里 → AgentConfig.Security
+		//         → New() 写 a.security → securityDecisionFor → CheckTool。
+		//
+		// 判据 TestAgentAssemblyWiresSecurity 走真实登记表装配 + 真工具执行，
+		// 删掉本行或 Requires 里的 FacSecurity 都会红。
+		Security:        secRT,
+		ThinkingEnabled: cfg.LLM.ThinkingEnabled,
+		InputProcessing: cfg.InputProcessing,
 	})
 
 	// 图记忆读写钩子 → 事件总线。

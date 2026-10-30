@@ -488,7 +488,14 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		AllowedOutputs:    []string{opts.Output},
 		KernelSource:      string(a.id),
 		ParentID:          string(a.id),
-		IsRealtime:        true, // ★ 类型标签：只有它可被划 rt 通道
+		// ★ 安全运行时**必须继承父的**（2026-10-30 补）。
+		//
+		// rtchild 是高频、低延迟的执行体，且它照样能调工具（R3：rt 流不禁工具）。
+		// 不继承的后果与主 agent 同型：`securityDecisionFor` 恒走 nil ⇒ 恒放行。
+		// 而它比主 agent 更危险 —— 通话场景下它一边听用户说话一边执行工具，
+		// 没有任何人工复核的窗口。
+		Security:   a.security,
+		IsRealtime: true, // ★ 类型标签：只有它可被划 rt 通道
 	})
 	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 3 个记忆
 	//   整理循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。

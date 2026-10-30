@@ -50,10 +50,27 @@ func (a *Agent) activateSecurityProfile(payload map[string]interface{}) string {
 // 工具执行前的统一检查点：调用方拿到 !Allowed 时应把 Reason 原样回给模型
 // （统一拒绝语义 —— 模型据此能修正，而不是反复重试同一调用）。
 //
-// ★ 2026-10-29：本函数此前是**死代码**（`a.security` 从未被赋值 ⇒ 永远
-// 走 nil 分支 ⇒ 永远放行），`Policy.CheckTool` 因此对工具执行链完全不生效。
-// 修复分两步：① 补 `SetSecurity` 注入通道；② 在 `executeToolCallInner`
-// 的**所有实际执行分支之前**调用本函数。
+// ## 历史（两轮都错，值得记住）
+//
+// ★ 第一轮（2026-10-29）的诊断是「`a.security` 从未被赋值」，于是补了
+// `SetSecurity()`。但**生产装配链从来没调它** —— 唯一的调用方是 4 条测试。
+// 那 4 条判据全绿，因为它们在测试里**手动**调了 `a.SetSecurity(...)`：
+// 判据自己把缺失的那根线补上了，所以永远绿。
+//
+// ★ 第二轮（2026-10-30）才看清根因：`kernelmod/agent` 的 `Requires()`
+// **没有声明 `FacSecurity`**，依赖图就没有理由把 security 的产物交给
+// agent（只有声明了的 device 拿到了）。所以这不是"少一行赋值"，
+// 而是"模块边界没连上"。
+//
+// 现在的链路：
+//
+//	security.Init → ks.Security
+//	  → buildAgent 传 AgentConfig.Security
+//	  → New() 写 a.security
+//	  → 子 agent（resident/rtchild）继承 a.security
+//	  → 本函数 → CheckTool
+//
+// 判据钉的是**装配**（kernelmod/all 的整机判据），不是本函数被手动调用后的行为。
 func (a *Agent) securityDecisionFor(tool string) security.Decision {
 	if a == nil || a.security == nil {
 		return security.Decision{Allowed: true}
@@ -61,13 +78,16 @@ func (a *Agent) securityDecisionFor(tool string) security.Decision {
 	return a.security.CheckTool(tool)
 }
 
-// SetSecurity 注入安全运行时（装配期调用，幂等）。
+// SetSecurity 注入安全运行时（**仅限测试与独立工具**）。
 //
-// ## 为什么需要显式注入点
+// ## 不要在生产装配里调它
 //
-// `Agent.security` 曾经是**只有测试赋过值**的字段：生产装配链里没有任何
-// 地方写它，于是 `securityDecisionFor` 恒定放行。这不是"策略写错了"，
-// 而是"策略根本没接上"，而两种故障在日志上看起来一样（都是没有拒绝记录）。
+// 生产路径是 `AgentConfig.Security`（构造期落位），因为那一条由依赖图
+// 保证 `ks.Security` 已就绪。用 SetSecurity 事后补会造出一个图看不见的
+// 隐式依赖 —— 正是本仓反复踩的那个坑。
+//
+// 保留它是因为 4 条进程内判据需要一个"只换安全运行时"的开关，
+// 而它们不跑整机装配。
 //
 // ## 为什么允许 nil
 //
