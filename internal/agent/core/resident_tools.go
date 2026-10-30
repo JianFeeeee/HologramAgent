@@ -133,7 +133,7 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 		// 必须在 Destroy 之前 —— Destroy 会关掉 temp（这正是原先
 		// ReclaimResident 内部做的顺序）。
 		var promoted int
-		residual, rmsg, ferr := a.FinishResident(id, residualPolicyOf(tc),
+		residual, rmsg, ferr := a.FinishResidentWith(id, residualPolicyOf(tc), channelDispositionOf(tc),
 			func(rc *residentChild) error {
 				p, herr := a.harvestResidentMemory(rc)
 				if herr != nil {
@@ -151,7 +151,7 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 	case "destroy":
 		id := strArg(tc, "id")
 		// 同上：销毁前先把残余任务交出去，否则它们会随子一起无声消失。
-		residual, rmsg, ferr := a.FinishResident(id, residualPolicyOf(tc), nil)
+		residual, rmsg, ferr := a.FinishResidentWith(id, residualPolicyOf(tc), channelDispositionOf(tc), nil)
 		if ferr != nil {
 			return fmt.Sprintf("销毁失败: %v", ferr)
 		}
@@ -174,8 +174,27 @@ func residualPolicyOf(tc agentAPI.ToolCall) ResidualPolicy {
 	switch strings.ToLower(strArg(tc, "residual")) {
 	case "drop", "discard":
 		return ResidualDrop
+	case "stash", "park":
+		// 暂存到原通道，等通道被接回时放出。
+		return ResidualStash
+	case "takeover", "take_over", "take":
+		return ResidualTakeover
 	default:
 		return ResidualKeep
+	}
+}
+
+// channelDispositionOf 从工具参数读**通道**的处置方式（release/suspend/takeover）。
+//
+// 默认 release = 原有行为（归还未分配），保持向后兼容。
+func channelDispositionOf(tc agentAPI.ToolCall) ChannelDisposition {
+	switch strings.ToLower(strArg(tc, "channels")) {
+	case "suspend", "park":
+		return ChannelSuspend
+	case "takeover", "take_over", "take":
+		return ChannelTakeover
+	default:
+		return ChannelRelease
 	}
 }
 

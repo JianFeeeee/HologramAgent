@@ -996,6 +996,22 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	regMeta(ConfigDef{Key: "core.security.sandbox.allow_network", Default: "true", Type: "bool", DisplayName: "允许网络访问",
 		Description: "启用沙箱后为 false 则拒绝带 URL/网络意图的调用。默认 true（不施加网络约束）。", Category: "defaults"})
 
+	// 各 agent 类型优先使用的模型源（空 = 用总默认 core.llm.provider）。
+	//
+	// 四类 agent 负载不同：主 agent 要强推理、rtchild 要极低首字延迟、
+	// 驻留子要长时间挂着省成本。共用一个源对三者都是妥协。
+	//
+	// ★ 语义是**优先不是独占**：该源排在候选链最前，其余源仍作回退。
+	//   名字不存在时回退到默认源并记日志（不静默）。
+	reg(ConfigDef{Key: "core.agent.llm.main_provider", Default: "", Type: "string",
+		DisplayName: "主 agent 模型源", Description: "留空 = 用总默认源（core.llm.provider）。该源优先，不可用时自动回退到其他源。", Category: "agent"})
+	reg(ConfigDef{Key: "core.agent.llm.resident_provider", Default: "", Type: "string",
+		DisplayName: "驻留子模型源", Description: "驻留子 agent 优先使用的模型源；留空继承总默认源。", Category: "agent"})
+	reg(ConfigDef{Key: "core.agent.llm.rt_provider", Default: "", Type: "string",
+		DisplayName: "实时子 agent 模型源", Description: "rtchild 优先使用的模型源；留空继承总默认源。通话场景应选首字延迟最低的源。", Category: "agent"})
+	reg(ConfigDef{Key: "core.agent.llm.child_provider", Default: "", Type: "string",
+		DisplayName: "子 agent 模型源", Description: "工作式轻量子 agent（spawn_child）优先使用的模型源；留空继承总默认源。", Category: "agent"})
+
 	reg(ConfigDef{Key: "core.agent.max_tool_turns", Default: "10", Type: "int", DisplayName: "最大工具轮次", Description: "单次请求允许的最大工具调用轮数", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.offload_enabled", Default: "false", Type: "bool", DisplayName: "积压任务自动转投", Description: "主 agent 长时间忙时，把积压任务自动转投给内核拉起的驻留子（需重启生效）", Category: "agent"})
 	// 1m 而非 5m：实测本机正常任务最长 1.2 分钟，5 分钟的阈值意味着

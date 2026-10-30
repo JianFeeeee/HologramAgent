@@ -35,14 +35,17 @@ func TestClampExternalPriority_RejectsL4(t *testing.T) {
 
 // 贯穿 pubSdkInjectOpts：RPC 报文里的 priority 必须经过夹取才落到 InjectOptions。
 func TestPubSdkInjectOpts_ClampsPriority(t *testing.T) {
-	got := pubSdkInjectOpts(true, "prune", "none", "cleaner", "L4")
+	got := pubSdkInjectOpts(injectParams{
+		NoMemory: true, ContextPolicy: "prune", RecallPolicy: "none",
+		CleanerName: "cleaner", Priority: "L4",
+	})
 	if got.Priority != pubsdk.PriorityL3 {
 		t.Fatalf("经桥后的优先级=%q，期望 L3", got.Priority)
 	}
 	if !got.NoMemory || got.ContextPolicy != "prune" || got.RecallPolicy != "none" || got.CleanerName != "cleaner" {
 		t.Fatalf("其它字段被改动：%+v", got)
 	}
-	if l2 := pubSdkInjectOpts(false, "", "", "", "L2"); l2.Priority != pubsdk.PriorityL2 {
+	if l2 := pubSdkInjectOpts(injectParams{Priority: "L2"}); l2.Priority != pubsdk.PriorityL2 {
 		t.Fatalf("L2 应原样通过，实际 %q", l2.Priority)
 	}
 }

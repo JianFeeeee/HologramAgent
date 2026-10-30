@@ -687,9 +687,18 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		if iom == nil {
 			return nil
 		}
+		// ★ Def.Realtime ⇒ 补上 CapRT 位（SDK 声明 → 内核能力位）。
+		//
+		// 输入侧在 ChannelRegistry.Register 里映射；**输出侧必须在这里映射** ——
+		// 两条路径是分开的，只做一边就会出现"inputch 声明成 rt 了、outputch 没有"，
+		// 于是 AssignRealtime(outputch) 被拒，插件以为"我声明了 rt"却划不上。
+		outCaps := agentIO.OutputCapability(caps)
+		if def.Realtime {
+			outCaps |= agentIO.CapRT
+		}
 		if err := iom.RegisterDevice(&channelDevice{
 			name:    chName,
-			caps:    agentIO.OutputCapability(caps),
+			caps:    outCaps,
 			desc:    desc,
 			handler: handler,
 			chDef:   agentIO.ChannelDef(def),

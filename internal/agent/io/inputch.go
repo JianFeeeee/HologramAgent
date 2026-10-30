@@ -11,6 +11,7 @@ package io
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 )
@@ -20,6 +21,11 @@ var (
 	ErrInputChannelUnknown = errors.New("inputch 未注册")
 	// ErrInputChannelNameEmpty 表示 inputch 名为空。
 	ErrInputChannelNameEmpty = errors.New("inputch 名不能为空")
+	// ErrChannelNotRealtime 表示该通道没有声明 CapRT 能力（不能承载 rt 流）。
+	//
+	// 两侧校矩的另一侧（"目标 agent 是不是 rtchild"）在 core 包，
+	// 因为 agent 类型属于 core 而非 io（plan.md 十一.三 F）。
+	ErrChannelNotRealtime = errors.New("通道未声明 rt 能力（CapRT）")
 )
 
 // InputChannel 是一个 inputch 的完整登记记录。
@@ -40,6 +46,17 @@ type InputChannel struct {
 	// Def 是记忆/上下文策略（沿用 ChannelDef：NoMemory / Cleaner / ContextPolicy）。
 	// Cleaner 是函数，故本字段不可序列化（json:"-"）。
 	Def ChannelDef `json:"-"`
+
+	// Capabilities 是本通道的**能力位**（rt 流 / 文本 / 音频…）。
+	//
+	// ★ 为何不放进 Def：Def 是公开 SDK 的 ChannelDef 别名
+	// （`type ChannelDef = pubsdk.ChannelDef`），往里面加字段等于改 SDK 契约；
+	// 而能力位是**通道实例**的属性，属于内核侧的登记记录。
+	//
+	// ★ 它声明的是“本通道**能承载**什么”，不是“内核要产出什么”：
+	// 例如 CapRT 表示“能承载实时流（新值作废旧值）”，CapAudio 表示
+	// “本出口会把文本转成声音”——都是插件侧的实现能力声明。
+	Capabilities OutputCapability `json:"capabilities,omitempty"`
 }
 
 // ChannelRegistry 是 inputch 的登记表。
@@ -49,6 +66,13 @@ type InputChannel struct {
 type ChannelRegistry struct {
 	mu       sync.RWMutex
 	channels map[string]InputChannel
+	// stash 是**挂在通道上**的暂存区：驻留子销毁时选 ResidualStash 的残余任务
+	// 留在这里，等该通道被接回（Assign 给新 owner）时放出。
+	//
+	// ★ 为什么挂在通道而不是 agent：这些任务此刻**不属于任何 agent**
+	// （子已销毁、父没接手）。挂在通道上才符合"暂存在对应通道"的语义，
+	// 也让"谁接回通道谁拿到活"自动成立 —— 不需要额外的转交逻辑。
+	stash map[string][]*InputEvent
 	// outputTargets 把**输出通道**解析成"目标 agent 的哪个 inputch"。
 	// 这是"输出可寻址到具体 agent"的依据（子→父、父→指定子）。
 	outputTargets map[string]OutputTarget
@@ -67,6 +91,7 @@ func NewChannelRegistry() *ChannelRegistry {
 	return &ChannelRegistry{
 		channels:      make(map[string]InputChannel),
 		outputTargets: make(map[string]OutputTarget),
+		stash:         make(map[string][]*InputEvent),
 	}
 }
 
@@ -83,6 +108,16 @@ func (r *ChannelRegistry) Register(ch InputChannel) error {
 	if r.channels == nil {
 		r.channels = make(map[string]InputChannel)
 	}
+	// ★ Def.Realtime ⇒ 映射到 Capabilities 的 CapRT 位（SDK 声明 → 内核能力位）。
+	//
+	// 为什么在这里映射而不是让插件直接填能力位：公开 SDK 的 ChannelDef 是
+	// 插件能碰到的唯一结构（插件不依赖内核），能力位（OutputCapability）是
+	// 内核侧类型。两侧各自表达同一件事，由登记表做**唯一一次**转换。
+	// 判据 TestRTChannel_SDKRealtimeBecomesCapRT 钉它。
+	if ch.Def.Realtime {
+		ch.Capabilities |= CapRT
+	}
+
 	if old, ok := r.channels[ch.Name]; ok {
 		if ch.Owner == "" {
 			ch.Owner = old.Owner
@@ -131,18 +166,43 @@ func (r *ChannelRegistry) Lookup(name string) (InputChannel, bool) {
 // 语义（默认取值，见设计文档 R6）：**读写授权**，不转移所有权 ——
 // 登记表仍记录 Plugin（谁注册的）与 Owner（划给了谁）两件事。
 func (r *ChannelRegistry) Assign(name, agentID string, capacity int) error {
+	_, err := r.AssignAndDrainStash(name, agentID, capacity)
+	return err
+}
+
+// AssignAndDrainStash 与 Assign 相同，但**同时返回该通道上的暂存任务**。
+//
+// ## 为什么需要它（用户 2026-10-30 要求）
+//
+// 「原本驻留子持有的通道也应该支持**挂起或接回**主 agent」。
+//
+// 挂起 = `Assign(name, "", 0)`（Owner 清空，通道仍登记但无人处理）；
+// 接回 = `AssignAndDrainStash(name, newOwner, 0)`。
+//
+// 接回时必须把暂存任务一并交出：如果只改 Owner 不取暂存，
+// 那批任务会永远躺在通道上 —— 通道看起来"已经接回来了"，
+// 但活没人做，且没有任何报错。**这是本轮最容易埋的静默缺陷。**
+func (r *ChannelRegistry) AssignAndDrainStash(name, agentID string, capacity int) ([]*InputEvent, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	ch, ok := r.channels[name]
 	if !ok {
-		return ErrInputChannelUnknown
+		r.mu.Unlock()
+		return nil, ErrInputChannelUnknown
 	}
 	ch.Owner = agentID
 	if capacity > 0 {
 		ch.Capacity = capacity
 	}
 	r.channels[name] = ch
-	return nil
+	// 接回给某个具体 agent 时才释放暂存；挂起（agentID==""）时保持不动 ——
+	// 挂起的语义正是"先放着，等有人接"。
+	var drained []*InputEvent
+	if agentID != "" {
+		drained = r.stash[name]
+		delete(r.stash, name)
+	}
+	r.mu.Unlock()
+	return drained, nil
 }
 
 // List 返回全部已注册 inputch（按名字稳定排序）。
@@ -222,4 +282,58 @@ func (r *ChannelRegistry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.channels)
+}
+
+// Stash 把若干条输入事件**暂存到指定通道**（驻留子销毁时用）。
+//
+// 与"转回父队列"的区别：这些任务此刻不属于任何 agent —— 子已销毁、父没接手。
+// 挂在通道上，于是"谁接回这条通道，谁就拿到这批活"自动成立，
+// 不需要额外的转交逻辑。这正是用户要求的「暂存在对应通道」。
+//
+// 通道不存在时返回错误而不是静默丢弃：暂存到一条不存在的通道，
+// 等于丢了一条还让人以为存住了。
+func (r *ChannelRegistry) Stash(channel string, events []*InputEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.channels[channel]; !ok {
+		return fmt.Errorf("通道 %s 不存在，无法暂存残余任务", channel)
+	}
+	r.stash[channel] = append(r.stash[channel], events...)
+	return nil
+}
+
+// TakeStash 取走并清空某通道上的全部暂存任务。
+//
+// 取走即清空：调用方（Assign 的接回路径，或显式调用）负责把它们放出去。
+// 返回值可能是 nil（无暂存）。
+func (r *ChannelRegistry) TakeStash(channel string) []*InputEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	evs := r.stash[channel]
+	delete(r.stash, channel) // 取出即清空，避免重复释放
+	return evs
+}
+
+// StashLen 返回某通道暂存的条数（用于 ResidentInfo/控制面展示）。
+//
+// ★ 必须有：暂存如果不可见，它就和"丢弃"没有区别 ——
+// 用户需要能查到"这批活还在通道上等着"。
+func (r *ChannelRegistry) StashLen(channel string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.stash[channel])
+}
+
+// StashTotal 返回全部通道上的暂存总条数。
+func (r *ChannelRegistry) StashTotal() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, evs := range r.stash {
+		n += len(evs)
+	}
+	return n
 }

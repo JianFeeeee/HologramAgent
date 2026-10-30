@@ -323,6 +323,13 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		return toolOutcome{Text: a.executeInputChannels(tc)}
 	case tc.Name == "resident_agents":
 		return toolOutcome{Text: a.executeResidentAgents(tc)}
+	// ★ rt_transcript：rtchild 上下文交接的**拉取**入口（用户裁定 2026-10-30）。
+	// 交接协议是「推信号 + 拉状态」：回收时只推一条 L4（带条数），
+	// 正文由主 agent 用本工具按需取回并**自行选择**保留哪些。
+	case tc.Name == "rt_transcript":
+		return toolOutcome{Text: a.executeRTTranscript(tc)}
+	case tc.Name == "rt_children":
+		return toolOutcome{Text: a.executeRTChildren(tc)}
 	case tc.Name == "notify_parent":
 		return toolOutcome{Text: a.executeNotifyParent(tc)}
 	case tc.Name == "inputch_note":

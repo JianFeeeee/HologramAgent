@@ -51,6 +51,18 @@ const (
 	CapImage                                   // 图片
 	CapAudio                                   // 音频
 	CapStructured                              // 结构化数据（JSON/卡片）
+	// CapRT 表示该通道**能承载 rt 流**（实时通话）。
+	//
+	// ★ 这是**通道**侧的声明，与 agent 是否为 rtchild 是两件事
+	//   （plan.md 十一.三 F）。rt 通道的划拨校验要两侧都满足：
+	//     · 通道声明自己能承载 rt 流（本能力位）
+	//     · 目标 agent 是 rtchild（AgentConfig.IsRealtime）
+	//   校验落点是 AssignRealtime，而不是普通 Assign —— 计划原文：
+	//   「标签不是准入门槛：不带 rt 标签的普通通道同样可以划给 rt agent」。
+	//
+	// ★ 它**不**表示"内核要产出音频"。outputch(rt) 只产出**文本**，
+	//   怎么展示（含 TTS）是插件的活（用户裁定 R6）。
+	CapRT
 )
 
 func (c OutputCapability) Supports(cap OutputCapability) bool {
@@ -73,6 +85,9 @@ func (c OutputCapability) String() string {
 	}
 	if c&CapStructured != 0 {
 		flags = append(flags, "structured")
+	}
+	if c&CapRT != 0 {
+		flags = append(flags, "rt")
 	}
 	return fmt.Sprintf("%v", flags)
 }

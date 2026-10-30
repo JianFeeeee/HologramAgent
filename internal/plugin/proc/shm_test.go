@@ -2,6 +2,7 @@ package proc
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +123,123 @@ func TestSegment_RoundTripAllFields(t *testing.T) {
 	if dst.Extra[ExtraKeyMediaType] != "image" {
 		t.Errorf("Extra 提升字段应往返: %v", dst.Extra)
 	}
+}
+
+// TestSegment_RoundTripEveryField 是**反射驱动的全字段往返**判据。
+//
+// ## 它取代了什么
+//
+// 上面那条 `TestSegment_RoundTripAllFields` 是逐字段手写断言，历史价值很大
+// （C ABI 时代它能抓"哪些字段外部插件看不到"），但有两个结构性缺陷：
+//
+//  1. **漏字段无声**：它只断言了 Response/NoMemory/Memory/TokenUsage/Errors/
+//     ToolResults/Extra 的 media_type。实测漏了 Phase、LLMText、FinalText、
+//     ToolCalls、ExtraKeyMediaBlocks、ExtraBag —— 而那些字段确实在往返，
+//     只是没人验。**手写断言永远不会因为"新增字段"而变红。**
+//  2. 它验证的是"我记得的那几个"，不是"全部"。
+//
+// 本判据改用反射：遍历 `pubsdk.StageContext` 的每个导出字段，
+// 构造非零值 → WriteAll → ReadInto → 逐字段比。**新增 SDK 字段而不改
+// shmcodec 时，这里会红并指名是哪个字段。**
+//
+// ## 为什么不用 == 整体比较
+//
+// StageContext 内含 `sync.RWMutex`（不可比较）与 map/slice（不可比较），
+// 只能逐字段用 reflect.DeepEqual。Extra 需要单独归一（具名键提升 + bag）。
+func TestSegment_RoundTripEveryField(t *testing.T) {
+	seg := newTestSegment(t, 65536)
+	src := fullStageContext(t)
+
+	if err := seg.WriteAll(src); err != nil {
+		t.Fatalf("WriteAll: %v", err)
+	}
+	var dst pubsdk.StageContext
+	if err := seg.ReadInto(&dst); err != nil {
+		t.Fatalf("ReadInto: %v", err)
+	}
+
+	sv := reflect.ValueOf(src).Elem()
+	dv := reflect.ValueOf(&dst).Elem()
+	var lost []string
+	for i := 0; i < sv.NumField(); i++ {
+		f := sv.Type().Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if name := f.Name; name == "Extra" {
+			continue // 单独验（见下）
+		}
+		if !reflect.DeepEqual(sv.Field(i).Interface(), dv.Field(i).Interface()) {
+			lost = append(lost, fmt.Sprintf("%s: want=%v got=%v",
+				f.Name, sv.Field(i).Interface(), dv.Field(i).Interface()))
+		}
+	}
+	if len(lost) > 0 {
+		t.Fatalf("StageContext 有字段跨进程往返后**丢值或变形**：\n  %s\n"+
+			"（修法：在 shmcodec.go 的 captureLocal/writeLocal/readLocal 三处接线）",
+			strings.Join(lost, "\n  "))
+	}
+
+	// Extra 的四类具名键 + bag 必须都保住。
+	for _, k := range []string{
+		ExtraKeyMediaBlocks, ExtraKeyMediaType, ExtraKeyInputSource, ExtraKeyOutputChannel,
+	} {
+		if !reflect.DeepEqual(src.Extra[k], dst.Extra[k]) {
+			t.Errorf("Extra[%s] 未往返：want=%v got=%v", k, src.Extra[k], dst.Extra[k])
+		}
+	}
+	if !reflect.DeepEqual(src.Extra["qq_auth"], dst.Extra["qq_auth"]) {
+		t.Errorf("Extra 的自建键（bag）未往返：want=%v got=%v",
+			src.Extra["qq_auth"], dst.Extra["qq_auth"])
+	}
+}
+
+// fullStageContext 构造一个**所有导出字段都非零**的 StageContext。
+//
+// ★ 它自身带防腐蚀：反射断言每个导出字段都非零。新增 SDK 字段而没在这里
+// 赋值时，本函数会直接失败 —— 否则那条新字段永远不会被上面那条判据覆盖，
+// 判据看起来全绿却罩不住新字段（"假绿"）。
+func fullStageContext(t *testing.T) *pubsdk.StageContext {
+	t.Helper()
+	resp := "resp"
+	sc := &pubsdk.StageContext{
+		RawMessage:       "raw-输入",
+		UserID:           "u1",
+		GroupID:          "g1",
+		LLMText:          "llm-输出",
+		ReasoningContent: "think",
+		FinalText:        "final",
+		Response:         &resp,
+		Phase:            pubsdk.StageAfterToolcall,
+		NoMemory:         true,
+		ContextMsgs:      []map[string]interface{}{{"role": "user", "content": "hi"}},
+		ToolCalls:        []pubsdk.ToolCall{{ID: "c1", Name: "t1", Plugin: "p"}},
+		ToolResults:      []pubsdk.ToolResult{{CallID: "c1", Name: "t1", Success: true, Result: "o"}},
+		Memory:           []pubsdk.MemItem{{Role: "user", Content: "m", Score: 0.5}},
+		TokenUsage:       map[string]int{"prompt": 1},
+		Errors:           []string{"e1"},
+		Extra: map[string]interface{}{
+			ExtraKeyMediaBlocks:   []interface{}{map[string]interface{}{"type": "text"}},
+			ExtraKeyMediaType:     "image",
+			ExtraKeyInputSource:   "qq",
+			ExtraKeyOutputChannel: "qq",
+			"qq_auth":             "self-key",
+		},
+	}
+
+	// 防腐蚀：每个导出字段都必须非零。
+	v := reflect.ValueOf(sc).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Type().Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		if v.Field(i).IsZero() {
+			t.Fatalf("StageContext.%s 在 fullStageContext 里没赋值（仍是零值）—— "+
+				"全字段往返判据覆盖不到它。请给它一个非零值。", f.Name)
+		}
+	}
+	return sc
 }
 
 // nil Response 与空字符串 Response 必须可区分（短路语义依赖此）。

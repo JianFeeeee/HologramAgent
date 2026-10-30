@@ -1390,7 +1390,54 @@ func (a *Agent) resolveProviders(req *agentAPI.CompletionRequest) []agentAPI.Pro
 	if len(providers) == 0 {
 		providers = []agentAPI.Provider{a.provider}
 	}
-	return providers
+	return a.preferProvider(providers)
+}
+
+// preferProvider 把本 agent 的**优先源**提到候选链最前面。
+//
+// ## 语义（用户 2026-10-30 要求）
+//
+// 「主 agent / 子 agent / 驻留子 / rt agent 可各自配置模型源，
+//
+//	默认使用总模型源（default）」。
+//
+// ## 为什么是"提前"而不是"只留它"
+//
+// 四类 agent 的负载不同（主 agent 要推理、rtchild 要首字低延迟、驻留子要省成本），
+// 所以各自该有自己的首选源。但**硬锁定会让"这个源挂了"直接变成"这个 agent
+// 彻底不工作"** —— 而多源回退链正是本仓为此建立的机制（callLLMWithFallback）。
+// 把它排到最前，两者兼得：正常情况走首选，首选不可用时照旧回退。
+//
+// ## 配置写错要能看见
+//
+// 优先源名不存在时**回退到默认源并记日志**，不静默 —— 拼错的配置如果悄悄
+// 无效，用户会以为"我配了但没生效"，而日志里一个字都没有。
+func (a *Agent) preferProvider(cands []agentAPI.Provider) []agentAPI.Provider {
+	name := strings.TrimSpace(a.preferredProvider)
+	if name == "" || len(cands) <= 1 {
+		return cands // 未配置：用总默认（providerManager 的排序本来就以默认源为先）
+	}
+	for i, p := range cands {
+		if !strings.EqualFold(p.Name(), name) {
+			continue
+		}
+		if i == 0 {
+			return cands // 已经在最前
+		}
+		out := make([]agentAPI.Provider, 0, len(cands))
+		out = append(out, p)
+		out = append(out, cands[:i]...)
+		out = append(out, cands[i+1:]...)
+		return out
+	}
+	// 名字对不上：响亮回退（含可用源清单，便于一次改对）。
+	names := make([]string, 0, len(cands))
+	for _, p := range cands {
+		names = append(names, p.Name())
+	}
+	log.Printf("[agent] %s: preferred_provider %q 不在可用源里（%v），回退到默认源 %q",
+		a.id, name, names, cands[0].Name())
+	return cands
 }
 
 // callLLMWithFallback 在候选 provider 间回退，并把同源瞬时错误重试一次。

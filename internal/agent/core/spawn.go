@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -181,7 +183,13 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			DisableThinking: !a.thinkingEnabled,
 		}
 
-		resp, err := a.provider.Chat(a.ctx, req)
+		// ★ 走与主 agent 同一套 provider 选择（而不是直接 a.provider.Chat）。
+		//
+		// 两件事因此成立：
+		//  ① `core.agent.llm.child_provider` 对它生效（四类 agent 各自可配源）
+		//  ② 多源回退对它生效 —— 此前它是唯一绕过回退链的地方：
+		//     默认源抖动一次，整条子任务就"执行失败"，而主 agent 同刻能自动换源
+		resp, err := a.chatWithProviderChain(req)
 		if err != nil {
 			finalResult = fmt.Sprintf("子 Agent 执行失败: %v", err)
 			break
@@ -369,4 +377,29 @@ func (a *Agent) executeLLMTool(tc agentAPI.ToolCall) string {
 	default:
 		return fmt.Sprintf("未知的 LLM 工具: %s", tc.Name)
 	}
+}
+
+// chatWithProviderChain 用本 agent 的 provider 链跑一次**非流式**请求。
+//
+// 优先级：自身 preferredProvider 提前 → 其余源按原顺序回退。
+// 与主 agent 的 `callLLMWithFallback` 的区别是这里不重试、不切 active provider：
+// 子任务是短生命周期，重试只会把一个已经抖动的时间窗拉长。
+func (a *Agent) chatWithProviderChain(req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+	providers := a.resolveProviders(req)
+	var lastErr error
+	for _, p := range providers {
+		resp, err := p.Chat(a.ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		// 取消/超时不再试下一个：那是调用方主动结束，不是"这个源坏了"。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有可用的 LLM 源")
+	}
+	return nil, lastErr
 }

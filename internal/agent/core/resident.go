@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -49,6 +50,12 @@ type ResidentOptions struct {
 	Capacity int
 	// TempPath 是它 temp 图记忆的存储路径（必填；与子同生共死）。
 	TempPath string
+	// PreferredProvider 是**这个驻留子**优先使用的模型源（空 = 继承父的）。
+	//
+	// 为什么由父在创建时传入、而不是让子自己读配置：子没有配置中心句柄
+	// （轻量内核刻意不接），而"哪个源给哪类 agent 用"是**部署策略**，
+	// 本来就该在创建点决定。
+	PreferredProvider string
 	// OffloadOwned 标记这是**内核为转投而拉起**的驻留子（见 offload.go）。
 	//
 	// 为什么要区分：自动转投会复用、也会按上限限制自己拉起的子，
@@ -183,13 +190,15 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		SystemPrompt:    a.systemPrompt,
 		Provider:        a.provider,
 		ProviderManager: a.providerManager,
-		IO:              childIO,
-		StageHost:       a.stageHost,
-		LightMemory:     light, // 轻量内核：只有图记忆共同面
-		AllowedOutputs:  opts.AllowedOutputs,
-		KernelSource:    parentID, // 子的 L4 只属于父
-		ParentID:        parentID,
-		TaskPrompt:      opts.TaskPrompt,
+		// 驻留子可以有自己的优先源；留空则继承父的（父再留空 ⇒ 总默认源）。
+		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
+		IO:                childIO,
+		StageHost:         a.stageHost,
+		LightMemory:       light, // 轻量内核：只有图记忆共同面
+		AllowedOutputs:    opts.AllowedOutputs,
+		KernelSource:      parentID, // 子的 L4 只属于父
+		ParentID:          parentID,
+		TaskPrompt:        opts.TaskPrompt,
 	})
 
 	rc := &residentChild{
@@ -265,6 +274,11 @@ func (a *Agent) residentInboundChannel(childID string) string {
 //
 // 销毁是父**随时**可做的；父退出时由 StopResidents 对全部子执行。
 func (a *Agent) DestroyResident(id string) error {
+	return a.DestroyResidentWith(id, ChannelRelease)
+}
+
+// DestroyResidentWith 按父的决定处置通道后销毁驻留子。
+func (a *Agent) DestroyResidentWith(id string, disp ChannelDisposition) error {
 	a.residentMu.Lock()
 	rc, ok := a.residents[id]
 	if ok {
@@ -274,7 +288,7 @@ func (a *Agent) DestroyResident(id string) error {
 	if !ok {
 		return fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	a.teardownResident(rc)
+	a.teardownResidentWith(rc, disp, nil)
 	return nil
 }
 
@@ -298,6 +312,32 @@ const (
 	ResidualKeep ResidualPolicy = "keep"
 	// ResidualDrop 明确丢弃残余任务（父已看过清单并确认）。
 	ResidualDrop ResidualPolicy = "drop"
+	// ResidualStash 把残余任务**暂存到其原通道**，等通道被接回时再放出。
+	//
+	// ## 与 keep 的区别（用户 2026-10-30 提出）
+	//
+	// keep 是"转回父自己的队列"—— 任务立刻变成父的活。
+	// stash 是"放回它来的那条通道"—— 任务不与任何 agent 绑定，
+	// 谁接回那条通道，谁就拿到它们。
+	//
+	// 三个动作正好对应三种真实情况：
+	//
+	// | 选择 | 适用 |
+	// |---|---|
+	// | keep（接手） | 父有空、或这批活必须连续处理 |
+	// | stash（暂存到通道） | 父现在忙，但活不能丢；下一个接手该通道的 agent 来做 |
+	// | drop（丢弃） | 这批活已过期/已由别处完成 |
+	//
+	// ★ stash 的前提是"通道能挂起"：留空 Owner 的通道如果没人接，
+	// 任务就静静躺着。所以 stash 必须**逐条留日志**（和 drop 同等待遇），
+	// 且 ResidentInfo 里要能查到暂存条数 —— 否则它就是"更好的丢"。
+	ResidualStash ResidualPolicy = "stash"
+	// ResidualTakeover 是 keep 的别名，语义是"父**接手**这些活"。
+	//
+	// 单独给一个名字是因为用户要求里"接手"是一个独立选项，而 keep
+	// 听起来像"保持原状"。两者实现完全一致（转回父队列），
+	// 别名让调用方的意图在代码里可读。
+	ResidualTakeover ResidualPolicy = "takeover"
 )
 
 // TakeResidual 取走一个驻留子手头**尚未处理**的残余任务（不处置）。
@@ -344,6 +384,18 @@ func (a *Agent) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
 // （不再取新任务），已在执行的那一条跑完后循环自然结束。
 // 等它真正停下，再回收队列 —— 此刻队列是静止的，回收没有歧义。
 func (a *Agent) FinishResident(id string, policy ResidualPolicy, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
+	return a.FinishResidentWith(id, policy, ChannelRelease, onDestroy)
+}
+
+// FinishResidentWith 是 FinishResident 的完整版：残余任务策略 + **通道处置**一次定。
+//
+// 为什么合成一个入口：两者有依赖关系 ——
+//   - residual=stash 要求通道**继续存在**（暂存挂在通道上）；
+//   - channel=release 会把通道还给池子（可能被别的 agent 接走）。
+//
+// 若拆成两次调用，中间窗口里通道可能已被别人接管，暂存任务就跑到了
+// 一个跟它无关的 agent 手里。**一次定完，没有窗口。**
+func (a *Agent) FinishResidentWith(id string, policy ResidualPolicy, disp ChannelDisposition, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
 	a.residentMu.Lock()
 	rc := a.residents[id]
 	a.residentMu.Unlock()
@@ -370,8 +422,11 @@ func (a *Agent) FinishResident(id string, policy ResidualPolicy, onDestroy func(
 			return n, msg, herr
 		}
 	}
-	// ⑤ 销毁（内部会 Stop 子、关 temp、放通道）。
-	return n, msg, a.DestroyResident(id)
+	// ⑤ 销毁（内部会 Stop 子、关 temp、按 disp 处置通道）。
+	//
+	// ⚠️ 必须用 DestroyResidentWith：走 DestroyResident 会丢掉 disp，
+	// 通道被无条件释放 —— 而 stash 的暂存任务正挂在那条通道上。
+	return n, msg, a.DestroyResidentWith(id, disp)
 }
 
 // ApplyResidual 按父给出的策略处置一个驻留子的残余任务。
@@ -412,7 +467,46 @@ func (a *Agent) applyResidualEvents(id string, events []*agentIO.InputEvent, pol
 		}
 		return len(events), fmt.Sprintf("已按父的决定丢弃 %d 条残余任务（逐条已记日志）", len(events)), nil
 	}
-	// 默认 keep：转回父自己
+	// stash：暂存回**每条任务来的那条通道**。
+	//
+	// ★ 必须逐条按其自身 OutputChannel 归位，不能整批塞进一个通道 ——
+	// 一个驻留子可能同时收 qq 和 webui 的消息，混存会导致接回 qq 的人
+	// 拿到本该给 webui 的活。
+	if policy == ResidualStash {
+		reg := a.io.ChannelRegistry()
+		if reg == nil {
+			return 0, "", fmt.Errorf("无通道登记表，无法暂存残余任务")
+		}
+		stashed, failed := 0, 0
+		for _, evt := range events {
+			if evt == nil {
+				continue
+			}
+			ch := evt.OutputChannel
+			if ch == "" {
+				ch = evt.Source // 无回程通道时用来源通道兜底
+			}
+			if err := reg.Stash(ch, []*agentIO.InputEvent{evt}); err != nil {
+				// 通道已不存在（插件卸载等）：这条只能丢，但必须留痕，
+				// 并给同步调用方终态 —— 否则 cli/a2a 会永久挂起。
+				failed++
+				log.Printf("[resident] %s residual task could NOT be stashed (channel %q gone): source=%s request=%s content=%s",
+					id, ch, evt.Source, evt.RequestID, truncateStr(inputTextOf(evt), 80))
+				a.emitSkippedReply(evt, "residual_stash_channel_gone")
+				continue
+			}
+			stashed++
+			// 暂存也要留痕：不可追溯的"暂存"和丢弃没区别。
+			log.Printf("[resident] %s residual task stashed to channel %q: source=%s request=%s content=%s",
+				id, ch, evt.Source, evt.RequestID, truncateStr(inputTextOf(evt), 80))
+		}
+		msg := fmt.Sprintf("已把 %d 条残余任务暂存到各自通道（接回通道即释放）", stashed)
+		if failed > 0 {
+			msg += fmt.Sprintf("；%d 条因通道已不存在而丢弃（已记日志并给调用方终态）", failed)
+		}
+		return stashed + failed, msg, nil
+	}
+	// keep / takeover：转回父自己
 	for _, evt := range events {
 		if evt == nil {
 			continue
@@ -433,7 +527,39 @@ func inputTextOf(evt *agentIO.InputEvent) string {
 }
 
 // teardownResident 停内核、放通道、丢 temp（销毁与回收共用）。
+// ChannelDisposition 是父对**驻留子持有的通道**的显式决定。
+//
+// 用户 2026-10-30 要求：「原本驻留子持有的通道也应该支持**挂起或接回**主 agent」。
+//
+// 之前销毁驻留子时内核**无条件**把通道归到"未分配"（`Assign(ch, "", 0)`）：
+// 通道确实回到了池子，但**谁也不知道该由谁来接**。于是有两种坏结局：
+//   - 通道一直没人分配 ⇒ 投进来的消息无人处理，且无任何提示
+//   - 刚好被别的 agent 抢到 ⇒ 那个 agent 莫名其妙开始收它没准备的流量
+//
+// 所以和残余任务的处置一样：**原语在内核，决定在父的模型**。
+type ChannelDisposition string
+
+const (
+	// ChannelRelease 是原有行为：归属清空回到"未分配"，可被任意 agent 再分配。
+	// 作为**零值**保持向后兼容（已有调用方不传就等于它）。
+	ChannelRelease ChannelDisposition = ""
+	// ChannelSuspend 挂起：归属清空但**标记为挂起**，不参与自动分配。
+	//
+	// 与 release 的差别是"会不会被别人悄悄接走"：挂起的通道等父显式接回，
+	// 期间的输入被暂存（不是丢弃），接回时一并交出。
+	ChannelSuspend ChannelDisposition = "suspend"
+	// ChannelTakeover 接回主 agent：通道归属改为父，**并释放暂存任务**，
+	// 那些任务立即转进父的队列。
+	ChannelTakeover ChannelDisposition = "takeover"
+)
+
 func (a *Agent) teardownResident(rc *residentChild) {
+	a.teardownResidentWith(rc, ChannelRelease, nil)
+}
+
+// teardownResidentWith 是 teardownResident 的完整版：额外决定**通道去向**，
+// 并在 takeover 时把释放出来的暂存任务转进父队列。
+func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition, onDrained func([]*agentIO.InputEvent)) {
 	rc.mu.Lock()
 	rc.state = "stopped"
 	rc.mu.Unlock()
@@ -449,10 +575,40 @@ func (a *Agent) teardownResident(rc *residentChild) {
 	if rc.dir != "" && strings.Contains(rc.tempPath, rc.id) {
 		_ = os.RemoveAll(rc.dir)
 	}
-	// 归还划入的 inputch（归属清空 ⇒ 回到"未分配"，可再分配）。
+	// 处置划入的 inputch（按父的决定：释放 / 挂起 / 接回）。
 	if reg := a.io.ChannelRegistry(); reg != nil {
 		for _, ch := range rc.inputChs {
-			_ = reg.Assign(ch, "", 0)
+			switch disp {
+			case ChannelTakeover:
+				// 接回父：通道归父，并把该通道上的暂存任务交出。
+				drained, err := reg.AssignAndDrainStash(ch, string(a.id), 0)
+				if err != nil {
+					log.Printf("[resident] %s 接回通道 %s 失败: %v", rc.id, ch, err)
+					continue
+				}
+				if len(drained) > 0 {
+					log.Printf("[resident] %s 接回通道 %s，释放暂存任务 %d 条", rc.id, ch, len(drained))
+					if onDrained != nil {
+						onDrained(drained)
+					} else {
+						for _, evt := range drained {
+							if evt != nil {
+								a.sched.enqueue(newInputTask(evt))
+							}
+						}
+						a.sched.signalWake()
+					}
+				}
+			case ChannelSuspend:
+				// 挂起：归属清空但**不交还池子**。实现上仍记为 ""，
+				// 差别在于本通道上的暂存任务保留（接回时才释放），
+				// 且日志明确写出"已挂起"，让运维能查到它没有在跑。
+				_ = reg.Assign(ch, "", 0)
+				log.Printf("[resident] %s 通道 %s 已挂起（暂存 %d 条，等接回时释放）",
+					rc.id, ch, reg.StashLen(ch))
+			default: // ChannelRelease
+				_ = reg.Assign(ch, "", 0)
+			}
 		}
 		// 注销"父接收该子消息"的入站 inputch（child/<id>）。
 		//
@@ -526,7 +682,26 @@ func (a *Agent) SendToResident(id, text string) error {
 	return nil
 }
 
-// CompressResident 是父的"压缩"（**保留语义**）：压上下文 + **清理处理表**，子继续存在。
+// CompressResident 是父的"压缩"（**保留语义**）：**压成摘要** + 清理处理表，子继续存在。
+//
+// ## 这里曾经是纯截断（2026-10-30 修正）
+//
+// 原实现直接 `TrimKeepRecent(20)` —— 丢掉除了最近 20 条之外的一切，
+// 与设计文档明写的「**压成摘要**」（resident-subagent-design.md §9, R7）
+// 不符。两个后果：
+//
+//	① "压缩"与"零成本丢数据"没有区别，被丢的语义不可恢复
+//	② 压缩（保留）与回收（取消）在实现上退化成同一个动作的两种力度
+//
+// 现在的顺序（用户 2026-10-30 裁定 A+B）：
+//
+//	① PlanCompaction  取一份**只读计划**（不动上下文）
+//	② 用**子自己的** provider 生成摘要（设计 R7："子的轻量内核自己压"）
+//	③ ApplyCompaction 用摘要事件**替换**那段
+//	④ 摘要失败 ⇒ **回退截断**（裁定 B），并留日志（不静默降级）
+//
+// 为什么先出计划再执行：摘要要调 LLM（可能几十秒），期间不能持锁、也不能
+// 先把事件摘掉 —— 那样一旦失败/取消，上下文就被破坏了一半。
 func (a *Agent) CompressResident(id string) (int, error) {
 	a.residentMu.Lock()
 	rc, ok := a.residents[id]
@@ -534,13 +709,37 @@ func (a *Agent) CompressResident(id string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	dropped := rc.agent.context.TrimKeepRecent(residentKeepRecent)
+
+	ctx := rc.agent.context
+	compacted := 0
+
+	if ctx != nil {
+		// ① 只读计划：此时上下文一个字都没动。
+		plan := ctx.PlanCompaction(residentKeepRecent)
+		if len(plan.Old) > 0 {
+			// ② 用**子自己**的 provider 压（裁定 A）。
+			summary, err := rc.agent.summarizeForCompaction(plan.PrefixText)
+			if err != nil {
+				// ③ 裁定 B：回退截断。必须留日志 —— 静默降级会让运维
+				//    永远不知道"压缩退化成丢弃"发生了多少次。
+				log.Printf("[resident] %s compaction summary failed (falling back to truncation — "+
+					"%d events will be DISCARDED, not summarized): %v", id, len(plan.Old), err)
+				compacted = ctx.TrimKeepRecent(residentKeepRecent)
+			} else {
+				// ④ 摘要替换那段（不是丢弃）。
+				compacted = ctx.ApplyCompaction(plan, summary)
+				log.Printf("[resident] %s compacted %d events into a %d-char summary (kept last %d)",
+					id, compacted, len([]rune(summary)), residentKeepRecent)
+			}
+		}
+	}
+
 	rc.agent.clearInputchTable() // 处理表记的是被压掉那段窗口的逐轮处理 ⇒ 必须清
 	rc.agent.resetContextFull()
 	rc.mu.Lock()
 	rc.state = "running"
 	rc.mu.Unlock()
-	return dropped, nil
+	return compacted, nil
 }
 
 // ReclaimResident 是父的"回收"（**取消语义**）：父读子的 temp → 选记录 → 合入 main
@@ -618,7 +817,14 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 //
 // 只对**驻留子**生效（只有它们设了 onContextFull）。
 func (a *Agent) checkContextFull() {
-	if a.onContextFull == nil || a.ctxFullSignaled {
+	if a.onContextFull == nil {
+		return
+	}
+	// 读标记要加锁：它可能被**父的 goroutine**（CompressResident）并发清零。
+	a.ctxFullMu.Lock()
+	signaled := a.ctxFullSignaled
+	a.ctxFullMu.Unlock()
+	if signaled {
 		return
 	}
 	if a.context == nil {
@@ -634,11 +840,21 @@ func (a *Agent) checkContextFull() {
 	if a.overflowRatioNow() < contextFullRatio {
 		return
 	}
+	a.ctxFullMu.Lock()
 	a.ctxFullSignaled = true
+	a.ctxFullMu.Unlock()
 	a.onContextFull()
 }
 
-func (a *Agent) resetContextFull() { a.ctxFullSignaled = false }
+// resetContextFull 清零上报标记（压缩后允许再次上报）。
+//
+// 加锁理由见 Agent.ctxFullMu：本函数**通常由父的 goroutine 调用**
+// （CompressResident），而子的调度器 goroutine 正在读同一个字段。
+func (a *Agent) resetContextFull() {
+	a.ctxFullMu.Lock()
+	a.ctxFullSignaled = false
+	a.ctxFullMu.Unlock()
+}
 
 // ---- 子侧：inputch 处理表（子持有，父 pull） ----
 
@@ -759,4 +975,65 @@ func MarshalResidentInfo(info ResidentInfo) string {
 		return fmt.Sprintf("%+v", info)
 	}
 	return string(b)
+}
+
+// compactionSummaryPrompt 是压缩摘要的指令。
+//
+// 三条硬要求，每条都对应一种坏摘要：
+//   - 保留事实（人名/数字/决定/未完成项）—— 否则摘要等于把知识蒸干了
+//   - 不得编造 —— 模型很容易"补全"它以为该有的结论
+//   - 输出纯文本，不要复述"以下是摘要"这类客套 —— 它会被原样插回上下文
+const compactionSummaryPrompt = `把下面这段对话压缩成一段摘要，供你自己后续继续工作使用。
+
+要求：
+1. **保留全部事实**：人物、数字、时间、已作出的决定、结论、以及**尚未完成的事项**。
+2. **不得编造**：原文没有的内容一律不要补充；不确定的写「未确认」。
+3. 丢掉过程细节（逐条工具调用的原始输出、寒暄、重复确认），保留结果。
+4. 直接输出摘要正文，不要写「以下是摘要」之类的开场白。
+5. 控制在 300 字以内。
+
+对话原文：
+%s`
+
+// summarizeForCompaction 用**本 agent 自己的 provider** 把一段原文压成摘要。
+//
+// ## 为什么用子自己的 provider（设计 R7 / 用户 2026-10-30 裁定 A）
+//
+// 「压缩由**子的轻量内核自己压**（它有自己的上下文与 LLM）」——
+// resident-subagent-design.md:640。语义上压缩是**子对自身记忆的整理**，
+// 它的视角、它认为重要的东西，与父不同。让父代劳会让子的记忆被父的兴趣点
+// 重塑 —— 那不是压缩，是替换。
+//
+// ## 失败语义（用户裁定 B：回退截断）
+//
+// 返回错误时调用方**退回 TrimKeepRecent**（截断），并记日志。
+// 不抛错让压缩失败：contextfull 时子已经顶着满上下文，压缩再失败就等于
+// 把"能不能继续干活"赌在一次可能超时的 LLM 调用上。
+func (a *Agent) summarizeForCompaction(text string) (string, error) {
+	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("没有可压缩的内容")
+	}
+	if a == nil || a.provider == nil {
+		return "", fmt.Errorf("本 agent 没有可用的 LLM provider")
+	}
+
+	req := &agentAPI.CompletionRequest{
+		Messages: []agentAPI.Message{
+			{Role: "user", Content: fmt.Sprintf(compactionSummaryPrompt, text)},
+		},
+		// 摘要不需要长输出；给足 300 字（中文约 600 token）+ 余量。
+		MaxTokens:       1024,
+		ToolChoice:      "none",
+		DisableThinking: true,
+	}
+	// 用本 agent 的 ctx：父退出/子被销毁时压缩自然中止（不留下悬空调用）。
+	resp, err := a.provider.Chat(a.ctx, req)
+	if err != nil {
+		return "", err
+	}
+	out := strings.TrimSpace(resp.Content)
+	if out == "" {
+		return "", fmt.Errorf("摘要器返回空内容")
+	}
+	return out, nil
 }

@@ -824,6 +824,45 @@ func (a *Agent) buildToolDefs() []interface{} {
 
 	tools = append(tools, toolDefWith("output_list_channels", "列出所有可用输出通道及其能力（如 text/file/image/audio）和对应的输出门工具名称。", map[string]interface{}{}, nil, parallelOpts()))
 
+	// 父侧：rtchild 控制面（实时通话子 agent，plan.md 十一）。
+	if a.parentID == "" {
+		tools = append(tools, toolDefWith("rt_children",
+			"管理实时子 agent（rtchild，用于通话/视频通话）：list 列出 / "+
+				"create 创建（**必须成对**给 inputch + outputch）/ "+
+				"send 注入一条新输入（**会立即打断它当前轮**，不排队）/ "+
+				"stop 回收（先交给你全部上下文，是否保留由你决定，用 rt_transcript 取回）。"+
+				"注意：rt 通道必须由插件声明（ChannelDef.Realtime=true）；"+
+				"没有 rt 能力的 agent 不能持有 rt 通道。", map[string]interface{}{
+				"action": map[string]interface{}{
+					"type": "string",
+					"enum": []string{"list", "create", "send", "stop"},
+				},
+				"id":            map[string]interface{}{"type": "string", "description": "rtchild 的 id"},
+				"inputch":       map[string]interface{}{"type": "string", "description": "create：rt inputch 名（采集侧灌入；成对的一半）"},
+				"outputch":      map[string]interface{}{"type": "string", "description": "create：rt outputch 名（内核把文本写进它；成对的另一半）"},
+				"system_prompt": map[string]interface{}{"type": "string", "description": "create：系统提示词（留空用内置的实时通话提示词）"},
+				"max_tools":     map[string]interface{}{"type": "number", "description": "create：单轮最多几批工具调用（0=不限，rt 默认不限）"},
+				"text":          map[string]interface{}{"type": "string", "description": "send：要注入的输入（会打断当前轮）"},
+			},
+			[]string{"action"}, parallelOpts()))
+	}
+
+	// 父侧：rtchild 上下文交接（用户裁定 2026-10-30：走 contextfull 式中断，
+	// 主 agent **自行选择**保留哪些内容 —— 所以给一个按需拉取的读口）。
+	if a.parentID == "" {
+		tools = append(tools, toolDefWith("rt_transcript",
+			"取回实时子 agent（rtchild）的通话上下文原文。回收 rtchild 时你会收到一条中断，"+
+				"告知有多少条消息；**是否保留、保留哪些由你决定** —— 用本工具分段读取后再取舍，"+
+				"不要把整段塞进自己的上下文（一条通话可能有几百条消息）。",
+			map[string]interface{}{
+				"id":     map[string]interface{}{"type": "string", "description": "rtchild 的 id"},
+				"offset": map[string]interface{}{"type": "number", "description": "从第几条消息开始（0 = 从头）"},
+				"limit":  map[string]interface{}{"type": "number", "description": fmt.Sprintf("最多返回多少条（默认 %d）", rtTranscriptDefaultLimit)},
+				"format": map[string]interface{}{"type": "string", "enum": []string{"text", "raw"}, "description": "text=可读渲染（默认）/ raw=原始消息"},
+			},
+			[]string{"id"}, parallelOpts()))
+	}
+
 	// 父侧：驻留子控制面（单工具多动作，见设计 §7）。
 	if a.parentID == "" {
 		tools = append(tools, toolDef("resident_agents", "管理驻留子 agent（长期派驻的下属）：list 列出 / create 创建（划入 inputch + "+
@@ -845,10 +884,20 @@ func (a *Agent) buildToolDefs() []interface{} {
 			"text":            map[string]interface{}{"type": "string", "description": "send：要发给子 agent 的消息"},
 			"residual": map[string]interface{}{
 				"type": "string",
-				"description": "reclaim/destroy：该子手头未处理消息的处置。" +
-					"keep=转回主 agent 队列（默认，宁可多做一件不可默默丢一条）/ drop=丢弃（已确认不要）。" +
-					"无论哪种都会逐条记日志；异步通道（如 qq）被丢时用户收不到任何回复，请慎重选 drop。",
-				"enum": []string{"keep", "drop"},
+				"description": "reclaim/destroy：该子手头**未处理消息**的处置。" +
+					"keep=转回你自己的队列（默认）/ takeover=同 keep 但语义明确为「我接手」/" +
+					"stash=暂存到它各自的原通道，等该通道被接回时再放出（你暂时忙但活不能丢时用）/" +
+					"drop=丢弃（已确认不要）。" +
+					"四者都会逐条记日志；异步通道（如 qq）被 drop 时用户收不到任何回复，请慎重。",
+				"enum": []string{"keep", "takeover", "stash", "drop"},
+			},
+			"channels": map[string]interface{}{
+				"type": "string",
+				"description": "reclaim/destroy：该子**持有的通道**的处置。" +
+					"release=归还池子变「未分配」，可被任意 agent 再分配（默认）/ " +
+					"suspend=挂起：归属清空但不参与自动分配，通道上的暂存任务保留，等你接回/" +
+					"takeover=接回你自己：通道归你，并立即释放该通道上的暂存任务到你的队列。",
+				"enum": []string{"release", "suspend", "takeover"},
 			},
 		}, "action"))
 	}

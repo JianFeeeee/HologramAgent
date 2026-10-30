@@ -298,6 +298,20 @@ type ChannelDef struct {
 	RecallPolicy string `json:"recall_policy,omitempty"`
 	// ScenePolicy 见 InjectOptions.ScenePolicy；空串等价 auto（保持既有行为）。
 	ScenePolicy string `json:"scene_policy,omitempty"`
+
+	// Realtime 声明**本通道能承载 rt 流**（实时通话）。
+	//
+	// ## 它是什么、不是什么
+	//
+	// 它是**通道**侧的能力声明：「我这个通道知道怎么处理『新值作废旧值』的
+	// 实时流」。与「目标 agent 是不是 rtchild」是两件事，两侧都要满足才能划拨
+	// （内核侧校验见 Agent.AssignRealtime）。
+	//
+	// ★ 它**不**表示"内核要产出音频"：`outputch(rt)` 只产出**文本**，
+	//   怎么展示（含 TTS/播放）是本插件的事。
+	// ★ 它**不是**准入门槛：不带本标记的普通通道同样可以划给 rtchild，
+	//   只是不能承载 rt 流（计划 §2.3「标签不是准入门槛」）。
+	Realtime bool `json:"realtime,omitempty"`
 }
 
 // StageContext provides context for stage handlers.

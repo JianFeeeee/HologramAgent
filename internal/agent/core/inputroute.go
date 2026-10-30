@@ -32,6 +32,37 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	a.residentMu.Lock()
 	rc := a.residents[entry.Owner]
 	a.residentMu.Unlock()
+
+	// ★ rtchild 分支：rt 通道的输入必须进 **rtSlot**（单槽覆盖），
+	// 而不是走 rc.agent.io.DeliverRouted（那会进四级中断阶梯）。
+	//
+	// 这是插件→rtchild 的**唯一通路**：插件只能用 Inject* 系列，那些方法
+	// 最终都汇到 deliverInput → 本函数。若不在这里识别 rt 通道，插件的
+	// 语音/画面输入会永远打在父身上（rtchild 的轮次永远是 0）。
+	//
+	// 判据 TestRTChannel_PluginInputReachesRTSlot 钉它。
+	a.rtMu.Lock()
+	rt := a.rtChildren[entry.Owner]
+	a.rtMu.Unlock()
+	if rt != nil {
+		// 不区分 isInterrupt：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
+		// 这正是 plan.md 十一.三 B 说的"rt 输入不进四级中断阶梯"的落点。
+		rt.slot.Push(evt)
+		if rt.agent != nil && rt.agent.ctx != nil {
+			// 已存在且活着的轮次：取消它，让 rtLoop 立刻用新输入重开（契约 1）。
+			rt.mu.Lock()
+			cancel, critical := rt.curCancel, rt.critical
+			if cancel != nil && critical > 0 {
+				rt.suppressedCancels++
+			}
+			rt.mu.Unlock()
+			if cancel != nil && critical == 0 {
+				cancel()
+			}
+		}
+		return true
+	}
+
 	if rc == nil || rc.agent == nil || rc.agent.io == nil {
 		// 归属到一个不存在（或已销毁、登记表尚未归还）的 agent：
 		// **不吞输入** —— 由本内核兜底处理并留痕。吞掉一条输入比多处理一条更糟：

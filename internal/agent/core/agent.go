@@ -35,8 +35,11 @@ type Agent struct {
 	id              types.AgentID
 	provider        agentAPI.Provider
 	providerManager *agentAPI.ProviderManager
-	io              *agentIO.IOManager
-	memory          *memory.GraphDB
+	// preferredProvider 是本 agent 优先使用的模型源名（"" = 总默认源）。
+	// 语义见 AgentConfig.PreferredProvider：优先而非独占。
+	preferredProvider string
+	io                *agentIO.IOManager
+	memory            *memory.GraphDB
 	// graph 是本 agent 的**图记忆共同面**（根 = 同一个 GraphDB；驻留子 = LightMemory）。
 	// 整理面仍走 memory 字段（子为 nil ⇒ 既有的 nil 关卡自动禁用整理面）。
 	graph GraphMemory
@@ -47,13 +50,49 @@ type Agent struct {
 	taskPrompt   string
 	dataDir      string
 
+	// isRealtime 标记本 agent 是 **rtchild**（实时子 agent，plan.md 十一）。
+	//
+	// 它是 agent **类型标签**，与通道侧的 CapRT 是两个不同结构：
+	//   · CapRT      —— “这个**通道**能承载 rt 流”（插件声明）
+	//   · isRealtime —— “这个 **agent** 是 rtchild”（内核构造时定）
+	// rt 通道的划拨要两侧都满足（见 Agent.AssignRealtime）。
+	//
+	// 与 kernelSource 同类：都是“这个 agent 在层级/类型上是谁”的不可变标记。
+	isRealtime bool
+
 	// 驻留子（父侧）：登记表 + 子侧钩子。
 	residentMu sync.Mutex
 	residents  map[string]*residentChild
 
+	// rtchild（实时子 agent，plan.md 十一）：登记表 + 单槽输入。
+	//
+	// ★ 为何与 residents 分开而不复用：两者的语义**相反**：
+	//   residents：有任务队列、有残余可回灌、父可 pull 状态面（不丢活）
+	//   rtChildren：无队列（单槽覆盖）、无残余、最新者胜（低延迟）
+	// 混在一张表里会让"该不该转残余"这类判断变成条件分叉。
+	rtMu       sync.Mutex
+	rtChildren map[string]*rtChild
+	// rtClosedTranscripts 是**已回收** rtchild 的上下文留档（id → 全文）。
+	//
+	// 为什么必须留档：交接是「推信号 + 拉状态」两步（见 CloseRTChild），
+	// 推完中断后实例已出登记表 —— 若不留档，主 agent 收到"可调用 rt_transcript
+	// 取回原文"的提示时，原文已经取不到了。
+	rtClosedTranscripts map[string][]agentAPI.Message
+	// rtSlot 是**本 agent 作为 rtchild 时**的输入槽（作为父时无用）。
+	rtSlot *rtSlot
+	// rtMaxTools 是本 agent 作为 rtchild 时的工具批数上限（0 = 不限）。
+	rtMaxTools int
+
 	// 子侧：向父发消息（L3）与 contextfull 上报（父侧内核级事件）的钩子。
-	notifyParent    func(text string)
-	onContextFull   func()
+	notifyParent  func(text string)
+	onContextFull func()
+	// ctxFullSignaled / ctxFullMu：contextfull 只上报一次的去重标记。
+	//
+	// ★ 必须加锁（2026-10-30，-race 实测抓到真实竞争）：
+	// 读它的是**子自己的调度器 goroutine**（checkContextFull，stepPrepare 里），
+	// 而写它的是**父的 goroutine**（CompressResident → resetContextFull）。
+	// 这两个 goroutine 并发读写同一 bool，是无锁数据竞争。
+	ctxFullMu       sync.Mutex
 	ctxFullSignaled bool
 
 	// 子侧：inputch 处理表（子持有，父 pull）。
@@ -262,8 +301,27 @@ type AgentConfig struct {
 	SystemPrompt    string
 	Provider        agentAPI.Provider
 	ProviderManager *agentAPI.ProviderManager
-	IO              *agentIO.IOManager
-	Memory          *memory.GraphDB
+	// PreferredProvider 是本 agent **优先使用**的模型源名（空 = 用总默认源）。
+	//
+	// ## 为什么需要它（用户 2026-10-30 要求）
+	//
+	// 「要求支持为主 agent、子 agent、驻留式子 agent、rt agent 可各自配置模型源，
+	//   **默认使用总模型源（default）**」
+	//
+	// 之前四类 agent 共用 providerManager 的同一套顺序：谁都没法单独指定。
+	// 但它们的负载完全不同 —— 主 agent 要强推理、rtchild 要极低首字延迟、
+	// 驻留子要长时间挂着省成本。用同一个源对三者都是妥协。
+	//
+	// ## 语义：**优先，不是独占**
+	//
+	// 它把该源排到候选链**最前面**，其余源仍作为回退（与原有多源回退语义一致）。
+	// 硬锁定成唯一源会让"这个源挂了"直接变成"这个 agent 完全不工作"，
+	// 而回退链正是本仓为此建立的机制。
+	//
+	// 名字不存在时**响亮回退到默认源并记日志**（不静默）：配置拼错要能看见。
+	PreferredProvider string
+	IO                *agentIO.IOManager
+	Memory            *memory.GraphDB
 	// LightMemory 是**轻量内核**的图记忆装配（驻留子用；读 temp∪main，只写 temp）。
 	//
 	// 给了它就意味着这是轻量内核：`Memory` 必须为 nil，
@@ -302,7 +360,16 @@ type AgentConfig struct {
 	//
 	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
 	// 父 agent 创建驻留子时用它收窄子的输出能力。
-	AllowedOutputs  []string
+	AllowedOutputs []string
+	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，plan.md 十一）。
+	//
+	// 置 true 后：
+	//   · 只有它能被划入带 CapRT 的 rt 通道（Agent.AssignRealtime 校验）；
+	//   · 打断不走四级中断阶梯，而走单槽覆盖（plan.md 十一.三 B）。
+	//
+	// ★ 这不是权限位，而是**类型标记**：另外两类子 agent 的设计目标函数
+	//   与 rt 相反（公平 vs 最新者胜），混用会两边都坏。
+	IsRealtime      bool
 	PluginDir       string
 	DistillInterval time.Duration
 	ArchiveInterval time.Duration // 冷文档归档间隔（L2→L3），0 则使用 DistillInterval
@@ -412,27 +479,29 @@ func New(cfg AgentConfig) *Agent {
 	}
 
 	a := &Agent{
-		id:               cfg.ID,
-		startTime:        time.Now(),
-		provider:         cfg.Provider,
-		providerManager:  cfg.ProviderManager,
-		io:               cfg.IO,
-		memory:           cfg.Memory,
-		graph:            graphMemoryOf(cfg),
-		kernelSource:     cfg.KernelSource,
-		parentID:         cfg.ParentID,
-		taskPrompt:       cfg.TaskPrompt,
-		dataDir:          cfg.DataDir,
-		indexer:          cfg.Indexer,
-		tracker:          cfg.Tracker,
-		context:          rc,
-		systemPrompt:     cfg.SystemPrompt,
-		ctx:              ctx,
-		cancel:           cancel,
-		coldcontextStore: cfg.DocStore,
-		knowledge:        cfg.Knowledge,
-		social:           cfg.SocialStore,
-		textMem:          cfg.TextMemory,
+		id:                cfg.ID,
+		startTime:         time.Now(),
+		provider:          cfg.Provider,
+		preferredProvider: cfg.PreferredProvider,
+		providerManager:   cfg.ProviderManager,
+		io:                cfg.IO,
+		memory:            cfg.Memory,
+		graph:             graphMemoryOf(cfg),
+		kernelSource:      cfg.KernelSource,
+		parentID:          cfg.ParentID,
+		taskPrompt:        cfg.TaskPrompt,
+		dataDir:           cfg.DataDir,
+		isRealtime:        cfg.IsRealtime,
+		indexer:           cfg.Indexer,
+		tracker:           cfg.Tracker,
+		context:           rc,
+		systemPrompt:      cfg.SystemPrompt,
+		ctx:               ctx,
+		cancel:            cancel,
+		coldcontextStore:  cfg.DocStore,
+		knowledge:         cfg.Knowledge,
+		social:            cfg.SocialStore,
+		textMem:           cfg.TextMemory,
 		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
 		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
 		personality:       cfg.Personality,

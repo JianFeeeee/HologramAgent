@@ -1447,3 +1447,159 @@ func (c *RelevanceContext) purgeToolResultDir(evtID string) {
 		log.Printf("[agent] purge toolresult dir %s: %v", p, err)
 	}
 }
+
+// ── 压缩支持（resident 的「压缩」= 摘要替换，不是截断丢弃） ──
+
+// CompactPlan 是一次压缩的**只读计划**：描述要压掉哪一段、留下哪一段。
+//
+// 为什么先出计划再执行（而不是一步做完）：
+// 摘要需要调 LLM（可能几百毫秒到几十秒），期间不能持锁、也不能先把事件
+// 从上下文里摘掉 —— 那样一旦摘要失败或取消，上下文就被破坏了一半。
+// 所以顺序是：**取计划 → 无锁生成摘要 → 应用**。
+type CompactPlan struct {
+	// Old 是即将被压掉的事件（按时间正序）。可能为空（没什么可压的）。
+	Old []*ContextEvent
+	// Keep 是保留的最近事件数（仅供日志/判据核对）。
+	Keep int
+	// Total 是压缩前的事件总数。
+	Total int
+	// PrefixText 是把 Old 渲染成供摘要用的纯文本。
+	PrefixText string
+}
+
+// PlanCompaction 生成压缩计划：保留最近 keepRecent 条，其余进 Old。
+//
+// 注意它**不改动任何状态**——调用方拿到计划后可以安全地去做慢操作（调 LLM），
+// 失败了就当没发生过。
+func (c *RelevanceContext) PlanCompaction(keepRecent int) CompactPlan {
+	if keepRecent < 1 {
+		keepRecent = 1
+	}
+	evts := c.snapshotEvents()
+	plan := CompactPlan{Keep: keepRecent, Total: len(evts)}
+	if len(evts) <= keepRecent {
+		return plan
+	}
+	cut := len(evts) - keepRecent
+	plan.Old = evts[:cut]
+	plan.PrefixText = renderEventsForSummary(plan.Old)
+	return plan
+}
+
+// ApplyCompaction 用一条**摘要事件**替换 Old 那一段。
+//
+// 语义（design §9「压成摘要 → 清处理表 → 子续用」）：
+//   - 被压掉的 N 条不再存在于上下文（它们的**语义**留在摘要里）
+//   - 摘要作为一条 system 事件排在保留段的**前面**，子下一轮就能看到
+//
+// 为什么按"时间戳 + 事件指针"定位而不是按下标：
+// 摘要生成期间（可能几十秒）上下文可能被 Append 追加新事件，下标会移。
+// 这里用"Old 末尾那条事件"作为锚点：找到它当前的位置，删掉它之前的、
+// 属于本次压缩的那些事件。
+//
+// 返回实际删掉的事件数。
+func (c *RelevanceContext) ApplyCompaction(plan CompactPlan, summary string) int {
+	if len(plan.Old) == 0 {
+		return 0
+	}
+	dropSet := make(map[*ContextEvent]bool, len(plan.Old))
+	for _, e := range plan.Old {
+		dropSet[e] = true
+	}
+
+	// ★ 这里**不能**用 defer Unlock：本函数在中途（向量计算前）必须主动解锁，
+	// 而 defer 会在返回时再解一次 ⇒ "unlock of unlocked mutex"（实测 fatal）。
+	c.mu.Lock()
+
+	kept := make([]*ContextEvent, 0, len(c.events)+1)
+	removed := 0
+	inserted := false
+	for _, e := range c.events {
+		if dropSet[e] {
+			// 第一次遇到被压掉的事件时，就在这个位置插入摘要 —— 保持时间顺序
+			// （摘要代表"那段被压掉的内容"，位置应在保留段之前）。
+			if !inserted && summary != "" {
+				kept = append(kept, newCompactionEvent(plan, summary))
+				inserted = true
+			}
+			removed++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if removed == 0 {
+		c.mu.Unlock()
+		return 0 // 期间上下文被别处改动过（如 Prune 已把它归档）—— 不重复处理
+	}
+	c.events = kept
+	c.dirty = true
+	// 把要算向量的那条事件带出锁外 —— 不能在这里算：
+	// c.mu 是**不可重入**的 sync.Mutex，而 computeVector 依赖 c.toolDefLookup
+	// 等字段（读锁内状态），在锁内再进出会死锁（实测 panic）。
+	// 向量计算还会调嵌入模型，持锁会拖住所有读者。
+	var toVector *ContextEvent
+	if inserted {
+		for _, e := range c.events {
+			if e.Source == compactionSource {
+				toVector = e
+				break
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	if toVector != nil {
+		c.computeVector(toVector)
+	}
+	c.save()
+	return removed
+}
+
+// compactionSource 是压缩摘要事件的来源标识（判据与渲染据此识别它）。
+const compactionSource = "system/compaction"
+
+// newCompactionEvent 构造摘要事件。调用方须持锁（append 到 c.events）。
+func newCompactionEvent(plan CompactPlan, summary string) *ContextEvent {
+	return &ContextEvent{
+		Timestamp: time.Now(),
+		Source:    compactionSource,
+		Input:     fmt.Sprintf("[压缩摘要] 以下是此前 %d 条对话的摘要（原文已不在上下文中）：\n%s", len(plan.Old), summary),
+		// 摘要本身是"背景说明"，不是用户说的话 ⇒ 不参与记忆写入，
+		// 否则每次压缩都会往图库里灌一条假对话。
+		NoMemory: true,
+	}
+}
+
+// renderEventsForSummary 把一批事件渲染成供 LLM 摘要的纯文本。
+//
+// 口径：**尽量保留事实**（谁说了什么、调用了什么工具得到什么结论），
+// 但工具结果只留摘要（它们是体积大头，且摘要不需要原始 HTML/JSON）。
+func renderEventsForSummary(evts []*ContextEvent) string {
+	var sb strings.Builder
+	for _, e := range evts {
+		if e == nil {
+			continue
+		}
+		if t := strings.TrimSpace(e.Input); t != "" {
+			fmt.Fprintf(&sb, "[用户] %s\n", truncateStr(t, compactionToolResultMaxRunes))
+		}
+		for _, tc := range e.ToolCalls {
+			fmt.Fprintf(&sb, "[工具调用] %s\n", tc.Name)
+		}
+		if len(e.ToolResults) > 0 {
+			parts := make([]string, 0, len(e.ToolResults))
+			for _, tr := range e.ToolResults {
+				parts = append(parts, fmt.Sprintf("%s→%s",
+					tr.Name, truncateStr(strings.TrimSpace(tr.Output), compactionToolResultMaxRunes)))
+			}
+			fmt.Fprintf(&sb, "[工具结果] %s\n", strings.Join(parts, "；"))
+		}
+		if r := strings.TrimSpace(e.Response); r != "" {
+			fmt.Fprintf(&sb, "[助手] %s\n", truncateStr(r, compactionToolResultMaxRunes))
+		}
+	}
+	return sb.String()
+}
+
+// compactionToolResultMaxRunes 是喂给摘要器时单条工具结果的字符上限。
+const compactionToolResultMaxRunes = 400

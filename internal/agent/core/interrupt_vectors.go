@@ -46,6 +46,8 @@ const (
 	VectorContextOverflow VectorID = "ctx_overflow"
 	// VectorChildContextFull：驻留子上下文已满，父据此决定压缩/回收/销毁。
 	VectorChildContextFull VectorID = "child_ctxfull"
+	// VectorRTChildClosed：rtchild 回收，父据此**自行选择**要保留哪些上下文。
+	VectorRTChildClosed VectorID = "rtchild_closed"
 )
 
 // vectorArgs 是一次中断向量调用的全部入参。
@@ -59,6 +61,12 @@ type vectorArgs struct {
 	Panic any
 	// ChildID 是驻留子标识（VectorChildContextFull 使用）。
 	ChildID string
+	// RTID 是 rtchild 标识（VectorRTChildClosed 使用）。
+	RTID string
+	// RTCount / RTChars 是本次交接的规模（VectorRTChildClosed 使用），
+	// 让主 agent 判断"值不值得去取全文"。
+	RTCount int
+	RTChars int
 }
 
 // interruptVector 是一个中断源的**完整契约**。
@@ -124,6 +132,25 @@ var interruptVectors = map[VectorID]interruptVector{
 		// 为什么必须带空串而不是省略 Build：lookupVector 的契约要求 Build
 		// 存在（否则调用方 nil panic），"没有正文"要显式表达成 ""。
 		Build: func(vectorArgs) string { return "" },
+	},
+
+	VectorRTChildClosed: {
+		ID:     VectorRTChildClosed,
+		Level:  LevelCritical,
+		Source: func(a vectorArgs) string { return "rtchild/" + a.RTID },
+		Guard:  func(vectorArgs) bool { return true },
+		Build: func(a vectorArgs) string {
+			// ★ 父子协议同驻留子 contextfull：**只推信号，不塞正文**。
+			//
+			// 用户裁定（2026-10-30）：「交还是类似驻留式子 agent 的 contextfull
+			// 中断，让主 agent **自行选择**保留的内容。」
+			//
+			// 所以这里**不**把通话原文灌进 payload —— 那等于替主 agent 做了
+			// "全都要"的决定，且会把几十万字符直接顶进它的上下文。正文由
+			// RTTranscript 按需拉取（"推信号 + 拉状态"），与驻留子同一套协议。
+			return fmt.Sprintf("内核事件：实时子 agent %s 已回收，本次通话共 %d 条消息（约 %d 字符）。"+
+				"如需复盘，可调用 rt_transcript 取回原文并按需选取保留内容。", a.RTID, a.RTCount, a.RTChars)
+		},
 	},
 
 	VectorChildContextFull: {

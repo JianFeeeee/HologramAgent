@@ -253,6 +253,13 @@ type injectParams struct {
 	CleanerName   string    `json:"cleaner_name,omitempty"`
 	// Priority 声明中断注入的优先级（L1..L3）；L4 内核独占，见 InjectOptions。
 	Priority string `json:"priority,omitempty"`
+	// ScenePolicy 声明此次注入是否参与场面识别（场景式记忆）。
+	ScenePolicy string `json:"scene_policy,omitempty"`
+	// SecurityProfile 选择本插件声明的**命名安全限式**（如 "qq.guest"）。
+	//
+	// ★ 漏了它等于「插件声明了档位、注入时带了、内核从没收到」——
+	//   策略静默不生效，且没有任何报错（2026-10-30 审计发现，已修）。
+	SecurityProfile string `json:"security_profile,omitempty"`
 }
 
 // injectMediaParams 是带媒体注入/工具块注入的参数。
@@ -275,17 +282,47 @@ type injectMediaParams struct {
 	RecallPolicy  string                `json:"recall_policy,omitempty"`
 	CleanerName   string                `json:"cleaner_name,omitempty"`
 	Priority      string                `json:"priority,omitempty"`
+	// ScenePolicy / SecurityProfile 与 injectParams 同义（见那里的注释）。
+	ScenePolicy     string `json:"scene_policy,omitempty"`
+	SecurityProfile string `json:"security_profile,omitempty"`
+}
+
+// asInjectParams 把媒体注入参数降成通用注入参数（只取共有的 opts 字段）。
+//
+// 为什么要有这个转换：pubSdkInjectOpts 接收 injectParams，而媒体路径用的是
+// injectMediaParams（多 Blocks/BlocksRef）。与其让 pubSdkInjectOpts 收两个类型
+// 或改签名成 8 个裸参数（那正是本次修掉的缺陷形态），不如显式降一次。
+func (p injectMediaParams) asInjectParams() injectParams {
+	return injectParams{
+		Source: p.Source, Channel: p.Channel, Text: p.Text,
+		NoMemory: p.NoMemory, ContextPolicy: p.ContextPolicy,
+		RecallPolicy: p.RecallPolicy, CleanerName: p.CleanerName,
+		Priority: p.Priority, ScenePolicy: p.ScenePolicy,
+		SecurityProfile: p.SecurityProfile,
+	}
 }
 
 // pubSdkInjectOpts 把 RPC 报文里的三个字段转成公开 SDK 的 InjectOptions。
 //
 // 单独提一个转换函数是为了让「默认值」只有一个出处：零值即记入记忆 + 不裁剪，
 // 与旧三参数注入等价。
-func pubSdkInjectOpts(noMemory bool, policy, recallPolicy, cleanerName, priority string) pubsdk.InjectOptions {
+// ★ 签名接收整个 injectParams 而**不是逐个字段**：
+//
+// 曾经的形态是 `pubSdkInjectOpts(noMemory, policy, recallPolicy, cleanerName, priority)`
+// —— 于是新增 InjectOptions 字段时，这个转换函数**不会**提醒任何人去接，
+// 实际漏了 ScenePolicy 与 SecurityProfile（后者正是 QQ owner/guest 档位的通路）。
+//
+// 现在：`injectParams` 与 `pubsdk.InjectOptions` 字段一一对应，
+// 新增字段时编译器会在这里提示"未使用/缺字段"，而不是静默丢失。
+func pubSdkInjectOpts(p injectParams) pubsdk.InjectOptions {
 	return pubsdk.InjectOptions{
-		NoMemory: noMemory, ContextPolicy: policy, RecallPolicy: recallPolicy,
-		CleanerName: cleanerName,
-		Priority:    clampExternalPriority(priority),
+		NoMemory:        p.NoMemory,
+		ContextPolicy:   p.ContextPolicy,
+		RecallPolicy:    p.RecallPolicy,
+		ScenePolicy:     p.ScenePolicy,
+		CleanerName:     p.CleanerName,
+		Priority:        clampExternalPriority(p.Priority),
+		SecurityProfile: p.SecurityProfile,
 	}
 }
 
@@ -558,8 +595,20 @@ func (h *coreHandler) outputRegister(params json.RawMessage) (interface{}, error
 	if err != nil {
 		return nil, fmt.Errorf("output.register: %w", err)
 	}
-	return nil, h.sdk.RegisterOutputChannel(channel, p.Caps, p.Desc,
-		pubsdk.ChannelDef{NoMemory: p.Def.NoMemory, Cleaner: cleaner},
+	// ★ 整体传 p.Def（只把函数型的 Cleaner 换成代理），**不要手写字段白名单**。
+	//
+	// 这里曾写成 `pubsdk.ChannelDef{NoMemory: p.Def.NoMemory, Cleaner: cleaner}` ——
+	// 一个字段白名单，于是 `Realtime` / `ContextPolicy` / `RecallPolicy` /
+	// `ScenePolicy` **全部静默丢失**。表现（2026-10-30 外部插件 e2e 实测）：
+	// 插件声明 `ChannelDef{Realtime:true}` 的 outputch，到内核侧
+	// `OutputCapabilities()` 只有 `[text]`，没有 CapRT ⇒ AssignRealtime 被拒
+	// ⇒ 作者以为"我声明了 rt"却怎么也划不上，且没有任何报错指向这里。
+	//
+	// 输入侧（corehandler_register.go）本来就是正确写法，同一件事故意写成两种，
+	// 所以只修了一半也看不出来。现在两侧同构。
+	def := p.Def
+	def.Cleaner = cleaner
+	return nil, h.sdk.RegisterOutputChannel(channel, p.Caps, p.Desc, def,
 		func(args map[string]interface{}) (interface{}, error) {
 			return h.invokeOutput(channel, args)
 		})

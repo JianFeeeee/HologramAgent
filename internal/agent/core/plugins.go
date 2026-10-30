@@ -75,6 +75,10 @@ var builtinToolOwner = map[string]string{
 	"input_channels": "core", "inputch_note": "core",
 	"spawn_child": "core", "child_result": "core", "notify_parent": "core",
 	"resident_agents": "core",
+	// rtchild 上下文交接的拉取入口（用户裁定 2026-10-30：走 contextfull 式中断，
+	// 主 agent 自行选择保留哪些内容）。归 core：它是内核原语，不是插件能力。
+	"rt_transcript": "core",
+	"rt_children":   "core",
 	// LLM 源 / 插件管理
 	"llm_list_sources": "core", "llm_set_source": "core", "llm_current_source": "core",
 	"plgreload": "core", "get_plugin_tools": "core", "list_devices": "core",
