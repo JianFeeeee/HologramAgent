@@ -242,8 +242,20 @@ func TTLSeconds(n int) time.Duration {
 
 // profilePolicy 取当前活跃档位的策略（无档位时返回零值 + false）。
 func (r *Runtime) profilePolicy() (Profile, bool) {
-	name := r.ActiveProfile()
-	if name == "" || r.profiles == nil {
+	return r.profilePolicyByName(r.ActiveProfile())
+}
+
+// profilePolicyByName 按**指定**档位名取策略（per-agent 视图用）。
+//
+// ★ 与 profilePolicy 的分工：
+//
+//	profilePolicy        —— 读进程级 active（旧路径，单执行体场景）
+//	profilePolicyByName  —— 由调用方给出档位（per-agent 视图必须走这条）
+//
+// 之所以要拆：per-agent 视图的档位是**它自己的** session/longtime，
+// 不能去读 `Runtime.active` —— 那样多 agent 并发时仍会串档。
+func (r *Runtime) profilePolicyByName(name string) (Profile, bool) {
+	if name == "" || r == nil || r.profiles == nil {
 		return Profile{}, false
 	}
 	return r.profiles.Get(name)

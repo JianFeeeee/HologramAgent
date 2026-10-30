@@ -98,7 +98,37 @@ func (a *Agent) securityDecisionFor(tool string) security.Decision {
 	if a == nil || a.security == nil {
 		return security.Decision{Allowed: true}
 	}
-	return a.security.CheckToolForAgent(string(a.id), a.parentID != "", tool)
+	// ★ 走本 agent 的**执行视图**（session 档 > longtime 档 > 全局基线）。
+	//
+	// 这是 2026-10-31「每个 agent 一个实例」的落地：视图由 security 按
+	// agentID 持有，本 agent 的 sessionProfile 不会污染别的 agent。
+	return a.securityScope().CheckTool(tool)
+}
+
+// securityScope 返回（并缓存）本 agent 的策略执行视图。
+//
+// 为什么要缓存：`ForAgent` 是幂等的，但每条输入/每次工具调用都取一次会
+// 反复加锁；而视图本身在整个 agent 生命周期内不变。
+func (a *Agent) securityScope() *security.AgentScope {
+	if a == nil || a.security == nil {
+		return nil
+	}
+	a.securityScopeOnce.Do(func() {
+		a.securityScopeView = a.security.ForAgent(string(a.id), a.parentID != "")
+	})
+	return a.securityScopeView
+}
+
+// ReleaseSecurityScope 在 agent 销毁时释放它的策略视图。
+//
+// ★ 必须调：视图里存着 **longtimeProfile**（跨轮保留的档位）。
+// agent/子 agent 回收后同名重建是常规操作，残留的 long-time 档会让
+// 新一代继承上一代父留的约束 —— 与 `RevokePrincipalPolicy` 同一纪律。
+func (a *Agent) ReleaseSecurityScope() {
+	if a == nil || a.security == nil {
+		return
+	}
+	a.security.ReleaseAgent(string(a.id))
 }
 
 // declareChildPolicy 让父为刚创建的子执行体声明主体策略。

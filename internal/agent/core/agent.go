@@ -282,6 +282,15 @@ type Agent struct {
 	// builtinHandlers 是交给 device 路由层的族处理器适配器（装配期构造一次）。
 	builtinHandlers agentAPI.BuiltinToolHandlers
 
+	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
+	// （security 按 agentID 持有，见 security_profile.go 的 securityScope）。
+	//
+	// ★ 为什么是 per-agent 而不是全局：轮次档位（sessionProfile）是该 agent
+	// 独有的状态。放在共享单例上，主 agent 的 guest 会被驻留子的 owner 覆盖
+	// —— 实测可复现（两者同进程并发）。
+	securityScopeView *security.AgentScope
+	securityScopeOnce sync.Once
+
 	// security 是安全防火墙运行时（security 模块产出，可 nil）。
 	//
 	// ★ 可 nil：测试与独立工具（memgc 等）不需要安全模块。
@@ -599,6 +608,13 @@ func (a *Agent) Start() {
 func (a *Agent) Stop() {
 	// 父退出**必须**销毁全部驻留子（设计 §10 硬约束：子不得比父活得久、不留孤儿）。
 	a.StopResidents()
+	// ★ 释放本 agent 的策略执行视图（2026-10-31）。
+	//
+	// 视图里存着 **longtimeProfile**（跨轮保留的档位）。不释放的话，
+	// 同名 agent 重建会继承上一代的 long-time 档 —— 那时可能是
+	// "上一个任务留下的访客权限"被新一代默默沿用。
+	// 与主体策略撤销（revokeChildPolicy）同一纪律。
+	a.ReleaseSecurityScope()
 	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse
 	// 自然拿到终态，但**从未运行**（排队/待处理）与**已挂起**的任务不会有任何人
 	// 回它们；带 ResponseCh 的同步注入方（cli / clawhubadapter 均无超时）会永久挂起

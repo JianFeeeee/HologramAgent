@@ -43,7 +43,6 @@ package security
 
 import (
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -83,14 +82,19 @@ const profileKey = "security_profile"
 // 一次调用，调用方不再需要知道任何组合规则。
 type Round struct {
 	rt *Runtime
+	// scope 是**该 agent 独有的**策略执行视图（2026-10-31 起的正路）。
+	//
+	// 为 nil 表示走旧的进程级单例路径（Round.End 会恢复 Runtime.active）。
+	scope *AgentScope
 	// principal 是 security **自己判定**出来的主体（不是调用方声明的）。
 	principal Principal
-	// profile 是本轮激活的档位名（空 = 未使用档位）。
+	// profile 是本轮生效的档位名（空 = 未使用档位）。
 	profile string
-	// restored 记录 BeginRound 之前的档位，End 时恢复。
+	// restored 仅在 scope == nil 时使用：记录进程级 active 的进入值。
 	//
-	// 为什么恢复而不是清空：进程内可能有多条输入在跑（主 agent + 驻留子），
-	// 清空会把别处的档位抹掉。恢复到进入前的值是最小惊讶行为。
+	// ★ 为什么旧的进程级路径要"恢复"而不是"清空"：那时多个 agent
+	// 共享一个 active，清空会把别处正在用的档抹掉。per-agent 视图
+	// 没有这个问题（每个 agent 自己一份），所以走 scope 时直接清 session。
 	restored string
 	ended    bool
 }
@@ -137,36 +141,13 @@ func (r *Runtime) BeginRound(in RoundInput) (*Round, error) {
 	if r == nil {
 		return &Round{}, nil // 未装配 security：零成本句柄
 	}
-
-	rc := &Round{
-		rt:        r,
-		principal: r.classifyPrincipal(in),
-		restored:  r.ActiveProfile(),
-	}
-
-	name := strings.TrimSpace(roundProfileName(in.Payload))
-	if name == "" {
-		// 不带档位 = 显式不使用（沿用全局策略）。但**必须归位**：
-		// 上一条输入若激活了 guest 档，不清掉就会误伤这一条。
-		if r.active != nil {
-			r.active.Clear()
-		}
-		return rc, nil
-	}
-
-	if err := r.ActivateProfile(name, 0); err != nil {
-		// 响亮但不断流：注入是 fire-and-forget，插件看不到内核错误。
-		// 但这里必须**清掉上一轮的档**，否则拼错档位名会静默沿用旧档 ——
-		// “拼错却仍收窄”与“拼错却仍放行”都是安全事故形态。
-		if r.active != nil {
-			r.active.Clear()
-		}
-		log.Printf("[security] round profile %q rejected for agent %q: %v "+
-			"(falling back to default policy, NOT to the previous round's profile)", name, in.AgentID, err)
-		return rc, err
-	}
-	rc.profile = name
-	return rc, nil
+	// ★ 正路：per-agent 视图（每个 agent 一份 session 档，互不干扰）。
+	//
+	// 2026-10-31 用户裁定「每个 agent 一个，分为 sessionProfile 和
+	// longtimeProfile」后，这里的档位状态落在 `AgentScope` 上，
+	// 不再写进程级 `Runtime.active`。
+	sc := r.ForAgent(in.AgentID, in.IsChild)
+	return sc.BeginRound(in)
 }
 
 // roundProfileName 从原始载荷里取档位名。
@@ -215,6 +196,20 @@ func (rc *Round) Principal() Principal {
 	return rc.principal
 }
 
+// EffectiveProfile 返回本轮**实际生效**的档位名。
+//
+// per-agent 视图下它是 `session > longtime > 空` 的结果；
+// 旧路径下等于 Round.Profile()。
+func (rc *Round) EffectiveProfile() string {
+	if rc == nil {
+		return ""
+	}
+	if rc.scope != nil {
+		return rc.scope.EffectiveProfile()
+	}
+	return rc.profile
+}
+
 // Profile 返回本轮生效的档位名（空 = 未使用档位）。
 func (rc *Round) Profile() string {
 	if rc == nil {
@@ -231,22 +226,35 @@ func (rc *Round) CheckTool(name string) Decision {
 	if rc == nil || rc.rt == nil {
 		return allowed()
 	}
-	return rc.rt.CheckToolFor(rc.principal, name)
+	// per-agent 视图：用**本 agent 的**生效档位（session > longtime）。
+	if rc.scope != nil {
+		return rc.rt.checkToolWithProfile(rc.principal, rc.scope.EffectiveProfile(), name)
+	}
+	// 旧路径：进程级档位。
+	return rc.rt.checkToolWithProfile(rc.principal, rc.rt.ActiveProfile(), name)
 }
 
 // End 结束本轮：恢复进入前的档位。
 //
 // 幂等：重复调用无副作用（defer + 显式调用并存是安全的）。
 func (rc *Round) End() {
-	if rc == nil || rc.rt == nil || rc.ended {
+	if rc == nil || rc.ended {
 		return
 	}
 	rc.ended = true
-	if rc.rt.active == nil {
+
+	// per-agent 视图：只清**自己的** session 档，longtime 档保留
+	//（它是该 agent 的生命状态，不是本轮事实）。
+	if rc.scope != nil {
+		rc.scope.clearSession()
+		return
+	}
+
+	// 旧的进程级路径：恢复进入前的值（那时多个 agent 共享一个 active）。
+	if rc.rt == nil || rc.rt.active == nil {
 		return
 	}
 	if rc.restored != "" {
-		// 恢复到进入前的档位（可能是别的输入正在用的档）。
 		rc.rt.active.Activate(rc.restored, scopeTTLDefault)
 		return
 	}
@@ -300,4 +308,12 @@ func (r *Runtime) RevokeChildPolicy(childID string) {
 // "生产里调了它"在 code review 时一眼可见。
 func (r *Runtime) ClassifyPrincipalForTest(in RoundInput) Principal {
 	return r.classifyPrincipal(in)
+}
+
+// classifyScopePrincipal 按 per-agent 视图的事实判定主体类别。
+//
+// 与 classifyPrincipal 同一套规则（**唯一事实来源**），
+// 只是入参来自 AgentScope 而不是 RoundInput。
+func (r *Runtime) classifyScopePrincipal(agentID string, isChild bool) Principal {
+	return r.classifyPrincipal(RoundInput{AgentID: agentID, IsChild: isChild})
 }

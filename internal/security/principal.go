@@ -250,8 +250,22 @@ func (r *Runtime) CheckToolFor(p Principal, tool string) Decision {
 	if r == nil {
 		return allowed()
 	}
-	// ① 全局策略（deny 优先）。
-	if d := r.CheckTool(tool); !d.Allowed {
+	// 用进程级档位（旧路径）。per-agent 视图走 checkToolForWithProfile。
+	return r.checkToolForWithProfile(p, r.ActiveProfile(), tool)
+}
+
+// checkToolForWithProfile 是**主体判定 + 指定档位**的组合实现。
+//
+// ★ 为什么必须与档位一起传（2026-10-31）：
+// per-agent 视图的档位是**它自己的**（session/longtime）。若这里回头
+// 调 `r.CheckTool(tool)`（读进程级 active），per-agent 的档位就被丢了 ——
+// 表现为「档位设了但不生效」，而全局 active 恰好为空时看不出问题。
+func (r *Runtime) checkToolForWithProfile(p Principal, profileName, tool string) Decision {
+	if r == nil {
+		return allowed()
+	}
+	// ① 全局策略 + 档位（deny 优先）。
+	if d := r.checkToolWithProfile(p, profileName, tool); !d.Allowed {
 		return d
 	}
 	pols := r.principals.lookup(p)
