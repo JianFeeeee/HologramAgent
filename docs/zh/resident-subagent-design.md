@@ -1,5 +1,16 @@
 # 驻留式子 Agent 设计（轻量内核 · 两级记忆 · 父子中断）
 
+> **状态：已实现并部署。** 驻留子、两级记忆、父子 L3/L4 中断、残余任务四态均已落地。
+> 本轮（2026-10-31）校订时补充的下沉事实：
+>
+> - 安全：驻留子会**继承父的安全运行时实例**，但**权限不继承** —— 父在
+>   `SpawnResident` 时通过 `ResidentOptions.AllowedTools / DenyTools`
+>   **为这个子单独声明**主体策略，内核持有并执行；子销毁时撤销。
+>   工具面参数名：`allowed_tools` / `deny_tools`。
+> - 本文正文里的 `memory_recall` 等旧工具名已统一改为现行的 `stablemem_*`。
+>
+> **未实现项**不在本文维护，见 [`future-plan.md`](./future-plan.md)。
+>
 > **前置**：本文建立在《输入调度器设计》（`docs/zh/input-scheduler-design.md`）之上。
 > 那里已经落地了：两类别输入（中断 / 排队）、四级中断优先级、可抢占、
 > 现场保存/恢复、中断栈（LIFO，结构上界 4 帧）、任务级回执、panic→L4。
@@ -502,7 +513,7 @@
 | **A 记忆整理流水线** | `distill.go`（10）：`archiveLoop` / `reviewLoop` / `mergeLoop` / `detectEntityMerge` / `reviewRelations` / `archiveColdDocs` | `Recall`, `ClearSentenceID`, `CleanupOrphanedSentences` | **root-only**（后台定时器） |
 | **B 记忆块 + 媒体桥** | `graphmedia.go`（18）、`medialoop.go`（4） | `PutMemoryBlocks`, `AddMemoryBlockEdge`, `BlocksForNode`, `PutDocumentNode`, `MemoryBlocks`, `MigrateLegacyMediaEntities`, `mediaContextFor*` | **root-only** |
 | **C 记忆整理工具** | `toolcall.go::executeMemoryTool`（8） | `Introspect`, `MergeEntities`, `DeleteEntity`, `Purge`, `Commit` | **root-only**（`memory_merge`/`memory_delete_entity`/`memory_block_merge`/`memory_purge`/`memory_edit`/`memory_stats`） |
-| **D 共同面** | `graphmedia.go:114`（自动写入）、`toolcall.go:130`（`memory_recall`） | **只有 `Recall` + `Commit`** | 根与子都要 |
+| **D 共同面** | `graphmedia.go:114`（自动写入）、`toolcall.go`（`stablemem_recall`） | **只有 `Recall` + `Commit`** | 根与子都要 |
 | **E 判空/状态** | 22 处 `if a.memory != nil` + `GetKernelStatus` + `buildToolDefs` | — | 既有关卡 |
 
 ⇒ **子 agent 需要的记忆面只有 `Recall` + `Commit`**；其余全是"整理记忆 / 记忆整理流水线"
@@ -527,7 +538,7 @@ type GraphMemory interface {
   （`executeMemoryTool` 开头已经是 `if a.memory == nil { return "图记忆系统不可用" }`）。
 - 唯一要拆的是**自动写入路径** `commitTriplesWithMedia`：
   图部分 → `a.graph.Commit`；块/媒体部分 → 由 `a.memory != nil` 守卫。
-- 工具表：`memory_recall`（读）对子开放；整理类
+- 工具表：`stablemem_recall`（读）对子开放；整理类
   （`memory_merge`/`memory_delete_entity`/`memory_block_merge`/`memory_purge`/`memory_edit`/`memory_stats`）
   **不进子的工具表**（而不是让它们进去再报"不可用"）。
 - 轻量 profile 另外不接线的装配：doc 记忆 / context 动态上下文（`pruneOnInput` 等）/

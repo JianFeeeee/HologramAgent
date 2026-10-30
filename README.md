@@ -175,7 +175,7 @@ flowchart TB
     subgraph G[③ Graph 图数据库]
         DB[(SQLite)]
         IDX[Indexer 向量+jieba→BFS depth=2] -->|【记忆索引】| SP
-        MEM[memory_recall/commit/merge/purge/edit]
+        MEM[stablemem_*/coldcontext_*]
         SOC[person_query/set_trait]
         subgraph SC[场面识别：声明 + 涌现]
             FE[① 指纹 chan/peer/tool/topic/part<br/>权重 1.0/1.0/0.8/0.4/0.2]
@@ -196,7 +196,7 @@ flowchart TB
     end
     SP[System Prompt] -->|顺序组装| LLM
     LLM[LLM] -->|coldcontext_query| Q2
-    LLM -->|memory_recall| MEM
+    LLM -->|stablemem_recall| MEM
 ```
 
 详细说明见 [`assets/docs/zh/ARCHITECTURE.md`](assets/docs/zh/ARCHITECTURE.md)。
@@ -329,7 +329,7 @@ internal/
 > inline/small **30.4µs**、frame/small 51.5µs、inline/large 767µs、frame/large 398µs。
 > 保留原文不修改，以免伪造历史。
 
-**v1.1.1** — 多模态贯通**插件边界**。v1.1.0 让记忆系统支持了二进制多媒体节点，但那条链路只对内核自己开放；本版打通到插件与模型。公开 SDK 新增媒体字段与三个媒体注入接口（配套 [SDK v1.1.0](https://github.com/JianFeeeee/hologramagentsdk/tree/v1.1.0)，整条 1.1.x 线共用），内核实现对应四个 RPC。桥接层此前在**静默裁字段**：插件交进来的 `Confidence`/类型/`SentenceText` 全被丢弃、`Doc` 只留三个字段、`Remove` 不解引用（媒体永久算「被引用」，GC 收不掉）。`processTextInput`/`processMediaInput` 归一成一条 `processInput`，媒体路径由此获得它一直缺的去重、`no_memory`、通道 `Cleaner`、中断语义、`EventRawInput`。修掉三处真实缺陷：**用户发的图从来没出现在 WebUI 聊天记录里**（媒体路径发布 map 而订阅方断言 string）、**`memory_commit` 的 `sentence_text` 从未暴露给模型**（而它是媒体绑定链的必经环节）、**`PluginSDK` 两处并发竞态**（`-race` 实测 11 处，插件重载瞬间偶发 nil 解引用崩溃）。
+**v1.1.1** — 多模态贯通**插件边界**。v1.1.0 让记忆系统支持了二进制多媒体节点，但那条链路只对内核自己开放；本版打通到插件与模型。公开 SDK 新增媒体字段与三个媒体注入接口（配套 [SDK v1.1.0](https://github.com/JianFeeeee/hologramagentsdk/tree/v1.1.0)，整条 1.1.x 线共用），内核实现对应四个 RPC。桥接层此前在**静默裁字段**：插件交进来的 `Confidence`/类型/`SentenceText` 全被丢弃、`Doc` 只留三个字段、`Remove` 不解引用（媒体永久算「被引用」，GC 收不掉）。`processTextInput`/`processMediaInput` 归一成一条 `processInput`，媒体路径由此获得它一直缺的去重、`no_memory`、通道 `Cleaner`、中断语义、`EventRawInput`。修掉三处真实缺陷：**用户发的图从来没出现在 WebUI 聊天记录里**（媒体路径发布 map 而订阅方断言 string）、**`memory_commit` 的 `sentence_text` 从未暴露给模型**（注：该工具现名 `stablemem_commit`，本条保留 1.1.1 发布时的原名）（而它是媒体绑定链的必经环节）、**`PluginSDK` 两处并发竞态**（`-race` 实测 11 处，插件重载瞬间偶发 nil 解引用崩溃）。
 
 **v1.1.0** — 记忆系统支持**二进制多媒体节点**。内容寻址媒体存储（CAS + SQLite 元数据 + 磁盘 blob，`Get` always 重校 digest），贯通 L0（上下文事件）/L2（文档）/L3（图谱句子）三层，引用计数式 GC（有引用者绝不删）。视觉模型生成的描述文本是持久语义记忆，blob 只是可被容量 GC 淘汰的缓存。
 
