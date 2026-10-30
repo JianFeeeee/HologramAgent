@@ -1,5 +1,14 @@
 # 内核安全模块（Secret Firewall）设计 · 计划追加
 
+> **架构形态（2026-10-31 收敛后）**：security 是**外围内核到核心内核之间的防火墙**
+> —— 它自己提供接口、判定全部内聚在自己内部。调用方只提供**事实**
+> （谁在跑、有没有父、原始载荷），不提供**结论**（我是哪类主体、该走哪条判定链）。
+>
+> 落地形态：**每 agent 一个策略执行视图**（`AgentScope`），共享一个注册表
+> （`profiles` / `principals` / `scopes`）。档位分两层：
+> `sessionProfile`（轮次级，End 即清）/ `longtimeProfile`（agent 生命期）。
+> 详见 `internal/security/agentscope.go` 与 `round.go` 的包注释。
+>
 > **状态：部分实现。** 凭据防火墙、配置加密、变量库统一与 C1–C8 判据已落地并**在生产线生效**；
 > 但**三条能力机制完整却零生产调用方**（敏感词/注入预警、路径沙箱、网络闸）。
 > 本文保留原始设计与逐条审计记录；未实现项统一登记在
@@ -15,10 +24,10 @@
 > | 出向凭据拦截 `PrepareOutbound` | 完整 | `eventguard.go` / 各界代理 | ✅ 生效 |
 > | 入向凭据清洗 `ScrubInbound` | 完整 | `eventguard.go`、`events/bus.go`、`device/mod.go` | ✅ 生效 |
 > | 执行前回填 `FillForExecution` | 完整 | stage 管道 | ✅ 生效 |
-> | 工具黑白名单 `CheckTool` | 完整 | `agent/core/security_profile.go`（主 agent） | ✅ **2026-10-30 接通** |
-> | 按主体授权 `CheckToolFor` | 完整 | `agent/core/security_profile.go`（子 agent） | ✅ **2026-10-30 接通** |
+> | 工具黑白名单 `CheckTool` / `checkToolWithProfile` | 完整 | `security/agentscope.go` → `AgentScope.CheckTool` | ✅ **2026-10-31 接通** |
+> | 按主体授权 `CheckToolFor` | 完整 | 同上（`checkToolForWithProfile` 同时叠主体策略） | ✅ **2026-10-30 接通** |
 > | 插件命名档位 `DeclareProfile` | 完整 | `sdk/security_impl.go`、`proc/corehandler_security.go` | ✅ 声明侧通 |
-> | 插件命名档位 `ActivateProfile` | 完整 | `agent/core/security_profile.go` 内的 `activateSecurityProfile` | 🔴 **该函数零调用方** ⇒ 档位永不激活，见 future-plan §1.1 |
+> | 插件命名档位 `ActivateProfile` | 完整 | `security/agentscope.go` 的 `setSession` + `BeginRound` | ✅ **2026-10-31 接通**（每 agent 独立实例） |
 > | 敏感词/注入 `ScanContent` | 完整（254 行） | **无** | 🔴 配置里的敏感词一条不生效，见 future-plan §1.2 |
 > | 路径沙箱 `CheckPath` | 完整 | **无**（只被 Runtime 自己调 Policy） | 🔴 见 future-plan §1.3 |
 > | 网络闸 `CheckNetwork` | 完整 | **无**（同上） | 🔴 见 future-plan §1.3 |

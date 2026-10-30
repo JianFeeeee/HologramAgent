@@ -355,6 +355,8 @@ internal/
 - [插件开发指南](assets/docs/zh/PLUGIN_DEV.md) | [English](assets/docs/en/PLUGIN_DEV.md)
 - [Lua Adapter](assets/docs/zh/ADAPTER.md) | [English](assets/docs/en/ADAPTER.md)
 - [知识库演示](assets/knowledge/homeagent_architecture/content.md)
+- [设计文档索引](docs/zh/README.md) — 32 篇设计/计划文档的**状态分类与可信度规则**
+- [未来计划](docs/zh/future-plan.md) — 尚未实现 / 已知缺口的**唯一登记处**
 
 ## 下载
 

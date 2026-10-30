@@ -38,7 +38,7 @@
 |---|---|---|---|---|
 | 1 | 工具黑白名单 `Policy.CheckTool` | 完整 | `Agent.security` 恒 nil，闸门恒放行 | ✅ 2026-10-30 修复（依赖图补 `FacSecurity`） |
 | 2 | 主体策略 `CheckToolFor` | 完整 | 0 生产调用方 | ✅ 2026-10-30 修复（父为子声明） |
-| 3 | 插件命名档位 `ActivateProfile` | 完整 | **0 生产调用方** | 🔴 **未修**，见 §1.1 |
+| 3 | 插件命名档位 `ActivateProfile` | 完整 | 曾 0 生产调用方 | ✅ 2026-10-31 修（见 §1.1，两次修才修对） |
 | 4 | 敏感词 / 注入预警 `ScanContent` | 完整（254 行） | **0 生产调用方** | 🔴 **未修**，见 §1.2 |
 | 5 | 沙箱 `CheckPath` / `CheckNetwork` | 完整 | **0 生产调用方** | 🔴 **未修**，见 §1.3 |
 
@@ -48,48 +48,64 @@
 
 ## 一、安全（security）
 
-### 1.1 🔴 插件命名档位没有生效点
+### 1.1 ✅ 插件命名档位已接通（2026-10-31，两次提交）
 
-**现状**：插件侧链路是完整的——
+> **本节已结案，保留是因为它的两次修法本身是教训。**
+> 最初的诊断是「`activateSecurityProfile` 零调用方，在 `prepareInputTask`
+> 里加一次调用」—— **那个诊断方向是错的**。
 
-```
-QQ 插件 Start:     s.Security().DeclareProfiles([qq.owner, qq.guest])   ✅ 内核登记了
-QQ 插件注入:       InjectOptions{SecurityProfile: "qq.guest"}           ✅ payload 里写进去了
-内核 activateSecurityProfile(payload)                                   ❌ 零调用方
-CheckTool 按档位判定                                                     ❌ 从未激活 ⇒ 恒"无档位"
-```
-
-实测确认：
-
-- `codegraph_callers("activateSecurityProfile")` → 4 个调用方，**全部是测试**
-- `prepareInputTask` 逐条消费 `evt.Payload` 的各键（`no_memory` / `interrupt` /
-  `priority` / `scene` / `scene_policy` / `content` …），**唯独没有 `security_profile`**
-- 生产日志里 `security profiles declared: qq.owner, qq.guest` 是**真的**（声明成功了），
-  但没有一条拒绝记录 —— 因为档位永远没被激活
-
-**影响**：QQ 的 owner / guest 差别对待**在生产中完全失效**。访客能用的工具与所有者相同。
-
-**要做的**：
-
-1. 在 `prepareInputTask` 里读 `evt.Payload["security_profile"]`，调 `activateSecurityProfile`
-2. **必须自带归位**：不带档位的输入要显式清空（`ActivateProfile("")`），
-   否则进程级 `active` 会泄漏到下一轮（guest 的收窄误伤后续输入；方向相反就是提权）
-3. 判据必须走**真实输入路径**（`runInputTask`），不能直接调 `activateSecurityProfile`
-
-**已知的架构限制**（解决前必须知道）：
-
-`security.Runtime` 的 active profile 是**进程级单例**，不按任务隔离。
-主 agent / 驻留子 / rtchild 同进程并发时，两个不同档位的轮次**交错**就无法表达。
+**真正的缺陷分三层：**
 
 ```
-A 轮: 注入 guest 档  ─┐
-                      ├─ 共享一个 active ⇒ 后写者覆盖先写者
-B 轮: 注入 owner 档  ─┘
+第 3 层（表面）：activateSecurityProfile 零调用方
+                 ↑ 补一次调用「看起来」就好了
+
+第 2 层：agent/core 在替 security 做**策略决策**
+         · 自己从 payload 抠 security_profile（解析 security 的协议）
+         · 自己判断 parentID != "" → 走 CheckToolFor，否则 CheckTool
+         · 自己拼 PrincipalPolicy{...} 字面量
+         · 自己写 Kind: "resident" —— **声明自己是哪类主体**（提权口子）
+
+第 1 层（根因）：security 缺少「输入接入点」
+         判定原语是细粒度的，要求调用方自己知道"我是谁、该走哪条链"。
+         于是每个消费方都得理解策略语义，三条输入路径各接一遍。
 ```
 
-正确形态是把档位挂到 `TaskFrame` 上按任务隔离，但那要先改
-`security.Runtime.CheckTool` 的签名（它当前无任务上下文）。
-**在此之前只保证串行场景正确。**
+**收敛后的形态**（`5194a96`）：
+
+```
+RoundInput{AgentID, IsChild, Payload, Source}   ← 只有事实，无 Kind
+rt.BeginRound(in)  → security 自己解析档位 + 自己判定主体类别
+round.CheckTool(t) → 本轮判定
+round.End()        → 归位
+```
+
+**再进一层：每 agent 一个实例**（`8293282`，用户裁定「每个 agent 一个，
+分为 sessionProfile 和 longtimeProfile」）：
+
+```
+共享（进程级 1 份）          per-agent（N 份）
+─────────────────────      ─────────────────────
+gate / policy / content      sessionProfile   ← 轮次级，End 即清
+profiles / principals        longtimeProfile  ← agent 生命期，跨轮保留
+scopes / eventPolicy
+```
+
+优先级 **session > longtime**，这个顺序本身是安全语义：
+session 是"这一轮的事实"，必须能盖住 long-time 默认值（否则访客在长期
+为 owner 的 agent 上无法收窄）；反向就是提权。
+
+**判据**：`TestAgentScopesDoNotShareSessionProfile` /
+`TestLongtimeProfileSurvivesRounds` / `TestReleaseAgentDropsLongtimeProfile` /
+`TestAgentCoreHoldsNoPolicySemantics`（源码扫描，禁 agent 再做策略决策）/
+`TestEveryInputPathDeclaresRound`（三条输入路径都要声明轮次边界）。
+
+**顺带暴露的一个仍未解决的限制**：`Round` 是 per-round 句柄，但
+`Runtime.active`（旧路径）仍是进程级。per-agent 视图已经解决**并发 agent 串档**，
+但**同一 agent 内**若将来出现并行子任务，仍需按 task 隔离。
+当前所有路径都是串行的，故不构成缺陷。
+
+---
 
 ### 1.2 🔴 敏感词 / 提示词注入预警从未运行
 

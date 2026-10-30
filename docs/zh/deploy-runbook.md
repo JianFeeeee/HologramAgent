@@ -1,5 +1,7 @@
 # HologramAgent 生产部署手册（homed / waiter）
 
+> **状态：操作手册（现行）。** 照着做即可；命令与配置如有变更需同步更新本文。
+
 > 适用范围：本机（`.60`）的 `homeagent.service`，以及两台设备桥宿主上的
 > `waiter-remote.service`。
 >

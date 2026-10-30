@@ -864,6 +864,34 @@ platform-check → heartbeat-early → logging → data-dirs
 - `internal/kernelmod/all/bootgraph_test.go` 的 5 条整机判据 —— 真实登记表装配、
   层间有序、逆序关闭、无残留、模块不漏挂
 
+#### 2.7.5 模块产物的**实例化粒度**（2026-10-31 补充）
+
+依赖图保证的是"设施**已就绪**"，但没说设施该有几个实例。这在本模块化设计里
+是个独立决策，已有两个不同的答案：
+
+| 设施 | 粒度 | 理由 |
+|---|---|---|
+| `memory` / `knowledge` / `llm` | **进程级 1 个** | 共享同一份数据源，复制没有意义 |
+| `security` | **1 个 Runtime + 每 agent 1 个执行视图** | 全局基线共享（否则插件声明对部分 agent 不生效），但**轮次状态**必须 per-agent |
+
+security 的切分值得记下来，因为**整份复制是错的**：
+
+```
+共享（进程级 1 份）          per-agent（N 份）
+─────────────────────      ─────────────────────
+gate / policy / content      sessionProfile   ← 轮次级，End 即清
+profiles / principals        longtimeProfile  ← agent 生命期，跨轮保留
+scopes / eventPolicy
+```
+
+若把整个 Runtime 复制给每个 agent：插件往 A `DeclareProfile("qq.guest")`，
+B 就看不到这个档位 ⇒ B 上注入 `qq.guest` 报"未声明"。那是最难查的一类缺陷
+（表现为"时灵时不灵"）。所以切分原则是**共享注册表 + per-agent 执行视图**。
+
+**给未来新模块的判据**：决定实例化粒度时先问两件事 ——
+
+1. 这份状态是**共享的事实**（配置/注册表）还是**某个执行体的私有状态**（轮次/会话）？
+2. 复制它会不会让"某个模块声明的东西"对另一个实例不可见？
 
 ### 2.8 完整启动流程与真实依赖（逐行核对，2026-10-16）
 
@@ -960,7 +988,9 @@ func (d *Distiller) distillLoop() {
 
 原 main 用 `defer closeMem()` 等 5 处，释放顺序 = **注册顺序的逆序**（LIFO）。
 模块化后改为 `Put("<facility>.close", fn)` + `CloseAll()` 按**发布顺序逆序**执行
-⇒ 语义**逐字等价**（判据 `TestBootCtxCloseAllIsReverseOrder` 守）。
+⇒ 语义**逐字等价**（判据 `TestKernelStateCloseAllIsReverseOrder` 守 ——
+原名 `TestBootCtxCloseAllIsReverseOrder`，`BootCtx` 改名为 `KernelState` 时判据跟着改名，
+本文此前未同步，2026-10-31 更正）。
 
 **(D) 包级 `init()` 注册（BuiltinFactory）**
 
@@ -1353,7 +1383,8 @@ var i SyncState = nb   // ★ i != nil！经典的 typed-nil 陷阱
 
 接口值**非 nil**（它带类型信息），于是 `bus.IsReady(...)` 解引用空指针 ⇒ **panic**。
 
-**实测复现**：`TestNilTypedBusSafety` 确认 panic 真实发生
+**实测复现**：`TestNilTypedBusSafety`（**规划中的判据名，仓库中不存在**；
+该 panic 形态由 §2.6 的 `SyncBus` 现行为规避）确认 panic 真实发生
 （`invalid memory address or nil pointer dereference`）。
 而 panic 在**插件拉起路径**上 ⇒ 整个内核启动失败。
 

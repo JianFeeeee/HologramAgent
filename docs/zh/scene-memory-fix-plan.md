@@ -1,5 +1,8 @@
 # 场景式记忆修复 plan
 
+> **状态：计划（部分落地）。** 是修复计划，不是现状描述。
+> 未完成项已索引到 [`future-plan.md`](./future-plan.md) §六。
+
 > 起点：2026-09-26 生产库实测（`${HA_DATA}/memory/graph.db`）。
 > 现象：65 个场景中 6 组是同一场面的双胞胎键；主力场景 `auto:chan:qq+part:morning`
 > strength=270、6 个 features、**0 条记忆**，日志里被"命中"179 次。
