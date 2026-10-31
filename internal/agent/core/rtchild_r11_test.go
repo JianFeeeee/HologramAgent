@@ -188,9 +188,31 @@ func TestRTChild_RapidInputCollapsesToLatest(t *testing.T) {
 	if !ok {
 		t.Fatal("实例不存在")
 	}
-	if st.Rounds > 3 {
+	// ★ 判据是「**绝大多数输入被覆盖**」，不是「轮次必须 ≤3」。
+	//
+	// ## 为什么不能只看 Rounds（实测：本判据曾偶发红）
+	//
+	// rtCountingProvider 的 ChatStream **同步瞬间返回**（缓冲 2 的 channel
+	// 里塞好就 close），于是消费循环的每一轮是微秒级；而连发 50 条本身
+	// 也只花 ~80µs（探针实测）。两者同量级 ⇒ 消费方有机会在连发过程中
+	// 抢到几次执行，轮次可能到 5。
+	//
+	// 这不是缺陷：探针实测 dropped=48、rounds=2，collapse 明明生效了。
+	// 真实通话里每轮要几十毫秒（LLM 往返），而连发是微秒级，
+	// 所以"轮次≈1"在生产里自然成立 —— 用微秒级 provider 去要求它，
+	// 是在测调度抖动，不是在测契约。
+	//
+	// ## 真正该钉的是什么
+	//
+	// 契约 1/3 的核心是「**不排队**」：绝大多数输入必须被**覆盖丢弃**，
+	// 而不是逐条被处理。所以断言 dropped 占绝对多数。
+	if st.Rounds > burst/4 {
 		t.Fatalf("连发 %d 条却跑了 %d 轮 —— rtSlot 退化成了队列（契约 1/3：最新者胜、不排队）",
 			burst, st.Rounds)
+	}
+	if st.Dropped < burst/2 {
+		t.Fatalf("dropped=%d（连发 %d 条）—— 绝大多数输入应被覆盖丢弃，"+
+			"而不是逐条处理（契约 3：不吃队列、不补偿）", st.Dropped, burst)
 	}
 	if st.Dropped == 0 {
 		t.Fatal("连发 50 条但 dropped=0 —— 覆盖没有发生，或计数器没接线")

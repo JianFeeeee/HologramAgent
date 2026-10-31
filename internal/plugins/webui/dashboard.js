@@ -2370,6 +2370,44 @@ function renderChat() {
 			},
 			true,
 		);
+		// 图片加载失败：**必须用捕获阶段**的委托，不能写成内联 onerror。
+		//
+		// ## 原来坏在哪（2026-10-30 实测）
+		//
+		// 原代码是：
+		//   onerror="this.parentElement.innerHTML='<span class=\"att-err\">图片加载失败</span>'"
+		//
+		// HTML **属性值里没有反斜杠转义** —— 那个 \" 就是引号本身，
+		// 于是 onerror 属性在 <span class= 之后就闭合了。浏览器切出来的属性是：
+		//   onerror = "this.parentElement.innerHTML='<span class="
+		// 剩下的 `att-err">图片加载失败</span>'"/>` 变成**文本节点**直接显示。
+		//
+		// 症状因此极具误导性：图片明明加载成功了（img 元素在、src 正确），
+		// 界面上却多出一行「图片加载失败"/>」；而那个 onerror 本身因为语法
+		// 错误永远不会执行 —— 真失败时反而什么都不显示。
+		//
+		// ## 为什么用 error 捕获而不是重写内联
+		//
+		// error 事件**不冒泡**，只有在捕获阶段才能委托到容器上。
+		// 改内联也能修（用单引号包属性值 + 不嵌套引号），但那仍然要求
+		// 以后每次拼 HTML 都记得转义规则；委托把这条规则从"每次都要做对"
+		// 变成"只在一处写对"。
+		msgsEl.addEventListener(
+			"error",
+			(e) => {
+				var t = e.target;
+				if (!t || t.tagName !== "IMG" || !t.classList.contains("chat-attachment-img")) {
+					return;
+				}
+				var box = t.parentElement;
+				if (!box) return;
+				var span = document.createElement("span");
+				span.className = "att-err";
+				span.textContent = __("图片加载失败", "Image failed to load");
+				box.replaceChildren(span);
+			},
+			true,
+		);
 	}
 	var msgs = state.messages;
 	var sig =
@@ -2470,7 +2508,7 @@ function renderChat() {
 						escHtml(att.url) +
 						'" ' +
 						'alt="image" loading="lazy" style="max-width:320px;max-height:240px;border-radius:10px;display:block;cursor:zoom-in" ' +
-						'onerror="this.parentElement.innerHTML=\'<span class=\\"att-err\\">图片加载失败</span>\'"/></a>';
+						'/></a>';
 				} else if (att.type === "audio") {
 					// 音频用原生播放器：与图片同理，附件能在聊天里直接消费才算可见。
 					// preload="metadata" 只拉时长不拉全部字节，避免历史消息满屏时并发下载。

@@ -1590,6 +1590,27 @@
         border-radius: 6px;
       }
 
+      /* ===== 聊天附件（图片/音频）=====
+         这两个类此前**只有类名没有样式**：JS 里写着 class="chat-attachment-img"
+         和 class="att-err"，CSS 里一条都没有。图片靠内联 style 撑着还能看，
+         而失败占位 .att-err 完全没有样式 —— 即使事件接上了也只是一行裸文字。 */
+      .chat-attachment-img {
+        max-width: 320px;
+        max-height: 240px;
+        border-radius: 10px;
+        display: block;
+        cursor: zoom-in;
+      }
+      .att-err {
+        display: inline-block;
+        padding: 8px 12px;
+        border: 1px dashed var(--kv-border);
+        border-radius: 8px;
+        color: var(--text-muted, #888);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
       /* ===== 思考卡片（PiDeck 风格）===== */
       .reasoning-card {
         margin: 6px 0;
