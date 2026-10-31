@@ -4,37 +4,75 @@
 
 > **English**: [README_EN.md](./README_EN.md)
 
-自托管 Agent 内核。[文档](assets/docs/zh/ARCHITECTURE.md) · [English](README_EN.md)
-
-**启动顺序是编译期算出来的，不是运行期猜的。** 20 个内核模块各自声明 `Requires`/`Provides`，
-构建时算出 6 层依赖图写进 `depgraph.bin`，并把图的 digest 用 `-ldflags` 注入二进制。
-运行期只读图，不重算。图与二进制不配套就拒绝启动，不猜哪边对。
+自托管 Agent 内核。跑在自己的机器上，插件以独立进程接入。
 
 ```bash
 make build build-cli
 ./build/homed -data /tmp/ha
 ```
 
-**插件按设施就绪时刻启动，不等内核全装完。** 插件声明 `requires_facilities: [config]`，
-config 层（第 1 层）完成时它就起来了，不必等 agent 层。实测省掉 35 秒：agent 层要做
-context dense backfill 750 条事件、重建文档与知识库索引。
+API 密钥在 WebUI（`http://localhost:8080`）里填。需要 Linux。
 
-**输入分两类，中断分四级。** 排队输入没有级别，任何中断都能打断它。中断带 L1–L4，
-高抢占低，被抢占的现场压栈待恢复。同级不互相抢占。L4 归内核独占（panic、内核事件），
-插件声明 L4 会被夹到 L3。抢占计数能提级，但最多两档（`preemptPromotionCap = 2`），
-防低优先级任务被无限饿死。
+## 几个设计
 
-**记忆按场面分，不按会话。** 场面指纹由通道、对话对象、工具、话题、时段构成，
-权重依次 1.0 / 1.0 / 0.8 / 0.4 / 0.2。重复出现到第 2 次才长成场面
-（`minSceneEvidence = 2`），只发生一次的不算。归属阈值 0.5，唤起阈值 0.35，
-唤起比归属宽松——想不起来是损失，多想一条只是多几行上下文。
+**启动顺序在编译期定序。** 20 个内核模块各自声明 `Requires`/`Provides`，构建时算出 6 层
+依赖图写进 `depgraph.bin`，digest 用 `-ldflags` 注入二进制。运行期只读图，不重算。
+图与二进制不配套则拒绝启动。
+
+**插件按设施就绪提前启动。** 声明 `requires_facilities: [config]` 的插件在第 1 层完成时就起，
+不必等第 4 层 agent。实测省 35 秒，那是 agent 层做 dense backfill 750 条事件、重建索引的时间。
+
+**两级输入、四级中断。** 排队输入无级别，任何中断可打断。中断带 L1–L4，高抢占低并将现场
+压栈待恢复，同级不抢占。L4 内核独占，插件声明会被夹到 L3。抢占计数可提级，上限两档
+（`preemptPromotionCap = 2`），避免低优先级任务长期得不到执行。
+
+**记忆按场面分。** 指纹由通道、对话对象、工具、话题、时段构成，权重 1.0/1.0/0.8/0.4/0.2。
+同一指纹出现到第 2 次才建场景（`minSceneEvidence = 2`）。归属阈值 0.5、唤起阈值 0.35，
+唤起比归属宽松：想不起来是损失，多想一条只是多几行上下文。
+
+## 架构
+
+```
+                    homed（内核）
+        LLM 编排 · 三层记忆 · 检索 · 调度
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+   stdio RPC       共享内存        事件环
+     控制          大块数据         通知
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+              插件（各自独立进程）
+   WebUI · QQ · 命令行 · 文件 · 浏览器
+```
+
+内核不发 HTTP、不读文件。所有接触外部世界的能力都在插件里，插件崩溃不影响内核，
+重启退避 1s / 2s / 3s，5 分钟内第 4 次崩溃停止自动重启等人工介入。
+
+**消息进入后的七个阶段**（`internal/agent/core/stages.go`）：
+
+| 阶段 | 时机 | 插件可做 |
+|---|---|---|
+| `on_input` | 消息到达 | 黑名单、限流、短路回复 |
+| `pre_action` | 上下文就绪，调 LLM 前 | 注入外部数据 |
+| `post_action` | LLM 返回文本与工具调用 | 敏感词过滤、强制改向 |
+| `before_toolcall` | 单个工具执行前 | 审计、拒绝、改参 |
+| `after_toolcall` | 单个工具执行完 | 脱敏、排序 |
+| `before_output` | 最终文本就绪 | 格式适配 |
+| `after_output` | 已发送 | 统计 |
+
+`post_action → [before_toolcall → 执行 → after_toolcall] → post_action` 是内循环，
+退出条件：模型不再调工具、全部被拒、或达到上限。
+
+**三层记忆**：上下文（最近 10 条恒受保护）→ 文档（冷数据下沉）→ 图数据库（蒸馏成三元组）。
+媒体是图里的一等节点，不是附件。
 
 ## 其余
 
 - **通道**：WebUI、命令行、QQ 群与私聊、A2A、IDE 里的 ACP
 - **工具**：文件、命令、代码、浏览器（真实 Chrome）、日程、备忘、RSS、音乐
 - **模态**：图片、视频、语音、截图、网页
-- **内核零 IO**：不发 HTTP、不读文件，全部能力在插件里
 
 28 个内置插件、89 个模型可调工具。外部插件一插件一仓，见 [github.com/HologramAgent](https://github.com/HologramAgent)。
 
@@ -70,20 +108,13 @@ Windows 上构建 `waiter.exe`，`homed` 跑在 WSL2 里；macOS 要原生构建
 
 ## 许可
 
-本项目以 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0-only）** 发布，全文见 [LICENSE](LICENSE)。
+内核以 **AGPL-3.0-only** 发布（[LICENSE](LICENSE)）。改过的版本如果对外提供网络服务，
+必须向使用者提供源码（§13）。
 
-它是 GPL 家族里**传染性最强**的一档：不仅分发时须提供完整对应源码，
-**通过网络提供服务时也要向使用者提供源码**（§13 Remote Network Interaction）。
-即：任何人把改过的 HologramAgent 对外提供网络服务，都必须让该服务的使用者拿到改动后的源码。
+自己写的插件不受此约束。插件静态链接的 [hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk)
+是 **MIT**，宽松许可不继承 AGPL，所以外部插件可以闭源、可以商用，也不必开源自改。
 
-插件与本项目通过公开 [hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) 静态链接
-（SDK 源码会进入插件二进制），但那个仓以 **MIT** 发布。MIT 是宽松许可，拿到授权的代码不继承
-本项目的 AGPL。因此**外部插件不是本项目的衍生作品**，作者可自行选择许可（含闭源、商业、私有），
-既不必同许可、也不受 §13 网络条款约束。第三方插件生态的安全与活跃正建立在这条之上。
-
-边界很清楚：**AGPL 覆盖内核与随包内置插件**（`homed`、`internal/`、`internal/plugins/` 下的内置插件）；
-**MIT 覆盖公开 SDK**（`sdk/`，`go.mod` 零外部依赖、只依赖 Go 标准库，不引用内核任何代码）。
-子进程隔离在这里不重要了。决定许可的是被链接的 SDK 代码本身，而它是 MIT。
+随包第三方组件保持各自许可，全文在 `/usr/share/doc/hologramagent/licenses/`。
 
 ### 随包分发的第三方组件
 
