@@ -77,6 +77,14 @@ type Agent struct {
 	// 为什么必须留档：交接是「推信号 + 拉状态」两步（见 CloseRTChild），
 	// 推完中断后实例已出登记表 —— 若不留档，主 agent 收到"可调用 rt_transcript
 	// 取回原文"的提示时，原文已经取不到了。
+	//
+	// ★ 键是 id，所以**同名复用会撞键**。串线的真因在读侧：RTTranscript 曾
+	// "先查留档、命中即返回"，于是新实例读到的永远是上一通已回收的原文
+	// （2026-10-30 实测复现）。现在改为**在跑实例优先**（见 RTTranscript）。
+	//
+	// ★ 刻意**不**在 Spawn 时 delete 这份留档：留档存在的意义就是"回收后
+	// 主 agent 按需取回原文"，提前删掉等于让推了信号却拉不到正文。
+	// 同名键只在下一次 CloseRTChild 写入时被自然覆写。
 	rtClosedTranscripts map[string][]agentAPI.Message
 	// rtSlot 是**本 agent 作为 rtchild 时**的输入槽（作为父时无用）。
 	rtSlot *rtSlot
@@ -274,6 +282,15 @@ type Agent struct {
 	// builtinHandlers 是交给 device 路由层的族处理器适配器（装配期构造一次）。
 	builtinHandlers agentAPI.BuiltinToolHandlers
 
+	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
+	// （security 按 agentID 持有，见 security_profile.go 的 securityScope）。
+	//
+	// ★ 为什么是 per-agent 而不是全局：轮次档位（sessionProfile）是该 agent
+	// 独有的状态。放在共享单例上，主 agent 的 guest 会被驻留子的 owner 覆盖
+	// —— 实测可复现（两者同进程并发）。
+	securityScopeView *security.AgentScope
+	securityScopeOnce sync.Once
+
 	// security 是安全防火墙运行时（security 模块产出，可 nil）。
 	//
 	// ★ 可 nil：测试与独立工具（memgc 等）不需要安全模块。
@@ -361,6 +378,31 @@ type AgentConfig struct {
 	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
 	// 父 agent 创建驻留子时用它收窄子的输出能力。
 	AllowedOutputs []string
+	// Security 是安全防火墙运行时（security 模块产出，可 nil）。
+	//
+	// ## 为什么它是**装配期字段**而不是事后 Set
+	//
+	// 这个字段曾经只能靠 `SetSecurity()` 注入，而生产装配链里**没有任何
+	// 地方调用它** —— 唯一的调用方是 4 条测试。于是 `securityDecisionFor`
+	// 在生产中恒走 nil 分支、恒放行，而策略表本身完全正确：这是
+	// 「机制 ≠ 接线」的教科书样本（GUI 无拒绝记录，看起来像"没人违规"）。
+	//
+	// ★ 根因在**依赖图**，不在这行赋值：`agent.Requires()` 没声明
+	//   `FacSecurity`，图就没有理由把 security 的产物交给 agent（只有声明了
+	//   的 device 拿到了）。所以修复必须同时改三处：
+	//     ① kernelmod/agent 的 Requires() 加 FacSecurity
+	//     ② 这里加字段 + New() 赋值 + buildAgent 传 k.Security
+	//     ③ 装配级判据（删 ① 或 ② 必须红）
+	//   只做 ②不做 ① 会让代码读 `k.Security` 而图不保证它已就绪 ——
+	//   今天恰好对（security 在第 1 层）是运气，不是设计。
+	//
+	// ## 子 agent 必须继承
+	//
+	// 驻留子 / rtchild 各自 `New(AgentConfig{...})`，不继承就等于子 agent
+	// 完全没有闸门（而它们恰是"能指挥设备、能写记忆"的高风险执行体）。
+	// 见 resident.go / rtchild.go 里 `Security: a.security`。
+	Security *security.Runtime
+
 	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，plan.md 十一）。
 	//
 	// 置 true 后：
@@ -531,8 +573,11 @@ func New(cfg AgentConfig) *Agent {
 		embeddingProvider: cfg.EmbeddingProvider,
 		embeddingError:    cfg.EmbeddingError,
 		fusionCfg:         cfg.FusionCfg,
-		noMergeMarkers:    make(map[string]int),
-		lastInput:         make(map[string]time.Time),
+		// ★ 安全运行时在**构造期**落位（不再依赖事后 SetSecurity）。
+		//   为 nil 表示调用方显式不启用（独立工具/单测），不是"忘了接线"。
+		security:       cfg.Security,
+		noMergeMarkers: make(map[string]int),
+		lastInput:      make(map[string]time.Time),
 	}
 
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
@@ -563,6 +608,13 @@ func (a *Agent) Start() {
 func (a *Agent) Stop() {
 	// 父退出**必须**销毁全部驻留子（设计 §10 硬约束：子不得比父活得久、不留孤儿）。
 	a.StopResidents()
+	// ★ 释放本 agent 的策略执行视图（2026-10-31）。
+	//
+	// 视图里存着 **longtimeProfile**（跨轮保留的档位）。不释放的话，
+	// 同名 agent 重建会继承上一代的 long-time 档 —— 那时可能是
+	// "上一个任务留下的访客权限"被新一代默默沿用。
+	// 与主体策略撤销（revokeChildPolicy）同一纪律。
+	a.ReleaseSecurityScope()
 	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse
 	// 自然拿到终态，但**从未运行**（排队/待处理）与**已挂起**的任务不会有任何人
 	// 回它们；带 ResponseCh 的同步注入方（cli / clawhubadapter 均无超时）会永久挂起

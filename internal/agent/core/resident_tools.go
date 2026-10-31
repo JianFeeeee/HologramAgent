@@ -80,6 +80,9 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 			AllowedOutputs: splitArg(strArg(tc, "allowed_outputs")),
 			Capacity:       intArg(tc, "capacity"),
 			TempPath:       tempPath,
+			// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
+			AllowedTools: splitArg(strArg(tc, "allowed_tools")),
+			DenyTools:    splitArg(strArg(tc, "deny_tools")),
 		})
 		if err != nil {
 			return fmt.Sprintf("创建驻留子失败: %v", err)

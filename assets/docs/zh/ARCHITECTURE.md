@@ -228,12 +228,13 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 ③ Graph (图数据库 — 顶层仍是三元组，节点即记忆块)
    SQLite — memory_blocks（节点） + memory_block_edges（边）
    三元组 = 【节点】【关系边】【节点】；putTripleBlocksTx 落为 src --edge_type--> dst
-   写入: memory_commit / 冷文档蒸馏 / Pipeline 规则蒸馏 / memory_merge
+   写入: stablemem_commit / 冷文档蒸馏 / Pipeline 规则蒸馏 / stablemem_merge
    读取:
        ├── 自动召回: Indexer.BuildContext(input)
        │     → CleanText → 向量实体搜索 + jieba关键词 → SQLite LIKE + BFS depth=2
        │     → 【记忆索引】→ system prompt
-       └── LLM主动: memory_recall / memory_merge / memory_purge / memory_edit / memory_delete_entity
+       └── LLM主动: stablemem_recall / stablemem_merge / stablemem_purge /
+                    stablemem_edit / stablemem_delete_entity
    Social: person_query / set_trait / relate (包装 GraphDB)
 
 ④ 四个独立心跳循环（各自独立的 ticker 和配置间隔）
@@ -356,20 +357,26 @@ Core ◀─入向审查── 外部
 
 | 工具 | 作用 |
 | ------ | ------ |
-| `memory_recall` | 从 Graph 召回 |
-| `memory_commit` | 写入 Graph 三元组 |
-| `memory_merge` | 合并两个实体节点 |
-| `memory_purge` | 删除指定实体 |
-| `memory_edit` | 编辑已有实体/关系 |
-| `memory_delete_entity` | 删除实体及其所有关系 |
-| `memory_introspect` | 查看记忆统计 |
+| `stablemem_recall` | 从 Graph 召回 |
+| `stablemem_commit` | 写入 Graph 三元组 |
+| `stablemem_merge` | 合并两个实体节点 |
+| `stablemem_block_merge` | 合并两个记忆块 |
+| `stablemem_purge` | 删除指定实体 |
+| `stablemem_edit` | 编辑已有实体/关系 |
+| `stablemem_delete_entity` | 删除实体及其所有关系 |
+| `stablemem_introspect` | 查看记忆统计 |
 | `coldcontext_query` | 从冷上下文（cold context）召回 |
 | `coldcontext_commit` | 写入冷上下文 |
 
-`memory_commit` 与 `coldcontext_commit` 自 v1.1.1 起接受 `media_digests`，并由内核把
+> ★ 工具名以 `stablemem_` / `coldcontext_` 为前缀（v1.2 起，旧的
+> `memory_*` / `doc_*` 已废弃）。权威定义在
+> `internal/agent/core/tooldefs.go`；核对命令：
+> `grep -rhoE '"(stablemem|coldcontext)_[a-z_]+"' --include=*.go internal | sort -u`
+
+`stablemem_commit` 与 `coldcontext_commit` 自 v1.1.1 起接受 `media_digests`，并由内核把
 `[<mime> <短digest>] <描述>` 标记补进句子/正文——**标记由内核拼，模型只给 digest**。
 要求调用方知道格式，等于让一个拼写错误静默切断引用绑定而全链路无人报错。
-`memory_commit` 同时新增 `sentence_text`：媒体引用挂在句子上，没有句子就无处可挂。
+`stablemem_commit` 同时新增 `sentence_text`：媒体引用挂在句子上，没有句子就无处可挂。
 
 ### 媒体记忆（块 union：媒体即块）
 

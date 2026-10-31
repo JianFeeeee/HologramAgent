@@ -69,6 +69,20 @@ type Runtime struct {
 	//（QQ 的 beforeToolcall）：插件只声明谁可以调什么，
 	// 判定与拒绝文案由内核统一产出。
 	principals *principalRegistry
+
+	// scopesByAgent 是**每 agent 一个**策略执行视图（见 agentscope.go）。
+	//
+	// ★ 为何需要（2026-10-31 用户裁定）：每个 agent / 子 agent 一个实例，
+	// 因为轮次档位（sessionProfile）是**该 agent 独有**的状态。
+	// 放在 Runtime 单例上会让并发 agent 互相覆写（主 agent 的 guest
+	// 被驻留子的 owner 盖掉，或反之）。
+	//
+	// ★ 为何不把整个 Runtime 复制一份：`profiles` / `principals` / `scopes`
+	// 是**插件声明出来的注册表**，每个 agent 各持一份就会变成
+	// “插件往 A 声明了档位，B 看不见”—— 那是最难查的一类缺陷。
+	// 所以切分是「共享注册表 + per-agent 执行视图」。
+	scopesByAgent map[string]*AgentScope
+	scopeMu       sync.Mutex
 }
 
 // NewRuntime 用已装好的变量库构造运行时。
@@ -217,7 +231,30 @@ func (r *Runtime) DeclareTurnPolicy(opts ScopeOptions) error {
 // 组合顺序（**deny 永远优先**，这是安全策略的基本直觉）：
 //
 //	全局 deny → 作用域 deny → 全局 allow（非空则必须命中）→ 作用域 allow
+//
+// ## 与 per-agent 视图的关系（2026-10-31 用户裁定）
+//
+// 本函数用 `Runtime.active`（**进程级**）上的档位 —— 新代码不要依赖它。
+// 新调用方应走 `Runtime.ForAgent(id, isChild)` 拿 `*AgentScope`：
+// 那里的档位是**该 agent 独有**的，不会与其他 agent 串。
+//
+// 保留本函数是为了：独立工具（memgc 等，进程内只有一个执行体）、判据、
+// 以及尚未按 agent 切分的旧路径。
 func (r *Runtime) CheckTool(name string) Decision {
+	if r == nil {
+		return allowed()
+	}
+	return r.checkToolWithProfile(Principal{}, r.ActiveProfile(), name)
+}
+
+// checkToolWithProfile 是工具判定的**唯一实现**：档位由调用方显式给定。
+//
+// `profileName` 为空 = 不使用档位（零影响）。
+//
+// ★ 为什么档位作参数、而不是读全局 `r.active`：
+// per-agent 视图必须传入**它自己的**档位（session 或 longtime）。
+// 若这里读 `r.active`，per-agent 视图就白做了 —— 那正是本轮要修的缺陷。
+func (r *Runtime) checkToolWithProfile(p Principal, profileName, name string) Decision {
 	if r == nil {
 		return allowed()
 	}
@@ -227,7 +264,7 @@ func (r *Runtime) CheckTool(name string) Decision {
 	// ★ 活跃档位（可选）：插件没声明/没激活时这里零影响。
 	// 档位只参与**收窄**：它的 deny / allow 与主体、全局同一条链，
 	// 并且不能绕过全局黑名单（上面已先判过）。
-	if prof, ok := r.profilePolicy(); ok {
+	if prof, ok := r.profilePolicyByName(profileName); ok {
 		for _, pat := range prof.Policy.DenyTools {
 			if matchTool(pat, name) {
 				return deny("tool %q is disabled by profile %q", name, prof.Name)

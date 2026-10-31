@@ -459,9 +459,10 @@ func TestRTChildrenTool_NotVisibleToChild(t *testing.T) {
 //
 // 只断言"返回里有错"不够 —— 那可能只是碰巧提到"创建失败"。
 // 所以同时断言：
-//  ① 返回里出现正确的参数名（inputch / outputch），让人知道该写什么
-//  ② **没有**创建出 rtchild（不能半成功后失败）
-//  ③ 通道归属没被改动（不能"创建失败但通道已经被占了"）
+//
+//	① 返回里出现正确的参数名（inputch / outputch），让人知道该写什么
+//	② **没有**创建出 rtchild（不能半成功后失败）
+//	③ 通道归属没被改动（不能"创建失败但通道已经被占了"）
 func TestRTChildrenTool_WrongParamNameIsRejectedNotSilent(t *testing.T) {
 	p := &rtCountingProvider{}
 	host, _ := newRTHost(t, p)
@@ -471,10 +472,10 @@ func TestRTChildrenTool_WrongParamNameIsRejectedNotSilent(t *testing.T) {
 	out := host.executeRTChildren(agentAPI.ToolCall{
 		Name: "rt_children",
 		Arguments: map[string]interface{}{
-			"action":   "create",
-			"id":       "typo-child",
-			"input":    "voice-in", // ← 错的参数名
-			"output":   "voice",    // ← 错的参数名
+			"action": "create",
+			"id":     "typo-child",
+			"input":  "voice-in", // ← 错的参数名
+			"output": "voice",    // ← 错的参数名
 		},
 	})
 

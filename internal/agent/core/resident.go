@@ -62,6 +62,22 @@ type ResidentOptions struct {
 	// 但**绝不能**把人（父的模型）建的子算进去或拿去复用 ——
 	// 那会把人工安排的工作负载搬到一个本来在做别的事的 agent 上。
 	OffloadOwned bool
+	// AllowedTools 是**父为这个子声明**的工具白名单（空 = 不作额外限制）。
+	//
+	// ## 为什么由父在创建时给（用户裁定 2026-10-30）
+	//
+	// 子 agent 没有配置中心句柄（轻量内核刻意不接），也**没有资格自己决定权限**
+	// —— 权限只能来自委派者。这与 PreferredProvider 同一道理：
+	// “用哪个源/给多少权限”是**委派策略**，本来就该在创建点决定。
+	//
+	// 内核持有这份声明（`security.Runtime` 的主体表），子崩了/被替换也不会丢：
+	// 否则“挂掉子就能绕过”就是现成的提权口子。
+	AllowedTools []string
+	// DenyTools 是**父为这个子声明**的追加禁止（父自己能用、但不给这个子用）。
+	//
+	// 与 AllowedTools 同时给时：两者**同时生效**（先 deny 后 allow，deny 优先）。
+	// 典型用法：不给白名单（沿用父的），只禁掉几个高危工具。
+	DenyTools []string
 }
 
 // ResidentInfo 是父对某个驻留子的可查询状态（登记表条目 + 状态面摘要）。
@@ -199,6 +215,12 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		KernelSource:      parentID, // 子的 L4 只属于父
 		ParentID:          parentID,
 		TaskPrompt:        opts.TaskPrompt,
+		// ★ 安全运行时必须继承（2026-10-30 补）。
+		//
+		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、
+		// 长时间不被人工审阅。它是本仓**最需要闸门**的一类 agent，
+		// 而原先它是唯一**完全没有闸门**的（子从 New 起 a.security 就是 nil）。
+		Security: a.security,
 	})
 
 	rc := &residentChild{
@@ -208,6 +230,23 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		allowed:   append([]string(nil), opts.AllowedOutputs...),
 		createdAt: time.Now(), state: "running",
 		offloadOwned: opts.OffloadOwned,
+	}
+
+	// ★ 父为这个子**声明主体策略**（用户裁定 2026-10-30）。
+	//
+	// 位置必须在“子开始跑”之前：子一旦接到第一条输入就会执行工具，
+	// 那个时刻策略必须已经在内核里 —— 否则存在一个“无约束执行”的窗口。
+	//
+	// 声明失败要**回滚整个创建**：一个“本该受限却无限”的执行体
+	// 比创建失败危险得多（而创建失败是可重试的）。
+	if err := a.declareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
+		child.Stop()
+		if light != nil {
+			_ = light.Close()
+		}
+		_ = mainRO.Close()
+		_ = os.RemoveAll(filepath.Dir(opts.TempPath))
+		return ResidentInfo{}, fmt.Errorf("为驻留子 %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
 	}
 
 	// ④ 子 → 父的主动消息（**L3 中断**，带子标识）：投进父的 inputch。
@@ -563,6 +602,13 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 	rc.mu.Lock()
 	rc.state = "stopped"
 	rc.mu.Unlock()
+
+	// ★ 撤销父为它声明的主体策略（与 teardown 同时，早于一切资源回收）。
+	//
+	// 不撤销的后果：主体表以**调用方给的名字**为键，回收后同名重建是常规
+	// 操作 ⇒ 新一代用上一代父留的约束运行；且表随 create/destroy 单调增长。
+	// 与 rtchild 留档串线（rtClosedTranscripts）同一形态。
+	a.revokeChildPolicy(rc.id)
 
 	rc.agent.Stop() // 停子的调度器（取消其运行中的任务）
 	if rc.light != nil {

@@ -166,7 +166,7 @@ flowchart TB
     subgraph G[③ Graph Database]
         DB[(SQLite)]
         IDX[Indexer vector+jieba→BFS depth=2] -->|Memory Index| SP
-        MEM[memory_recall/commit/merge/purge/edit]
+        MEM[stablemem_*/coldcontext_*]
         SOC[person_query/set_trait]
         subgraph SC[Scene recognition: declared + emergent]
             FE[① fingerprint chan/peer/tool/topic/part<br/>weights 1.0/1.0/0.8/0.4/0.2]
@@ -187,7 +187,7 @@ flowchart TB
     end
     SP[System Prompt] -->|Sequential assembly| LLM
     LLM[LLM] -->|coldcontext_query| Q2
-    LLM -->|memory_recall| MEM
+    LLM -->|stablemem_recall| MEM
 ```
 
 See [`assets/docs/en/ARCHITECTURE.md`](assets/docs/en/ARCHITECTURE.md) for details.
@@ -336,7 +336,7 @@ plugin were discarded, `Doc` kept only three fields, and `Remove` never released
 path the dedup, `no_memory`, channel `Cleaner`, interrupt semantics and correct `EventRawInput`
 it had always lacked. Three real defects fixed: **user-sent images never appeared in the WebUI
 chat log** (the media path published a map while the subscriber asserted a string),
-**`memory_commit`'s `sentence_text` had never been exposed to the model** (though it is the
+**`memory_commit`'s `sentence_text` had never been exposed to the model** (note: this tool is now named `stablemem_commit`; the original name is kept for the v1.1.1 release note) (though it is the
 mandatory link in the media binding chain), and **two data races in `PluginSDK`** (11 reported
 by `-race`; in production this showed up as sporadic nil-dereference crashes during plugin reload).
 

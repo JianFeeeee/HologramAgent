@@ -46,7 +46,7 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 - **无独立 GC、无引用计数、无 keep-set**：记忆块遵循单层不变量——Context → Document → Graph
   是块的**迁移**，不是复制、也不靠引用保活；**删除块即删内容**
 - **v1.1.1 起贯通插件边界**：插件可通过 `InsertWithMedia` / `InjectInputMedia` 读写媒体，
-  模型可用 `memory_commit` / `coldcontext_commit` 的 `media_digests` 参数关联媒体
+  模型可用 `stablemem_commit` / `coldcontext_commit` 的 `media_digests` 参数关联媒体
 - **旧机制已整体拆除**：此前把视觉模型生成的描述写进正文、以 `[<mime> <短digest>] <描述>` 标记
   参与检索的**描述式索引**，以及 `media_refs` 引用计数，均已在 v1.2.0 删除——描述是模型生成的
   二手信息，检索「别人转述的图片」不如检索图片自己的向量

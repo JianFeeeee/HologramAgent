@@ -1,7 +1,15 @@
 # 内核模块化与并行装配设计
 
-> **状态**：设计已定（2026-10-16），实现分阶段推进。
+> **状态**：**已实现并部署**（设计 2026-10-16，落地完成 2026-10-24，2026-10-31 全量校订）。
 > 本文是**唯一的装配架构权威**。任何新增内核模块或插件都必须遵循本文的依赖声明契约。
+>
+> **本文与 `future-plan.md` 的分工**：本文只写**已落地的事实与设计理由**；
+> 未实现的事项（如 device 第二阶段、漂移判据补回）一律登记在
+> [`future-plan.md`](./future-plan.md)，本文不重复维护「未做」列表 ——
+> 那份列表历史上滞后过一次（§2.7.4 曾写「main 仍走串行代码」而实际早已接完）。
+>
+> **数字类断言的取数方式**：模块数/层数一律用 `go run ./cmd/homed-depgraph -print`
+> 现场取，**不要凭文档记忆** —— 本文历史上写错过一次（17 模块 vs 实际 20）。
 >
 > 关联文档：`kernel-secret-firewall-design.md`（安全模块的装配点约束是本文 §2.3 的实例）、
 > `resident-subagent-design.md`（inputch 共享总线是 §5 的既有先例）。
@@ -418,7 +426,7 @@ CGO_ENABLED=1 go build ... \
 3. **Step 4 后续增量**：把 12 个 `init*` 迁成 `Module`，声明清单即废止，
    生成器改为 import 模块登记包（那时"清单与代码不符"**结构上不可能**）
 
-> **★ 当前已产出的分层结果（实测）**：
+> **★ 当时的推演结果（2026-10-16，已过时，仅作设计推演保留）**：
 >
 > ```
 > 第 0 层（1 个）: config
@@ -427,7 +435,12 @@ CGO_ENABLED=1 go build ... \
 > 第 3 层（1 个）: agent
 > ```
 >
-> 对比现在硬编码的 **12 步串行** —— 这是本设计给出的**并行度提升的直接证据**。
+> 对比当时硬编码的 **12 步串行** —— 这是本设计给出的**并行度提升的直接证据**。
+>
+> ⚠️ **这 4 层 / 14 模块是 2026-10-16 的状态，不是现状。**
+> 现状是 **6 层 / 20 模块**（含 `update` / `migration` / `onnx-parser` / `device`），
+> 随时用 `go run ./cmd/homed-depgraph -print` 取，权威数字见 §2.7。
+> 保留这段是为了留下「并行度确实提升了」的原始论证，**不要拿它当前情况用**。
 
 ## 2.6 syncbus：插件与内核的状态同步（插件调度的唯一驱动）
 
@@ -738,11 +751,27 @@ loadOne(name):
 
 `internal/kernelmod/all` 的聚合 import 把**全部模块引入编译**后，各模块在自己
 文件中用 Requires() 把 **main() 里隐含在语句顺序中的依赖关系**变成显式声明。
-实测分层结果（2026-10-24 复核：`go test ./internal/kernelmod/all/ -run TestLayeringYieldsParallelism -v`）：
 
-```
-6 层 / 17 模块，最宽层 9 个可并行（原来是 17 步严格串行）
-```
+> **实测分层结果（2026-10-31 复核）**：
+> 命令 `go run ./cmd/homed-depgraph -print`
+>
+> ```
+> 第 0 层（3 个，可并行）: config, kernel-api, update
+> 第 1 层（10 个，可并行）: doc-store, knowledge-migration, lua, memory,
+>                          migration, multimodal, onnx-parser, security,
+>                          supervisor, tracker
+> 第 2 层（3 个，可并行）: knowledge-store, llm, text-memory
+> 第 3 层（1 个）: stage-host
+> 第 4 层（2 个，可并行）: agent, plugin-host
+> 第 5 层（1 个）: device
+> → 20 个模块 / 6 层，最宽层 10 个可并行
+> digest bd520ec9（图与二进制配套由内嵌 hash 校验）
+> ```
+>
+> ⚠️ **历史数字**：本节早期版本写的是「6 层 / 17 模块，最宽层 9 个」。
+> 那是 2026-10-24 的事实；此后新增了 `update`（第 0 层）、`migration`、
+> `onnx-parser`（第 1 层）与 `device`（第 5 层）。**当前数字以上方代码块为准**，
+> 任何时候都可以用上面那条命令重新取，不要凭文档记忆。
 
 #### 2.7.1 ★ cfg 的归属：修掉了"无主模块"（用户指出的问题）
 
@@ -783,28 +812,86 @@ platform-check → heartbeat-early → logging → data-dirs
 （`cmd/homed/bootstrap_order_test.go` 断言真实相对行号）。
 判据 `TestGroup0StaysOutOfScheduler` 保证 Group 0 与可调度模块**不重叠**。
 
-#### 2.7.3 判据 + 变异（全部咬住）
+#### 2.7.3 判据 + 变异（当时全部咬住）
 
-| 判据 | 守什么 |
+> **⚠️ 本节是 2026-10-16 的历史记录，判据名已随迁包发生变化。**
+> 2026-10-24 的 `3864f36` 删除了死包 `internal/kernelboot/modules`，
+> 整机启动图判据迁到 `internal/kernelmod/all`。迁移时**只搬了 5 条整机判据**
+> （`TestRealRegistryAssemblesWholeMachine` / `TestLayerTopologyIsRespected` /
+> `TestShutdownIsStrictlyReverseLayerOrder` / `TestShutdownLeavesNoResidue` /
+> `TestEveryRegisteredModuleIsCompiledIn`），下表里另外几条**没搬**。
+>
+> 下表左栏是**当时**的名字，右栏是**现在**仓库里真实的判据。
+> 找不到对应物的那 4 条已登记到 [`future-plan.md` §2.3](./future-plan.md)。
+
+| 当时写的判据 | 现在真实存在的位置 |
 |---|---|
-| `TestDeclaredLayeringMatchesRealTopology` | 9 条关键顺序（每条都来自**真实签名**，非抄写法顺序） |
-| `TestLayeringYieldsRealParallelism` | 分层确实带来并行（≥2 模块同层） |
-| `TestKernelAPIIsInFirstLayer` | `initKernelAPI()` 真无依赖 |
-| `TestGroup0StaysOutOfScheduler` | 副作用顺序不被误放进图 |
-| `TestConfigModuleRunsAfterGroup0` | cfg 的**阶段前提**（安全块在 Group 0 里、config 不在） |
-| `TestDeclarationsTraceToRealCallSites` | **声明与真实签名不漂移**（改了签名要改声明） |
-| `TestNoOrphanFacilities` | 设施名无重复提供者 |
+| `TestDeclaredLayeringMatchesRealTopology` | `kernelmod/all/registry_test.go` 的 `TestLayeringPreservesCriticalOrder`（10 条关键顺序） |
+| `TestLayeringYieldsRealParallelism` | 同上 `TestLayeringYieldsParallelism`（仅改名） |
+| `TestKernelAPIIsInFirstLayer` | 同上 `TestFirstLayerHasNoDependencies` |
+| `TestGroup0StaysOutOfScheduler` | ❌ **不存在**（已登记 future-plan §2.3） |
+| `TestConfigModuleRunsAfterGroup0` | ❌ **不存在**（同上） |
+| `TestDeclarationsTraceToRealCallSites` | ❌ **不存在** — 它正是能拦住 `agent→security` 这类「读了没声明」漂移的判据，见 future-plan §2.3 |
+| `TestNoOrphanFacilities` | ❌ **不存在**（`kernelboot.Build` 会检重名，但不是独立判据） |
 
-**变异 5/5 咬住**：漏 lua→llm、漏 migration→store、config 挪回 Group 0、
+**变异 5/5 咬住**（当时的验收）：漏 lua→llm、漏 migration→store、config 挪回 Group 0、
 去掉 security、签名漂移。其中**变异 3 正是"无主模块"的复现**。
 
-#### 2.7.4 未做（Step 4b 的剩余）
+> ★ **2026-10-31 补记**：`TestDeclarationsTraceToRealCallSites` 缺失的代价已经真实现过 ——
+> `kernelmod/agent` 的 `Requires()` 漏了 `FacSecurity`，代码读 `ks.Security`
+> 却不在图上声明，导致工具策略闸在生产里恒放行一整轮发布。详见 future-plan §2.3。
 
-声明层已完成且可验证，但 `main.go` **仍走原来的串行代码**。
-下一步是把 `Run(plan)` 真接进 main（届时 17 步变 6 层），
-并让 `loadPluginsScheduled` 取代 `loadPlugins`（syncbus 驱动插件）。
 
-这两步都要改生产启动路径 ⇒ 需要更谨慎的验证（含真机启动对比）。
+#### 2.7.4 Step 4b 已完成（原文写「未做」，2026-10-31 更正）
+
+> **⚠️ 本节原标题是「2.7.4 未做（Step 4b 的剩余）」，内容是错的。**
+> 它写着「`main.go` **仍走原来的串行代码**，下一步是把 `Run(plan)` 真接进 main」。
+> 实际 `cmd/homed/main.go:229` 早已调用 `RunKernelModules` → `kernelboot.Run`，
+> 插件调度也已归位到 `plugin-host` 模块（见 §8）。
+> 下面的「完成证据」是 2026-10-31 实测。
+
+**两条当时规划的剩余步骤，现在都完成了：**
+
+| 当时写的「下一步」 | 完成证据 |
+|---|---|
+| 把 `Run(plan)` 真接进 main（17 步变 6 层） | `cmd/homed/main.go:229` `RunKernelModules(ks, hooks)` → `cmd/homed/kmod_runtime.go:120` `kernelboot.Run(plan, ...)`；生产日志逐层打印 `kernel assembly layer N complete` |
+| 让 `loadPluginsScheduled` 取代 `loadPlugins`（syncbus 驱动插件） | 插件调度已归位 `internal/kernelmod/pluginhost`（§8）；生产日志 `[pluginhost] ... tools_ready published` |
+
+**结构性判据**（守这两步不退化的）：
+
+- `cmd/homed/bootstrap_order_test.go` —— 断言 `RunKernelModules(` 在 main 里的**真实相对行号**
+  （必须晚于 Group 0 的安全块与 `ToConfig`）
+- `internal/kernelmod/all/bootgraph_test.go` 的 5 条整机判据 —— 真实登记表装配、
+  层间有序、逆序关闭、无残留、模块不漏挂
+
+#### 2.7.5 模块产物的**实例化粒度**（2026-10-31 补充）
+
+依赖图保证的是"设施**已就绪**"，但没说设施该有几个实例。这在本模块化设计里
+是个独立决策，已有两个不同的答案：
+
+| 设施 | 粒度 | 理由 |
+|---|---|---|
+| `memory` / `knowledge` / `llm` | **进程级 1 个** | 共享同一份数据源，复制没有意义 |
+| `security` | **1 个 Runtime + 每 agent 1 个执行视图** | 全局基线共享（否则插件声明对部分 agent 不生效），但**轮次状态**必须 per-agent |
+
+security 的切分值得记下来，因为**整份复制是错的**：
+
+```
+共享（进程级 1 份）          per-agent（N 份）
+─────────────────────      ─────────────────────
+gate / policy / content      sessionProfile   ← 轮次级，End 即清
+profiles / principals        longtimeProfile  ← agent 生命期，跨轮保留
+scopes / eventPolicy
+```
+
+若把整个 Runtime 复制给每个 agent：插件往 A `DeclareProfile("qq.guest")`，
+B 就看不到这个档位 ⇒ B 上注入 `qq.guest` 报"未声明"。那是最难查的一类缺陷
+（表现为"时灵时不灵"）。所以切分原则是**共享注册表 + per-agent 执行视图**。
+
+**给未来新模块的判据**：决定实例化粒度时先问两件事 ——
+
+1. 这份状态是**共享的事实**（配置/注册表）还是**某个执行体的私有状态**（轮次/会话）？
+2. 复制它会不会让"某个模块声明的东西"对另一个实例不可见？
 
 ### 2.8 完整启动流程与真实依赖（逐行核对，2026-10-16）
 
@@ -901,7 +988,9 @@ func (d *Distiller) distillLoop() {
 
 原 main 用 `defer closeMem()` 等 5 处，释放顺序 = **注册顺序的逆序**（LIFO）。
 模块化后改为 `Put("<facility>.close", fn)` + `CloseAll()` 按**发布顺序逆序**执行
-⇒ 语义**逐字等价**（判据 `TestBootCtxCloseAllIsReverseOrder` 守）。
+⇒ 语义**逐字等价**（判据 `TestKernelStateCloseAllIsReverseOrder` 守 ——
+原名 `TestBootCtxCloseAllIsReverseOrder`，`BootCtx` 改名为 `KernelState` 时判据跟着改名，
+本文此前未同步，2026-10-31 更正）。
 
 **(D) 包级 `init()` 注册（BuiltinFactory）**
 
@@ -1294,7 +1383,8 @@ var i SyncState = nb   // ★ i != nil！经典的 typed-nil 陷阱
 
 接口值**非 nil**（它带类型信息），于是 `bus.IsReady(...)` 解引用空指针 ⇒ **panic**。
 
-**实测复现**：`TestNilTypedBusSafety` 确认 panic 真实发生
+**实测复现**：`TestNilTypedBusSafety`（**规划中的判据名，仓库中不存在**；
+该 panic 形态由 §2.6 的 `SyncBus` 现行为规避）确认 panic 真实发生
 （`invalid memory address or nil pointer dereference`）。
 而 panic 在**插件拉起路径**上 ⇒ 整个内核启动失败。
 
