@@ -4,27 +4,120 @@
 
 > **中文**: [README.md](./README.md)
 
-Self-hosted agent kernel. [Docs](assets/docs/en/ARCHITECTURE.md) · [中文](README.md)
-
-**Startup order is computed at build time, not guessed at runtime.** Twenty kernel modules each declare `Requires`/`Provides`. The build resolves a 6-layer dependency graph into `depgraph.bin` and injects the graph digest into the binary via `-ldflags`. At runtime the kernel reads the graph and does not recompute it. If the graph and the binary don't match, startup is refused rather than guessing which one is right.
+Self-hosted agent kernel. Runs on your own hardware; plugins attach as separate processes.
 
 ```bash
 make build build-cli
 ./build/homed -data /tmp/ha
 ```
 
-**Plugins start when their facilities are ready, not when the kernel finishes.** A plugin declaring `requires_facilities: [config]` launches as layer 1 completes instead of waiting for the agent layer. Measured saving: 35 seconds, which is how long the agent layer spends on dense backfill of 750 events plus rebuilding document and knowledge indexes.
+API keys go in the web UI at `http://localhost:8080`. Requires Linux.
 
-**Two input classes, four interrupt levels.** Queued input carries no level, so any interrupt can preempt it. Interrupts carry L1–L4; higher preempts lower and the preempted state is pushed onto a stack for later resume. Same level never preempts. L4 belongs to the kernel alone (panics, kernel events); a plugin declaring L4 gets clamped to L3. Preemption count can raise a task's level, but by at most two steps (`preemptPromotionCap = 2`), so low-priority work can't starve indefinitely.
+The main difference from typical agent frameworks is context handling: instead of truncating
+on overflow or asking the model to summarize, it scores history by relevance and sinks the
+low-scoring events into documents, then distills those into a graph. Two other things differ:
+startup order is resolved at build time, and plugins launch as soon as their facilities are ready.
 
-**Memory is partitioned by scene, not by session.** A scene fingerprint is built from channel, conversation partner, tools, topic, and time of day, weighted 1.0 / 1.0 / 0.8 / 0.4 / 0.2. A scene only comes into being on the second occurrence (`minSceneEvidence = 2`); one-off interactions don't count. Join threshold is 0.5, recall threshold 0.35. Recall is looser than join on purpose: failing to recall is a loss, while recalling one extra scene costs a few lines of context.
+## Architecture
+
+```
+                    homed (kernel)
+        LLM orchestration · memory · retrieval
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+   stdio RPC       shared mem     event ring
+     control       bulk data      notify
+        │              │              │
+        └──────────────┼──────────────┘
+                       │
+              plugins (separate processes)
+   web UI · QQ · CLI · files · browser
+```
+
+The kernel makes no HTTP calls and reads no files. Everything touching the outside world is a
+plugin. A plugin crash leaves the kernel running; restarts back off 1s / 2s / 3s, and the 4th
+crash within 5 minutes stops automatic restarting for human intervention.
+
+### Context is not "truncate and summarize"
+
+The usual approach drops old turns or asks the model to summarize them. Both share a flaw: what
+gets lost is decided by position. Here each historical event is scored against the current input,
+and low scorers sink into the document layer.
+
+Scoring uses dense cosine similarity in the same vector space as media and documents, falling
+back to TF-IDF when the model isn't loaded. The most recent N events are always kept, but N is
+itself bounded by budget:
+
+```go
+// protected count cannot exceed what the budget can hold
+budgetCap = ContextTokens / avgEventTokens
+pCount = min(configured, budgetCap)
+```
+
+That bound came from a measurement: with a 50k window, one event averaged 5800 tokens (tool
+results), while the budget was 40000, so "pin 10 events" didn't fit. Every prune hit the
+protection floor, the budget was exhausted after two rounds, and the task terminated. Recall
+dropped from 44% to 22%. Smaller windows now tighten automatically, and a 1M window can use the
+full configured value.
+
+Pruned events aren't discarded, they migrate: the event and the media blocks it holds move into
+the document layer with block IDs unchanged, only the holding layer changes. Retrieval uses
+`coldcontext_query` in two phases (Peek to confirm, then Remove) rather than delete-then-refill,
+which would lose data permanently if the refill failed.
+
+### Three layers migrate, they don't copy
+
+```
+L0 context   relevance pruning, last N always protected
+     ↓       low scorers sink (with media blocks)
+L1 documents dense retrieval; access count ≤2 and stale means sink further
+     ↓       distilled into triples
+L2 graph     entities, relations, scene index; recall by scene
+```
+
+A block has exactly one holder at any layer, with no reference counting to keep it alive. Media
+are not attachments: images and audio are first-class graph nodes with their own vectors,
+searchable in the same space as text.
+
+### Memory is partitioned by scene, not by session
+
+Typical agents keep one history per session, so switching topics loses context or crams
+everything into one window. Here memory is partitioned by observable scene fingerprint: channel,
+conversation partner, tools, topic, time of day, weighted 1.0/1.0/0.8/0.4/0.2.
+
+A scene comes into being only on the second matching fingerprint (`minSceneEvidence = 2`).
+Join threshold 0.5, recall 0.35 — recall is looser because failing to recall loses information
+while an extra scene costs a few lines of context. Each recurrence adds to scene strength;
+scenes that stop recurring decay by half-life.
+
+Two paths run in parallel: **declared** (a plugin states at the injection point which scene this
+is) and **emergent** (fingerprints cluster on their own). Declared scenes deliberately don't
+absorb the full fingerprint, otherwise they'd score near 1.0 against every later turn and the
+emergent path could never grow finer-grained scenes.
+
+### Seven stages
+
+`internal/agent/core/stages.go`
+
+| Stage | When | Plugins can |
+|---|---|---|
+| `on_input` | message arrives | blocklist, rate limit, short-circuit reply |
+| `pre_action` | context ready, before LLM | inject external data |
+| `post_action` | LLM returns text and tool calls | filter, force redirect |
+| `before_toolcall` | before one tool runs | audit, deny, rewrite args |
+| `after_toolcall` | after one tool runs | redact, sort results |
+| `before_output` | final text ready | format adaptation |
+| `after_output` | after sending | statistics |
+
+`post_action → [before_toolcall → run → after_toolcall] → post_action` is the inner loop. It exits
+when the model stops calling tools, all calls are denied, or the limit is reached.
 
 ## Everything else
 
 - **Channels**: web UI, CLI, QQ groups and DMs, A2A, ACP in your IDE
 - **Tools**: files, shell, code, browser (real Chrome), calendar, notes, RSS, music
 - **Modalities**: images, video, voice, screenshots, web pages
-- **Zero-IO kernel**: no HTTP calls, no file reads; every capability lives in a plugin
 
 28 built-in plugins, 89 model-callable tools. External plugins live one per repo under [github.com/HologramAgent](https://github.com/HologramAgent).
 
