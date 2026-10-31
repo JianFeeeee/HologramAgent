@@ -26,7 +26,7 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 
 **三层记忆架构** — 三层不是三种数据结构，而是**同一批记忆块的三层持有关系**：
 - **Context 层（L1，直接投喂）**：内存中预训练词嵌入评分的事件窗口（StaticEmbedder 词向量 → CosineSimilarity，TF-IDF 回退），实时维护最近上下文，低相关性事件自动下沉到下一层
-- **Document 层（L2，不直接投喂）**：与 L1 **结构同构**——同样的事件 + 同样的块，只是不直接进模型视野；支持显式提交和隐式归档，冷数据蒸馏到稳定记忆（stablemem）
+- **冷上下文层 Cold Context（L2，不直接投喂）**：与 L1 **结构同构**——同样的事件 + 同样的块，只是不直接进模型视野；支持显式提交和隐式归档，冷数据蒸馏到稳定记忆（stablemem）
 - **Stablemem 层（L3，持久）**：SQLite 图数据库，**顶层仍是三元组**（节点 + 关系边），但节点从 `entities` 表升级为 `memory_blocks`；BFS 遍历召回，蒸馏管道从对话中提取三元组
 
 ★ **L1 与 L2 唯一区别是「是否被直接投喂给模型」**：L2 不是 L1 的摘要层，也不是
@@ -43,7 +43,7 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 - **内容寻址存储（CAS）**：digest 寻址，元数据在 SQLite、blob 在磁盘（两级分桶），相同字节只存一份，
   每次 `Get` 重校 digest（磁盘损坏静默返回脏数据比报错更危险）
 - **媒体块直接参与向量检索**：块携带**自己的多模态向量与指纹**，正文里不再有任何媒体标记
-- **无独立 GC、无引用计数、无 keep-set**：记忆块遵循单层不变量——Context → Document → Graph
+- **无独立 GC、无引用计数、无 keep-set**：记忆块遵循单层不变量——Context → Cold Context → Graph
   是块的**迁移**，不是复制、也不靠引用保活；**删除块即删内容**
 - **v1.1.1 起贯通插件边界**：插件可通过 `InsertWithMedia` / `InjectInputMedia` 读写媒体，
   模型可用 `stablemem_commit` / `coldcontext_commit` 的 `media_digests` 参数关联媒体
@@ -64,7 +64,7 @@ CLI 需要终端面板时，**订阅事件总线**（`EventTerminalOutput` + `Ev
 
 **记忆系统** (`internal/memory/`)：
 - **GraphDB** (`graph.go`) — SQLite，entities + relations 表，BFS 遍历
-- **Document Store** (`document/document.go`) — 临时记忆，JSON 文件 + TF-IDF 向量索引，消费即删
+- **Cold Context Store** (`internal/memory/coldcontext/`) — 冷上下文，JSON 文件 + 稠密/TF-IDF 双路检索，两阶段取回
 - **Text Memory** (`text/text.go`) — 原始对话日志，JSONL 文件轮转
 - **Social Store** (`social/social.go`) — 人格特质 + 关系网，包装 GraphDB
 - **Memory Indexer** (`indexer.go`) — 自动将 GraphDB 实体向量化，用户输入时召回注入 system prompt

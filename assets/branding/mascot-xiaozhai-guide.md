@@ -29,7 +29,7 @@
 连衣裙    #FFFFFF → #F1F5F9    白→浅灰
 
 丝带蓝    #3B82F6    Context 层
-丝带青    #06B6D4    Document 层
+丝带青    #06B6D4    冷上下文层
 丝带金    #F59E0B    Graph 层
 
 徽章金    #F59E0B    Kernel

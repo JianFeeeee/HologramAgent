@@ -67,7 +67,7 @@ func TestQuery(t *testing.T) {
 	}
 }
 
-func TestContextToDoc(t *testing.T) {
+func TestContextToColdContext(t *testing.T) {
 	dir, err := os.MkdirTemp("", "doc_ctx_*")
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestContextToDoc(t *testing.T) {
 	}
 }
 
-func TestFindColdDocs(t *testing.T) {
+func TestFindColdContexts(t *testing.T) {
 	dir, err := os.MkdirTemp("", "doc_cold_*")
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +361,7 @@ func TestRemoveNonexistent(t *testing.T) {
 	}
 }
 
-func TestContextToDocContentPreservesRawToolOutput(t *testing.T) {
+func TestContextToColdContextContentPreservesRawToolOutput(t *testing.T) {
 	dir, err := os.MkdirTemp("", "doc_toolclean_*")
 	if err != nil {
 		t.Fatal(err)

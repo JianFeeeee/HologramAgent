@@ -2,7 +2,7 @@ package core
 
 // L2 → L1 召回协议的判据。
 //
-// 依据（assets/docs/zh/ARCHITECTURE.md「记忆流转」② Document 层的读取分支）：
+// 依据（assets/docs/zh/ARCHITECTURE.md「记忆流转」② 冷上下文 Cold Context 的读取分支）：
 //
 //	coldcontext_query → Consume(读取并删除)
 //	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}

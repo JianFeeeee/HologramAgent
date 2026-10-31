@@ -98,13 +98,13 @@ HologramAgent's cognitive architecture consists of three subsystems: the event l
 
 **The stage pipeline (StageHost)** manages two registration categories: tool definitions (ToolDef) and stage handlers (StageHandler). ToolDef includes two optional memory control fields: `NoMemory bool` — when true, the tool's output is excluded from vectorization/jieba/distillation (original text preserved); and `Cleaner func(string) string` — a filter applied before the output enters the computation layer (e.g., extracting a `content` field from JSON). Neither modifies the original output; both only affect the computation layer input. `RegisterTool` rejects duplicate names, infers the owning plugin name from the tool name prefix, and maintains a `toolPlugins` mapping. `RegisterStage` appends handlers to the corresponding stage list. On stage execution (`RunStage`), **all registered handlers execute in parallel via goroutines**, sharing a single `*StageContext` protected by `sync.RWMutex`. Individual handler panics are recovered independently without affecting other handlers. Short-circuit semantics are implemented by checking `ctx.Response != nil` — any stage handler can set this value to terminate the pipeline early. `ExecuteTool` includes built-in panic recovery with stack-trace recording. `UnregisterPluginTools` removes a plugin's tool set during hot-reload.
 
-**The context window (RelevanceContext)** maintains a chronologically ordered event list. `Append` aggregates tool outputs through `textForVector` before computing the embedding vector: `NoMemory` skips, `Cleaner` filters (per-tool cleaners registered by plugins — e.g. the QQ plugin strips its own tool-call templates), and `CleanText` finalizes with basic whitespace normalization. A three-branch strategy selects the text source (agent events use Response, user events use Input, cold_storage uses Input+Response). `Prune` triggers when the event count exceeds `topK`: it **unconditionally protects the last 10 events from eviction** (recency bias), scores remaining candidates against the current input via CosineSimilarity, keeps `topK - 10` highest-scoring entries (floor at 0), then re-sorts chronologically. Pruned events from sources other than `agentcli` and `terminal` are archived to the Document layer via `docStore.ContextToDoc`, retaining original timestamps. Persistence uses 5-second debounced writes to a JSON file.
+**The context window (RelevanceContext)** maintains a chronologically ordered event list. `Append` aggregates tool outputs through `textForVector` before computing the embedding vector: `NoMemory` skips, `Cleaner` filters (per-tool cleaners registered by plugins — e.g. the QQ plugin strips its own tool-call templates), and `CleanText` finalizes with basic whitespace normalization. A three-branch strategy selects the text source (agent events use Response, user events use Input, cold_storage uses Input+Response). `Prune` triggers when the event count exceeds `topK`: it **unconditionally protects the last 10 events from eviction** (recency bias), scores remaining candidates against the current input via CosineSimilarity, keeps `topK - 10` highest-scoring entries (floor at 0), then re-sorts chronologically. Pruned events from sources other than `agentcli` and `terminal` are archived to the Cold Context layer via `coldcontextStore.ContextToColdContext`, retaining original timestamps. Persistence uses 5-second debounced writes to a JSON file.
 
 **Tool definitions are aggregated from five sources**: IOManager-registered plugin tools; StageHost-registered SDK tools; Indexer-provided memory index tools; conditionally added built-in tools (depending on non-nil state of memory/knowledge/docStore/social/pluginReg/providerManager modules — including memory operations, knowledge retrieval, document queries, social networking, plugin reloading, child-agent spawning, per-output-channel send tools, and LLM source switching); and media processing tools added based on `pendingMedia` state. `buildToolDefs()` re-aggregates all sources on each process cycle.
 
 **Provider invocation follows an ordered fallback strategy**: `ProviderManager.OrderedProviders()` returns the provider list in registration order. The `process()` inner loop iterates this list attempting `Chat()` on each. HTTP 401/403 responses mark the provider as permanently unavailable; other error types also mark unavailability but with higher tolerance. If all providers fail, an error is returned to the caller. If a call is interrupted by context cancellation while the agent is still running, it is retried (only on non-consolidation paths).
 
-**The memory system adopts a three-tier storage hierarchy (Context → Document → Graph), tiering data by access locality and persistence requirements**: the Context layer is a fast-volatile working window using StaticEmbedder (pretrained word embeddings with TF-IDF fallback) for semantic relevance scoring; the Document layer **shares the same StaticEmbedder vector space with Context** (the embedder is injected into the Document Store at agent startup via `docStore.SetVectorizer(embedder)`), ensuring that relevance scores during Context pruning and semantic retrieval during Document queries operate within the same vector space — TF-IDF serves only as a fallback when the embedder is unavailable; the Graph layer uses SQLite as its persistence substrate with an entities table (nodes) and a relations table (directed edges), supporting BFS traversal recall. Data migration policies govern movement across tiers: low-scoring events sink from Context to Document (vectorized using the same embedder at archival time); cold documents, after a 72-hour no-access threshold, are distilled into triples via `docToTriples` and committed to Graph. The Indexer uses dual retrieval (entity vector similarity search + jieba keyword extraction) to construct Graph query seeds, and the `MarkRecalled` mechanism prevents entities already fetched via tool calls from being re-injected into the system prompt.
+**The memory system adopts a three-tier storage hierarchy (Context → Cold Context → Graph), tiering data by access locality and persistence requirements**: the Context layer is a fast-volatile working window using StaticEmbedder (pretrained word embeddings with TF-IDF fallback) for semantic relevance scoring; the Cold Context layer **shares the same StaticEmbedder vector space with Context** (the embedder is injected into the coldcontext Store at agent startup), ensuring that relevance scores during Context pruning and semantic retrieval during cold-context queries operate within the same vector space — TF-IDF serves only as a fallback when the embedder is unavailable; the Graph layer uses SQLite as its persistence substrate with an entities table (nodes) and a relations table (directed edges), supporting BFS traversal recall. Data migration policies govern movement across tiers: low-scoring events sink from Context to Cold Context (vectorized using the same embedder at archival time); cold-context docs, after a 72-hour no-access threshold, are distilled into triples via `coldDocToTriples` and committed to Graph. The Indexer uses dual retrieval (entity vector similarity search + jieba keyword extraction) to construct Graph query seeds, and the `MarkRecalled` mechanism prevents entities already fetched via tool calls from being re-injected into the system prompt.
 
 **The separation of core domain and application domain** constrains the kernel's responsibilities to LLM orchestration, memory management, and knowledge retrieval — no direct IO operations; all external interaction is mediated through the plugin domain. This separation limits the kernel's complexity to a verifiable scope while granting the plugin domain independent evolution: plugins can be independently developed, independently released, hot-loaded, and do not directly affect the stability of the core domain.
 
@@ -120,7 +120,7 @@ eventLoop() → processTextInput()
         │
         ├── on_input stage          Plugins can intercept/rewrite/short-circuit
         ├── Context.Append          Record to context window
-        ├── Context.Prune           Low-relevance events archived to Document
+        ├── Context.Prune           Low-relevance events archived to Cold Context
         ├── buildMemoryContext()    Indexer recall → GraphDB BFS traversal
         │
         ├── pre_action stage        Plugins can inject system messages
@@ -181,20 +181,20 @@ Setting `ctx.Response` at any stage jumps to `after_output`.
            Vector layers: unified multimodal space (primary, with fingerprint) → StaticEmbedder word embedding → TF-IDF (fallback)
    Prune:  DenseCosine (compared only within the same fingerprint) → StaticEmbedder CosineSimilarity fallback; keep topK + last 10
        ├── Keep → timeline → chronologically sorted → system prompt
-       └── Low score → Document layer archive (original timestamp)
+       └── Low score → Cold Context layer archive (original timestamp)
    Save: 5s debounce write to disk
 
          ↓ Prune archive                       ↑ LLM active recall
 
-② Document (File Memory)
+② Cold Context (File Memory)
    DocStore — JSON files + dense vectors (unified multimodal space; dense_fp must match the current space fingerprint or the doc is recomputed; fallback: StaticEmbedder / TF-IDF InvertedIndex)
    Write: Prune archive / coldcontext_commit / stablemem snapshot (syncGraphToDocs)
    Read:
        ├── Auto-inject: Query(input, top3) → similarity summary under same vector space → [Related Memory Docs] → system prompt (read-only)
        └── LLM active:  coldcontext_query → Consume(read and delete)
                          → context.Append{Timestamp: d.CreatedAt, Source: "cold_storage"} per doc
-                         → Docs written to context timeline with original timestamps, deleted from docStore
-   Cold: FindColdDocs(72h, ≤2 accesses) → docToTriples → Graph
+                         → Docs written to context timeline with original timestamps, deleted from coldcontextStore
+   Cold: FindColdContexts(72h, ≤2 accesses) → coldDocToTriples → Graph
 
          ↓ Cold doc distillation               ↑ Auto recall
 
@@ -209,8 +209,8 @@ Setting `ctx.Response` at any stage jumps to `after_output`.
    Social: person_query / set_trait / relate (wraps GraphDB)
 
 ④ Four Independent Heartbeat Loops (separate tickers and config intervals)
-   distillLoop  (distillInterval,  default 30m):  Context pruning — Context.Prune → Document
-   archiveLoop (archiveInterval, default 60m):  Cold doc archival — docToTriples → GraphDB
+   distillLoop  (distillInterval,  default 30m):  Context pruning — Context.Prune → Cold Context
+   archiveLoop (archiveInterval, default 60m):  Cold context archival — coldDocToTriples → GraphDB
    mergeLoop   (mergeInterval,   default 120m): Entity merge detection — similarity → LLM decision
    reviewLoop  (reviewInterval,  default 120m): Relation review — SentenceRef recall → LLM fix
 
@@ -268,7 +268,7 @@ dimension** participate in fusion (mixing coordinate systems yields a direction 
 - Protects last 10 events from eviction; excess candidates are sorted by relevance and archived to document memory
 - Archived events retain original timestamps; on `coldcontext_query` recall they re-insert into the context timeline at their original position
 
-### Document Layer
+### Cold Context Layer
 
 `internal/memory/document/document.go` — `Store`
 - Consume-on-read mode: deleted after `coldcontext_query` retrieval
@@ -389,9 +389,9 @@ switched), fetching bytes on demand via `BlockData`. Modalities outside the spac
 ```text
 Four independent heartbeat loops (each with configurable interval):
   ├── distillLoop  (distillInterval,  default 30m)
-  │   └── distillContext() — Context.Prune → Document
+  │   └── distillContext() — Context.Prune → Cold Context
   ├── archiveLoop (archiveInterval, default 60m)
-  │   └── archiveColdDocs() — Cold docs → docToTriples → GraphDB
+  │   └── archiveColdDocs() — Cold docs → coldDocToTriples → GraphDB
   ├── mergeLoop   (mergeInterval,   default 120m)
   │   └── detectEntityMerge() — Entity similarity detection → LLM decision
   └── reviewLoop  (reviewInterval,  default 120m)
@@ -857,7 +857,7 @@ internal/
 │   ├── graph.go           — SQLite graph database
 │   ├── indexer.go         — Graph → vector index
 │   ├── vector/store.go    — TF-IDF vector engine
-│   ├── document/document.go — Document memory
+│   ├── coldcontext/coldcontext.go — Cold Context memory
 │   ├── text/text.go       — Text logs
 │   └── pipeline/          — Distiller
 ├── knowledge/knowledge.go — Knowledge base
