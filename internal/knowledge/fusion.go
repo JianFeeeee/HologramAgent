@@ -2,52 +2,95 @@ package knowledge
 
 import "sort"
 
-// rrfK 是 RRF（Reciprocal Rank Fusion）的平滑常数。
+// minLexSignal 是「词法路有真实信号」的最低 top1 分数。
 //
-// 60 是 RRF 的通用取值（Cormack et al. 2009）：它让「第 1 名」与「第 2 名」
-// 的贡献足够接近（1/61 vs 1/62），又让第 100 名的贡献掉到 1/160 —— 既压住
-// 长尾噪声，又不至于让名次之间的差异被抹平。调大它更平权，调小更信头部。
-const rrfK = 60
+// 低于它的原因不是命中，而是 jieba 把查询切出了几个泛滥词（如单字、虚词），
+// 于是词法路给近 200 条都打上极小的分。这种情况下词法排序没有意义，
+// 应当把召回让给稠密路。
+//
+// 取值依据（2026-10-31 实测，真实 196 条库 + chineseclip）：真命中在
+// 0.056 ~ 0.208；弱命中（`鸿蒙` → openharmony-third-party）0.117。
+// 0.02 比最小真命中低一倍多，足够宽松。
+const minLexSignal = 0.02
 
-// fuseRRF 按倒数排名融合两路命中。
+// fuseLexPrimary 以**词法路为主、稠密路为辅**合并两路命中。
 //
-// 输入必须是**已按分数降序**的候选（SearchScored / denseHits 都保证这一点），
-// 因为 RRF 只用名次、不看分数。
+// # 为什么不是 RRF（试过，被实测否掉）
 //
-// 为什么用名次而不做分数归一化：两路量纲完全不可比（稠密余弦 0~1，TF-IDF 余弦
-// 可以低到 0.02）。2026-10-08 淘汰「三路融合」时踩的坑正是逐路按查询内最大值
-// 归一到 1.0 —— 那会把 0.02 的噪声抬到与 1.0 的信号等权。RRF 没有这个问题：
-// 它只问「你在这路里排第几」，权重由调用方显式给。
+// RRF 只看名次、丢掉分数差距。而这里词法路的名次之间**差距很小**：
+// `strip_path` 的 top1 是 0.056、top2 是 0.055 —— 名次差 1，RRF 就当成
+// 几乎等强，稠密路对 top2 的加分一叠就把它超了。实测：RRF（词法 1.0 /
+// 稠密 0.5）下 `strip_path` 的目标条目直接掉出前五。
 //
-// 任一路为空时，另一路的贡献不受影响（缺席的路径只是不加分）。
-func fuseRRF(dense, lex []scoreHit, wDense, wLex float64, k int) []scoreHit {
-	if k <= 0 {
-		k = rrfK
+// # 为什么词法为主（这与「稠密更先进」的直觉相反，但实测如此）
+//
+// 真实 196 条库 + 真实 chineseclip，同一批查询里两路的名次：
+//
+//	查询                        稠密名次   词法名次
+//	PruneOldBackups                103         1
+//	strip_path                     164         1
+//	minSceneEvidence               130         1
+//	changelog_v1.3.0                 9         1
+//	henan_medical_university         4         1
+//	上下文裁剪的保护条数受什么约束    157         1
+//	更新日志                        86         8
+//
+// 原因是本项目自己记录过的已知代价：chineseclip 双塔的**纯文本语义弱于
+// MLLM 型嵌入器**（见 multimodal-space 文档）。而这里 154/196 条是同一种
+// 文档（cangjie），在 512 维里挤成一团，稠密打分对「哪个才对」几乎没有
+// 分辨力 —— 目标条目普遍落在 100 名以外。
+//
+// # 稠密路仍然要接（不是死代码）
+//
+//  1. **同分裁决**：词法分数相同时按稠密名次排（分数是浮点，同分确实出现）
+//  2. **补位**：词法路命中不足 topK 时，按稠密名次追加
+//  3. **无信号时接管**：词法 top1 低于 minLexSignal（见该常量注释）
+//  4. **词法全空时接管**：查询里没有任何可命中的词
+//
+// 换嵌入器（比如换成语义更强的 MLLM 型）后本策略应当重测 —— 那时稠密路
+// 的名次可能反超，权重需要跟着改。判据见 identifier_recall_test.go 与
+// dense_recall_quality_test.go。
+func fuseLexPrimary(lex, dense []scoreHit) []scoreHit {
+	if len(lex) == 0 {
+		return dense
 	}
-	scores := make(map[string]float64, len(dense)+len(lex))
-	addRanks := func(hits []scoreHit, w float64) {
-		if w <= 0 {
-			return
-		}
-		for i, h := range hits {
-			// i 从 0 起，名次从 1 起
-			scores[h.id] += w / float64(k+i+1)
-		}
+	if lex[0].score < minLexSignal {
+		// 词法只是泛滥词的微弱命中，让它接管会把稠密路的语义召回埋掉。
+		return dense
 	}
-	addRanks(dense, wDense)
-	addRanks(lex, wLex)
 
-	out := make([]scoreHit, 0, len(scores))
-	for id, s := range scores {
-		out = append(out, scoreHit{id: id, score: s})
+	denseRank := make(map[string]int, len(dense))
+	for i, h := range dense {
+		denseRank[h.id] = i
 	}
-	sort.Slice(out, func(i, j int) bool {
+
+	out := make([]scoreHit, len(lex))
+	copy(out, lex)
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].score != out[j].score {
 			return out[i].score > out[j].score
 		}
-		// 同分按 id 稳定排序，避免 map 迭代顺序导致结果不可复现
-		return out[i].id < out[j].id
+		di, iok := denseRank[out[i].id]
+		dj, jok := denseRank[out[j].id]
+		if iok != jok {
+			return iok // 稠密路认识的排前面
+		}
+		if iok && jok && di != dj {
+			return di < dj
+		}
+		return out[i].id < out[j].id // 兜底：可复现
 	})
+
+	// 补位：词法路没覆盖的候选按稠密名次接在尾部。
+	seen := make(map[string]bool, len(out))
+	for _, h := range out {
+		seen[h.id] = true
+	}
+	for _, h := range dense {
+		if !seen[h.id] {
+			out = append(out, h)
+		}
+	}
 	return out
 }
 

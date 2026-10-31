@@ -494,49 +494,49 @@ var sparseSemWeight = 0.5
 // 既然不再融合，就不存在「稠密路占多少预算」的问题。
 // 保留本注释是因为 rankdiag_test 的历史实测门槛引用过它。
 
-// Search 检索知识库：**稠密路 + 词法路按 RRF 融合**。
+// Search 检索知识库：**词法路为主、稠密路为辅**（2026-10-31 改）。
 //
-// # 现行为（2026-10-31 改）
+// # 现行为
 //
-// 两路各自给候选排序，再用倒数排名融合（RRF）合并：
+// 两路各自打分，由 fuseLexPrimary 合并（见 fusion.go）：
 //
-//	score(d) = 1.0/(60+rank_dense) + 0.5/(60+rank_lex)
+//	· 词法路（标识符感知 TF-IDF）给主序，**保留分数差距**
+//	· 稠密路用于同分裁决、补位，以及词法无信号时接管
 //
-// 稠密路是语义主线（权重 1.0），词法路只做**精确命名**的救助（权重 0.5）。
+// 词法路的分词器不是 memory.TokenizeWords，而是 identifierTokenizer
+// （见 identtoken.go）：jieba 会把 `PruneOldBackups` 切成单字符，词法路
+// 对英文标识符因此完全失效。
 //
-// # 为什么不回到三路融合（2026-10-08 那次为什么淘汰它）
+// # 为什么词法为主（与「稠密更先进」的直觉相反）
 //
-// 当时是「稠密 + 稀疏语义 + 词法」三路，每路按**查询内最大值**归一化到 1.0
-// 再加权相加。那个归一化是致命的：
+// 真实 196 条库 + 真实 chineseclip 实测，目标条目在两路的名次：
 //
-//	实测（真实 KB 192 条）词法路对 `the_jet_engine` 的原始分只有 0.027，
-//	归一化后变成 1.0，与稠密路的 1.0 **等权相加** —— 弱信号被抬到
-//	与强信号同样的分量，噪声压倒信号。
+//	查询                        稠密   词法
+//	PruneOldBackups             103      1
+//	strip_path                  164      1
+//	minSceneEvidence            130      1
+//	changelog_v1.3.0              9      1
+//	henan_medical_university      4      1
+//	上下文裁剪的保护条数受什么约束 157      1
+//	更新日志                     86      8
 //
-// 于是改成「稠密路唯一」，top1 从 1/10 提到 6/10。
+// 原因是本项目记录过的已知代价：chineseclip 双塔的**纯文本语义弱于
+// MLLM 型嵌入器**。而这里 154/196 条是同一种文档（cangjie），在 512 维里
+// 挤成一团，稠密打分对「哪个才对」几乎没有分辨力。
 //
-// # 为什么现在要加回词法路（2026-10-31）
+// # 历史上两次翻转（别再翻回去）
 //
-// 「稠密路唯一」在**英文标识符**这类查询上留下了洞。实测（真实 196 条库）：
+//	2026-10-08  「三路归一化融合」→「稠密唯一」：因为逐路按查询内最大值
+//	             归一化把 0.02 的噪声抬到与 1.0 等权（top1 1/10）。
+//	2026-10-31  「稠密唯一」→「词法为主」：因为分词器修好后词法路在
+//	             标识符查询上唯一命中，而稠密路把它们排到 100 名外。
+//	             中间试过 RRF，被实测否掉：词法路名次间分数差太小
+//	             （strip_path top1=0.056 / top2=0.055），RRF 只看名次
+//	             会把它俩当等强，稠密加分一叠就反超。
 //
-//	query=PruneOldBackups   → 目标条目从未进前五
-//	query=minSceneEvidence  → 同上
-//	query=strip_path        → 同上
-//
-// 返回的全是 154 条 cangjie 文档里反复霸榜的那几篇。原因是词法路当年被淘汰
-// 时，把**分词器的缺陷**误判成了词法路的属性：jieba 对英文标识符是
-// **按字符切**的（`PruneOldBackups` → `[P r u n e O l d B a c k p s]`），
-// 任意两篇含英文字母的文档 token 重叠率都能到 50%。
-//
-// 修掉分词器（identtoken.go：标识符整词 + 分隔符部件，且不拆 camelCase）后，
-// 同三条查询词法路**唯一命中**目标条目。而稠密路对「只在文中出现一次专名」
-// 本就无能为力（chineseclip 的纯文本语义弱，见 multimodal-space 文档的已知代价）。
-//
-// 用 RRF 而不是当初那套归一化：RRF 只看**名次**、不看分数，两路量纲不可比
-// 的问题自动消失，也不会把 0.02 的弱信号抬到与 1.0 等权（第 100 名只贡献
-// 1/160，第 1 名贡献 1/61）。
-//
-// 回归判据：dense_recall_quality_test.go（带标注的 10 条查询集 + 标识符用例）。
+// 换嵌入器（比如换成语义更强的 MLLM 型）后必须重测：那时稠密路名次可能
+// 反超，权重需要跟着改。判据见 identifier_recall_test.go 与
+// dense_recall_quality_test.go。
 func (s *Store) Search(query string, topK int) []*Knowledge {
 	return s.SearchIn(query, "", topK)
 }
@@ -613,9 +613,7 @@ func (s *Store) SearchIn(query, category string, topK int) []*Knowledge {
 		}
 		dense := s.denseHits(qv)
 		lex := s.lexHits(query)
-
-		// 任一路为空都不影响另一路（RRF 对缺席的路径就是不加分）。
-		fused := fuseRRF(dense, lex, 1.0, 0.5, rrfK)
+		fused := fuseLexPrimary(lex, dense)
 		out := make([]*Knowledge, 0, topK)
 		for _, h := range fused {
 			if !inScope(h.id) {
