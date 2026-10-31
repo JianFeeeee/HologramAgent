@@ -310,6 +310,34 @@ systemctl restart waiter-remote.service
 
 ## 3. 故障排查
 
+### 3.0 日志里要不要源文件位置
+
+默认**不带**。生产日志长这样：
+
+```
+2026/10/31 18:47:03 [homed] shutting down...
+```
+
+排查插件/装配问题时可以临时打开，加上 `file.go:NNN`：
+
+```bash
+systemctl edit hologramagent      # 或直接改 drop-in
+# [Service]
+# Environment=HOMED_LOG_SOURCE=1
+systemctl restart hologramagent
+```
+
+打开后：
+
+```
+2026/10/31 18:47:03 bootstrap.go:320: [homed] shutting down...
+```
+
+为什么默认关：多数日志本身带模块前缀（`[homed]` / `[plugin]` / `[kbtree]`），
+定位能力并不缺；而 `Lshortfile` 每行都要多一次 `runtime.Caller`。
+保留开关是因为同名文件太多——每个插件都有自己的 `plugin.go`，
+只有行号能区分。
+
 ### 3.1 "消息发过去没反应"
 
 按这个顺序查，**别跳步**：
