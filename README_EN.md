@@ -4,58 +4,56 @@
 
 > **中文**: [README.md](./README.md)
 
-An agent kernel that runs for months and still remembers.
+HologramAgent is an agent kernel that runs on your own hardware. Connect it to QQ, a web UI,
+your shell, your files, a browser, and it works in all of them.
 
-In plain terms: connect it to QQ, a web UI, your shell, your files, a browser, and it gets
-work done in all of them. What you discussed this morning, it still knows tonight. A
-preference you mentioned three weeks ago doesn't vanish when the context window scrolls.
-A plugin crashes and it keeps running. Swap the model and nothing else changes.
+Memory sinks: the last few turns stay in context, older ones become documents, oldest get
+distilled into triples in a graph database. That is why it can run for months without
+stuffing the entire history into every prompt.
 
 ```bash
 ./build/homed -data /tmp/ha      # start the kernel
 ./build/waiter                    # talk to it
 ```
 
-All you need is a Linux box. API keys go in through the web UI and live in local SQLite.
+You need a Linux box. API keys go in through the web UI and live in local SQLite.
+Development started July 2026; currently 1.4.0.
 
 ---
 
-## What makes it different
+## Design decisions
 
-**Plugins are separate processes, not shared libraries.** A plugin panic can't take the
-kernel down, and it restarts on its own. Drop in a new `plugin.bin` and it's live. No
-rebuild, no restart. This isn't architectural purity for its own sake: the `.so` approach
-burned us badly enough to justify the rewrite (`dlclose` silently no-ops under
-`DF_1_NODELETE`, cgo timeouts leave threads alive, one plugin panic dragged the whole
-`homed` process down with it).
+Plugins run in separate processes. One panics and the kernel stays up; it restarts on its
+own. Drop in a new `plugin.bin` and it's live. The earlier version used C shared libraries,
+where `dlclose` silently no-ops under `DF_1_NODELETE`, cgo timeouts leave threads alive, and
+one plugin panic dragged `homed` down with it. That is why it was rewritten as subprocesses
+plus shared memory.
 
-**The kernel touches no IO.** No HTTP calls, no file reads, no reach into the world outside
-its database. Web UI, QQ, command execution, web search are all plugins. The payoff isn't
-tidiness; it's that you can replace the entire interaction layer without touching the kernel.
+The kernel itself makes no HTTP calls and reads no files. Everything that touches the outside
+world lives in plugins: the web UI, QQ, command execution, web search, the browser. Not for
+tidiness. It means you can swap the entire interaction layer without touching the kernel.
 
-**Memory sinks as it ages; it doesn't pile up in the context window.** Recent turns stay in
-the window, older ones settle into a document layer, oldest get distilled into a graph.
-That's why it can run for months without stuffing the whole history into every prompt.
+Inside one QQ plugin, a group owner and a random member can hold different permissions.
+Instructions arriving from another agent don't get written into your memory, though they can
+trigger recall. The kernel's security module makes those calls; plugins only declare.
 
-**It remembers scenes, not sessions.** Move from work talk to personal talk and it splits
-the context by channel, conversation partner, tools used, and time of day. When a scene
+Memory is partitioned by scene, not by session. Move from work talk to personal talk and it
+splits context by channel, conversation partner, tools used, and time of day. When a scene
 recurs, last time's conclusions come back, including the ones it got wrong.
-
-**Security is a wall, not a line each tool remembers to check.** Everything leaving the
-kernel and everything flowing back from plugins passes through it. Secrets never enter the
-prompt (they're substituted at execution time), tool allow/deny lists, sensitive-word
-alerts, per-principal authorization (the same QQ plugin can grant an owner and a random
-group member different powers).
 
 ## What it can do
 
-No API listings. What you can point it at:
+Places it talks: web UI, shell, QQ groups and DMs, other agents over A2A, and an ACP server
+inside your IDE. It can look at images, video, voice, and web pages, and it can drive a real
+Chrome.
 
-- **Where it talks**: web UI, CLI/TUI, QQ groups and DMs, other agents (A2A), ACP in your IDE
-- **What it sees**: images, video, voice, screenshots, web pages
-- **What it does**: read and write files, run commands, write code, drive a real Chrome, calendar, notes, RSS, music
-- **What it remembers**: three-layer memory plus graph memory plus a knowledge base, recallable by scene
-- **How it schedules**: chat with a human while long jobs run in parallel sub-agents; jump the queue when the user pushes back; resume interrupted work where it stopped
+For getting things done it reads and writes files, runs commands, writes code, and handles
+calendars, notes, RSS, and music. QQ files and voice messages go both ways.
+
+Behind that sit three memory layers plus a graph database plus a knowledge base, recalled by
+scene. When new work arrives mid-task it enters a scheduler; if the user pushes back it can
+jump the queue, and interrupted work saves its state and resumes. Long jobs can be handed to
+sub-agents so they don't block the line you're talking on.
 
 28 built-in plugins, 89 model-callable tools. External plugins live one-per-repo at
 [github.com/HologramAgent](https://github.com/HologramAgent).
@@ -68,16 +66,18 @@ homed  (kernel: LLM orchestration + memory + retrieval)
 plugins  (web UI / QQ / CLI / files / network / all IO)
 ```
 
-Three channels between kernel and plugins: stdio JSON-RPC for control, shared memory for
-bulk data, an event ring for notifications. Large objects aren't serialized and copied twice.
+Three channels between kernel and plugins: JSON-RPC over stdio for control, shared memory
+for bulk data, an event ring for notifications. Large objects aren't serialized, so there's
+nothing to copy twice.
 
-Incoming messages hit a **scheduler** first, not the model. Queued work and interruptions
-are separate classes; interruptions come in four levels ("how badly can this wait"), and a
-higher level preempts a lower one while saving its state. Same level waits its turn.
+Incoming messages hit a scheduler first, not the model. This exists for the case where work is
+already in flight and a new instruction arrives: queued work and interruptions are separate
+classes, interruptions carry four urgency levels, a higher level preempts a lower one and the
+preempted work saves its state to resume later. Same level waits.
 
-Then seven pipeline stages, and the model can call tools in a loop. Multiple tool calls in
-one turn are **serial by default**; to run them in parallel a tool must declare itself safe.
-One undeclared tool in a batch drops the whole batch back to serial.
+Below that sits a seven-stage pipeline where the model can call tools in a loop. Multiple tool
+calls in one turn are serial by default unless a tool declares itself concurrency-safe. One
+undeclared tool in a batch drops the whole batch back to serial.
 
 ## Quick Start
 
