@@ -372,13 +372,12 @@ retention 修好之后这些会被逐步清掉，但不会立刻（要等跨月�
 |---|---|---|
 | **弃答：泛指词检测未实现** | `abstention-criterion.md` §未完成 | 🟡 拒答主路径已接（`RecallBlocksGuarded`），泛指词这一支没做 |
 | **弃答：n=10 判据样本偏小** | 同上 | ⚪ 方向确定（确定性事实+完全分离），样本可扩 |
-| **遗留表退役：生产仍在用旧三表** | `entities-retirement-plan.md`、`legacy-table-retirement.md` | 🔴 迁移工具已就绪，生产未切换（entities 1292 / relations 978 / sentences 66 行仍在） |
-| **场景：现网垃圾场景清理 + 收口验证** | `scene-memory-fix-plan.md` 步骤 4 / 7 | ⚪ 属现场操作，代码侧 5/7 步已完成 |
+| **遗留表退役：生产仍在用旧三表** | `legacy-table-retirement.md` | 🔴 迁移工具已就绪（`internal/memory/migrate_entities.go`），生产未切换。2026-10-31 实测：entities 1292 / relations 978 / sentences 66 行仍在。方案原文已随计划文档删除，剩余读方清单见 `legacy-table-retirement.md` §八/§十二 |
+| **场景：现网垃圾场景清理 + 收口验证** | `future-plan.md`（原计划已删） | ⚪ 代码侧 7 步里 5 步已完成（归一化/ScenePolicy/R3/R5/R4 覆盖面）；剩「清现网垃圾场景」与「收口验证」属现场操作 |
 | **中断子系统独立化** | `interrupt-subsystem-split-plan.md` | ⚪ 计划未实施；当前中断实现仍在 `agent/core`（`interrupt.go` + `scheduler.go`） |
 | 测试模板库（压力/接口/编译预置模板） | `commondev-design.md` §4「尚未做」 | ⚪ 机制已落地，模板按需补 |
 | 记忆召回「形态 3 / 形态 4」两个缺口 | `recall-capability-tiers.md` §「待补的能力」 | 🟡 需新实验，方向已列 |
 | 判据口径与契约对齐 | `abstention-criterion.md` §「待办」 | 🟡 |
-| 工具并行化的遗留项 | `toolcall-parallel-execution-plan.md` §「遗留项状态」 | ⚪ |
 | 生产召回验证的 3 条遗留 sentence→块 边 | `production-recall-validation.md` | ⚪ 非迁移产生 |
 | 遗留问题清单 | `legacy-issues.md` §二「真正待办」 | ⚪ 长期清单 |
 

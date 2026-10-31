@@ -356,7 +356,7 @@ journalctl -u homeagent.service --since "-10 min" | grep -E "finish_reason=lengt
 先看**是不是内核的兜底在工作**。例：`重复申请 stage 锁` 是 SDK 模板在每个
 stage handler 入口自动加锁 + 锁不可重入所致，**插件侧问题**；内核的强制释放
 是有意设计（避免后续插件死锁），不要当内核缺陷去修。详见
-[`toolcall-parallel-execution-plan.md`](./toolcall-parallel-execution-plan.md) 末节。
+[`toolcall-contract-and-sequence-design.md`](./toolcall-contract-and-sequence-design.md)
 
 ---
 
