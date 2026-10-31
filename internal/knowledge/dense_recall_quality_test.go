@@ -162,18 +162,13 @@ func TestDensePathFeedsRanking(t *testing.T) {
 	// 这个反模式实测踩过：把结果赋给 _ 再走别的路径，排序完全落到另一路上，
 	// 而表面上「稠密路接了」看起来是好的。
 	//
-	// 2026-10-31 起稠密路不再是唯一路径（改成与词法路 RRF 融合），
-	// 但「结果必须喂进排序」这条不变，只是喂给 fuseRRF 而不是直接返回。
-	if !regexp.MustCompile(`(\w+)\s*:=\s*s\.denseHits\(qv\)`).MatchString(body) {
-		t.Fatal("稠密路的结果必须被接住（x := s.denseHits(qv)）")
+	// 2026-10-31 起的合并策略是 fuseLexPrimary（词法为主，稠密做同分裁决与补位），
+	// 但「稠密结果必须喂进排序」这条不变。
+	if !regexp.MustCompile(`dense\s*:=\s*s\.denseHits\(qv\)`).MatchString(body) {
+		t.Fatal("必须写成 dense := s.denseHits(qv)（稠密路结果要被接住）")
 	}
-	if !regexp.MustCompile(`fuseRRF\(\s*(\w+)`).MatchString(body) {
-		t.Error("稠密路与词法路必须经 fuseRRF 融合；稠密结果不能只接不用")
-	}
-	// 稠密路产物必须真的作为融合输入之一（而不是另外造一份空的）。
-	if !regexp.MustCompile(`dense\s*:=\s*s\.denseHits\(qv\)`).MatchString(body) ||
-		!regexp.MustCompile(`fuseRRF\(\s*dense\s*,`).MatchString(body) {
-		t.Error("必须写成 dense := s.denseHits(qv) 然后 fuseRRF(dense, ...)")
+	if !regexp.MustCompile(`fuseLexPrimary\(\s*lex\s*,\s*dense\s*\)`).MatchString(body) {
+		t.Error("两路必须经 fuseLexPrimary(lex, dense) 合并；稠密结果不能只接不用")
 	}
 	if !regexp.MustCompile(`if k, ok := s\.items\[h\.id\]`).MatchString(body) {
 		t.Error("融合结果必须参与条目组装（s.items[h.id]），不能是摆设")
@@ -229,11 +224,10 @@ func TestIdentifierTokenFeedsLex(t *testing.T) {
 	}
 }
 
-// TestSearchDocReflectsRRF 防止文档与实现漂移。
+// TestSearchDocReflectsFusion 防止文档与实现漂移。
 //
-// 2026-10-31 起语义变为「稠密 + 词法 RRF 融合」，本判据随之更新：
-// 文档必须声明 RRF，且不得再声称「稠密路是唯一召回路径」。
-func TestSearchDocReflectsRRF(t *testing.T) {
+// 2026-10-31 起语义变为「词法为主、稠密为辅」，本判据随之更新。
+func TestSearchDocReflectsFusion(t *testing.T) {
 	src := readSourceFile(t, "knowledge.go")
 	i := strings.Index(src, "// Search ")
 	if i < 0 {
@@ -241,9 +235,12 @@ func TestSearchDocReflectsRRF(t *testing.T) {
 	}
 	doc := src[i:min(len(src), i+2500)]
 
-	// ① 必须声明 RRF 融合（这是现行接口语义）。
-	if !strings.Contains(doc, "RRF") {
-		t.Error("Search 文档必须写明「稠密路 + 词法路按 RRF 融合」")
+	// ① 必须声明当前的合并策略（这是接口语义）。
+	if !strings.Contains(doc, "fuseLexPrimary") {
+		t.Error("Search 文档必须写明合并入口 fuseLexPrimary（词法为主、稠密为辅）")
+	}
+	if !strings.Contains(doc, "词法路为主") {
+		t.Error("Search 文档必须写明「词法路为主」——否则读代码的人会以为稠密路是主线")
 	}
 	// ①' 不得再声称稠密路是唯一路径（已与实现不符）。
 	if strings.Contains(doc, "稠密向量路是**唯一召回路径**") {
