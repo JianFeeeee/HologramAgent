@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HologramAgent — 常驻型个人 Agent 框架</title>
-    <meta name="description" content="HologramAgent 是一个持续运行的个人智能 Agent 框架：内核零 IO（所有 IO 由插件承载）、三层记忆（Context → Document → Graph）、输入调度（两类别 + 四级中断）与驻留式子 agent。" />
+    <meta name="description" content="HologramAgent 是一个持续运行的个人智能 Agent 框架：内核零 IO（所有 IO 由插件承载）、三层记忆（Context → Cold Context → Graph）、输入调度（两类别 + 四级中断）与驻留式子 agent。" />
     <link rel="icon" type="image/svg+xml" href="assets/logo.svg" />
     <meta property="og:title" content="HologramAgent — 常驻型个人 Agent 框架" />
     <meta property="og:description" content="内核零 IO · 三层记忆 · 四级中断调度 · 驻留式子 agent" />
@@ -29,7 +29,7 @@
          默认跟随系统，可用导航栏按钮手动切换（存 localStorage）。 */
       :root {
         --brand-blue: #3b82f6;   /* Context 层 */
-        --brand-cyan: #06b6d4;   /* Document 层 */
+        --brand-cyan: #06b6d4;   /* 冷上下文层 */
         --brand-gold: #f59e0b;   /* Graph / Kernel */
         --brand-violet: #8b5cf6;
         --brand-sky: #38bdf8;
@@ -2558,7 +2558,7 @@
                 <p>
                 内存中的事件窗口。按与当前输入的相关性打分：优先比统一空间的稠密向量余弦，
                 未配置时退到稀疏词向量（TF-IDF / fastText）。最近 10 条受保护，
-                低分事件归档进 Document 层。
+                低分事件归档进冷上下文层。
               </p>
             </div>
             </div>
@@ -2566,10 +2566,10 @@
             <div class="layer l-doc reveal">
               <div class="bar"></div>
               <div class="body">
-                <h3><span class="mark">②</span> Document<span class="en">文件记忆</span></h3>
+                <h3><span class="mark">②</span> Cold Context<span class="en">冷上下文</span></h3>
                 <p>
-                                    JSON + TF-IDF 索引的中间层。支持显式提交与隐式归档，
-                  冷数据下沉后蒸馏成三元组进入图谱。
+                                    与 L1 结构同构的冷层：同样的事件、同样的块，只是不直接进模型视野。
+                  稠密向量与 TF-IDF 双路检索，取回走「先确认再删」两阶段。
                 </p>
               </div>
             </div>
@@ -2723,7 +2723,7 @@
             <div class="n n-mem">
               <span class="n-ico">◈</span>
               <span class="n-t">三层记忆</span>
-              <span class="n-s">Context → Document → Graph</span>
+              <span class="n-s">Context → Cold Context → Graph</span>
             </div>
             <div class="lnk" style="--d:1.65s" aria-hidden="true"></div>
 
