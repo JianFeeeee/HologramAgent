@@ -2028,7 +2028,7 @@
       <!-- ── 特性总起 ── -->
       <section id="features">
         <div class="wrap">
-          <h2 class="reveal rise">真正的 AgentOS，长这样</h2>
+          <h2 class="reveal rise">HologramAgent 是什么</h2>
           <p class="sub reveal rise" style="--d:90ms">
             隔离、调度、通信、资源。操作系统躲不开的四道题，
             这里逐题给答案 —— 且每题都有能测的数字。
@@ -2037,31 +2037,31 @@
           <div class="duties reveal rise" style="--d:180ms">
             <article class="duty rise-zoom">
               <span class="duty-k">隔离</span>
-              <h3>崩一个，不赔上全部</h3>
+              <h3>插件崩溃不影响内核</h3>
               <p>插件不在内核里，是另一个进程。崩了就把它注册的东西一并摘掉，其余照跑。重启退避 1s / 2s / 3s，5 分钟内第 4 次崩溃则停下等人。</p>
             </article>
 
             <article class="duty rise-zoom">
               <span class="duty-k">调度</span>
-              <h3>拦得住，也接得回</h3>
+              <h3>中断可以抢占，也能恢复现场</h3>
               <p>输入分能等与不能等。不能等的可抢占，被打断的现场压栈，稍后<strong>原样恢复</strong>。L4 内核独占，外部插件声明 L4 会被夹到 L3。</p>
             </article>
 
             <article class="duty rise-zoom">
               <span class="duty-k">通信</span>
-              <h3>三条道，各走各的</h3>
-              <p>控制走 stdio，数据走共享内存，通知走事件环。变长内容只传偏移，两边映射到不同地址也能读。实测整段写入 + 读回 3.5µs。</p>
+              <h3>三条通信通道各管一类数据</h3>
+              <p>控制走 stdio 上的 JSON-RPC，数据走共享内存，通知走事件环。三类流量互不阻塞：大块数据不会把控制信令堵在管道里。控制面往返实测 3.5µs。</p>
             </article>
 
             <article class="duty rise-zoom">
               <span class="duty-k">资源</span>
-              <h3>记忆不会越用越肿</h3>
+              <h3>记忆会下沉，不会无限堆积</h3>
               <p>上下文按相关性取舍，最近 10 条恒受保护。低分下沉成文档，冷文档再蒸馏成三元组。有效工作区间上限 60 万 token。</p>
             </article>
 
             <article class="duty rise-zoom">
               <span class="duty-k">并行</span>
-              <h3>同轮的工具，一起跑</h3>
+              <h3>同轮工具默认串行，声明后才并发</h3>
               <p>一轮里的多个 tool_call 默认并发，但<strong>安全性前置</strong>：工具必须在自己的定义里声明并发安全，未声明的一律串行。批内只要有一个不安全，<strong>整批降级</strong>——不做收益不抵风险的「部分并发」。同通道输出仍严格保序。</p>
             </article>
           </div>
@@ -2075,7 +2075,7 @@
           <div class="alt reveal rise">
             <div class="alt-copy">
               <span class="alt-n">01</span>
-              <h3>内核零 IO，只碰调度</h3>
+              <h3>内核不碰 IO</h3>
               <p>
                 内核不读文件、不发网络、不碰硬件。它只做三件事：
                 <strong>编排、记忆、调度</strong>。外面的一切 —— 消息、文件、网络、设备 ——
@@ -2221,7 +2221,7 @@
           <div class="alt flip reveal rise">
             <div class="alt-copy">
               <span class="alt-n">02</span>
-              <h3>部署，从未如此便捷</h3>
+              <h3>部署是拷一个文件</h3>
               <p>
                 插件是<strong>静态编译的单个文件</strong>：目标机上没有 Go、没有 libc、
                 没有容器、没有运行时，拷过去就能跑。
@@ -2264,7 +2264,7 @@
           <div class="alt reveal rise">
             <div class="alt-copy">
               <span class="alt-n">03</span>
-              <h3>数据如水，随流，随改，随走</h3>
+              <h3>大块数据走共享内存，不序列化</h3>
               <p>
                 控制信令走 stdio，<strong>真正的数据走一块共享内存</strong>。
                 变长内容只传一个相对偏移，两边 mmap 到不同地址也能各自解引用。
@@ -2354,7 +2354,7 @@
           <div class="alt flip reveal rise">
             <div class="alt-copy">
               <span class="alt-n">04</span>
-              <h3>轻重缓急，各归其位</h3>
+              <h3>输入分两类，中断分四级</h3>
               <p>
                 输入走两条路。<strong>排队</strong>的没有级别 —— 什么都能插它前面；
                 <strong>中断</strong>的带级别 L1–L4，级别高的可以抢占级别低的。
@@ -2456,7 +2456,7 @@
           <div class="alt flip reveal rise">
             <div class="alt-copy">
               <span class="alt-n">05</span>
-              <h3>忙时，有人替你接住</h3>
+              <h3>积压的消息由驻留子 agent 接手</h3>
               <p>
                 主 agent 被长任务占住、积压又够多时，内核把这些消息转给一个<strong>驻留子 agent</strong>。能当场办的就办了；
                 非等主 agent 不可的，立刻回一句「忙碌中，请稍候」。
@@ -2544,7 +2544,7 @@
       <!-- ── 三层记忆 ── -->
       <section id="memory">
         <div class="wrap">
-          <h2 class="reveal rise">三层记忆：从「刚才说了什么」到「三年前说过什么」</h2>
+          <h2 class="reveal rise">三层记忆：上下文、文档、图数据库</h2>
           <p class="sub reveal rise" style="--d:90ms">
                         不是一个大向量库包打天下，而是三层各司其职、逐层下沉。
             蓝 / 青 / 金三色对应的就是这三层。
@@ -2588,14 +2588,14 @@
 
           <div class="grid-3" style="margin-top: 1.2rem">
             <div class="card reveal rise" style="--d:360ms">
-              <h3>媒体也是一等节点</h3>
+              <h3>媒体是记忆节点，不是附件</h3>
               <p>
                                 图片、音频不是附件，而是三层里的一类节点：内容寻址（相同字节只存一份）。
                 媒体不单独记引用账本 —— 删掉持有它的记忆块才删内容，与文本块同一套规则。
               </p>
             </div>
             <div class="card reveal rise" style="--d:450ms">
-              <h3>图片靠自己的向量被检索</h3>
+              <h3>图片按自己的向量检索</h3>
               <p>
                 图像是真正的记忆块，不是「描述文本 + 可淘汰的 blob」。
                 旧实现靠视觉模型生成的描述当索引，现已弃用 ——
@@ -2603,7 +2603,7 @@
               </p>
             </div>
             <div class="card reveal rise" style="--d:540ms">
-              <h3>统一多模态空间</h3>
+              <h3>文本和图片在同一向量空间</h3>
               <p>
                                 文本与图像落在同一向量空间（默认 Chinese-CLIP）：
                 可以用一句话搜图，也可以用图找记忆。
@@ -2612,7 +2612,7 @@
           </div>
 
           <div class="wrap" style="margin-top: 2.2rem">
-            <h3 class="reveal rise" style="margin-bottom: .2rem">场面涌现：同一场合，记忆自己回来</h3>
+            <h3 class="reveal rise" style="margin-bottom: .2rem">场面识别：同类输入重复出现才成为场面</h3>
             <p class="reveal rise" style="--d:80ms; opacity:.78; max-width: 62ch">
                           三层记忆按<strong>字面相关性</strong>召回——你得说出相近的词才想得起来。
               场面记忆补上另一半：<strong>按场合召回</strong>。同一个场合再次出现，
@@ -2620,14 +2620,14 @@
             </p>
             <div class="grid-3" style="margin-top: 1.1rem">
               <div class="card reveal rise" style="--d:160ms">
-                <h3>没人声明，自己长出来</h3>
+                <h3>场面可以自行涌现</h3>
                 <p>
                               每轮交互只采集可观察的信号：在哪个通道、跟谁、在用什么工具、聊什么词、什么时段。
                   这组指纹反复重合时，一场「场面」就自己成形了——不需要人工标注。
                 </p>
               </div>
               <div class="card reveal rise" style="--d:250ms">
-                <h3>只发生一次的不算场面</h3>
+                <h3>重复两次才算一个场面</h3>
                 <p>
                               同类场面<strong>出现第二次</strong>才被认定会重复。
                   一次性的交互不建场面，否则图库里会堆满只发生过一次的事，
@@ -2635,7 +2635,7 @@
                 </p>
               </div>
               <div class="card reveal rise" style="--d:340ms">
-                <h3>参与与否，由插件声明</h3>
+                <h3>插件声明自己是否参与场面识别</h3>
                 <p>
                               通道可用 <code>ScenePolicy</code> 声明是否参与场面识别（默认参与）。
                   纯内部信号（内核自循环、心跳）可以显式退出，不在记忆里留下脚印。
@@ -2649,7 +2649,7 @@
       <!-- ── 架构 ── -->
       <section id="architecture">
         <div class="wrap">
-          <h2 class="reveal rise">一条消息进来之后</h2>
+          <h2 class="reveal rise">一条消息进来之后发生什么</h2>
           <p class="sub reveal rise" style="--d:90ms">
                         输入先过调度器，再进处理管道。全程 7 个阶段钩子。
           </p>
@@ -2753,9 +2753,9 @@
           </div>
 
           <div class="stats reveal" style="margin-top: 2rem">
-                        <div class="stat"><div class="n">36</div><div class="l">在跑插件</div></div>
-            <div class="stat"><div class="n">340</div><div class="l">可用工具</div></div>
-            <div class="stat"><div class="n">109k</div><div class="l">Go 代码行</div></div>
+                        <div class="stat"><div class="n">30</div><div class="l">在跑插件</div></div>
+            <div class="stat"><div class="n">285</div><div class="l">可用工具</div></div>
+            <div class="stat"><div class="n">240k</div><div class="l">Go 代码行</div></div>
             <div class="stat"><div class="n">9</div><div class="l">LLM 适配器</div></div>
           </div>
         </div>
@@ -2764,7 +2764,7 @@
       <!-- ── 上手 ── -->
       <section id="quickstart">
         <div class="wrap">
-          <h2 class="reveal rise">跑起来</h2>
+          <h2 class="reveal rise">运行</h2>
           <p class="sub reveal rise" style="--d:90ms">
             依赖 Go 1.25+ 与 CGo（sqlite3）。内核需 Linux；Windows 上
             <span class="mono">homed</span> 跑在 WSL2 里，仅需构建 <span class="mono">waiter.exe</span>。
@@ -2790,7 +2790,7 @@ echo <span class="s">"你好，记住我喜欢喝咖啡"</span> | ./build/waiter
       <!-- ── 插件墙 ── -->
       <section id="plugins">
         <div class="wrap">
-          <h2 class="reveal">开箱可用的插件</h2>
+          <h2 class="reveal">可用插件</h2>
                     <p class="sub reveal rise" style="--d:90ms">外部插件经 <span class="mono">hmapdev</span> 构建为独立二进制，可单独装卸、热重载。<strong>点任意插件看它能做什么。</strong></p>
           <div class="badges reveal">
             <button class="badge" type="button" data-plugin="a2a" style="--i:0">a2a</button>
@@ -2823,37 +2823,37 @@ echo <span class="s">"你好，记住我喜欢喝咖啡"</span> | ./build/waiter
           <div class="pcard" id="p-a2a">
             <div class="pcard-head"><code>a2a</code><span class="ver">v1.3.1</span></div>
             <p>Agent 间通信。对外起 HTTP 服务暴露 /agent-card 与 /a2a（JSON-RPC）供他人发现与调用；对内提供工具去问别的 Agent。把监听地址设为空即只出站、不开端口。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/a2a" target="_blank" rel="noopener noreferrer" title="SDK example/a2a"><span class="psrc-r">SDK</span><span class="psrc-p">example/a2a</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/a2a" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/a2a"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/a2a</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-acp">
             <div class="pcard-head"><code>acp</code><span class="ver">v1.2.1</span></div>
             <p>Agent Client Protocol 通信插件：充当 ACP 服务端接受其他 Agent 的任务请求，同时提供客户端工具向远程 ACP Agent（如 opencode）发起会话并读取回复</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/acp" target="_blank" rel="noopener noreferrer" title="SDK example/acp"><span class="psrc-r">SDK</span><span class="psrc-p">example/acp</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/acp" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/acp"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/acp</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-bili">
             <div class="pcard-head"><code>bili</code><span class="ver">v1.2.0</span></div>
             <p>B站视频下载。需系统装 yt-dlp。不指定格式时先返回可用清晰度列表，选定后再下载；输出目录有路径校验，拒绝写成系统目录。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/bili" target="_blank" rel="noopener noreferrer" title="SDK example/bili"><span class="psrc-r">SDK</span><span class="psrc-p">example/bili</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/bili" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/bili"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/bili</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-browser">
             <div class="pcard-head"><code>browser</code><span class="ver">v2.4.1</span></div>
             <p>统一浏览器插件：搜索、HTTP抓取(quick)、无头渲染(normal)、交互式浏览器(interactive/CDP)</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/browser" target="_blank" rel="noopener noreferrer" title="SDK example/browser"><span class="psrc-r">SDK</span><span class="psrc-p">example/browser</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/browser" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/browser"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/browser</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-calendar">
             <div class="pcard-head"><code>calendar</code><span class="ver">v1.1.0</span></div>
             <p>日历事件管理，支持提醒和重复事件</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/calendar" target="_blank" rel="noopener noreferrer" title="SDK example/calendar"><span class="psrc-r">SDK</span><span class="psrc-p">example/calendar</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/calendar" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/calendar"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/calendar</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-deepsearch">
             <div class="pcard-head"><code>deepsearch</code><span class="ver">v1.1.2</span></div>
             <p>为 agent 提供真正的联网信息检索：本地 SearXNG 聚合多引擎（返回标题/URL/摘要/时间），支持新闻、时间范围、指定引擎；并提供网页正文抽取与「搜索+读前K篇」的深检索</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/deepsearch" target="_blank" rel="noopener noreferrer" title="SDK example/deepsearch"><span class="psrc-r">SDK</span><span class="psrc-p">example/deepsearch</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/deepsearch" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/deepsearch"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/deepsearch</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-editdoc">
             <div class="pcard-head"><code>editdoc</code><span class="ver">v2.0.0</span></div>
             <p>全能办公插件：新建/读取/编辑/转换 docx·xlsx·pptx·md·csv·txt（基于 python-docx / openpyxl / python-pptx / soffice / pandoc）</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/editdoc" target="_blank" rel="noopener noreferrer" title="SDK example/editdoc"><span class="psrc-r">SDK</span><span class="psrc-p">example/editdoc</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/editdoc" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/editdoc"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/editdoc</span><span class="psrc-out">↗</span></a>
             <p class="psrc-note">公开仓中的 example 仍是 v1.0.0；v2.0.0 全能版源码尚未公开。</p>
           </div>
           <div class="pcard" id="p-homeagent-mail-bridge">
@@ -2869,72 +2869,72 @@ echo <span class="s">"你好，记住我喜欢喝咖啡"</span> | ./build/waiter
           <div class="pcard" id="p-memo">
             <div class="pcard-head"><code>memo</code><span class="ver">v1.1.0</span></div>
             <p>待办与备忘录刻意分两类：待办每 5 分钟检查未完成数、有则注入提醒；备忘录纯记事不提醒。混成一类要么天天弹、要么被忘掉。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/memo" target="_blank" rel="noopener noreferrer" title="SDK example/memo"><span class="psrc-r">SDK</span><span class="psrc-p">example/memo</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/memo" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/memo"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/memo</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-music">
             <div class="pcard-head"><code>music</code><span class="ver">v0.1.0</span></div>
             <p>搜歌与查歌词（网易云公开接口）。只读：不下载音频、不落文件。两段式用法 —— 先搜到歌曲 ID，再按 ID 取词。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/music" target="_blank" rel="noopener noreferrer" title="SDK example/music"><span class="psrc-r">SDK</span><span class="psrc-p">example/music</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/music" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/music"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/music</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-ocr">
             <div class="pcard-head"><code>ocr</code><span class="ver">v1.0.0</span></div>
             <p>图片文字识别。需系统装 tesseract（中文另需 chi_sim 语言包）。支持 URL 或 base64 输入，临时文件识别后自动清理。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/ocr" target="_blank" rel="noopener noreferrer" title="SDK example/ocr"><span class="psrc-r">SDK</span><span class="psrc-p">example/ocr</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/ocr" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/ocr"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/ocr</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-plugindev">
             <div class="pcard-head"><code>plugindev</code><span class="ver">v1.0.0</span></div>
             <p>把 hmapdev 工具链封装成 Agent 可调用的工具：脚手架生成插件工程、构建打包 .hmap、管理 SDK 版本。配合 plugin_install 即可让 Agent 自己做完「新建插件 → 构建 → 安装」全流程。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/plugindev" target="_blank" rel="noopener noreferrer" title="SDK example/plugindev"><span class="psrc-r">SDK</span><span class="psrc-p">example/plugindev</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/plugindev" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/plugindev"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/plugindev</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-qq">
             <div class="pcard-head"><code>qq</code><span class="ver">v1.4.1</span></div>
             <p>经 NapCat 桥接 QQ：20 个工具覆盖消息、群/好友、文件传输。带权限模型 —— 身份绑在「帧」上而非插件全局（中断抢占恢复后不会丢身份），多来源合并取权限交集，敏感工具按前缀一律拒绝非所有者。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/qq" target="_blank" rel="noopener noreferrer" title="SDK example/qq"><span class="psrc-r">SDK</span><span class="psrc-p">example/qq</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/qq" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/qq"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/qq</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-recoverydiag">
             <div class="pcard-head"><code>recoverydiag</code><span class="ver">v0.2.0</span></div>
             <p>快速检查/崩溃取证工具集：diag_triage（退出码/信号/存活粗分）、diag_db（config.db 完整性 + LLM 源解析校验）、diag_log_scan（日志签名命中）、diag_delta（last-good 快照 vs 现状 diff）、diag_loc（正交综合定位）。全部返回结论而非原文，确定性、不消耗 LLM token，供 guard / failback 恢复决策使用。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/recoverydiag" target="_blank" rel="noopener noreferrer" title="SDK example/recoverydiag"><span class="psrc-r">SDK</span><span class="psrc-p">example/recoverydiag</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/recoverydiag" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/recoverydiag"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/recoverydiag</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-rss">
             <div class="pcard-head"><code>rss</code><span class="ver">v1.1.0</span></div>
             <p>RSS/Atom 订阅监控。按间隔轮询，发现新条目即以中断注入告知 agent；订阅时记下历史条目，所以订一个源不会把旧文章全推一遍。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/rss" target="_blank" rel="noopener noreferrer" title="SDK example/rss"><span class="psrc-r">SDK</span><span class="psrc-p">example/rss</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/rss" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/rss"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/rss</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-sanitizer">
             <div class="pcard-head"><code>sanitizer</code><span class="ver">v0.1.0</span></div>
             <p>在三个阶段清洗文本：坏 UTF-8 / U+FFFD / ANSI 转义（会被模型复读）与 LLM 输出里的工具调用残留。不注册工具，只挂钩子。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/sanitizer" target="_blank" rel="noopener noreferrer" title="SDK example/sanitizer"><span class="psrc-r">SDK</span><span class="psrc-p">example/sanitizer</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/sanitizer" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/sanitizer"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/sanitizer</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-vanblog">
             <div class="pcard-head"><code>vanblog</code><span class="ver">v1.0.0</span></div>
             <p>管理 VanBlog 开源博客系统：文章的增删改查、分类标签管理、草稿发布、备份导出等</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/vanblog" target="_blank" rel="noopener noreferrer" title="SDK example/vanblog"><span class="psrc-r">SDK</span><span class="psrc-p">example/vanblog</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/vanblog" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/vanblog"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/vanblog</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-vikunja">
             <div class="pcard-head"><code>vikunja</code><span class="ver">v1.0.1</span></div>
             <p>Vikunja 待办/任务管理：任务增删改查、项目与看板桶、标签、指派、评论、关联、附件、保存筛选器、团队与分享、通知、订阅、Webhook、时间跟踪、数据导入、实例管理；并附通用 API 直通工具兜底</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/vikunja" target="_blank" rel="noopener noreferrer" title="SDK example/vikunja"><span class="psrc-r">SDK</span><span class="psrc-p">example/vikunja</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/vikunja" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/vikunja"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/vikunja</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-weather">
             <div class="pcard-head"><code>weather</code><span class="ver">v1.0.0</span></div>
             <p>查实时天气与预报（wttr.in，无需 API Key）。可设默认城市；结果标记为不进记忆计算 —— 天气是易变数据，反复写进记忆只会挤占预算。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/weather" target="_blank" rel="noopener noreferrer" title="SDK example/weather"><span class="psrc-r">SDK</span><span class="psrc-p">example/weather</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/weather" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/weather"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/weather</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-ai_image">
             <div class="pcard-head"><code>ai_image</code><span class="ver">v1.3.0</span></div>
             <p>文生图：按文字提示生成图片，下载到本地并返回<strong>文件路径</strong>（可直接被多模态链路读取）。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/ai_image" target="_blank" rel="noopener noreferrer" title="SDK example/ai_image"><span class="psrc-r">SDK</span><span class="psrc-p">example/ai_image</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/ai_image" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/ai_image"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/ai_image</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-files">
             <div class="pcard-head"><code>files</code><span class="ver">v1.0.0</span></div>
             <p>沙箱文件操作：读写与编辑文件，<strong>全部操作限制在沙箱目录内</strong>（读取/写入/编辑/列目录）。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/files" target="_blank" rel="noopener noreferrer" title="SDK example/files"><span class="psrc-r">SDK</span><span class="psrc-p">example/files</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/files" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/files"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/files</span><span class="psrc-out">↗</span></a>
           </div>
           <div class="pcard" id="p-luademo">
             <div class="pcard-head"><code>luademo</code><span class="ver">v0.1.0</span></div>
             <p>Lua 插件全功能示例：工具（no_memory / cleaner）、阶段钩子、通道、数据类 API —— 想用 Lua 写插件，从这个例子抄起。</p>
-            <a class="psrc" href="https://github.com/JianFeeeee/hologramagentsdk/blob/main/example/luademo" target="_blank" rel="noopener noreferrer" title="SDK example/luademo"><span class="psrc-r">SDK</span><span class="psrc-p">example/luademo</span><span class="psrc-out">↗</span></a>
+            <a class="psrc" href="https://github.com/HologramAgent/luademo" target="_blank" rel="noopener noreferrer" title="github.com/HologramAgent/luademo"><span class="psrc-r">GitHub</span><span class="psrc-p">HologramAgent/luademo</span><span class="psrc-out">↗</span></a>
           </div>
           </div>
         </div>
@@ -3021,7 +3021,7 @@ echo <span class="s">"你好，记住我喜欢喝咖啡"</span> | ./build/waiter
             <ul>
               <li><a href="https://github.com/JianFeeeee/HologramAgent/blob/main/docs/zh/input-scheduler-design.md">输入调度器设计</a></li>
               <li><a href="https://github.com/JianFeeeee/HologramAgent/blob/main/docs/zh/resident-subagent-design.md">驻留式子 Agent</a></li>
-              <li><a href="https://github.com/JianFeeeee/HologramAgent/blob/main/docs/zh/multimodal-space.md">统一多模态空间</a></li>
+              <li><a href="https://github.com/JianFeeeee/HologramAgent/blob/main/docs/zh/multimodal-space.md">文本和图片在同一向量空间</a></li>
             </ul>
           </div>
           <div>
@@ -3064,7 +3064,7 @@ echo <span class="s">"你好，记住我喜欢喝咖啡"</span> | ./build/waiter
     <script>
       /* ═══════════════════════════════════════════════════════════
          动效引擎。设计原则（吃过一次亏，见 git 历史）：
-           · **内容默认可读** —— 不用 JS 也完整；只有本脚本真的跑起来
+           · **内容默认可读** —— 不用 JS 也完整；只有本脚本真的运行
              才给 <html> 加 .js-fx 接管初始隐藏，因此 JS 报错/被禁用
              时页面不会变成一片空白（早期版本把 opacity:0 写在默认
              样式里，结果 30 个元素里 26 个永久不可见）。
