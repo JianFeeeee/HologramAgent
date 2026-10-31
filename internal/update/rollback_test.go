@@ -98,15 +98,29 @@ func TestRollback_RestoresBackup(t *testing.T) {
 	bin := filepath.Join(dir, "homed")
 
 	// 备份目录里放"旧版"
+	//
+	// ★ 必须是**真正可执行**的假二进制（版本 1.4.0 = 下面标记里的 FromVer）。
+	// 以前这里放的是纯字节 "OLD-GOOD"，只能测"字节搬对了"，测不到
+	// "搬过去的东西能跑" —— 而后者才是回滚能救机器的前提。B1 加了
+	// 回读校验后，非可执行备份必须被判失败（见 TestRollback_RefusesCorruptBackup）。
 	backupDir := filepath.Join(dir, "backup")
 	os.MkdirAll(backupDir, 0755)
-	oldBin := filepath.Join(backupDir, "homed")
-	os.WriteFile(oldBin, []byte("OLD-GOOD"), 0755)
-	os.WriteFile(filepath.Join(backupDir, "depgraph.bin"), []byte("OLD-DG"), 0644)
+	oldBin := writeVersionScript(t, backupDir, "homed", "1.4.0", "old")
+	if err := os.WriteFile(filepath.Join(backupDir, "depgraph.bin"), []byte("OLD-DG"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
-	// 当前是"升级后的坏版本"
-	os.WriteFile(bin, []byte("NEW-BROKEN"), 0755)
-	os.WriteFile(filepath.Join(dir, "depgraph.bin"), []byte("NEW-DG"), 0644)
+	// 当前是"升级后坏掉的版本"：半写坏的、根本跑不起来的字节。
+	//
+	// ★ 必须让它**读不出版本**（而不是报 ToVer）：按两段式确认的语义，
+	// 当前版本 == 标记的 ToVer 意味着"新版已跑起来" ⇒ 确认、不回滚。
+	// 真实需要回滚的场景恰恰是"新二进制装上去但没跑起来"（exec 失败/半写）。
+	if err := os.WriteFile(bin, []byte("NEW-BROKEN"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "depgraph.bin"), []byte("NEW-DG"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	MarkPendingUpgrade(dir, PendingRecord{
 		FromVer: "1.4.0", FromCommit: "old",
@@ -125,11 +139,13 @@ func TestRollback_RestoresBackup(t *testing.T) {
 		t.Errorf("版本轨迹应记录 from/to，实际 %s → %s", from, to)
 	}
 
-	// ① 二进制回到旧版
-	b, _ := os.ReadFile(bin)
-	if string(b) != "OLD-GOOD" {
-		t.Errorf("二进制应回滚到旧版，实际 %q", b)
+	// ① 二进制回到旧版（按**版本**断言，而不是按字节）
+	if v, verr := ReadBinVersion(bin); verr != nil {
+		t.Errorf("回滚后的二进制应可执行: %v", verr)
+	} else if v.Version != "1.4.0" {
+		t.Errorf("二进制应回滚到 1.4.0，实际 %s", v.Version)
 	}
+	_ = oldBin
 	// ② depgraph 同批回滚（必须与 homed 一致）
 	dg, _ := os.ReadFile(filepath.Join(dir, "depgraph.bin"))
 	if string(dg) != "OLD-DG" {
@@ -293,7 +309,8 @@ func TestRollback_RollsBackWhenRunningOldVersion(t *testing.T) {
 
 	backupDir := filepath.Join(dir, "backup")
 	os.MkdirAll(backupDir, 0755)
-	os.WriteFile(filepath.Join(backupDir, "homed"), []byte("OLD-GOOD"), 0755)
+	// 可执行的 1.4.0（= FromVer）：回读校验要能通过
+	writeVersionScript(t, backupDir, "homed", "1.4.0", "oldcommit")
 
 	MarkPendingUpgrade(dir, PendingRecord{
 		FromVer: "1.4.0", FromCommit: "oldcommit",
