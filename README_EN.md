@@ -4,67 +4,29 @@
 
 > **中文**: [README.md](./README.md)
 
-Self-hosted agent kernel. Connects to QQ, a web UI, your shell, files, and a browser. Runs for months without a restart and keeps what it learned.
+Self-hosted agent kernel. [Docs](assets/docs/en/ARCHITECTURE.md) · [中文](README.md)
+
+**Startup order is computed at build time, not guessed at runtime.** Twenty kernel modules each declare `Requires`/`Provides`. The build resolves a 6-layer dependency graph into `depgraph.bin` and injects the graph digest into the binary via `-ldflags`. At runtime the kernel reads the graph and does not recompute it. If the graph and the binary don't match, startup is refused rather than guessing which one is right.
 
 ```bash
 make build build-cli
 ./build/homed -data /tmp/ha
-./build/waiter
 ```
 
-API keys go in the web UI at `http://localhost:8080`. Requires Linux.
+**Plugins start when their facilities are ready, not when the kernel finishes.** A plugin declaring `requires_facilities: [config]` launches as layer 1 completes instead of waiting for the agent layer. Measured saving: 35 seconds, which is how long the agent layer spends on dense backfill of 750 events plus rebuilding document and knowledge indexes.
 
-## What it does
+**Two input classes, four interrupt levels.** Queued input carries no level, so any interrupt can preempt it. Interrupts carry L1–L4; higher preempts lower and the preempted state is pushed onto a stack for later resume. Same level never preempts. L4 belongs to the kernel alone (panics, kernel events); a plugin declaring L4 gets clamped to L3. Preemption count can raise a task's level, but by at most two steps (`preemptPromotionCap = 2`), so low-priority work can't starve indefinitely.
+
+**Memory is partitioned by scene, not by session.** A scene fingerprint is built from channel, conversation partner, tools, topic, and time of day, weighted 1.0 / 1.0 / 0.8 / 0.4 / 0.2. A scene only comes into being on the second occurrence (`minSceneEvidence = 2`); one-off interactions don't count. Join threshold is 0.5, recall threshold 0.35. Recall is looser than join on purpose: failing to recall is a loss, while recalling one extra scene costs a few lines of context.
+
+## Everything else
 
 - **Channels**: web UI, CLI, QQ groups and DMs, A2A, ACP in your IDE
 - **Tools**: files, shell, code, browser (real Chrome), calendar, notes, RSS, music
 - **Modalities**: images, video, voice, screenshots, web pages
-- **Memory**: three layers (context → document → graph) plus a knowledge base, recalled by scene
-- **Scheduling**: parallel sub-agents, interrupt preemption, resumable state
+- **Zero-IO kernel**: no HTTP calls, no file reads; every capability lives in a plugin
 
 28 built-in plugins, 89 model-callable tools. External plugins live one per repo under [github.com/HologramAgent](https://github.com/HologramAgent).
-
-## Architecture
-
-```go
-homed  (kernel: LLM orchestration, memory, retrieval)
-   ↑ PluginSDK
-plugins  (all IO: web UI, QQ, CLI, files, network)
-```
-
-The kernel makes no IO calls. Plugins run as separate processes and talk to it over three channels: JSON-RPC on stdio for control, shared memory for bulk data, an event ring for notifications. A plugin panic doesn't take the kernel down.
-
-Memory sinks over time. Recent turns stay in context, older ones become documents, oldest get distilled into graph triples.
-
-Memory is partitioned by scene rather than by session. A scene is made of channel, conversation partner, tools used, and time of day, so returning to a topic recalls what was concluded last time.
-
-## Documentation
-
-- [Architecture](assets/docs/en/ARCHITECTURE.md) ([中文](assets/docs/zh/ARCHITECTURE.md))
-- [Plugin development](assets/docs/en/PLUGIN_DEV.md)
-- [SDK docs](https://sdk.homeagent.jianfgit.xyz/) · [llms.txt](https://sdk.homeagent.jianfgit.xyz/llms.txt)
-- [Changelog](CHANGELOG_EN.md) · [Design docs](docs/zh/README.md) · [Future plan](docs/zh/future-plan.md)
-
-## Code Structure
-
-```
-cmd/homed/          Daemon entry, assembles all subsystems
-cmd/waiter/         CLI client (Unix socket)
-internal/
-├── agent/core/     Agent core: input scheduler (2 classes + 4 levels), event loop, LLM tool loop, 7-stage pipeline, residents
-├── agent/api/      LLM Provider (Lua adapter layer: provider.go drives the vm)
-├── memory/         Three-layer memory: Graph(SQLite) / Document(JSON+TF-IDF) / Text(JSONL) + StaticEmbedder(pretrained word embedding/TF-IDF fallback) + CleanTemplateText(de-template)
-├── knowledge/      Knowledge base (filesystem + TF-IDF)
-├── plugin/         Plugin registry + subprocess loader (stdio RPC + shared memory segment + event ring)
-├── plugins/        built-in plugins (webui / cli / files / cmd / mcp / kbtree / seq / skillmgr …)
-├── sdk/            PluginSDK (Tool/Stage/Event three channels)
-├── config/         SQLite config center
-├── events/         Event bus
-└── internal/lua/adapters/   10 LLM protocol adapter scripts
-External plugin development: see the [hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk)
-repo with the `hmapdev` toolchain. Each plugin has its own repo under
-[github.com/HologramAgent](https://github.com/HologramAgent).
-```
 
 ## Downloads
 
