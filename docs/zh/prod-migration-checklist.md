@@ -2,7 +2,13 @@
 
 **日期**：2026-10-04
 **分支**：`feat/context-overflow-l4`（未 push）
-**状态**：HologramAgent 已停机（inactive + disabled）
+**状态**：⚠️ **归档（2026-10-04 的一次性操作清单）**
+
+> 本文记录的是那次停机迁移的**执行现场**。其中「已停机」是当时的真实状态，
+> **不是现在的状态** —— 现在就别照着这份清单判断服务是否在跑。
+>
+> 现行部署操作见 [`deploy-runbook.md`](./deploy-runbook.md)；
+> 服务当前状态用 `systemctl status hologramagent` 查。
 
 ---
 

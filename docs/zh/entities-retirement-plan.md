@@ -6,7 +6,21 @@
 > 现行架构与术语以 `assets/docs/zh/ARCHITECTURE.md` 为准；本文保留作为决策记录。
 
 
-> 状态：已确认（方案 A：三表全退），执行中
+> 状态：**方案已定，执行未完成**（2026-10-31 复核）。
+>
+> 方案是「三表全退」（`entities` / `relations` / `sentences` 并入
+> `memory_blocks`）。迁移代码在（`internal/memory/migrate_entities.go`），
+> 但**生产库仍在用旧表**：
+>
+> ```
+> entities   1292 行
+> relations   978 行
+> sentences    66 行
+> ```
+>
+> ⇒ 本计划的「执行中」不能读成"快完成了"，而是**迁移工具就绪、
+> 生产尚未切换**。切换前的剩余读方清单见
+> [`legacy-table-retirement.md`](./legacy-table-retirement.md) §八 / §十二。
 > 范围：含生产实例 ${HA_DATA}（用户 2026-10-02 确认迁移）
 > 前置：docs/zh/memory-restructure-plan.md（重构计划）
 > 原则：一次迁移，删除所有 entities 遗留，避免后续误导。

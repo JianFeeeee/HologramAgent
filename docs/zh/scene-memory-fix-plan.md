@@ -1,6 +1,18 @@
 # 场景式记忆修复 plan
 
-> **状态：计划（部分落地）。** 是修复计划，不是现状描述。
+> **状态：大部分落地（2026-10-31 复核）。** 7 个步骤里 5 步已完成。
+>
+> | 步骤 | 状态 |
+> |---|---|
+> | 1 修 R1+R2（归一化、时段污染主键） | ✅ 已完成 |
+> | 2 SDK 补 `ScenePolicy` 声明项 | ✅ 已完成（`sdk/plugin.go` 有 `ScenePolicyAuto` / `ScenePolicyNone`） |
+> | 3 修 R3（图整理覆盖全库） | ✅ 已完成 |
+> | 4 清理现网垃圾场景 | ❓ 未复核（属现场操作，不在代码里） |
+> | 5 修 R5（证据桶别全表清） | ✅ 已完成 |
+> | 6 修 R4 覆盖面（peer / 语义场景） | ✅ 已完成（`scene_emerge.go` 已区分 `peer:group_*` 与 `peer:user_*`） |
+> | 7 验证与收口 | ❓ 未复核 |
+>
+> 剩余不确定项已索引到 [`future-plan.md`](./future-plan.md) §六。
 > 未完成项已索引到 [`future-plan.md`](./future-plan.md) §六。
 
 > 起点：2026-09-26 生产库实测（`${HA_DATA}/memory/graph.db`）。
