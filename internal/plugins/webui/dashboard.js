@@ -2396,7 +2396,11 @@ function renderChat() {
 			"error",
 			(e) => {
 				var t = e.target;
-				if (!t || t.tagName !== "IMG" || !t.classList.contains("chat-attachment-img")) {
+				if (
+					!t ||
+					t.tagName !== "IMG" ||
+					!t.classList.contains("chat-attachment-img")
+				) {
 					return;
 				}
 				var box = t.parentElement;
@@ -2508,7 +2512,7 @@ function renderChat() {
 						escHtml(att.url) +
 						'" ' +
 						'alt="image" loading="lazy" style="max-width:320px;max-height:240px;border-radius:10px;display:block;cursor:zoom-in" ' +
-						'/></a>';
+						"/></a>";
 				} else if (att.type === "audio") {
 					// 音频用原生播放器：与图片同理，附件能在聊天里直接消费才算可见。
 					// preload="metadata" 只拉时长不拉全部字节，避免历史消息满屏时并发下载。
@@ -4221,7 +4225,11 @@ async function queryMemoryContext() {
 						var score = Number(d.score || 0).toFixed(2);
 						return (
 							'<div style="margin-bottom:4px">' +
-							'<span style="opacity:.7">' + escHtml(when) + " · " + score + "</span> " +
+							'<span style="opacity:.7">' +
+							escHtml(when) +
+							" · " +
+							score +
+							"</span> " +
 							escHtml(d.text || "") +
 							"</div>"
 						);
@@ -5101,7 +5109,8 @@ function renderCmdHistory() {
 				var badge = ok ? "badge-green" : "badge-red";
 				var label = ok
 					? __("成功", "OK")
-					: __("失败", "Failed") + (c.exit_code ? " (" + c.exit_code + ")" : "");
+					: __("失败", "Failed") +
+						(c.exit_code ? " (" + c.exit_code + ")" : "");
 				html +=
 					"<tr>" +
 					'<td style="font-family:monospace;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
