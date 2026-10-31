@@ -35,66 +35,59 @@ startup order is resolved at build time, and plugins launch as soon as their fac
    web UI · QQ · CLI · files · browser
 ```
 
-The kernel makes no HTTP calls and reads no files. Everything touching the outside world is a
-plugin. A plugin crash leaves the kernel running; restarts back off 1s / 2s / 3s, and the 4th
-crash within 5 minutes stops automatic restarting for human intervention.
+The kernel process handles orchestration, memory and retrieval; HTTP, files and devices belong to
+plugins (`internal/plugin`). A crashed plugin is restarted with backoff 1s / 2s / 3s; the 4th
+crash within 5 minutes stops automatic restarting pending human intervention
+(`cmd/homed/kmod_runtime.go`).
 
-### Context is not "truncate and summarize"
+### Context window
 
-The usual approach drops old turns or asks the model to summarize them. Both share a flaw: what
-gets lost is decided by position. Here each historical event is scored against the current input,
-and low scorers sink into the cold-context layer.
+`internal/agent/core/context.go`
 
-Scoring uses dense cosine similarity in the same vector space as media and cold context, falling
-back to TF-IDF when the model isn't loaded. The most recent N events are always kept, but N is
-itself bounded by budget:
+Each event gets two vectors on entry: a dense vector sharing one space with media and cold
+context, and a TF-IDF word vector as fallback. Pruning scores history against the current input
+and keeps topK, with the most recent N events exempt from scoring.
 
-```go
-// protected count cannot exceed what the budget can hold
-budgetCap = ContextTokens / avgEventTokens
-pCount = min(configured, budgetCap)
-```
+N defaults to 10, bounded by budget: `min(configured, ContextTokens / avg tokens per event)`.
 
-That bound came from a measurement: with a 50k window, one event averaged 5800 tokens (tool
-results), while the budget was 40000, so "pin 10 events" didn't fit. Every prune hit the
-protection floor, the budget was exhausted after two rounds, and the task terminated. Recall
-dropped from 44% to 22%. Smaller windows now tighten automatically, and a 1M window can use the
-full configured value.
+That bound came from a measurement. At a 50k window with 5800 tokens per event and a 40000
+budget, pinning 10 events needed 58k, more than the budget itself. Every prune met its target
+without freeing space; the budget was gone after two rounds and the task terminated, with recall
+falling from 44% to 22%. Small windows now tighten automatically; a 1M window uses the configured
+value.
 
-Pruned events aren't discarded, they migrate: the event and the media blocks it holds move into
-the cold-context layer with block IDs unchanged, only the holding layer changes. Retrieval uses
-`coldcontext_query` in two phases (Peek to confirm, then Remove) rather than delete-then-refill,
-which would lose data permanently if the refill failed.
+Pruned events move to the cold-context layer together with the media blocks they hold. Block IDs
+stay the same; only the holding layer changes. Retrieval uses `coldcontext_query`: `Peek` to
+confirm, then `Remove` the source copy. There is no fetch-and-delete path, since deletion follows
+confirmation.
 
-### Three layers migrate, they don't copy
+### Three layers
 
-```text
-L1  Context        relevance pruning, last N always protected
-      ↓   low scorers sink (with media blocks)
-L2  Cold Context   dense retrieval; ≤2 accesses and 72h stale means sink further
-      ↓   distilled into triples
-L3  Stable         entities, relations, scene index; recall by scene
-```
+`internal/agent/core/context.go` · `internal/memory/coldcontext/` · `internal/memory/graph.go`
 
-A block has exactly one holder at any layer, with no reference counting to keep it alive. Media
-are not attachments: images and audio are first-class graph nodes with their own vectors,
-searchable in the same space as text.
+| Layer | Holds | Reaches the model | Cooling |
+|---|---|---|---|
+| L1 Context | events + blocks | directly, in the system prompt | low relevance sinks |
+| L2 Cold Context | events + blocks (same shape as L1) | inserted back into L1 order on recall | ≤2 accesses and 72h idle, then distilled |
+| L3 Stable | triples, nodes are blocks | on recall | never leaves |
 
-### Memory is partitioned by scene, not by session
+A block has exactly one holder at any layer, with no reference counting. Images and audio are
+blocks in L2/L3 with their own vectors, searched in the same space as text.
 
-Typical agents keep one history per session, so switching topics loses context or crams
-everything into one window. Here memory is partitioned by observable scene fingerprint: channel,
-conversation partner, tools, topic, time of day, weighted 1.0/1.0/0.8/0.4/0.2.
+### Scenes
 
-A scene comes into being only on the second matching fingerprint (`minSceneEvidence = 2`).
-Join threshold 0.5, recall 0.35 — recall is looser because failing to recall loses information
-while an extra scene costs a few lines of context. Each recurrence adds to scene strength;
-scenes that stop recurring decay by half-life.
+`internal/memory/scene_emerge.go`
 
-Two paths run in parallel: **declared** (a plugin states at the injection point which scene this
-is) and **emergent** (fingerprints cluster on their own). Declared scenes deliberately don't
-absorb the full fingerprint, otherwise they'd score near 1.0 against every later turn and the
-emergent path could never grow finer-grained scenes.
+A scene is built from five weighted features: channel 1.0, conversation partner 1.0, tools 0.8,
+topic 0.4, time of day 0.2. A scene is created on the second occurrence of the same fingerprint
+(`minSceneEvidence = 2`); one-off interactions don't create one. Join threshold 0.5, recall 0.35.
+Recurrence adds 1 to strength; scenes that stop recurring decay by half-life.
+
+Two entry points run in parallel: a plugin declares the scene at an injection point (e.g.
+`chan:qq/peer:group_1`), or fingerprints cluster on their own. A declared scene derives features
+only from its own key and does not absorb the full fingerprint. Absorbing it would make the
+declared scene match nearly every later turn of that kind at close to 1.0 similarity, and the
+clustering path could never grow narrower scenes.
 
 ### Seven stages
 
@@ -110,7 +103,7 @@ emergent path could never grow finer-grained scenes.
 | `before_output` | final text ready | format adaptation |
 | `after_output` | after sending | statistics |
 
-`post_action → [before_toolcall → run → after_toolcall] → post_action` is the inner loop. It exits
+The inner loop is `post_action → [before_toolcall → run → after_toolcall] → post_action`. It exits
 when the model stops calling tools, all calls are denied, or the limit is reached.
 
 ## Everything else
