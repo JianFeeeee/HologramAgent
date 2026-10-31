@@ -47,21 +47,41 @@ type BinVersion struct {
 // 文件能执行”的证词，会让一个零字节的坏备份“校验通过”。回滚路径用
 // digest（见 rollback.go 的 verifyRestored），不用版本。
 func ReadBinVersion(bin string) (*BinVersion, error) {
+	v, err := readBinVersionStrict(bin)
+	if err == nil {
+		return v, nil
+	}
+	// ★ 回退：老版本内核没有 --version（它是 2026-10-25 才加的）。
+	//
+	// 这正是 OTA 的**第一次**升级必然撞到的情况：新版工具要读线上版本，
+	// 而线上那个版本还不支持被读。此时不能失败退出——否则所有人第一次
+	// 升级都要人工介入。改为从运行中进程的环境/文件里找线索，找不到就
+	// 诚实地说"未知"，让版本比较降级（其余预检照常）。
+	//
+	// ★★ 注意：这个回退使 ReadBinVersion **不能**用做回滚校验。
+	// 推断出来的版本可能来自**另一个文件**（或运行中的老进程），拿它当
+	// "刚拷过去的文件能执行"的证词，会让一个零字节约的坏备份"校验通过"。
+	// 回滚路径必须用 readBinVersionStrict（见 rollback.go）。
+	if iv := InferVersionFromRunning(); iv != nil {
+		return iv, nil
+	}
+	return nil, fmt.Errorf("执行 --version: %v（老版本内核不支持 --version，且无法从运行进程推断）", err)
+}
+
+// readBinVersionStrict 只认**这个文件自己**能报出版本，任何回退都不要。
+//
+// 用于**回滚校验**：我们要证明的是"刚替换上去的那个文件是可执行的且
+// 版本对"，而任何形式的推断（读别的路径、问运行中的进程）都会把一个
+// 死文件"验证"成活的。
+func readBinVersionStrict(bin string) (*BinVersion, error) {
 	if _, err := os.Stat(bin); err != nil {
 		return nil, err
 	}
 	out, err := exec.Command(bin, "--version").CombinedOutput()
 	if err != nil {
-		// ★ 回退：老版本内核没有 --version（它是 2026-10-25 才加的）。
-		//
-		// 这正是 OTA 的**第一次**升级必然撞到的情况：新版工具要读线上版本，
-		// 而线上那个版本还不支持被读。此时不能失败退出——否则所有人第一次
-		// 升级都要人工介入。改为从运行中进程的环境/文件里找线索，找不到就
-		// 诚实地说"未知"，让版本比较降级（其余预检照常）。
-		if v := InferVersionFromRunning(); v != nil {
-			return v, nil
-		}
-		return nil, fmt.Errorf("执行 --version: %v（老版本内核不支持 --version，且无法从运行进程推断）", err)
+		// ★ 这里**不**做任何回退（与 ReadBinVersion 的关键区别）：
+		// 执行失败就说明这个文件不可用，回退会把死文件验成活的。
+		return nil, fmt.Errorf("执行 --version: %v（该文件不可执行或架构不符）", err)
 	}
 	v := &BinVersion{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -177,46 +197,6 @@ func ShortCommit(c string) string {
 		return c[:8]
 	}
 	return c
-}
-
-// readBinVersionStrict 只认**这个文件自己**能报出版本，任何回退都不要。
-//
-// 与 ReadBinVersion 的唯一区别：exec 失败直接返回 error，**不**走
-// InferVersionFromRunning。用于“确认分支”这类必须证明“这个文件能用”
-// 的判定。
-//
-// ★ 不要拿它当回滚校验：老内核（1.3.x 及以前）没有 --version，
-// 而它们恰恰是最常见的回滚目标。回滚用 digest（verifyRestored）。
-func readBinVersionStrict(bin string) (*BinVersion, error) {
-	if _, err := os.Stat(bin); err != nil {
-		return nil, err
-	}
-	out, err := exec.Command(bin, "--version").CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("执行 --version: %v（该文件不可执行或架构不符）", err)
-	}
-	v := &BinVersion{}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		k, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "version":
-			v.Version = val
-		case "commit":
-			v.Commit = val
-		case "build_time":
-			v.BuildTime = val
-		case "sdk":
-			v.SDKVersion = val
-		}
-	}
-	if v.Version == "" {
-		return nil, fmt.Errorf("--version 输出里没有 version= 行: %q", strings.TrimSpace(string(out)))
-	}
-	return v, nil
 }
 
 // ShortSum 把 sha256 缩到前 12 位，用于错误消息（完整值对排查无益）。
@@ -363,10 +343,10 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 	publishProgress(bus, "kernel", "", "verify", "新内核可执行，版本 "+nv.Version)
 	fmt.Printf("\n== 预检通过 ==\n新内核 %s 可执行\n", nv.Version)
 
-	// ── 备份：只备本次会动的文件（不整目录拷贝，那是个几百 MB）──
-	//
-	// ★ 备份必须落在 dataDir 下，不能是 /root：服务以 ProtectSystem=strict
-	//   + 非 root 运行，对 /root 没有写权限 ⇒ MkdirAll 必 EACCES。
+	// ── 备份：只备本次会动的文件（不整目录拷贝，那是几百 MB）──
+	// ★ 备份必须落在 dataDir 下，不能是 /root：
+	// 服务以 ProtectSystem=strict + ReadWritePaths=/var/lib/hologram 运行，
+	// 非 root 身份对 /root 没有写权限 ⇒ MkdirAll 必 EACCES ⇒ 首次升级必挂。
 	ts := NowStamp()
 	backup := filepath.Join(dataDir, BackupDirPrefix+ts)
 	if err := os.MkdirAll(backup, 0755); err != nil {
@@ -416,7 +396,8 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 		HadDepGraph: hadDepGraph,
 		Digests:     digests,
 	}); perr != nil {
-		// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力。
+		// 写不成功 ⇒ 放弃本次升级：没有标记就没有回滚能力，
+		// 而不带回滚的升级等于赌运气。
 		return nil, fmt.Errorf("写升级确认标记失败（放弃升级，未替换任何文件）: %w", perr)
 	}
 	fmt.Printf("已写升级确认标记 → %s\n", pendingPath(dataDir))
@@ -490,13 +471,15 @@ func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, err
 	fmt.Println("已替换 homed")
 	publishProgress(bus, "kernel", "", "ready", "新内核已就位，等待重启")
 
-	// ★ 成功路径也必须发 result 事件：
-	//   此前只有失败路径发，订阅方只能靠“进度停在最后一步且没看到 failed”
-	//   来猜成功，猜错的方向是“以为还在升级”。先发事件再返回：返回后
-	//   调用方可能立即重启，进程消失。
+	// ★ 成功路径也必须发 result 事件。
+	//
+	// 此前只有失败路径（restore）发 result，成功路径什么都不发 ⇒ 订阅方
+	// 只能靠"进度停在最后一步且没看到 failed"来猜成功，猜错的方向是
+	// "以为还在升级"。先发事件再返回：返回后调用方可能立刻重启，进程消失。
 	publishResult(bus, "kernel", "", true, curVer.Version, nv.Version, false, "")
 
-	// 备份必须 GC：旧注释写“确认稳定后可删”，但全仓从来没有一行删除逻辑。
+	// 备份必须 GC：否则每次升级都在 dataDir 下留几十 MB，旧注释写
+	// "确认稳定后可删"，但全仓从来没有一行删除逻辑。
 	PruneOldBackups(dataDir)
 
 	return &Outcome{
@@ -537,12 +520,26 @@ func NowStamp() string {
 //  2. 读 WebUI 的 /api/v1/agents（那里返回 meta.Version）—— 需服务在跑
 //
 // 都失败则返回 nil，调用方把比较降级为"未知"，**不阻断**升级。
+// 推断逻辑读的两个路径。
+//
+// ★ 提为变量（而不是写死在函数体里）的唯一目的是**可测**：
+// 以前它们直接内联在 InferVersionFromRunning 里，导致“确认分支不得使用
+// 推断值”这条判据只能在**装了 homed/waiter 且 /usr/local/bin 可写**的机器上
+// 验证。那是典型的“CI 假绿、生产真红”形状：跑不到就 Skip，跳着跳着就没人看。
+//
+// 生产行为完全不变（默认值就是原来那两个绝对路径，没人会改它们）；
+// 只有测试会临时指向自己造的假文件，从而能**稳定复现**“借到别人版本”的场景。
+var (
+	inferHomedPath  = "/usr/local/bin/homed"
+	inferWaiterPath = "/usr/local/bin/waiter"
+)
+
 func InferVersionFromRunning() *BinVersion {
 	// 手段 1：从二进制里找注入的版本串。
 	//
 	// ldflags 注入的字符串在 rodata 里是裸的，形如 "1.4.0dev"；
 	// 配合 "commit=" 一起找才有意义，所以这里只认成对出现的情况。
-	if v := scanBinaryForVersion("/usr/local/bin/homed"); v != nil {
+	if v := scanBinaryForVersion(inferHomedPath); v != nil {
 		return v
 	}
 	// 手段 2：问 waiter。
@@ -551,7 +548,7 @@ func InferVersionFromRunning() *BinVersion {
 	//   而且它一直支持 --version（输出形如
 	//   `waiter 1.4.0 (commit 98850e1, built 2026-10-17T09:20:25Z)`）。
 	//   老内核没有 --version，但同批的 waiter 有 —— 用它反推。
-	if v := versionFromWaiter("/usr/local/bin/waiter"); v != nil {
+	if v := versionFromWaiter(inferWaiterPath); v != nil {
 		return v
 	}
 	return nil

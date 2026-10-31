@@ -89,6 +89,26 @@ func pendingPath(dataDir string) string {
 // 由 DoUpgrade 在替换二进制**之前**写：若替换后重启失败，标记一定在。
 // 反过来（替换后才写）会在"替换成功但没来得及写标记就崩了"时丢标记，
 // 于是下次启动不知道该回滚。
+//
+// ## ★ 为什么必须临时文件 + fsync + rename
+//
+// 旧实现直接 os.WriteFile 覆写目标文件。它**不是原子**的：WriteFile
+// 先 O_TRUNC 再写，如果这之间掉电（或 OOM-kill、机器硬重启），
+// 磁盘上留下的是一个**半截 JSON**。下一轮启动读到半截 JSON 会解析失败，
+// 而解析失败在旧代码里被原样上抛 ⇒ 内核拒启动 ⇒ 而回滚分支根本走不到
+// ⇒ **既起不来也回滚不了**（这是所有升级故障里最难救的一种）。
+//
+// 所以要：
+//
+//	写 <path>.tmp → fsync(文件) → rename(原子替换) → fsync(目录)
+//
+// rename 在同文件系统内是原子的：任何时刻读到的都是**完整的旧版本**或
+// **完整的新版本**，不存在中间态。fsync 目录是为了让 rename 本身也落盘
+// （否则掉电后可能连 rename 都不生效，但留下的仍是完整旧文件 —— 安全方向）。
+//
+// 注意：fsync 失败时**不**当作失败处理。有些文件系统（叠加层/容器/tmpfs）
+// 不支持对目录 fsync，返回 EINVAL；此时 rename 已完成、内容已正确，
+// 为此拒绝升级只会把可用环境弄成不可用。只记录日志。
 func MarkPendingUpgrade(dataDir string, rec PendingRecord) error {
 	if dataDir == "" {
 		return fmt.Errorf("dataDir 为空，无法写升级确认标记")
@@ -99,8 +119,38 @@ func MarkPendingUpgrade(dataDir string, rec PendingRecord) error {
 		return err
 	}
 	p := pendingPath(dataDir)
-	if err := os.WriteFile(p, b, 0644); err != nil {
-		return fmt.Errorf("写 %s: %w", p, err)
+	tmp := p + ".tmp"
+
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("建临时标记 %s: %w", tmp, err)
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("写 %s: %w", tmp, err)
+	}
+	// ★ fsync 必须在 Close 之前：Close 只把数据交给内核页缓存，
+	// 掉电仍可能丢。这里失败要报错（内容没落盘 ⇒ 不能假装标记写好了）。
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("fsync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename %s → %s: %w", tmp, p, err)
+	}
+	// 目录 fsync：让 rename 自身落盘。失败仅告警（见函数头注释）。
+	if d, derr := os.Open(dataDir); derr == nil {
+		if serr := d.Sync(); serr != nil {
+			log.Printf("[update] fsync dir %s: %v（rename 已完成，内容正确）", dataDir, serr)
+		}
+		d.Close()
 	}
 	return nil
 }
@@ -118,6 +168,17 @@ func ClearPendingUpgrade(dataDir string) error {
 }
 
 // ReadPendingUpgrade 读标记；不存在返回 (nil, nil)。
+//
+// 返回 error 的两种情况：
+//
+//	· 文件存在但**解析不了**（掉电截断、被外部写坏）
+//	· 读失败（权限等）
+//
+// ★ 调用方**不得**因此拒绝启动 —— 见 RollbackIfUnconfirmed 的处理：
+// 解析不了的标记意味着"不知道上次升了什么"，此时保守做法是**保留现场
+// 并继续启动**，而不是把内核卡死。启动失败比"可能少回滚一次"严重得多：
+// 前者是机器不可用，后者只是多跑一个已知能起得来的版本（能跑到这行
+// 说明当前二进制本身是可执行的）。
 func ReadPendingUpgrade(dataDir string) (*PendingRecord, error) {
 	b, err := os.ReadFile(pendingPath(dataDir))
 	if err != nil {
@@ -138,13 +199,44 @@ func ReadPendingUpgrade(dataDir string) (*PendingRecord, error) {
 // 返回 (rolled, from, to, err)：
 //
 //	rolled=false, err=nil  —— 没有待确认标记，正常继续
-//	rolled=true,  err=nil  —— 已回滚（from/to 记录版本轨迹）
+//	rolled=true,  err=nil  —— 已回滚且**回读校验通过**（from/to 记录版本轨迹）
 //	rolled=*,     err!=nil —— 回滚失败，调用方**必须中止启动**
 //	                          （继续装配等于用一个已知起不来的版本）
+//
+// ## ★ 回滚的可信性靠"回读校验"，不靠"拷贝没报错"
+//
+// 这是本函数最重要的不变量：CopyFile 返回 nil 只说明字节搬完了，
+// **不说明搬过去的东西是可执行的**。备份文件本身可能是零字节 / 截断 /
+// 架构不对（例如磁盘满时写坏的备份），拷贝依旧会成功。
+//
+// 旧代码就卡在这里：零字节备份 ⇒ CopyFile 成功 ⇒ 清 marker ⇒
+// 返回 rolled=true, err=nil ⇒ 日志打 "rolled back to 1.4.0" ⇒
+// 调用方以为自愈完成继续启动，而磁盘上躺着的是一个不可执行的二进制。
+// 更糟的是 marker 已被清掉 ⇒ **失去第二次自愈机会**。
+//
+// 所以现在改成：替换后必须 readBinVersionStrict(binPath) 回读，并且版本 ==
+// rec.FromVer。任何一环不过都算回滚失败：不清 marker、返回 error、
+// 让调用方停在下边（不用坏二进制继续跑）。
 func RollbackIfUnconfirmed(dataDir, binPath string) (bool, string, string, error) {
 	rec, err := ReadPendingUpgrade(dataDir)
 	if err != nil {
-		return false, "", "", err
+		// ★ 解析不了 ≠ 中止启动。
+		//
+		// marker 被截断（掉电）或写坏时说"不知道上次升了什么"。把内核
+		// 卡在启动阶段是最差的选择：能执行到这里已经证明**当前二进制是
+		// 可执行的**，而拒绝启动会让机器彻底不可用、且还得人工上机器。
+		//
+		// 保守做法：告警 + 把坏掉的 marker 改名留存（不删，保留现场供
+		// 人工判断），然后当作"无待确认升级"继续启动。代价只是可能少
+		// 回滚一次；而不是把一台本来能用的机器搞成起不来。
+		quarantined, qerr := quarantineMarker(dataDir)
+		if qerr != nil {
+			log.Printf("[update] pending marker unreadable (%v) and quarantine failed: %v", err, qerr)
+		} else {
+			log.Printf("[update] pending marker unreadable, quarantined to %s: %v", quarantined, err)
+		}
+		log.Printf("[update] 继续启动（不因标记损坏而拒绝启动）；本次不做自动回滚")
+		return false, "", "", nil
 	}
 	if rec == nil {
 		return false, "", "", nil
@@ -161,15 +253,20 @@ func RollbackIfUnconfirmed(dataDir, binPath string) (bool, string, string, error
 	//	当前版本 == 标记里的 To  ⇒ 新版本**已经跑起来了** ⇒ 确认，清标记，继续启动
 	//	当前版本 != To（或读不到）⇒ 新版本没能成为运行版本（exec 失败、被 guard 回退等）
 	//	                          ⇒ 回滚到备份
-	//
 	// ★★★ 确认分支**必须**用严格版本（不可用带推断回退的 ReadBinVersion）。
 	//
-	// 这里曾经用 ReadBinVersion，于是与回滚校验是同一个病：它在 exec 失败时会
-	// 回退到 InferVersionFromRunning()（读 /usr/local/bin/homed 的字符串、或跑
-	// /usr/local/bin/waiter --version）。已实测的事故形态：binPath 是一个
-	// 不可执行的残文件，marker.ToVer 恰好等于本机 waiter 的版本 ⇒ 推断回退从
-	// **waiter** 借到相同版本 ⇒ 与 ToVer 相等 ⇒ confirmed=true ⇒ 清 marker、
-	// **不回滚** ⇒ 机器带着跑不起来的二进制继续启动，且失去自愈机会。
+	// 这里曾经用 ReadBinVersion，于是与 B1 是**同一个病**，只是从"回滚后校验"
+	// 转移到了"确认"：ReadBinVersion 在 exec 失败时会回退到
+	// InferVersionFromRunning()（读 /usr/local/bin/homed 的字符串、或跑
+	// /usr/local/bin/waiter --version）。
+	//
+	// 已实测的事故形态：binPath 是一个不可执行的残文件，marker.ToVer 恰好
+	// 等于本机 waiter 的版本 ⇒ 推断回退从 **waiter** 借到 1.4.0/98850e1
+	// ⇒ 与 ToVer 相等 ⇒ confirmed=true ⇒ 清 marker、**不回滚** ⇒ 机器带着
+	// 跑不起来的二进制继续启动，且失去自愈机会。
+	//
+	// 而这条缺陷是**环境相关**的：没装 homed/waiter 的机器（如 CI）会绿，
+	// 生产装了就会红 —— 最难查的那一类。所以不能靠"本机恰好有没有"来验。
 	//
 	// 判据只有一条：这个文件自己能不能报出版本。报不出 ⇒ confirmed=false
 	// ⇒ 走回滚。绝不用推断值去证明"新版已跑起来"。
@@ -212,6 +309,8 @@ func RollbackIfUnconfirmed(dataDir, binPath string) (bool, string, string, error
 		log.Printf("[update] create broken-binary dir %s failed: %v", brokenDir, err)
 	} else if err := CopyFileAtomic(binPath, filepath.Join(brokenDir, "homed")); err != nil {
 		// 备份失败不阻断回滚：回滚是主线，留现场是支线
+		log.Printf("[update] create broken-binary dir %s failed: %v", brokenDir, err)
+	} else if err := CopyFile(binPath, filepath.Join(brokenDir, "homed")); err != nil {
 		log.Printf("[update] backup of broken binary failed: %v", err)
 	} else {
 		log.Printf("[update] broken binary kept at %s", brokenDir)
@@ -250,6 +349,9 @@ func RollbackIfUnconfirmed(dataDir, binPath string) (bool, string, string, error
 			"回滚后校验失败: %v；marker 保留（备份可能已损坏，需人工用已知良好版本替换 %s）",
 			verr, binPath)
 	}
+
+	// ★★★ 回读校验：这是"回滚成功"的**唯一**判据。
+	//
 
 	// 回滚 depgraph.bin（必须与 homed 同批）
 	//
@@ -333,8 +435,26 @@ func verifyRestored(rec *PendingRecord, binPath string) (string, error) {
 		return "", fmt.Errorf("还原内容与备份不一致（期望 %s，实际 %s）",
 			ShortSum(wantSum), ShortSum(gotSum))
 	}
+	// ★ 内容一致还不够：零字节的备份"内容也一致"。
+	//
+	// 旧 marker 没有 digest，内容比对是唯一可用的间接证据，但它对
+	// 「备份本身就是零字节/截断」这种情况失效 —— 拷过去仍是零字节，
+	// 两边 sha256 相等，于是判成"回滚成功"，机器带着不可执行的二进制
+	// 继续启动且 marker 已清（实测事故形态，见 TestRollback_RefusesCorruptBackup）。
+	//
+	// 因此补一道**最低可用性**检查：非空且带可执行位。
+	// 刻意**不**要求 `--version`：老内核（1.3.x 及以前）没有这个 flag，
+	// 而它们恰恰是最常见的回滚目标 —— 那正是 PR #31 的回归。
+	if fi, serr := os.Stat(binPath); serr != nil {
+		return "", fmt.Errorf("读取还原后的 %s: %w", binPath, serr)
+	} else if fi.Size() == 0 {
+		return "", fmt.Errorf("回滚后回读失败：还原后的 %s 是零字节，不可执行（备份不可用）", binPath)
+	} else if fi.Mode()&0111 == 0 {
+		return "", fmt.Errorf("回滚后回读失败：还原后的 %s 没有可执行位（模式 %v），不可执行", binPath, fi.Mode())
+	}
+
 	// 备份可能与 marker 的 FromVer 不符（备份被别的升级覆盖过）。
-	// 读得到版本就校，读不到（老内核）就放行 —— 内容一致已经是本分支的上限。
+	// 读得到版本就校，读不到（老内核）就放行 —— 内容一致 + 可执行已是本分支的上限。
 	if v, verr := readBinVersionStrict(binPath); verr == nil {
 		if rec.FromVer != "" && v.Version != rec.FromVer {
 			return "", fmt.Errorf("版本不符：期望 %s（标记里的 FromVer），实际 %s",

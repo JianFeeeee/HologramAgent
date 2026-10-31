@@ -12,14 +12,15 @@ package update
 //
 // 不删的后果不是"占点磁盘"这么温和：dataDir 和 pending 标记在同一个
 // 文件系统上，磁盘被备份吃满之后 pending 标记就写不进去 ⇒ Apply 拒绝
-// 升级（守卫是对的，但保护频繁触发本身就是故障）。
+// 升级（H1 的保护是对的，但保护频繁触发本身就是故障）。
 //
 // ## 保留策略：upgrade 备 3 个，broken 备 1 个
 //
 // 为什么不对称：
 //
 //	· homed-upgrade-backup-* 是**回滚源**，可能被任意一次"上次升级的
-//	  pending 标记"引用。多留几个才能覆盖"升级→重启→再升级"的连环操作。
+//	  pending 标记"引用。多留几个才能覆盖"升级→重启→再升级"的连环操作，
+//	  避免 GC 把当下那次升级还需要的那一份删掉。留 3 个够。
 //	· homed-broken-* 是**事后现场**，只有人工排查时才看，且总是看最近
 //	  一次。留 1 个（而非 0 个）是为了不丢现场。
 //
@@ -62,13 +63,14 @@ func BrokenDirPath(dataDir, ts string) string {
 //
 // 设计上的克制（这几条都是为了"GC 本身不能造成故障"）：
 //
-//   - dataDir 为空 ⇒ 直接返回。空值曾被当作"当前目录"，在这类函数里
-//     那就是灾难（会去删 CWD 下匹配前缀的东西）。
-//   - 任何一次 RemoveAll 失败都只 log，不返回 error —— 调用点在 Apply
-//     成功路径的末尾，GC 失败绝不能让一次**已经成功的升级**变成失败。
-//   - 只处理目录、只处理名字精确匹配 "<前缀><ts>" 形态的项（ts 必须是
-//     NowStamp 的形状，见 isBackupStamp）—— 不递归、不碰 pending 标记、
-//     不碰名字碰巧带同样前缀的其它东西。
+//	· dataDir 为空 ⇒ 直接返回。空值曾被当作"当前目录"，在这类函数里
+//	  那就是灾难（会去删 CWD 下匹配前缀的东西）。
+//	· 任何一次 RemoveAll 失败都只 log，不返回 error —— 调用点在 Apply
+//	  成功路径的末尾，GC 失败绝不能让一次**已经成功的升级**变成失败。
+//	· 只处理目录、只处理名字精确匹配 "<前缀><ts>" 形态的项（ts 必须是
+//	  NowStamp 的形状，见 isBackupStamp）—— 不递归、不碰 pending 标记、
+//	  不碰名字碰巧带同样前缀的其它东西。GC 的删除权只能给"确实是自己
+//	  造的东西"。
 func PruneOldBackups(dataDir string) {
 	if dataDir == "" {
 		return
@@ -108,7 +110,7 @@ func pruneByPrefix(dir, prefix string, keep int) {
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() {
-			continue
+			continue // 只删目录：磁盘满时备份里可能还有半截文件，按名字处理不到就跳过
 		}
 		n := e.Name()
 		if !strings.HasPrefix(n, prefix) || len(n) == len(prefix) {
