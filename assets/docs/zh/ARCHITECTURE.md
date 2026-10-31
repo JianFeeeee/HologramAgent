@@ -87,7 +87,7 @@ HologramAgent 的认知架构由三个核心子系统构成：事件循环（eve
 
 **阶段管道（StageHost）** 管理两类注册：工具定义（ToolDef）与阶段处理器（StageHandler）。ToolDef 包含 `NoMemory bool` 和 `Cleaner func(string) string` 两个可选的记忆控制字段：`NoMemory=true` 时工具输出不参与向量化/jieba/蒸馏计算（原文保留）；`Cleaner` 在输出进入计算层前执行过滤（如提取 JSON 的 `content` 字段）。两者均不修改原文，只影响计算层输入。`RegisterTool` 拒绝同名注册，推断工具所属插件名，并维护工具到插件的映射表 `toolPlugins`。`RegisterStage` 将处理器追加至对应阶段的处理器列表。触发阶段执行时（`RunStage`），**所有已注册处理器通过 goroutine 并行执行**，共享同一 `*StageContext` 实例（通过 `sync.RWMutex` 保护并发访问）。单个处理器的 panic 被独立恢复，不影响其他处理器。短路语义通过检查 `ctx.Response != nil` 实现——任一阶段处理器可设置此值提前终止当前链路。工具执行 `ExecuteTool` 内置 panic 恢复与栈追踪记录。`UnregisterPluginTools` 在插件热重载时移除对应工具集。
 
-**上下文窗口（RelevanceContext）** 维护一个按时间排序的事件列表。`Append` 在录入前经 `textForVector` 聚合工具输出：按 `NoMemory` 跳过、`Cleaner` 过滤（插件为各自工具注册的清洗函数），最后经 `CleanText` 做基本空白规范化，再通过三分支向量策略（agent 事件用 Response，用户事件用 Input，cold_storage 用 Input+Response）计算嵌入向量。`Prune` 在事件数超过 `topK` 时触发，**无条件保护最近 10 条事件不被裁剪**（recency bias），对剩余候选事件计算与当前输入的 CosineSimilarity，按评分降序保留 `topK - 10` 条（下限为 0），之后按时间戳重排序。裁剪出的事件通过 `docStore.ContextToDoc` **迁移**至 Document 层：事件连同它持有的块一起下沉，保留原始时间戳与完整正文。持久化采用 5 秒防抖写入磁盘 JSON 文件。
+**上下文窗口（RelevanceContext）** 维护一个按时间排序的事件列表。`Append` 在录入前经 `textForVector` 聚合工具输出：按 `NoMemory` 跳过、`Cleaner` 过滤（插件为各自工具注册的清洗函数），最后经 `CleanText` 做基本空白规范化，再通过三分支向量策略（agent 事件用 Response，用户事件用 Input，cold_storage 用 Input+Response）计算嵌入向量。`Prune` 在事件数超过 `topK` 时触发，**无条件保护最近 10 条事件不被裁剪**（recency bias），对剩余候选事件计算与当前输入的 CosineSimilarity，按评分降序保留 `topK - 10` 条（下限为 0），之后按时间戳重排序。裁剪出的事件通过 `coldcontextStore.ContextToColdContext` **迁移**至冷上下文层：事件连同它持有的块一起下沉，保留原始时间戳与完整正文。持久化采用 5 秒防抖写入磁盘 JSON 文件。
 
 > ★ **哪些事件不该进 L2，由插件自己声明，内核不认插件名**。
 >
@@ -104,7 +104,7 @@ HologramAgent 的认知架构由三个核心子系统构成：事件循环（eve
 
 **Provider 调用采用有序降级策略**：`ProviderManager.OrderedProviders()` 返回按注册顺序排列的 provider 列表。`process()` 内循环遍历该列表依次尝试 `Chat()` 调用。401/403 状态码将对应 provider 标记为永久不可用；其他错误类型同样标记不可用但容忍度更高。全部 provider 失败时返回错误返回调用方。若调用因 context 取消而中断且 Agent 仍在运行，则重试（仅当处理非 consolidation 路径时）。
 
-**记忆体系采用三级存储层级结构（Context → Document → Graph），按访问局部性与持久化需求进行数据分置**：Context 层为高速易失工作窗口，使用 StaticEmbedder（预训练词嵌入）进行语义相关性评分，以 TF-IDF 为回退策略；Document 层与 Context **共享同一 StaticEmbedder 向量空间**（agent 启动时将 embedder 注入 Document Store），使 Context 裁剪时的事件相关性评分与 Document 查询时的语义检索处于同一向量空间中，确保冷热数据之间的相似度可比——TF-IDF 仅在 embedder 未加载时作为兜底方案；Graph 层以 SQLite 为持久化载体，entities 表与 relations 表分别存储节点与有向边，支持 BFS 遍历召回。三级之间定义数据迁移策略：低分事件从 Context 下沉至 Document（以归档时相同的 embedder 向量化写入），冷文档经 72 小时未访问阈值判定后通过 `docToTriples` 蒸馏为三元组写入 Graph。Indexer 通过双路召回（实体向量相似度搜索 + jieba 关键词提取）构建 Graph 查询种子，结合 `MarkRecalled` 机制避免已被工具调用取回的实体重复注入系统提示。
+**记忆体系采用三级存储层级结构（Context → Cold Context → Graph），按访问局部性与持久化需求进行数据分置**：Context 层为高速易失工作窗口，使用 StaticEmbedder（预训练词嵌入）进行语义相关性评分，以 TF-IDF 为回退策略；冷上下文层与 Context **共享同一 StaticEmbedder 向量空间**（agent 启动时将 embedder 注入 coldcontext Store），使 Context 裁剪时的事件相关性评分与冷上下文查询时的语义检索处于同一向量空间中，确保冷热数据之间的相似度可比——TF-IDF 仅在 embedder 未加载时作为兜底方案；Graph 层以 SQLite 为持久化载体，entities 表与 relations 表分别存储节点与有向边，支持 BFS 遍历召回。三级之间定义数据迁移策略：低分事件从 Context 下沉至冷上下文（以归档时相同的 embedder 向量化写入），冷上下文文档经 72 小时未访问阈值判定后通过 `coldDocToTriples` 蒸馏为三元组写入 Graph。Indexer 通过双路召回（实体向量相似度搜索 + jieba 关键词提取）构建 Graph 查询种子，结合 `MarkRecalled` 机制避免已被工具调用取回的实体重复注入系统提示。
 
 **核心域与应用域的职责域分离**是一项系统级架构决策：内核的责任边界限定在 LLM 编排、记忆管理与知识检索三个维度内，不直接承载任何 IO 操作；所有外部交互通过插件域接入。该分离将核心域的复杂度控制在可验证范围内，同时赋予插件域独立的演化自由度——后者可独立开发、独立发布、热加载，且不对核心域的稳定性构成直接影响。
 
@@ -120,7 +120,7 @@ eventLoop() → processTextInput()
         │
         ├── on_input stage          插件可拦截/改写/短路
         ├── Context.Append          记录到上下文窗口
-        ├── Context.Prune           低相关性事件归档到 Document
+        ├── Context.Prune           低相关性事件归档到冷上下文
         ├── buildMemoryContext()    Indexer 召回 → GraphDB BFS 遍历
         │
         ├── pre_action stage        插件可注入 system 消息
@@ -185,7 +185,7 @@ eventLoop() → processTextInput()
 | 层 | 承载单元 | 与模型的关系 | 容量 | 流动性 |
 | --- | --- | --- | --- | --- |
 | **L1 Context** | 事件（内联正文 + 块） | **直接投喂**（进 system prompt 时序） | 最近 n 条 / 上限 m 条 | 超限时按相似度迁出 |
-| **L2 Document** | 事件（内联正文 + 块） | **不直接投喂**（需召回才进 L1） | 无上限 | 冷到阈值后蒸馏进 L3 |
+| **L2 Cold Context** | 事件（内联正文 + 块） | **不直接投喂**（需召回才进 L1） | 无上限 | 冷到阈值后蒸馏进 L3 |
 | **L3 Stable** | 三元组（节点 + 关系边），节点即记忆块 | 不投喂（经召回进入 L1） | 持久 | 不流出 |
 
 ★ **L1 与 L2 结构完全同构**，唯一区别是「是否被直接投喂给模型」。
@@ -208,12 +208,12 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
             向量层级：统一多模态空间（主，带 fingerprint）→ StaticEmbedder 词嵌入 → TF-IDF（回退）
    Prune:  DenseCosine（仅同指纹才比较）→ 退化 StaticEmbedder CosineSimilarity；保留 topK + 最近10条
        ├── 保留 → timeline → 按时间排序 → system prompt
-       └── 低分 → Document 层归档（迁移：事件连同块一起下沉，时间戳与正文不变）
+       └── 低分 → 冷上下文层归档（迁移：事件连同块一起下沉，时间戳与正文不变）
    Save: 5s debounce 写盘
 
          ↓ Prune 归档（迁移）                    ↑ 召回（迁回）
 
-② Document (文件记忆 — 不直接投喂，结构与 L1 同构)
+② 冷上下文 Cold Context (文件记忆 — 不直接投喂，结构与 L1 同构)
    DocStore — 每篇文档 = 检索元数据 + 事件列表（内联正文 + 块）
    写入: Prune归档 / coldcontext_commit / stablemem 快照(syncGraphToDocs)
    读取:
@@ -221,7 +221,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
        └── LLM主动:  coldcontext_query → Consume(取走)
                          → 逐条按各自原始时间戳把事件插回 L1 时序
                          → 块随事件迁回（同一块 ID，向量不重算），L2 不再持有
-   冷化: FindColdDocs(72h, ≤2次访问) → docToTriples → Graph
+   冷化: FindColdContexts(72h, ≤2次访问) → coldDocToTriples → Graph
 
          ↓ 冷文档蒸馏                           ↑ 自动召回
 
@@ -238,8 +238,8 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
    Social: person_query / set_trait / relate (包装 GraphDB)
 
 ④ 四个独立心跳循环（各自独立的 ticker 和配置间隔）
-   distillLoop  (distillInterval,  默认30m): 上下文裁剪 — Context.Prune → Document
-   archiveLoop (archiveInterval, 默认60m): 冷文档归档 — docToTriples → GraphDB
+   distillLoop  (distillInterval,  默认30m): 上下文裁剪 — Context.Prune → 冷上下文
+   archiveLoop (archiveInterval, 默认60m): 冷上下文归档 — coldDocToTriples → GraphDB
    mergeLoop   (mergeInterval,   默认120m): 实体合并检测 — 相似度 → LLM 裁决
    reviewLoop  (reviewInterval,  默认120m): 关系复审 — SentenceRef 回溯 → LLM 修正
 
@@ -297,7 +297,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 - 保护最近 10 条记录免于淘汰，超出部分按相关性排序**迁移**到文档记忆
 - 迁移是事件**连同它持有的块**一起下沉，时间戳与正文不变；源事件清空块（同一块不同时留两层）
 
-### Document 层
+### 冷上下文层
 
 `internal/memory/document/document.go` — `Store`
 
@@ -309,7 +309,7 @@ L2 不是 L1 的摘要层，也不是另一种数据形态——它就是同样�
 - `Doc.Content` 只是**渲染视图**（供摘要/人工阅读/SDK 兼容），不是原文载体
 - 自动预填充：与 Context 共享的向量空间做相似度检索 → 摘要进 system prompt（**只读**，不动层）
 - 主动召回：`coldcontext_query` 取走后，**逐条按各自原始时间戳**把事件插回 L1 时序，块随事件迁回
-- 冷化：`FindColdDocs(72h, ≤2次访问)` → `docToTriples` → Graph
+- 冷化：`FindColdContexts(72h, ≤2次访问)` → `coldDocToTriples` → Graph
 
 ## 安全防火墙与设备数据面（内核模块）
 
@@ -428,9 +428,9 @@ Core ◀─入向审查── 外部
 ```text
 四个独立心跳循环（各自可配置间隔）:
   ├── distillLoop  (distillInterval,  默认30m)
-  │   └── distillContext() — Context.Prune → Document
+  │   └── distillContext() — Context.Prune → 冷上下文
   ├── archiveLoop (archiveInterval, 默认60m)
-  │   └── archiveColdDocs() — 冷文档 → docToTriples → GraphDB
+  │   └── archiveColdDocs() — 冷上下文 → coldDocToTriples → GraphDB
   ├── mergeLoop   (mergeInterval,   默认120m)
   │   └── detectEntityMerge() — 实体相似度检测 → LLM 裁决
   └── reviewLoop  (reviewInterval,  默认120m)

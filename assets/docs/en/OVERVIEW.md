@@ -29,7 +29,7 @@ require touching the kernel, and no second version of business truth accumulates
 
 **Three-Layer Memory Architecture** — Manages information retention across long agent runtimes through a tiered storage strategy:
 - **Context Layer**: In-memory pretrained word embedding scored event window (StaticEmbedder word vectors → CosineSimilarity, TF-IDF fallback), maintains recent context in real-time, low-relevance events automatically sink to the next layer
-- **Document Layer**: JSON files + TF-IDF vector-indexed temporary memory, supports explicit submission and implicit archival, cold data distills to Graph
+- **Cold Context Layer (L2)**: JSON-file-backed cold memory with dense + TF-IDF retrieval, supports explicit submission and implicit archival, cold data distills to Graph
 - **Stablemem Layer**: SQLite graph database, persists entities and relations, BFS traversal recall, distillation pipeline extracts triples from conversations
 
 Three progressive layers — context, cold archive, long-term stable memory — form an information decay and consolidation pipeline from short-term to persistent storage.
@@ -41,7 +41,7 @@ Three progressive layers — context, cold archive, long-term stable memory — 
 - **Blocks carry their own multimodal vector and fingerprint**, and are retrieved directly — there is no
   media marker in the body text any more.
 - **No separate GC, no reference counting, no keep-set**: blocks follow the single-layer invariant —
-  Context → Document → Graph is a **migration** of a block, not a copy, and nothing is kept alive by
+  Context → Cold Context → Graph is a **migration** of a block, not a copy, and nothing is kept alive by
   references; **deleting a block deletes its content.**
 - **Reaches the plugin boundary since v1.1.1**: plugins read and write media through `InsertWithMedia` /
   `InjectInputMedia`; the model attaches media via the `media_digests` argument of `memory_commit` / `coldcontext_commit`.
@@ -64,7 +64,7 @@ Code is in the project root, implemented in Go.
 
 **Memory System** (`internal/memory/`):
 - **GraphDB** (`graph.go`) — SQLite, entities + relations tables, BFS traversal
-- **Document Store** (`document/document.go`) — Temporary memory, JSON files + TF-IDF vector index, consume-on-read
+- **Cold Context Store** (`internal/memory/coldcontext/`) — cold memory with two-phase retrieval (Peek, then Remove)
 - **Text Memory** (`text/text.go`) — Raw conversation logs, JSONL file rotation
 - **Social Store** (`social/social.go`) — Persona traits + relationship network, wraps GraphDB
 - **Memory Indexer** (`indexer.go`) — Auto-vectorizes GraphDB entities, recalls and injects into system prompt on user input

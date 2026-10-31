@@ -15,12 +15,12 @@ API keys go in the web UI at `http://localhost:8080`. Requires Linux.
 
 The main difference from typical agent frameworks is context handling: instead of truncating
 on overflow or asking the model to summarize, it scores history by relevance and sinks the
-low-scoring events into documents, then distills those into a graph. Two other things differ:
+low-scoring events into cold context, then distills those into a graph. Two other things differ:
 startup order is resolved at build time, and plugins launch as soon as their facilities are ready.
 
 ## Architecture
 
-```
+```text
                     homed (kernel)
         LLM orchestration · memory · retrieval
                        │
@@ -43,9 +43,9 @@ crash within 5 minutes stops automatic restarting for human intervention.
 
 The usual approach drops old turns or asks the model to summarize them. Both share a flaw: what
 gets lost is decided by position. Here each historical event is scored against the current input,
-and low scorers sink into the document layer.
+and low scorers sink into the cold-context layer.
 
-Scoring uses dense cosine similarity in the same vector space as media and documents, falling
+Scoring uses dense cosine similarity in the same vector space as media and cold context, falling
 back to TF-IDF when the model isn't loaded. The most recent N events are always kept, but N is
 itself bounded by budget:
 
@@ -62,18 +62,18 @@ dropped from 44% to 22%. Smaller windows now tighten automatically, and a 1M win
 full configured value.
 
 Pruned events aren't discarded, they migrate: the event and the media blocks it holds move into
-the document layer with block IDs unchanged, only the holding layer changes. Retrieval uses
+the cold-context layer with block IDs unchanged, only the holding layer changes. Retrieval uses
 `coldcontext_query` in two phases (Peek to confirm, then Remove) rather than delete-then-refill,
 which would lose data permanently if the refill failed.
 
 ### Three layers migrate, they don't copy
 
-```
-L0 context   relevance pruning, last N always protected
-     ↓       low scorers sink (with media blocks)
-L1 documents dense retrieval; access count ≤2 and stale means sink further
-     ↓       distilled into triples
-L2 graph     entities, relations, scene index; recall by scene
+```text
+L1  Context        relevance pruning, last N always protected
+      ↓   low scorers sink (with media blocks)
+L2  Cold Context   dense retrieval; ≤2 accesses and 72h stale means sink further
+      ↓   distilled into triples
+L3  Stable         entities, relations, scene index; recall by scene
 ```
 
 A block has exactly one holder at any layer, with no reference counting to keep it alive. Media
@@ -155,27 +155,10 @@ macOS can build `waiter`/`initconfig`; `homed` must be built on native macOS.
 
 ## License
 
-This project is released under the **GNU Affero General Public License, version 3
-(AGPL-3.0-only)** — see [LICENSE](LICENSE).
+**AGPL-3.0-only**. See [LICENSE](LICENSE).
 
-This is the strongest copyleft in the GPL family: besides shipping the complete corresponding
-source when you distribute the software, **you must also offer the source to users who interact
-with it over a network** (§13, Remote Network Interaction). Anyone running a modified HologramAgent
-as a network service therefore has to make the modified source available to that service's users.
-
-Plugins are **statically linked** against this project through the public
-[hologramagentsdk](https://github.com/JianFeeeee/hologramagentsdk) (the SDK source ends up inside the
-plugin binary), but that repository is released under **MIT**. That is a permissive license, so code
-received under it does **not** inherit this project's AGPL. External plugins are therefore **not
-derivative works of this project**: authors pick their own license (closed-source, commercial or
-private included), with no same-license obligation and no §13 network clause. The safety and
-vitality of the third-party plugin ecosystem rest on this.
-
-The boundary is clean: **AGPL covers the kernel and the bundled plugins** (`homed`, `internal/`,
-the 13 built-in plugins under `internal/plugins/`); **MIT covers the public SDK** (`sdk/`, whose
-`go.mod` has zero external dependencies and imports only the Go standard library, never
-any kernel code). Process isolation is beside the point here. What decides the
-license is the linked SDK code itself, and that code is MIT.
+Bundled third-party components keep their own licenses; full texts ship in
+`/usr/share/doc/hologramagent/licenses/`.
 
 ### Third-party components shipped with the packages
 
@@ -186,6 +169,4 @@ license is the linked SDK code itself, and that code is MIT.
 | jieba dictionary (embedded in the binary) | MIT | `internal/memory/jiebadict/` |
 | Go dependencies (go-sqlite3, gojieba, bubbletea, …) | MIT / BSD-3 / Apache-2.0 | permissive, AGPL-3.0-compatible |
 
-These components keep their own licenses and are not relicensed by this project. Full texts are
-shipped in `/usr/share/doc/hologramagent/licenses/`, and the package metadata declares this package
-as `AGPL-3.0-only`.
+The package metadata declares this package as `AGPL-3.0-only`.

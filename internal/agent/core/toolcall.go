@@ -1159,7 +1159,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		for i, d := range docs {
 			// 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件。
 			//
-			// ARCHITECTURE「记忆流转」② Document 层：
+			// ARCHITECTURE「记忆流转」② 冷上下文 Cold Context：
 			//   coldcontext_query → Consume(读取并删除)
 			//             → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
 			n := a.restoreDocEvents(d, plan.Evict[d.ID])
@@ -1414,7 +1414,7 @@ func (a *Agent) currentFingerprint() string {
 //
 // ## 依据
 //
-// ARCHITECTURE「记忆流转」② Document 层的读取分支：
+// ARCHITECTURE「记忆流转」② 冷上下文 Cold Context 的读取分支：
 //
 //	coldcontext_query → Consume(读取并删除)
 //	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
