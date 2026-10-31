@@ -29,12 +29,36 @@ import (
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
-// setupLogging 初始化日志：行号前缀 + 同时输出到控制台与 <data>/log/ 下的本次启动文件。
+// logSourceEnv 是「日志带源文件位置」的开关环境变量。
+//
+// 为什么默认关：生产日志要紧凑可读。加了 `file.go:NNN` 之后每行前面多出一截
+// 内部实现信息，而**大多数日志本身已经带了模块前缀**（`[kbtree]`、`[plugin]`、
+// `[agent]`），定位能力并不缺。
+//
+// 而它也不便宜：`log.Lshortfile` 在**每一次** log 调用里做一次 runtime.Caller。
+//
+// 为什么保留开关而不是删掉：排查插件/装配问题时，同名文件（多个插件都有自己的
+// plugin.go）靠行号才能区分。部署方临时 `HOMED_LOG_SOURCE=1` 重启即可。
+const logSourceEnv = "HOMED_LOG_SOURCE"
+
+// logFlags 返回日志前缀标志位（抽出来便于判据直接验，不必真去建目录/开文件）。
+func logFlags() int {
+	flags := log.Ldate | log.Ltime
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(logSourceEnv))) {
+	case "1", "true", "yes", "on":
+		flags |= log.Lshortfile
+	}
+	return flags
+}
+
+// setupLogging 初始化日志：时间前缀 + 同时输出到控制台与 <data>/log/ 下的本次启动文件。
+//
+// 源文件位置默认不带，见 logSourceEnv。
 //
 // 本函数体是 main() 里对应启动阶段的整块平移：语句、日志文本、错误语义不变，
 // 只把「*dataDir」变成参数、把 defer 变成由调用点注册的 cleanup。
 func setupLogging(dataDir string) string {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	log.SetFlags(logFlags())
 
 	// 文件日志：同时输出到控制台和 data/log/ 目录
 	logDir := filepath.Join(dataDir, "log")
