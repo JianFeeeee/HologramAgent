@@ -152,9 +152,19 @@ print(d.get('name'), d.get('version'), d.get('description','')[:60])"; done
 
 ## 改内容前请核对事实
 
-页面上的数字都是**实测值**。**注意「在跑插件 36」是加载总数**
-（16 内置 + 20 外部），不是"外部插件数" —— 早期版本写成「36 外部插件」是错的，
-已更正。改动前建议重新取一遍：
+页面上的数字都是**实测值**，不是估算。**「在跑插件」是加载总数，不是外部插件数**
+—— 早期版本写成「36 外部插件」是错的。
+
+2026-10-31 重新核对（生产日志 `homed_2026-10-31_10-05-16.log`）：
+
+| 页面项 | 原值 | 实测 | 说明 |
+|---|---|---|---|
+| 在跑插件 | 36 | **30** | 插件迁移到 org 后外部插件减少 |
+| 可用工具 | 340 | **285** | |
+| Go 代码行 | 109k | **240k** | 原核对命令漏排除 `build/`，反而少算了 |
+| LLM 适配器 | 9 | 9 ✓ | `server.lua` 是网关脚本不算厂商适配器 |
+
+改动前建议重新取一遍：
 
 ```bash
 # 在跑插件（以日志里实际 loaded 的为准，比数目录可靠）
@@ -164,9 +174,13 @@ grep -h '\[plugin\] loaded:' $(ls -t ${HA_DATA}/log/homed_*.log | head -1) \
 # 工具数（同上，日志里注册后的真实值）
 grep -ohE '[0-9]+ tools' $(ls -t ${HA_DATA}/log/homed_*.log | head -1) | tail -1
 
-# Go 代码行（排除第三方与鸿蒙工程）
+# Go 代码行（排除第三方、鸿蒙工程、以及 build/dist 里的打包副本）
+# ★ 必须排除 build/ 与 dist/：那里有打包进去的 SDK 副本，会把数字翻倍
+#   （实测不排除时 516549 行，排除后 240056 行）
 find . -name '*.go' -not -path './.git/*' -not -path './.go/*' \
-  -not -path './third_party/*' -not -path './cmd/ohos/*' | xargs cat | wc -l
+  -not -path './third_party/*' -not -path './cmd/ohos/*' \
+  -not -path './build/*' -not -path './dist/*' -not -path './site_build/*' \
+  -not -path './package/*' | xargs cat | wc -l
 
 # LLM 适配器（注意 server.lua 是网关脚本，不是厂商适配器，故为 9）
 ls internal/lua/adapters/*.lua | xargs -n1 basename
