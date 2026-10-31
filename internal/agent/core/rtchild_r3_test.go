@@ -262,13 +262,37 @@ func TestRTChild_OutputIsStreamed(t *testing.T) {
 // ── R5：打断即截断，且不重试 ──
 
 // TestRTChild_InterruptTruncatesOutput 钉住契约 2 的后半：被打断时就地截断。
+//
+// ## 前置条件为什么不用固定的 5 秒（2026-10-31 修偶发红）
+//
+// 本用例曾在 CI 的 -race 门里偶发失败，报「等待超时：开始输出」（5.00s），
+// 而本地 -race 连跑 6 轮全过。查 CI 日志：`[rtchild] t started` 之后
+// **一轮都没跑到 provider**，所以不是输出丢了，是轮次没启动。
+//
+// 它把「前置条件」和「被测行为」混在一个固定超时里了：被测的是
+// 「Stop 之后输出冻结」，而「输出已开始」只是 setup。setup 等不到时，
+// 报错看不出卡在哪一步（provider 没被调？还是输出没到设备？）。
+//
+// 改法同 2026-10-24 的 TestStress_Nesting...：**等状态**而不是等时间，
+// 并把两个阶段分开等——超时时能直接指认出卡在哪一步。
 func TestRTChild_InterruptTruncatesOutput(t *testing.T) {
 	p := &rtBlockingProvider{blockForever: true}
 	host, dev := newRTHost(t, p)
 
 	id := rtSpawn(t, host, "t")
-	host.PushRTInput(id, "一直说")
-	waitFor(t, "开始输出", func() bool { return len(dev.snapshot()) >= 2 })
+	if _, err := host.PushRTInput(id, "一直说"); err != nil {
+		t.Fatalf("投递输入: %v", err)
+	}
+
+	// 阶段 1：轮次真的进入了 LLM 调用。
+	// 这是其他一切的前提；过不去就说明轮次没启动（而不是输出没外发）。
+	waitForWithin(t, "轮次进入 ChatStream", 30*time.Second, func() bool {
+		return p.callCount() >= 1
+	})
+	// 阶段 2：provider 的 chunk 真的经 outputch 到了设备。
+	waitForWithin(t, "开始输出（chunk 到设备）", 30*time.Second, func() bool {
+		return len(dev.snapshot()) >= 2
+	})
 
 	if err := host.StopRTChild(id); err != nil {
 		t.Fatalf("停止: %v", err)
