@@ -4,118 +4,46 @@
 
 > **中文**: [README.md](./README.md)
 
-HologramAgent is an agent kernel that runs on your own hardware. Connect it to QQ, a web UI,
-your shell, your files, a browser, and it works in all of them.
-
-Memory sinks: the last few turns stay in context, older ones become documents, oldest get
-distilled into triples in a graph database. That is why it can run for months without
-stuffing the entire history into every prompt.
-
-```bash
-./build/homed -data /tmp/ha      # start the kernel
-./build/waiter                    # talk to it
-```
-
-You need a Linux box. API keys go in through the web UI and live in local SQLite.
-Development started July 2026; currently 1.4.0.
-
----
-
-## Design decisions
-
-Plugins run in separate processes. One panics and the kernel stays up; it restarts on its
-own. Drop in a new `plugin.bin` and it's live. The earlier version used C shared libraries,
-where `dlclose` silently no-ops under `DF_1_NODELETE`, cgo timeouts leave threads alive, and
-one plugin panic dragged `homed` down with it. That is why it was rewritten as subprocesses
-plus shared memory.
-
-The kernel itself makes no HTTP calls and reads no files. Everything that touches the outside
-world lives in plugins: the web UI, QQ, command execution, web search, the browser. Not for
-tidiness. It means you can swap the entire interaction layer without touching the kernel.
-
-Inside one QQ plugin, a group owner and a random member can hold different permissions.
-Instructions arriving from another agent don't get written into your memory, though they can
-trigger recall. The kernel's security module makes those calls; plugins only declare.
-
-Memory is partitioned by scene, not by session. Move from work talk to personal talk and it
-splits context by channel, conversation partner, tools used, and time of day. When a scene
-recurs, last time's conclusions come back, including the ones it got wrong.
-
-## What it can do
-
-Places it talks: web UI, shell, QQ groups and DMs, other agents over A2A, and an ACP server
-inside your IDE. It can look at images, video, voice, and web pages, and it can drive a real
-Chrome.
-
-For getting things done it reads and writes files, runs commands, writes code, and handles
-calendars, notes, RSS, and music. QQ files and voice messages go both ways.
-
-Behind that sit three memory layers plus a graph database plus a knowledge base, recalled by
-scene. When new work arrives mid-task it enters a scheduler; if the user pushes back it can
-jump the queue, and interrupted work saves its state and resumes. Long jobs can be handed to
-sub-agents so they don't block the line you're talking on.
-
-28 built-in plugins, 89 model-callable tools. External plugins live one-per-repo at
-[github.com/HologramAgent](https://github.com/HologramAgent).
-
-## How it works
-
-```go
-homed  (kernel: LLM orchestration + memory + retrieval)
-   ↑ PluginSDK
-plugins  (web UI / QQ / CLI / files / network / all IO)
-```
-
-Three channels between kernel and plugins: JSON-RPC over stdio for control, shared memory
-for bulk data, an event ring for notifications. Large objects aren't serialized, so there's
-nothing to copy twice.
-
-Incoming messages hit a scheduler first, not the model. This exists for the case where work is
-already in flight and a new instruction arrives: queued work and interruptions are separate
-classes, interruptions carry four urgency levels, a higher level preempts a lower one and the
-preempted work saves its state to resume later. Same level waits.
-
-Below that sits a seven-stage pipeline where the model can call tools in a loop. Multiple tool
-calls in one turn are serial by default unless a tool declares itself concurrency-safe. One
-undeclared tool in a batch drops the whole batch back to serial.
-
-## Quick Start
+Self-hosted agent kernel. Connects to QQ, a web UI, your shell, files, and a browser. Runs for months without a restart and keeps what it learned.
 
 ```bash
 make build build-cli
 ./build/homed -data /tmp/ha
-```
-
-```bash
-# Interactive mode
-./build/waiter
-
-# Or a single message
-echo "Hi, remember I like coffee" | ./build/waiter
-```
-
-### Daemon mode
-
-`waiter` can also run resident, holding a persistent connection to `homed` and waiting for a
-TUI instance to attach. Useful when the agent needs to reach you proactively or keep a device
-bridge alive.
-
-```bash
-# Resident (connects to ~/.homeagent/cli.sock by default)
-./build/waiter --daemon
-
-# Custom socket
-./build/waiter --socket /path/to/cli.sock --daemon
-
-# Any TUI or one-shot instance then attaches to the running daemon instead of homed directly
 ./build/waiter
 ```
 
-The daemon listens on `~/.homeagent/waiter.sock`, replays the last 256 lines of conversation to
-new clients, survives disconnects, reconnects to `homed` on its own, and keeps the device bridge
-alive when `device_gateway` / `device_token` are configured.
+API keys go in the web UI at `http://localhost:8080`. Requires Linux.
 
-Set API keys in the web UI at `http://localhost:8080`; they persist in SQLite.
+## What it does
+
+- **Channels**: web UI, CLI, QQ groups and DMs, A2A, ACP in your IDE
+- **Tools**: files, shell, code, browser (real Chrome), calendar, notes, RSS, music
+- **Modalities**: images, video, voice, screenshots, web pages
+- **Memory**: three layers (context → document → graph) plus a knowledge base, recalled by scene
+- **Scheduling**: parallel sub-agents, interrupt preemption, resumable state
+
+28 built-in plugins, 89 model-callable tools. External plugins live one per repo under [github.com/HologramAgent](https://github.com/HologramAgent).
+
+## Architecture
+
+```go
+homed  (kernel: LLM orchestration, memory, retrieval)
+   ↑ PluginSDK
+plugins  (all IO: web UI, QQ, CLI, files, network)
+```
+
+The kernel makes no IO calls. Plugins run as separate processes and talk to it over three channels: JSON-RPC on stdio for control, shared memory for bulk data, an event ring for notifications. A plugin panic doesn't take the kernel down.
+
+Memory sinks over time. Recent turns stay in context, older ones become documents, oldest get distilled into graph triples.
+
+Memory is partitioned by scene rather than by session. A scene is made of channel, conversation partner, tools used, and time of day, so returning to a topic recalls what was concluded last time.
+
+## Documentation
+
+- [Architecture](assets/docs/en/ARCHITECTURE.md) ([中文](assets/docs/zh/ARCHITECTURE.md))
+- [Plugin development](assets/docs/en/PLUGIN_DEV.md)
+- [SDK docs](https://sdk.homeagent.jianfgit.xyz/) · [llms.txt](https://sdk.homeagent.jianfgit.xyz/llms.txt)
+- [Changelog](CHANGELOG_EN.md) · [Design docs](docs/zh/README.md) · [Future plan](docs/zh/future-plan.md)
 
 ## Code Structure
 
@@ -137,26 +65,6 @@ External plugin development: see the [hologramagentsdk](https://github.com/JianF
 repo with the `hmapdev` toolchain. Each plugin has its own repo under
 [github.com/HologramAgent](https://github.com/HologramAgent).
 ```
-
-## Documentation
-
-**Online docs**:
-
-- Introduction site (project overview): <https://introduce.homeagent.jianfgit.xyz/>
-- Plugin SDK docs (getting started / API reference / guides / examples): <https://sdk.homeagent.jianfgit.xyz/>
-  plain-text entry for agents: [`llms.txt`](https://sdk.homeagent.jianfgit.xyz/llms.txt) /
-  [`llms-full.txt`](https://sdk.homeagent.jianfgit.xyz/llms-full.txt)
-
-**In-repo docs** (versioned with the code):
-
-- [Project Overview](assets/docs/en/OVERVIEW.md) | [中文](assets/docs/zh/OVERVIEW.md)
-- [Technical Architecture](assets/docs/en/ARCHITECTURE.md) | [中文](assets/docs/zh/ARCHITECTURE.md)
-- [Plugin Development Guide](assets/docs/en/PLUGIN_DEV.md) | [中文](assets/docs/zh/PLUGIN_DEV.md)
-- [Lua Adapter](assets/docs/en/ADAPTER.md) | [中文](assets/docs/zh/ADAPTER.md)
-- [Knowledge Base Demo](assets/knowledge/homeagent_architecture/content.md)
-- [Design doc index](docs/zh/README.md) — status classification and trust rules for 32 design docs
-- [Changelog](CHANGELOG_EN.md) — what actually changed in each release
-- [Future plan](docs/zh/future-plan.md) — everything not yet built
 
 ## Downloads
 
