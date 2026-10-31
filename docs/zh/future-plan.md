@@ -327,6 +327,35 @@ retention 修好之后这些会被逐步清掉，但不会立刻（要等跨月�
 
 ## 五、文档与工程卫生
 
+### 5.0 🟡 两个测试用例存在「固定时间假设」导致偶发红
+
+**2026-10-31 记录。** CI 的 `-race` 门两次因偶发失败变红（提交 `merge: pr31`、
+`style(webui)`），本地却复现不出来。
+
+#### 已修：`TestRTChild_InterruptTruncatesOutput`
+
+失败信息 `等待超时：开始输出`（正好 5.00s）。查 CI 日志：`[rtchild] t started`
+之后**一轮都没跑到 provider** —— 不是输出丢了，是轮次没启动。
+
+原写法把「前置条件（输出已开始）」和「被测行为（Stop 后输出冻结）」塞进同一个
+固定 5 秒的 `waitFor` 里，超时时看不出卡在哪一步。已改成两段**等状态**：
+先等 `p.callCount() >= 1`（轮次真进入 ChatStream），再等 chunk 到设备。
+超时直接指认卡在哪步。同 2026-10-24 `TestStress_Nesting...` 的修法。
+
+#### 未修：`TestResidualDropNotifiesSyncCaller`
+
+本地整包 `-race` 8 轮里偶发 1 次（`应处置 1 条，实际 0`），CI 从未出现。
+
+根因已定位：`scheduler.waitSchedulerStopped()` 只等 **`running == nil`**
+（没有任务在跑），**不等调度循环退出**。于是 `child.cancel()` 之后仍有一个窗口：
+循环可能还停在下一轮顶部、或正走到 `pumpInbox`/`nextRef`，把测试刚入队的任务
+取走执行 ⇒ 残余任务为 0 ⇒ 断言失效。
+
+**要修得给生产代码加一个「循环已退出」的信号**（`schedulerLoop` 退出时 close
+一个 channel，`waitSchedulerStopped` 改为等它），不是改测试能解决的。
+因此先登记、不改：它在 CI 里从未出现过，而改调度器退出信号属于生产路径改动，
+收益与风险不匹配。
+
 ### 5.1 🟡 README / ARCHITECTURE 的工具名陈旧
 
 实际工具名是 `stablemem_*` / `coldcontext_*`，但对外文档仍写 `memory_recall` /
