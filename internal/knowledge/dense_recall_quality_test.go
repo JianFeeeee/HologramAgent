@@ -140,7 +140,7 @@ func TestDenseRecallQuality(t *testing.T) {
 // 退化路径（未注入多模态空间时用稀疏两路）是**有意保留**的：
 // 留空 core.memory.multimodal_space.provider 的部署仍需可检索，
 // 否则直接变成「知识库完全不能用」。
-func TestDensePathIsSoleRecall(t *testing.T) {
+func TestDensePathFeedsRanking(t *testing.T) {
 	src := readSourceFile(t, "knowledge.go")
 	start := strings.Index(src, "func (s *Store) SearchIn(")
 	if start < 0 {
@@ -152,40 +152,88 @@ func TestDensePathIsSoleRecall(t *testing.T) {
 	}
 	body := src[start : start+end]
 
-	// 稠密路分支必须存在且在稀疏两路之前（提前返回）。
+	// 稠密路分支必须存在且在两路收集之前。
 	denseAt := strings.Index(body, "denseHits(qv)")
 	if denseAt < 0 {
-		t.Fatal("SearchIn 必须调用 denseHits（稠密路是唯一召回路径）")
+		t.Fatal("SearchIn 必须调用 denseHits（稠密路是语义主线）")
 	}
 
-	// 稠密分支必须真的**以它的结果返回**，不能只是调用完就丢掉。
-	// 光看 source 里有没有 denseHits 不够：把结果赋给 _ 再走融合
-	// 也能骗过纯文本断言（变异测试实测过）。
-	if !regexp.MustCompile(`hits\s*:=\s*s\.denseHits\(qv\)`).MatchString(body) {
-		t.Error("稠密路的结果必须被接住（hits := s.denseHits(qv)）并用于排序返回；" +
-			"只调用不使用等于没接——排序仍会落到稀疏融合上")
+	// ★ 本条判据真正要防的是「调用了 denseHits 却把结果丢掉」——
+	// 这个反模式实测踩过：把结果赋给 _ 再走别的路径，排序完全落到另一路上，
+	// 而表面上「稠密路接了」看起来是好的。
+	//
+	// 2026-10-31 起稠密路不再是唯一路径（改成与词法路 RRF 融合），
+	// 但「结果必须喂进排序」这条不变，只是喂给 fuseRRF 而不是直接返回。
+	if !regexp.MustCompile(`(\w+)\s*:=\s*s\.denseHits\(qv\)`).MatchString(body) {
+		t.Fatal("稠密路的结果必须被接住（x := s.denseHits(qv)）")
+	}
+	if !regexp.MustCompile(`fuseRRF\(\s*(\w+)`).MatchString(body) {
+		t.Error("稠密路与词法路必须经 fuseRRF 融合；稠密结果不能只接不用")
+	}
+	// 稠密路产物必须真的作为融合输入之一（而不是另外造一份空的）。
+	if !regexp.MustCompile(`dense\s*:=\s*s\.denseHits\(qv\)`).MatchString(body) ||
+		!regexp.MustCompile(`fuseRRF\(\s*dense\s*,`).MatchString(body) {
+		t.Error("必须写成 dense := s.denseHits(qv) 然后 fuseRRF(dense, ...)")
 	}
 	if !regexp.MustCompile(`if k, ok := s\.items\[h\.id\]`).MatchString(body) {
-		t.Error("稠密路结果必须参与条目组装（s.items[h.id]），不能是摆设")
+		t.Error("融合结果必须参与条目组装（s.items[h.id]），不能是摆设")
 	}
 
-	sparseAt := strings.Index(body, "s.vec.SearchScored")
-	if sparseAt < 0 {
-		return // 已彻底移除稀疏路调用（比 fallback 更彻底），通过
+	// 词法路也必须真的接上，「稀疏语义路」仍然不该回来。
+	if !regexp.MustCompile(`lex\s*:=\s*s\.lexHits\(query\)`).MatchString(body) {
+		t.Error("词法路必须接上（lex := s.lexHits(query)）——" +
+			"它是 PruneOldBackups / strip_path 这类标识符查询的唯一命中路径")
 	}
-	if denseAt > sparseAt {
-		t.Error("稠密路必须在稀疏路之前并提前返回：\n" +
-			"  稀疏路的逐路归一化会把 0.02x 的弱信号抬到 1.0，\n" +
-			"  与稠密路的 1.0 等权相加 → 噪声压倒信号（实测 top1 掉到 1/10）")
+	// 稀疏语义路不得出现在**稠密分支**里（退化路径用它是对的）。
+	if deg := strings.Index(body, "退化路径"); deg > 0 {
+		if strings.Contains(body[:deg], "s.vec.SearchScored") {
+			t.Error("稀疏语义路不该回到稠密分支：它与稠密路高度冗余，" +
+				"而逐路归一化的坑见 Search 的文档注释")
+		}
 	}
 }
 
-// TestSearchDocReflectsDenseOnly 防止文档与实现漂移。
+// TestIdentifierTokenFeedsLex 钉住「分词器修好了」这个前提。
 //
-// 只钉「文档不能声称三路融合是当前行为」。不能简单搜「三路」——
-// 新文档在解释「为何不再做三路融合」时会正当地提到它。
-// 故改为检查那些**只在声称当前这么做时**才会出现的句子。
-func TestSearchDocReflectsDenseOnly(t *testing.T) {
+// 若 identtoken.go 退化回 jieba 单字符切分，上面那条 RRF 判据仍会绿，
+// 但 PruneOldBackups 又搜不到了 —— 所以必须单独钉分词结果。
+func TestIdentifierTokenFeedsLex(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"PruneOldBackups", "pruneoldbackups"}, // 整词（不拆 camelCase）
+		{"strip_path", "strip_path"},           // 整词保留分隔符
+		{"strip_path", "strip"},                // 部件
+		{"coldcontext_query", "coldcontext"},   // 部件
+	}
+	for _, c := range cases {
+		got := identifierTokenizer(c.in)
+		found := false
+		for _, g := range got {
+			if g == c.want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("identifierTokenizer(%q) 必须产出 %q，实际 %v", c.in, c.want, got)
+		}
+	}
+	// 反向：不能拆出 old —— 那会命中 cjcompat 的 --old（31 次）把无关文档顶上来
+	for _, g := range identifierTokenizer("PruneOldBackups") {
+		if g == "old" || g == "backups" {
+			t.Errorf("不该拆 camelCase：产出了 %q（会把 --old 密集的无关文档顶上来）", g)
+		}
+	}
+	// 中文行为不变
+	if toks := identifierTokenizer("知识库检索"); len(toks) == 0 {
+		t.Error("中文分词不该被影响")
+	}
+}
+
+// TestSearchDocReflectsRRF 防止文档与实现漂移。
+//
+// 2026-10-31 起语义变为「稠密 + 词法 RRF 融合」，本判据随之更新：
+// 文档必须声明 RRF，且不得再声称「稠密路是唯一召回路径」。
+func TestSearchDocReflectsRRF(t *testing.T) {
 	src := readSourceFile(t, "knowledge.go")
 	i := strings.Index(src, "// Search ")
 	if i < 0 {
@@ -193,10 +241,13 @@ func TestSearchDocReflectsDenseOnly(t *testing.T) {
 	}
 	doc := src[i:min(len(src), i+2500)]
 
-	// ① 必须声明稠密路是唯一召回路径。
-	if !strings.Contains(doc, "唯一召回路径") {
-		t.Error("Search 文档必须明写「稠密向量路是唯一召回路径」——" +
-			"这是接口语义，调用方靠它理解为何换了模型就要重建向量")
+	// ① 必须声明 RRF 融合（这是现行接口语义）。
+	if !strings.Contains(doc, "RRF") {
+		t.Error("Search 文档必须写明「稠密路 + 词法路按 RRF 融合」")
+	}
+	// ①' 不得再声称稠密路是唯一路径（已与实现不符）。
+	if strings.Contains(doc, "稠密向量路是**唯一召回路径**") {
+		t.Error("Search 文档仍在声称「稠密向量路是唯一召回路径」，与实现不符")
 	}
 	// ② 不得声称仍在融合（旧文档的原句）。
 	for _, banned := range []string{
