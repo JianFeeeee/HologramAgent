@@ -196,8 +196,11 @@ func NewStore(root string) *Store {
 		denseCachePath: filepath.Join(root, ".dense.json"),
 		vec:            vector.NewStore(),
 		lex:            newLexicalStore(),
-		veczer:         vector.NewTFIDFVectorizer(memory.TokenizeWords),
-		items:          make(map[string]*Knowledge),
+		// 词法路用**标识符感知**分词器（见 identtoken.go），不是 memory.TokenizeWords：
+		// jieba 会把 `PruneOldBackups` 切成单字符，词法路对标识符因此完全失效。
+		// 只改知识库这一条路，内存索引/关键词提取仍用原分词器（行为不变）。
+		veczer: vector.NewTFIDFVectorizer(identifierTokenizer),
+		items:  make(map[string]*Knowledge),
 	}
 }
 
@@ -491,48 +494,49 @@ var sparseSemWeight = 0.5
 // 既然不再融合，就不存在「稠密路占多少预算」的问题。
 // 保留本注释是因为 rankdiag_test 的历史实测门槛引用过它。
 
-// Search 检索知识库：**稠密向量路是唯一召回路径**。
+// Search 检索知识库：**稠密路 + 词法路按 RRF 融合**。
 //
-// # 为何不再做三路融合（2026-10-08 改）
+// # 现行为（2026-10-31 改）
 //
-// 此前是「稠密 + 稀疏语义（词向量/TF-IDF）+ 词法（TF-IDF）」三路融合，
-// 每路按**查询内最大值**归一化到 1.0 再加权。这个归一化是致命的：
+// 两路各自给候选排序，再用倒数排名融合（RRF）合并：
+//
+//	score(d) = 1.0/(60+rank_dense) + 0.5/(60+rank_lex)
+//
+// 稠密路是语义主线（权重 1.0），词法路只做**精确命名**的救助（权重 0.5）。
+//
+// # 为什么不回到三路融合（2026-10-08 那次为什么淘汰它）
+//
+// 当时是「稠密 + 稀疏语义 + 词法」三路，每路按**查询内最大值**归一化到 1.0
+// 再加权相加。那个归一化是致命的：
 //
 //	实测（真实 KB 192 条）词法路对 `the_jet_engine` 的原始分只有 0.027，
 //	归一化后变成 1.0，与稠密路的 1.0 **等权相加** —— 弱信号被抬到
 //	与强信号同样的分量，噪声压倒信号。
 //
-// 后果是检索几乎完全失效：10 条带标注查询里 top-1 只命中 1 条，
-// 连条目自己的全名都搜不到（`plugin_dev_sdk` 搜不到 `plugin_dev_sdk`），
-// 用户看到的是「查什么都返回同样的几个无关条目」。
+// 于是改成「稠密路唯一」，top1 从 1/10 提到 6/10。
 //
-// 而**稠密路单独打分时表现极好** —— 同一批查询全库排名 1/192：
+// # 为什么现在要加回词法路（2026-10-31）
 //
-//	the_jet_engine     → the_jet_engine_rolls-royce  0.769
-//	plugin_dev_sdk     → plugin_dev_sdk              0.852
-//	homeagent_identity → homeagent_identity          0.823
+// 「稠密路唯一」在**英文标识符**这类查询上留下了洞。实测（真实 196 条库）：
 //
-// 改后实测：top1 1/10 → 6/10，top3 2/10 → 6/10。
+//	query=PruneOldBackups   → 目标条目从未进前五
+//	query=minSceneEvidence  → 同上
+//	query=strip_path        → 同上
 //
-// # 为何能去掉归一化
+// 返回的全是 154 条 cangjie 文档里反复霸榜的那几篇。原因是词法路当年被淘汰
+// 时，把**分词器的缺陷**误判成了词法路的属性：jieba 对英文标识符是
+// **按字符切**的（`PruneOldBackups` → `[P r u n e O l d B a c k p s]`），
+// 任意两篇含英文字母的文档 token 重叠率都能到 50%。
 //
-// 余弦分数**本身就是可比的**（同一空间、同一维度下），不需要逐路归一化。
-// 归一化当初是为了把「量级不同的三路」拉到同一尺度，现在只剩一路，
-// 它反而成了破坏排序的东西。
+// 修掉分词器（identtoken.go：标识符整词 + 分隔符部件，且不拆 camelCase）后，
+// 同三条查询词法路**唯一命中**目标条目。而稠密路对「只在文中出现一次专名」
+// 本就无能为力（chineseclip 的纯文本语义弱，见 multimodal-space 文档的已知代价）。
 //
-// # 历史结论为何在此时翻转
+// 用 RRF 而不是当初那套归一化：RRF 只看**名次**、不看分数，两路量纲不可比
+// 的问题自动消失，也不会把 0.02 的弱信号抬到与 1.0 等权（第 100 名只贡献
+// 1/160，第 1 名贡献 1/61）。
 //
-// 旧注释引的实测（仅稠密路 top-1 15%、MRR 0.271；融合后 21% / 0.376）
-// 做在两处**已不再成立的前提**上：
-//   - 33 条的小规模 KB（现在是 192 条，且含大量英文标识符）
-//   - 稀疏 fastText 词向量（现在是 chineseclip 512 维多模态空间）
-//
-// 换成真正的多模态向量空间后，稠密路的语义能力与当时不可同日而语，
-// 而稀疏路的「对专名/术语强」在**英文标识符**上反而因 jieba 把
-// the_jet_engine 切成 [t h e _ j n g ...] 而完全失效——两条无关文档
-// 的 token 重叠率高达 50%。
-//
-// 回归判据：dense_recall_quality_test.go（带标注的 10 条查询集）。
+// 回归判据：dense_recall_quality_test.go（带标注的 10 条查询集 + 标识符用例）。
 func (s *Store) Search(query string, topK int) []*Knowledge {
 	return s.SearchIn(query, "", topK)
 }
@@ -575,22 +579,45 @@ func (s *Store) SearchIn(query, category string, topK int) []*Knowledge {
 		return nil // 该分类下没有任何条目，省掉全库打分
 	}
 
-	// ★ 稠密向量路是**唯一召回路径**（2026-10-08）。
+	// ★ 稠密路 + 词法路按 **RRF（倒数排名融合）** 合并（2026-10-31 改）。
 	//
-	// 详见 Search 的文档注释：三路融合的逐路归一化把 0.02x 的弱信号
-	// 抬到与稠密路的 1.0 等权，导致检索几乎完全失效（top1 1/10）。
-	// 这里直接返回稠密路结果，不经任何融合。
+	// ## 为什么不再是「稠密路唯一」
+	//
+	// 2026-10-08 去掉词法路的理由是「词法路对英文标识符失效」。那个观察是对的，
+	// 但归因错了 —— 失效的是**分词器**（jieba 把 `PruneOldBackups` 切成
+	// `[P r u n e O l d B a c k p s]`），不是词法路本身。修掉分词器
+	// （见 identtoken.go）后，同一批查询词法路能精确命中：
+	//
+	//	PruneOldBackups  → hologramagent_kernel_assembly_upgrade（唯一命中）
+	//	minSceneEvidence → hologramagent_kernel_facts
+	//	strip_path       → changelog_v1.4.0
+	//
+	// 而稠密路对这些**只在文中出现一次的专名**无能为力（chineseclip 纯文本语义弱），
+	// 实测这三条查询的目标条目一次都进不了前五，返回的是 154 条 cangjie 文档里
+	// 反复霸榜的那几篇。
+	//
+	// ## 为什么用 RRF 而不是 2026-10-08 淘汰的那套
+	//
+	// 被淘汰的是「逐路按查询内最大值归一化再加权相加」。那个做法把词法路 0.027 的
+	// 原始分抬成 1.0，与稠密路的 1.0 等权 —— 是**归一化**破坏了排序，不是词法路没用。
+	// RRF 只用**名次**不用分数，天然不受两路量纲差异影响，也不会放大弱信号：
+	// 第 100 名贡献 1/(60+100)，与第 1 名的 1/61 差 2.6 倍，不会等权。
+	//
+	// 两路权重：稠密 1.0、词法 0.5 —— 语义仍是主线，词法只做精确命名的救助。
 	if s.denseEnabled() {
 		qv, err := s.dense.VectorizeDense(query)
 		if err != nil || len(qv) == 0 {
 			// 向量化失败或得到空向量（空/纯空白查询）。
-			// 稠密路是唯一路径，故返回空而不是退回稀疏路——
-			// 退回就等于把已验证的退化行为又放回来。
-			return nil
+			// 退回词法路：它不依赖模型，至少还能按字面命中。
+			return s.searchLexOnly(query, inScope, topK)
 		}
-		hits := s.denseHits(qv)
+		dense := s.denseHits(qv)
+		lex := s.lexHits(query)
+
+		// 任一路为空都不影响另一路（RRF 对缺席的路径就是不加分）。
+		fused := fuseRRF(dense, lex, 1.0, 0.5, rrfK)
 		out := make([]*Knowledge, 0, topK)
-		for _, h := range hits {
+		for _, h := range fused {
 			if !inScope(h.id) {
 				continue
 			}
