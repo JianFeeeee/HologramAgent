@@ -809,3 +809,118 @@ func TestAirInterrupt_RejectsOrdinaryEmptyInput(t *testing.T) {
 		t.Error("带正文的中断不应被认作空中断")
 	}
 }
+
+// ── 段页式：统计视图必须等于渲染视图（2026-11-02 生产事故） ──
+
+// TestEventTokens_ExcludesInactivePages 钉住「被剔除的页不占预算」。
+//
+// ## 生产现场（2026-11-02 20:58:24）
+//
+//	air-interrupt prune: 12→5 events (44185→39714 tokens), ratio=1.21
+//
+// 事件从 12 条裁到 5 条、页也剔了，token 只降 10% —— 因为被剔除页的工具结果
+// 仍然被 eventTokens 计入。于是水位降不下来，L4 反复触发，最终：
+//
+//	context overflow: recover budget exhausted (2/2), terminating this frame
+//	上下文超限：已裁剪 2 次仍超出窗口，本轮终止
+//
+// ## 为什么这是缺陷而不是保守
+//
+// buildTimeline（process.go:597）明确跳过 InactivePages 里的页 —— 模型根本
+// 看不到那些内容。看不到却要占预算，就是「统计视图 ≠ 渲染视图」，
+// 结果是裁剪永远裁不动：越裁越以为没裁。
+//
+// ## 变异
+//
+// 去掉 eventTokens 里的 containsInt 判断（恢复全量统计）⇒ 本判据红。
+func TestEventTokens_ExcludesInactivePages(t *testing.T) {
+	big := strings.Repeat("x", 4000) // ≈ 1000+ token
+
+	ev := ContextEvent{
+		Input:    "用户提问",
+		Response: "模型回答",
+		ToolCalls: []ToolCallItem{
+			{CallID: "c1", Name: "tool_one"},
+			{CallID: "c2", Name: "tool_two"},
+		},
+		ToolResults: []ToolResultItem{
+			{CallID: "c1", Name: "tool_one", Output: big},
+			{CallID: "c2", Name: "tool_two", Output: big},
+		},
+	}
+
+	full := eventTokens(ev)
+	if full <= 0 {
+		t.Fatal("全量统计不应为 0")
+	}
+
+	// 剔除第 2 页（= ToolCalls[0]，即 tool_one）
+	ev.InactivePages = []int{2}
+	trimmed := eventTokens(ev)
+
+	if trimmed >= full {
+		t.Fatalf("剔除一页后统计未下降：full=%d trimmed=%d —— "+
+			"被剔除的页不渲染却仍占预算，裁剪会永远裁不动", full, trimmed)
+	}
+	// 剔除的必须**正好**是那一页的量，不能多不能少。
+	onePage := EstimateTokens(big)
+	if diff := full - trimmed; diff < onePage/2 || diff > onePage*2 {
+		t.Fatalf("剔除量 %d 与单页约 %d token 不符 —— 剔错了页", diff, onePage)
+	}
+}
+
+// TestEventTokens_LLMRoundNeverExcluded 钉住第 1 页受保护。
+//
+// 第 1 页是「用户说了什么 + 模型答了什么」。剔除它这一帧就只剩工具流水，
+// 模型无法理解上下文在讲什么 —— 所以 evictPagesLocked 从 p=2 起剔。
+// 本判据保证 eventTokens 不会因为误算把 Input/Response 也算成可剔除。
+func TestEventTokens_LLMRoundNeverExcluded(t *testing.T) {
+	ev := ContextEvent{
+		Input:    "用户说的关键内容",
+		Response: "模型的回答",
+		// 即便页标记里有 1（不该发生），Input/Response 也必须被计入。
+		InactivePages: []int{1},
+	}
+	if n := eventTokens(ev); n <= 0 {
+		t.Fatal("llm_round（第 1 页）被整体剔除了 —— 模型将无法理解上下文在讲什么")
+	}
+}
+
+// TestOverflowRatio_DropsAfterPageEviction 是端到端的那一半：
+// 页剔除后 overflowRatioNow 必须真的下降。
+//
+// 只测 eventTokens 不够 —— 真正驱动报错的是 accumulatedTokens → overflowRatioNow
+// 这条链。判据覆盖到调用方才能保证「剔了页水位真的动」。
+func TestOverflowRatio_DropsAfterPageEviction(t *testing.T) {
+	a := newOverflowAgent(2000, 1, 10, 100)
+	big := strings.Repeat("y", 6000)
+	for i := 0; i < 6; i++ {
+		a.context.Append(ContextEvent{
+			Input:    fmt.Sprintf("问 %d", i),
+			Response: "答",
+			ToolCalls: []ToolCallItem{
+				{CallID: fmt.Sprintf("c%d", i), Name: "big_tool"},
+			},
+			ToolResults: []ToolResultItem{
+				{CallID: fmt.Sprintf("c%d", i), Name: "big_tool", Output: big},
+			},
+		})
+	}
+	before := a.overflowRatioNow()
+	if before <= 0 {
+		t.Fatal("构造后应有非零水位")
+	}
+
+	// 对每条事件剔除其工具页（第 2 页）
+	a.context.mu.Lock()
+	for _, e := range a.context.events {
+		e.InactivePages = []int{2}
+	}
+	a.context.mu.Unlock()
+
+	after := a.overflowRatioNow()
+	if after >= before {
+		t.Fatalf("剔除全部工具页后水位没有下降：before=%.2f after=%.2f —— "+
+			"统计没有跟随渲染视图，超限会无限重试直到预算耗尽", before, after)
+	}
+}

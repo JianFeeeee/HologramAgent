@@ -69,9 +69,36 @@ func (a *Agent) accumulatedTokens() int {
 //
 // resident.go 的 checkContextFull 有同样缺陷，但它只对驻留子生效、一直没暴露；
 // 现在两处共用本函数，口径不会再漂移。
+//
+// ## 必须排除 InactivePages（2026-11-02 实测修复）
+//
+// 段页式淘汰（P5）把某些**工具页**标成 InactivePages，渲染时整页不出现
+// （process.go:597 的 buildTimeline）。但本函数此前仍按全量 ToolResults 统计 ——
+// 于是「渲染的少了、统计的没少」：页剔了，水位却不动，L4 空中断反复触发，
+// 最终把 overflowRecoverBudget 耗尽并报「上下文超限」。
+//
+// 生产实例实证（2026-11-02 19:10:45 / 20:58:24）：
+//
+//	air-interrupt prune: 12→5 events (44185→39714 tokens), ratio=1.21
+//
+// 事件少了 7 条、页也剔了，token 只降 10% —— 因为被剔页的工具结果仍在算。
+// 随后下一轮 ratio 又回到 1.33，预算 2/2 用尽。
+//
+// ★ 判据口径：**统计视图必须等于渲染视图**。渲染不出的内容不该占预算，
+// 否则裁剪永远「裁不动」，这不是保守，是自相矛盾。
 func eventTokens(e ContextEvent) int {
 	n := EstimateTokens(e.Input) + EstimateTokens(e.Response)
-	for _, tr := range e.ToolResults {
+	if len(e.ToolResults) == 0 {
+		return n
+	}
+	// 与 process.go 的 timelineToolLines 用**同一个**页索引函数：
+	// 配对规则（CallID 优先、退化到名字、配不上记 0 永不剔除）只能有一份。
+	pageOf := toolResultPageIndex(&e)
+	for i, tr := range e.ToolResults {
+		// 已剔除的页不渲染 ⇒ 不计入预算（渲染视图 = 统计视图）。
+		if i < len(pageOf) && containsInt(e.InactivePages, pageOf[i]) {
+			continue
+		}
 		n += EstimateTokens(tr.Output)
 	}
 	return n
