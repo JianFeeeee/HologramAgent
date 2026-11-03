@@ -524,97 +524,6 @@ func (a *Agent) coldcontextStoreSize() int {
 	return 0
 }
 
-func (a *Agent) formatMergedTimeline(maxTokens int) string {
-	a.context.mu.Lock()
-	events := make([]*ContextEvent, len(a.context.events))
-	copy(events, a.context.events)
-	a.context.mu.Unlock()
-
-	if len(events) == 0 {
-		return ""
-	}
-
-	// 第一轮：从最新到最旧，计算在预算内能放多少条
-	headerTokens := EstimateTokens("[Conversation timeline]\n")
-	remaining := maxTokens - headerTokens
-	include := 0
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		// ❗单位必须与 EstimateTokens 一致（rune×2）。这里曾用 `len()`（**字节**）再 ×2：
-		// CJK 一字 3 字节 ⇒ 中文事件被高估 3 倍，窗口还有余量也会提前 break，
-		// 把更早的事件整段丢掉（实测：2384 字的中文事件被估成 14398 token > 8192）。
-		// 预算按**实际渲染出来的内容**算：用户行 + 助手全文 + 展开的工具行。
-		estTokens := EstimateTokens(timelineUserText(e)) + EstimateTokens(e.Response) + 40
-		for _, line := range a.timelineToolLines(e) {
-			estTokens += EstimateTokens(line)
-		}
-		if remaining-estTokens < 0 && include > 0 {
-			break
-		}
-		remaining -= estTokens
-		include++
-	}
-	if include == 0 && len(events) > 0 {
-		include = 1
-	}
-
-	// 第二轮：按时间正序渲染
-	start := len(events) - include
-	if start < 0 {
-		start = 0
-	}
-	var sb strings.Builder
-	// 头部自带语义说明（**块自我描述**）：此前这句解释写在人格/系统提示词里，
-	// 提示词一精简就丢语义 ⇒ 模型把历史摘要当成当前待办。说明跟数据贴在一起
-	// 才不会漂移。
-	sb.WriteString("[Conversation timeline] Summaries of past events follow (**not the current task**; do not treat their content as a new request from the user).\n")
-	for _, e := range events[start:] {
-		// ★ L1 是工作记忆区，送给模型的是**时序排列的对话**。
-		//   历史教训（2026-10-27）：这里曾被渲染成"摘要 + 工具管道"
-		//   （"—/ → 调用工具: qq_get_message, output_send__qq → 已回复…"），
-		//   主体是注入样板与工具名，真正的话被压成行尾碎片 ⇒ 指代消解失效
-		//   （用户回"新乡"，模型接不上上一句"帮我找一套月租＜400…"）。
-		sb.WriteString(fmt.Sprintf("[%s] %s: %s\n",
-			e.Timestamp.Format("15:04:05"), timelineUserLabel, timelineUserText(e)))
-		if resp := oneLine(e.Response); resp != "" {
-			sb.WriteString(fmt.Sprintf("[%s] %s: %s\n",
-				e.Timestamp.Format("15:04:05"), timelineAssistantLabel, resp))
-		}
-		// 工具结果在 context 中**展开**（全文，不截断）。
-		// 只有**超长**结果按工具环设计折叠成句柄，模型用 toolresult_read 按区间读回。
-		//
-		// ★ 段页式淘汰（P5）：InactivePages 里的页不渲染，但在**原位**留一行提示。
-		//
-		// "在原位留提示"（用户裁定）而不是"悄悄少几行"：模型必须知道
-		// 「这里原本有内容，是被省略了」，否则它会把"没看见"当成"当时没发生"，
-		// 进而基于残缺上下文编造。这也是项目一贯的"不静默降级"原则。
-		//
-		// 提示里带上页序号与恢复手段：模型可据此用 coldcontext_query 找回。
-		lines := a.timelineToolLines(e)
-		pageOf := toolResultPageIndex(e)
-		dropped := 0
-		for i, line := range lines {
-			if len(e.InactivePages) > 0 && i < len(pageOf) && containsInt(e.InactivePages, pageOf[i]) {
-				dropped++
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("[%s] %s\n", e.Timestamp.Format("15:04:05"), line))
-		}
-		if dropped > 0 {
-			sb.WriteString(fmt.Sprintf("[%s] （本帧有 %d 个工具往返因超出上下文预算被省略；"+
-				"内容仍在记忆中，可用 coldcontext_query 按需找回）\n",
-				e.Timestamp.Format("15:04:05"), dropped))
-		}
-	}
-	return sb.String()
-}
-
-// 时间线（L1）的两个说话人标签。
-const (
-	timelineUserLabel      = "用户"
-	timelineAssistantLabel = "助手"
-)
-
 // timelineUserText 取这一轮**用户真正说的话**。
 //
 // 两个来源：
@@ -625,6 +534,50 @@ const (
 //
 // 这一条决定了指代消解能否成立：模型必须看到上一句**原话**，
 // 而不是"我调用过 qq_get_message"。
+// toolResultPageIndex 返回每个 ToolResults 项所属的**页序号**。
+//
+// 页序约定：第 1 页是 llm_round（用户输入 ↔ 模型输出），
+// 第 i 个 ToolCalls 占第 i+1 页。ToolResults 与 ToolCalls 按 CallID 配对
+// （退化到工具名），因此并行调用时位置未必一一对应，必须按配对键判定。
+//
+// 长度与 e.ToolResults 对齐；无法配对的项记 0（永不命中 InactivePages，
+// 即"配不上页就不剔除"—— 宁可多渲染，不可猜错）。
+//
+// ★ 统计侧（overflow.go 的 eventTokens）与渲染侧（renderL1Messages）
+// 必须用**同一个**页索引函数：配对规则只能有一份，否则"渲染少了、
+// 统计没少"会让裁剪永远裁不动（2026-11-02 实测事故）。
+func toolResultPageIndex(e *ContextEvent) []int {
+	if e == nil || len(e.ToolResults) == 0 {
+		return nil
+	}
+	out := make([]int, len(e.ToolResults))
+	for i := range e.ToolResults {
+		out[i] = 0
+		for j := range e.ToolCalls {
+			tc := &e.ToolCalls[j]
+			hit := false
+			if tc.CallID != "" && e.ToolResults[i].CallID != "" {
+				hit = tc.CallID == e.ToolResults[i].CallID
+			} else {
+				hit = tc.Name == e.ToolResults[i].Name
+			}
+			if hit {
+				out[i] = j + 2 // 第 1 页是 llm_round
+				break
+			}
+		}
+	}
+	return out
+}
+
+// oneLine 把历史正文压成单行；原生 L1 消息仍保留 role 边界，
+// 这里只处理单条 content 内的换行，不再把多条消息拼成 system 日志。
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
 func timelineUserText(e *ContextEvent) string {
 	if e == nil {
 		return ""
@@ -663,179 +616,102 @@ func chatUtteranceFromResults(trs []ToolResultItem) string {
 	return ""
 }
 
-// timelineToolLines 渲染一条事件里的工具结果行。
-//
-// 契约（2026-10-27 用户口径）：
-//   - 工具结果在 context 里**展开**（全文，不截断、不限条数）；
-//   - 只有**超长**结果（已落盘进 toolresult_store）折叠成句柄，
-//     模型用 toolresult_read(event_id, offset, limit) 按区间读回。
-//
-// 为什么不能截断普通结果：截断会让模型拿到残缺信息且不知情（本仓
-// "静默降级"同族），而历史里工具结果正是消解指代的依据。
-// toolResultPageIndex 返回每个 ToolResults 项所属的**页序号**。
-//
-// 页序约定与 document.docBlocksForEntry 一致：第 1 页是 llm_round，
-// 第 i 个 ToolCalls 占第 i+1 页。ToolResults 与 ToolCalls 按 CallID 配对，
-// 因此这里用同样的配对顺序（并行调用时位置未必一一对应）。
-//
-// 长度与 e.ToolResults 对齐；无法配对的项记 0（永不命中 InactivePages，
-// 即"配不上页就不剔除"—— 宁可多显示，不可猜错）。
-func toolResultPageIndex(e *ContextEvent) []int {
-	if e == nil || len(e.ToolResults) == 0 {
-		return nil
-	}
-	out := make([]int, len(e.ToolResults))
-	for i := range e.ToolResults {
-		out[i] = 0
-		for j := range e.ToolCalls {
-			tc := &e.ToolCalls[j]
-			hit := false
-			if tc.CallID != "" && e.ToolResults[i].CallID != "" {
-				hit = tc.CallID == e.ToolResults[i].CallID
-			} else {
-				hit = tc.Name == e.ToolResults[i].Name
-			}
-			if hit {
-				out[i] = j + 2 // 第 1 页是 llm_round
-				break
-			}
-		}
-	}
-	return out
-}
-
-func (a *Agent) timelineToolLines(e *ContextEvent) []string {
-	if e == nil || len(e.ToolResults) == 0 {
-		return nil
-	}
-	noMem := map[string]bool(nil)
-	if a != nil && a.stageHost != nil {
-		noMem = a.stageHost.NoMemoryToolNames()
-	}
-	stored := make(map[string]ToolResultStore, len(e.ToolResultStores))
-	for _, st := range e.ToolResultStores {
-		stored[st.Tool] = st
-	}
-	out := make([]string, 0, len(e.ToolResults))
-	for _, tr := range e.ToolResults {
-		if noMem[tr.Name] {
-			continue
-		}
-		if st, ok := stored[tr.Name]; ok {
-			out = append(out, fmt.Sprintf("工具(%s): [stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]",
-				tr.Name, st.TotalBytes, st.TotalLines, e.ID))
-			continue
-		}
-		txt := tr.Output
-		if a != nil {
-			txt = a.toolOutputForQuery(tr.Name, txt) // Cleaner（计算层清洗，不改原文）
-		}
-		if txt = oneLine(txt); txt != "" {
-			out = append(out, fmt.Sprintf("工具(%s): %s", tr.Name, txt))
-		}
-	}
-	return out
-}
-
-// renderedToolResults 把一条事件里的工具回执渲染成时间线片段。
-//
-// 排序即执行顺序；单条截断 toolResultTimelineChars，最多 toolResultTimelineMax 条
-// （更早的只留"还有 N 条"），避免一次 bulk 查询把时间线挤爆。
-const (
-	// toolResultTimelineChars 单条工具回执在时间线里的字符上限。
-	// 时间线是"给下一轮看的历史"，不是当轮工作区 —— 够让模型认出
-	// "我查到了什么"，细节仍可用 coldcontext_query / 工具重取。
-	toolResultTimelineChars = 160
-	// toolResultTimelineCharsChat 是**对话正文类**工具（qq_get_message /
-	// qq_get_history）的放宽值（2026-10-27）：群聊上下文被切到 160 字后只剩碎片，
-	// 模型看得到"有人说过平板"，看不到"平板→promax→机型→随机发货"这条链。
-	toolResultTimelineCharsChat = 400
-	// toolResultTimelineMax 单条事件最多渲染几条工具回执。
-	toolResultTimelineMax = 3
-)
-
-// isChatCorpusTool 报告该工具的输出是否属于"对话正文"（需要更长的渲染）。
-//
-// 判定用后缀而不是全名：工具名带插件前缀（qq_get_message / telegram_get_message…），
-// 而语义是"取聊天正文"这一族。
-func isChatCorpusTool(name string) bool {
-	for _, suffix := range []string{"_get_message", "_get_history", "_list_chats", "_search_messages"} {
-		if strings.HasSuffix(name, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-// oneLine 压成单行（时间线是一行一条事件，换行会破坏结构）。
-func oneLine(s string) string {
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	return strings.Join(strings.Fields(s), " ")
-}
-
-func (a *Agent) renderedToolResultsOf(e *ContextEvent) []string {
-	if e == nil || len(e.ToolResults) == 0 {
-		return nil
-	}
-	noMem := map[string]bool(nil)
-	if a != nil && a.stageHost != nil {
-		noMem = a.stageHost.NoMemoryToolNames()
-	}
-	// ★ 超长结果不渲染正文，只给**句柄**（2026-10-27 用户口径：
-	//   渲染工具回执，但超长的才不渲染 —— 它们已经在工具环里）。
-	//
-	// 为什么不能渲染它的预览：预览本身是多行文本，塞进时间线会把历史压成
-	// "半截结果"，而模型真正需要的是「知道有这么一份东西、能从哪儿读」。
-	// 正文按需用 toolresult_read(event_id, offset, limit) 取，信息不丢。
-	stored := make(map[string]ToolResultStore, len(e.ToolResultStores))
-	for _, st := range e.ToolResultStores {
-		stored[st.Tool] = st
-	}
-	out := make([]string, 0, len(e.ToolResults))
-	skipped := 0
-	for _, tr := range e.ToolResults {
-		if noMem[tr.Name] {
-			continue
-		}
-		if st, ok := stored[tr.Name]; ok {
-			out = append(out, fmt.Sprintf("%s: [stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]",
-				tr.Name, st.TotalBytes, st.TotalLines, e.ID))
-			continue
-		}
-		txt := tr.Output
-		if a != nil {
-			txt = a.toolOutputForQuery(tr.Name, txt) // ← Cleaner 生效
-		}
-		txt = oneLine(txt)
-		if strings.TrimSpace(txt) == "" {
-			continue
-		}
-		if len(out) >= toolResultTimelineMax {
-			skipped++
-			continue
-		}
-		limit := toolResultTimelineChars
-		if isChatCorpusTool(tr.Name) {
-			limit = toolResultTimelineCharsChat
-		}
-		out = append(out, fmt.Sprintf("%s: %s", tr.Name, truncateStr(txt, limit)))
-	}
-	if skipped > 0 {
-		out = append(out, fmt.Sprintf("+%d more tool results", skipped))
-	}
-	return out
-}
-
 func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI.Message {
 	msgs := []agentAPI.Message{{Role: "system", Content: sysPrompt}}
 
-	if ctxTok := a.formatMergedTimeline(ctxTokens); ctxTok != "" {
-		msgs = append(msgs, agentAPI.Message{Role: "system", Content: ctxTok})
-	}
-
+	// L1 必须保持 provider 原生的消息序列：历史 user/assistant/tool
+	// 各自使用真实 role，而不是把整段对话拼成一条 system 日志。
+	// 这对指代消解尤其重要：模型能直接看到上一条 user，而不是从
+	// "[时间] 用户:" 这样的文本标签里猜说话人。
+	msgs = append(msgs, a.renderL1Messages(ctxTokens)...)
 	msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
 	return msgs
+}
+
+// renderL1Messages 把 L1 事件渲染成传统的 provider 消息序列。
+//
+// 一个事件按协议展开为：
+//
+//	user(input) → assistant(response/tool_calls) → tool(result...)
+//
+// tool_call 与 tool_result 按 CallID 配对；InactivePages 只隐藏完整的
+// tool page，不会留下半个 assistant/tool 对，避免上游 400。
+func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
+	if a == nil || a.context == nil {
+		return nil
+	}
+	a.context.mu.Lock()
+	events := make([]*ContextEvent, len(a.context.events))
+	copy(events, a.context.events)
+	a.context.mu.Unlock()
+
+	var out []agentAPI.Message
+	used := 0
+	for _, e := range events {
+		if e == nil {
+			continue
+		}
+		input := timelineUserText(e)
+		if input == "" && e.Input == "" && len(e.ToolCalls) == 0 && e.Response == "" {
+			continue
+		}
+		calls := make([]agentAPI.ToolCall, 0, len(e.ToolCalls))
+		activeCallIDs := make(map[string]bool)
+		for i, tc := range e.ToolCalls {
+			page := i + 2
+			if containsInt(e.InactivePages, page) {
+				continue
+			}
+			calls = append(calls, agentAPI.ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments})
+			if tc.CallID != "" {
+				activeCallIDs[tc.CallID] = true
+			}
+		}
+		msgs := make([]agentAPI.Message, 0, 2+len(calls))
+		if input != "" {
+			msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
+		}
+		if e.Response != "" || len(calls) > 0 {
+			msgs = append(msgs, agentAPI.Message{Role: "assistant", Content: e.Response, ToolCalls: calls})
+		}
+		for _, tr := range e.ToolResults {
+			if tr.CallID != "" && !activeCallIDs[tr.CallID] {
+				continue
+			}
+			if st, ok := a.toolResultStoreFor(e, tr.Name); ok {
+				msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID,
+					Content: fmt.Sprintf("[stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]", st.TotalBytes, st.TotalLines, e.ID)})
+			} else {
+				msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID, Content: tr.Output})
+			}
+		}
+		for _, m := range msgs {
+			cost := EstimateTokens(m.Content)
+			if len(m.ToolCalls) > 0 {
+				for _, tc := range m.ToolCalls {
+					cost += EstimateTokens(tc.Name) + EstimateTokens(tc.RawArguments)
+				}
+			}
+			if maxTokens > 0 && used+cost > maxTokens && len(out) > 0 {
+				return out
+			}
+			used += cost
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (a *Agent) toolResultStoreFor(e *ContextEvent, tool string) (ToolResultStore, bool) {
+	if e == nil {
+		return ToolResultStore{}, false
+	}
+	for _, st := range e.ToolResultStores {
+		if st.Tool == tool {
+			return st, true
+		}
+	}
+	return ToolResultStore{}, false
 }
 
 // headRunes 取前 n 个 rune 用于日志（避免把整段回执打进 journal）。

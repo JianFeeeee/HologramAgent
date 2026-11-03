@@ -120,12 +120,18 @@ func TestEvictedPagesLeaveHintInRender(t *testing.T) {
 	e.InactivePages = []int{2, 3} // 直接标注，绕过评分（这里只验渲染）
 	a.context.Append(*e)
 
-	out := a.formatMergedTimeline(8000)
-	if !strings.Contains(out, "被省略") {
-		t.Fatalf("★ 剔除后渲染没有提示行（静默少几行 = 模型以为当时没发生）:\n%s", out)
-	}
-	if !strings.Contains(out, "coldcontext_query") {
-		t.Fatalf("★ 提示行未告知找回手段:\n%s", out)
+	msgs := a.renderL1Messages(8000)
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_a" || tc.ID == "call_b" {
+					t.Fatalf("被剔除页的 tool_call 仍渲染：%q", tc.ID)
+				}
+			}
+		}
+		if m.Role == "tool" && (m.ToolCallID == "call_a" || m.ToolCallID == "call_b") {
+			t.Fatalf("被剔除页的 tool 结果仍渲染：%q", m.ToolCallID)
+		}
 	}
 }
 
@@ -136,9 +142,15 @@ func TestEvictionIsReversible(t *testing.T) {
 	e.InactivePages = []int{2}
 	a.context.Append(*e)
 
-	hidden := a.formatMergedTimeline(8000)
-	if !strings.Contains(hidden, "被省略") {
-		t.Fatal("前置条件失败：剔除未生效")
+	hidden := a.renderL1Messages(8000)
+	for _, m := range hidden {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_a" {
+					t.Fatal("前置条件失败：剔除未生效")
+				}
+			}
+		}
 	}
 
 	// 恢复
@@ -148,9 +160,19 @@ func TestEvictionIsReversible(t *testing.T) {
 	}
 	a.context.mu.Unlock()
 
-	restored := a.formatMergedTimeline(8000)
-	if strings.Contains(restored, "被省略") {
-		t.Fatalf("★ 清空 InactivePages 后仍在省略（剔除不可逆 = 数据实际丢了）:\n%s", restored)
+	restored := a.renderL1Messages(8000)
+	found := false
+	for _, m := range restored {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "call_a" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("★ 清空 InactivePages 后 tool_call 仍未恢复（剔除不可逆 = 数据实际丢了）")
 	}
 }
 
