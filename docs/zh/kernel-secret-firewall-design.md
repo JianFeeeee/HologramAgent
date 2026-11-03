@@ -10,7 +10,8 @@
 > 详见 `internal/security/agentscope.go` 与 `round.go` 的包注释。
 >
 > **状态：部分实现。** 凭据防火墙、配置加密、变量库统一与 C1–C8 判据已落地并**在生产线生效**；
-> 但**三条能力机制完整却零生产调用方**（敏感词/注入预警、路径沙箱、网络闸）。
+> 敏感词/注入预警 **2026-11-02 已接通**（B 档：标记+警示）；
+> 仍**零生产调用方**的是路径沙箱（`CheckPath`）与网络闸（`CheckNetwork`）。
 > 本文保留原始设计与逐条审计记录；未实现项统一登记在
 > [`future-plan.md`](./future-plan.md) §一。
 >
@@ -28,7 +29,7 @@
 > | 按主体授权 `CheckToolFor` | 完整 | 同上（`checkToolForWithProfile` 同时叠主体策略） | ✅ **2026-10-30 接通** |
 > | 插件命名档位 `DeclareProfile` | 完整 | `sdk/security_impl.go`、`proc/corehandler_security.go` | ✅ 声明侧通 |
 > | 插件命名档位 `ActivateProfile` | 完整 | `security/agentscope.go` 的 `setSession` + `BeginRound` | ✅ **2026-10-31 接通**（每 agent 独立实例） |
-> | 敏感词/注入 `ScanContent` | 完整（254 行） | **无** | 🔴 配置里的敏感词一条不生效，见 future-plan §1.2 |
+> | 敏感词/注入 `Round.CheckContent` → `ScanContentFor` | 完整 | `task.go`（插件输入）、`toolcall.go` defer（工具结果） | ✅ **2026-11-02 接通**（B 档：标记+警示，不阻断） |
 > | 路径沙箱 `CheckPath` | 完整 | **无**（只被 Runtime 自己调 Policy） | 🔴 见 future-plan §1.3 |
 > | 网络闸 `CheckNetwork` | 完整 | **无**（同上） | 🔴 见 future-plan §1.3 |
 > | 事件总线授权 + 载荷过闸 | 完整 | `security/mod.go`（唯一装配点） | ✅ 生效 |

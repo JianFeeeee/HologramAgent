@@ -39,7 +39,7 @@
 | 1 | 工具黑白名单 `Policy.CheckTool` | 完整 | `Agent.security` 恒 nil，闸门恒放行 | ✅ 2026-10-30 修复（依赖图补 `FacSecurity`） |
 | 2 | 主体策略 `CheckToolFor` | 完整 | 0 生产调用方 | ✅ 2026-10-30 修复（父为子声明） |
 | 3 | 插件命名档位 `ActivateProfile` | 完整 | 曾 0 生产调用方 | ✅ 2026-10-31 修（见 §1.1，两次修才修对） |
-| 4 | 敏感词 / 注入预警 `ScanContent` | 完整（254 行） | **0 生产调用方** | 🔴 **未修**，见 §1.2 |
+| 4 | 敏感词 / 注入预警 `ScanContent` | 完整（254 行） | **0 生产调用方** | ✅ 2026-11-02 修复（见 §1.2） |
 | 5 | 沙箱 `CheckPath` / `CheckNetwork` | 完整 | **0 生产调用方** | 🔴 **未修**，见 §1.3 |
 
 **做任何新能力之前，先问一句：这条链的每一跳，生产里真的有人调吗？**
@@ -107,24 +107,68 @@ session 是"这一轮的事实"，必须能盖住 long-time 默认值（否则�
 
 ---
 
-### 1.2 🔴 敏感词 / 提示词注入预警从未运行
+### 1.2 ✅ 敏感词 / 提示词注入预警已接通（2026-11-02）
 
-**现状**：`internal/security/content.go`（254 行）实现了完整的
-`ContentPolicy{Scan, BlockedBy}`，`Runtime.ScanContent` 也写好了，
-但**全仓零生产调用方**（只剩 2 条测试在调）。
+> **本节已结案，保留是因为接通过程中的一次走错本身是教训。**
 
-**影响**：
+**原缺陷**：`content.go`（254 行）实现了完整的 `ContentPolicy{Scan, BlockedBy}`，
+`Runtime.ScanContent` 也写好了，但**全仓零生产调用方**。配置与插件档位里
+声明的敏感词一条都不生效，注入迹象也不预警 —— 症状与"没配"完全一样。
 
-- 配置里写的敏感词一条都不生效
-- 模型被提示词注入时内核不预警、不阻断
-- 插件通过 `SecurityProfile.SensitiveWords` 声明的档位敏感词同样不生效
+**接线做了什么**：
 
-**要做的**：在**入向边界**接线。合理位置是 `executeToolCallOutcome` 的 defer
-（那里已经有 `security.Global().Replace(...)` 做凭据脱敏，同一个位置、
-同一条 defer 分支），以及插件注入的输入在进 `prepareInputTask` 之前。
+```
+Round.CheckContent(ins, text)          ← security 对外的新入口
+  → Runtime.ScanContentFor(ins, text, EffectiveProfile())
+  → effectiveContentFor(profileName).Scan(...)
+```
 
-**注意**：不要只接一处。入向有两条路——工具结果、插件输入事件。只接一条会
-留下「工具的返回被扫了、插件消息没扫」的缺口，而后者才是注入的主要入口。
+两处入向落点（本节原先就写明"不要只接一处"，照做了）：
+
+| 路径 | 位置 | 词表源 |
+|---|---|---|
+| 插件输入 | `task.go` → `ReviewInputContent(round, …)` | 档位（security 内部解析） |
+| 工具结果 | `toolcall.go` 的 defer（与出向凭据脱敏同一位置） | 全局词表 |
+
+工具侧用全局词表是设计使然：工具执行链没有轮次句柄，硬塞"进程当前档"
+才是收敛前的毛病（`ActivateProfile` 全局单例）。
+
+**处置**：B 档 —— **标记 + 警示，不阻断**（用户裁定）。敏感词由插件按自己
+通道声明，词表难免偏宽，阻断会误杀正常消息。命中时保留原文、正文前追加
+警示语；警示写进正文而不是只记日志（模型看不到内核日志）。
+
+**顺带修出一个真缺陷**：`effectiveContent()` 读的是**进程级 active** 档位，
+而 2026-10-31 起档位已迁到 `AgentScope`。工具策略同步改了
+（`checkToolWithProfile` 走 `profilePolicyByName`），**内容审查没改** ——
+于是 session 档声明的敏感词永远并不进词表。新增 `effectiveContentFor(profileName)`。
+
+**☆ 走错的一次（与 §1.1 同族，值得记）**
+
+第一版我写的是：
+
+```go
+// ✗ 让 agent 自己解析档位再传进来
+a.security.ScanContentFor(ins, text, a.effectiveSecurityProfile())
+```
+
+这正是 §1.1 收敛掉的第 2 层毛病 —— 把「本轮该用哪个档位」这条策略语义
+交回调用方。判据红了两轮（档位在 `BeginRound` 之前是空值），我去读设计文档
+才发现方向错了，改走 `Round.CheckContent` 才对。
+
+> 教训：**先读设计再动手**。这次盲试了两轮，而设计文档的接线状态表里
+> 🔴 那一行、以及"要做的"那一段，早就写清了落点和口径。
+
+**☆ 判据补出来的第二课**
+
+最初的 6 条判据都直接调辅助函数 `ReviewInputContent`。做变异时发现：
+**把 `task.go` 里的调用删掉，6 条全部仍然绿**。
+
+那正是本模块的原始缺陷形态 ——「实现完整、判据绿、生产零调用」。
+所以补了 `TestInputContentReviewWiredIntoProcessing`：走真实入口
+`runInputTask`，断言 payload 被改写。变异后才真的变红。
+
+> 教训：**判据必须至少有一条走生产调用点**。测辅助函数证明"函数能用"，
+> 不证明"生产路径上有人调它"。
 
 ### 1.3 🔴 沙箱约束从未运行
 
