@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-SDK_DIR=${REPO}/third_party/homeagent-sdk
+SDK_DIR=${REPO}/third_party/hologramagentsdk
 BUILD_DIR="$SDK_DIR/site_build"
 HOST=192.168.2.106
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no admin@$HOST"

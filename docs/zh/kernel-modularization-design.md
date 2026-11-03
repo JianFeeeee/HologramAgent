@@ -661,7 +661,7 @@ loadOne(name):
 #### 2.6.7.5 SDK 兼容性：一个必须记住的**例外**
 
 本轮给公开 SDK 的 `PluginMgrAPI` 新增 3 个方法。按 SDK 的版本纪律
-（`third_party/homeagent-sdk/docs/versions.md`），"插件调用、内核实现"的
+（`third_party/hologramagentsdk/docs/versions.md`），"插件调用、内核实现"的
 新增属**纯追加** ⇒ 存量插件不需要改、也不需要重编。
 
 **但这次有一个例外，必须记住**：

@@ -25,30 +25,30 @@ cmd/gui/dist/
 # SDK 工具链 — 核心仓不追踪
 #
 # 外部插件与工具链维护在独立 SDK 仓（决策 sdk_repo_only），
-# 本仓经 go.mod 的 replace => ./third_party/homeagent-sdk 引用。
+# 本仓经 go.mod 的 replace => ./third_party/hologramagentsdk 引用。
 # example/ 下已跟踪的 21 个文件（10 个示例的 plg.json + plugin.go，
 # 加 qq/plugin_test.go）早于本规则，
 # 靠「已跟踪文件不受 .gitignore 影响」保留——这是有意的，不要「修」。
-third_party/homeagent-sdk/bin/
-third_party/homeagent-sdk/tools/
-third_party/homeagent-sdk/package/
-third_party/homeagent-sdk/scripts/
+third_party/hologramagentsdk/bin/
+third_party/hologramagentsdk/tools/
+third_party/hologramagentsdk/package/
+third_party/hologramagentsdk/scripts/
 # skills/ 是 SDK 仓的 skill 源（hmapdev skill install 的来源），
 # 与 tools/、docs/ 同理属 SDK 仓自治范围，不进本仓。
-third_party/homeagent-sdk/skills/
+third_party/hologramagentsdk/skills/
 # .github/ 同理：SDK 仓的 workflow 由 SDK 仓自己管（它在那边被跟踪），
 # 本仓不参与构建，不需要在这边重复一份。
-third_party/homeagent-sdk/.github/
-third_party/homeagent-sdk/.gitignore
-third_party/homeagent-sdk/README*
-third_party/homeagent-sdk/example/
+third_party/hologramagentsdk/.github/
+third_party/hologramagentsdk/.gitignore
+third_party/hologramagentsdk/README*
+third_party/hologramagentsdk/example/
 # 文档站（mkdocs.yml + docs/ + 生成器）属于 SDK 仓，与 README* / tools/ 同理。
 # 注意 docs/ 带前导路径限定，够精确：本仓自己的 docs/ 不受影响。
-third_party/homeagent-sdk/docs/
-third_party/homeagent-sdk/mkdocs.yml
-third_party/homeagent-sdk/site_build/
+third_party/hologramagentsdk/docs/
+third_party/hologramagentsdk/mkdocs.yml
+third_party/hologramagentsdk/site_build/
 # 主题覆盖目录（只覆盖 footer.html，补备案号）——同属文档站。
-third_party/homeagent-sdk/overrides/
+third_party/hologramagentsdk/overrides/
 .codegraph/
 
 # codegraph 本地索引配置（含嵌套 SDK 仓放行，仅本地生效）

@@ -52,6 +52,16 @@ type Profile struct {
 	// key 是工具名模式（支持尾部 `*`），value 是该工具额外追加的词。
 	// 语义**追加不覆盖** —— 见 SDK 侧同名字段的说明。
 	ToolSensitiveWords map[string][]string
+	// DetectInjection 让这一档开启内置的**提示词注入迹象**识别。
+	//
+	// 与 SensitiveWords 的分工：敏感词是插件给的**数据**（它知道自己的
+	// 哪些词敏感），注入迹象是内核内置的**形态**规则（ignore previous /
+	// 角色劫持 / 索要系统提示 / 伪造更高优先级）。
+	//
+	// ★ 默认 false：失败即静默。注入识别会命中"扮演""你现在是"这类
+	// 正常对话词，对所有插件默认开启会让常识对话充满误报；
+	// 由插件按自己的内容形态显式声明。
+	DetectInjection bool
 	// DisableNetwork 在这一档内禁止网络意图。
 	DisableNetwork bool
 	// Sandbox 覆盖沙箱约束（零值 = 沿用全局）。

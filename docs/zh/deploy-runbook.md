@@ -404,7 +404,7 @@ stage handler 入口自动加锁 + 锁不可重入所致，**插件侧问题**�
 
 | 站 | 本地源 | 线上位置 | 构建 |
 | --- | --- | --- | --- |
-| SDK 文档站 | `third_party/homeagent-sdk/site_build/` | `/vol1/docker/navi-data/sites/sdk` | 需 `tools/apidoc/build.sh`（§5.3 坑①） |
+| SDK 文档站 | `third_party/hologramagentsdk/site_build/` | `/vol1/docker/navi-data/sites/sdk` | 需 `tools/apidoc/build.sh`（§5.3 坑①） |
 | introduce | `site/`（排除 `README.md`） | `/vol1/docker/navi-data/sites/introduce` | 零构建，源即产物 |
 
 两站部署在**同一台** 106 的同一 `sites/` 目录下。
@@ -465,7 +465,7 @@ find grep sed sort tr wc head tail stat file
 改完 SDK 文档的完整流程：
 
 ```bash
-cd third_party/homeagent-sdk
+cd third_party/hologramagentsdk
 # 1) 在 docs/guide/ 写文档
 # 2) 在 mkdocs.yml 的 nav 里登记          ← 漏了这步站点里找不到
 # 3) 重新生成（含 docs/api/* 与 llms.txt 同步）

@@ -38,7 +38,7 @@ go env:        CC=gcc  CGO_ENABLED=1  GOOS=linux  GOARCH=amd64
 
 ### 2.2 已有纯 C 先例，可直接复用
 
-`third_party/homeagent-sdk/remotedevice/` 是一个**零外部依赖**的纯 C 库
+`third_party/hologramagentsdk/remotedevice/` 是一个**零外部依赖**的纯 C 库
 （1320 行），已含可复用组件：
 
 | 文件 | 行数 | 能力 |
@@ -270,7 +270,7 @@ C 化的正确性**不能靠「跑起来没崩」**，必须有可复现的对�
 | 打包脚本 | ✅ 不再需带 `.a`（编源码，无外部产物依赖）| 扩张到多文件 C 实现时重评 |
 
 **仍未决（需 jianf 拍板）**：
-1. C 实现放**主仓 `csrc/`** 还是 **SDK `third_party/homeagent-sdk/`**？
+1. C 实现放**主仓 `csrc/`** 还是 **SDK `third_party/hologramagentsdk/`**？
    - 当前已在主仓 `csrc/`；若 SDK 侧也要复用，需定同步机制
    - 放 SDK：天然跨端复用，但要走 SDK 冻结与大版本流程
 2. `ha_json.c` 是**复用**（从 remotedevice 复制/提为公共）还是**新写**？

@@ -125,10 +125,10 @@ func buildPluginWithRealTemplate(t *testing.T, businessCode string) string {
 	// 工具链在 SDK 1.2.0 起改名 hmapdev（原 plugindev）。两个目录都接受：
 	// 旧检出（软链或旧版 SDK 仓）仍能跑本测试，新检出走新路径。
 	tmplDir := filepath.Join("..", "..", "..",
-		"third_party", "homeagent-sdk", "tools", "hmapdev", "templates")
+		"third_party", "hologramagentsdk", "tools", "hmapdev", "templates")
 	if _, err := os.Stat(tmplDir); err != nil {
 		tmplDir = filepath.Join("..", "..", "..",
-			"third_party", "homeagent-sdk", "tools", "plugindev", "templates")
+			"third_party", "hologramagentsdk", "tools", "plugindev", "templates")
 	}
 
 	dir := t.TempDir()
@@ -142,7 +142,7 @@ func buildPluginWithRealTemplate(t *testing.T, businessCode string) string {
 		mustWriteFile(t, filepath.Join(dir, rt.out), string(data))
 	}
 
-	sdkPath, err := filepath.Abs(filepath.Join("..", "..", "..", "third_party", "homeagent-sdk"))
+	sdkPath, err := filepath.Abs(filepath.Join("..", "..", "..", "third_party", "hologramagentsdk"))
 	if err != nil {
 		t.Fatalf("解析 SDK 路径: %v", err)
 	}

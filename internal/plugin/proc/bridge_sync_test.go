@@ -62,7 +62,7 @@ func publishedPluginMgrMethods(t *testing.T, sdkPath string) []string {
 // 这挡住了"SDK 加了方法但忘记登记能力" ⇒ 那种方法会被按 CapCore 放行，
 // 或者直接"未知 method"。
 func TestBridgeCoversEveryPublishedPluginMgrMethod(t *testing.T) {
-	sdkPath := filepath.Join("..", "..", "..", "third_party", "homeagent-sdk", "sdk", "plugin.go")
+	sdkPath := filepath.Join("..", "..", "..", "third_party", "hologramagentsdk", "sdk", "plugin.go")
 	methods := publishedPluginMgrMethods(t, sdkPath)
 
 	// SDK 方法名 → proc method 值（命名约定：StopPlugin → plugin.mgrStop）
@@ -160,16 +160,16 @@ func TestBridgeDispatchesEveryPluginMethod(t *testing.T) {
 // 漏 ⇒ 新生成的 plugin.bin **编译不过**（procPluginMgr 不满足接口）。
 // 这是最晚才发现的一环（编译期才报，且只在用户执行 hmapdev build 时暴露）。
 func TestHmapdevTemplateImplementsAllPluginMgrMethods(t *testing.T) {
-	sdkPath := filepath.Join("..", "..", "..", "third_party", "homeagent-sdk", "sdk", "plugin.go")
+	sdkPath := filepath.Join("..", "..", "..", "third_party", "hologramagentsdk", "sdk", "plugin.go")
 	methods := publishedPluginMgrMethods(t, sdkPath)
 
-	tmplPath := filepath.Join("..", "..", "..", "third_party", "homeagent-sdk",
+	tmplPath := filepath.Join("..", "..", "..", "third_party", "hologramagentsdk",
 		"tools", "hmapdev", "templates", "proc_main.go.tmpl")
 	src, err := os.ReadFile(tmplPath)
 	if err != nil {
 		// ★ 文件缺失必须 **skip 而不是 fail**（2026-10-17 CI 实测）：
 		//
-		// `third_party/homeagent-sdk/tools/` 在 .gitignore 里（SDK 仓自治，
+		// `third_party/hologramagentsdk/tools/` 在 .gitignore 里（SDK 仓自治，
 		// 本仓不跟踪）。所以：
 		//   · 本机（完整 SDK 检出）有该文件 ⇒ 判据能跑
 		//   · CI（只 checkout 本仓）没有该文件 ⇒ 原本 Fatalf ⇒ **CI 必红**
@@ -178,7 +178,7 @@ func TestHmapdevTemplateImplementsAllPluginMgrMethods(t *testing.T) {
 		// "Go build / vet / test" 和 "Build linux/amd64" 双红，把 PR 卡住。
 		//
 		// skip 不是放弃检查：跨仓一致性由 **SDK 仓自己的判据**守着
-		// （third_party/homeagent-sdk/tools/hmapdev/scaffold_stdout_test.go
+		// （third_party/hologramagentsdk/tools/hmapdev/scaffold_stdout_test.go
 		//  等），那边是模板的真实归属地。本判据在本机开发时仍然生效。
 		t.Skipf("跳过：SDK 仓的 tools/ 不在本仓跟踪范围（.gitignore），"+
 			"跨仓一致性由 SDK 仓判据守护。缺文件: %v", err)

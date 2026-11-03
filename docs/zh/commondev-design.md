@@ -124,7 +124,7 @@
 
 | 事实 | 证据/位置 |
 |---|---|
-| 已有 `plugindev` 示例插件，含 `plugindev_status/init/build/sdk/projects` | `third_party/homeagent-sdk/example/plugindev/` |
+| 已有 `plugindev` 示例插件，含 `plugindev_status/init/build/sdk/projects` | `third_party/hologramagentsdk/example/plugindev/` |
 | 插件数据目录 API | `sdk.Settings().DataDir()`（`internal/sdk/settings_impl.go:24`） |
 | `hmapdev` 工具链已装 | `/usr/local/bin/hmapdev` |
 | SDK 无 HTTP/exec 能力面，但插件是编译型 Go，可自行 `os/exec` | `internal/sdk/plugin.go` 方法清单 |
@@ -895,7 +895,7 @@ cd /tmp/probe-a && pi -p --provider <可用provider> --model <可用model> \
 
 # §3.4 a2a/acp 无 cwd
 grep -n "agent_url\|query\|session_id" \
-  /home/program/TrueAgent/third_party/homeagent-sdk/example/a2a/plugin.go
+  /home/program/TrueAgent/third_party/hologramagentsdk/example/a2a/plugin.go
 grep -n "cwd" /root/.pi/agent/extensions/pi-acp/index.ts   # 期望无结果
 
 # §3.5 端口归属
@@ -1039,7 +1039,7 @@ grep -n "phase,omitempty" cmd/waiter/state.go              # 判据匹配的是�
 复现命令：
 
 ```bash
-cd third_party/homeagent-sdk/example/commondev
+cd third_party/hologramagentsdk/example/commondev
 K=$(sqlite3 /home/newqqagent/config.db "select value from config where key='core.llm.api_key';")
 HA_E2E_LLM=1 HA_E2E_API_KEY="$K" HA_E2E_REAL_DB=/home/newqqagent/config.db \
   go test -count=1 ./...

@@ -553,7 +553,7 @@ hmapdev sdk list       # 本机已装的所有 SDK 版本
 ```
 
 - 核心仓 `/home/program/TrueAgent`（Go module `github.com/JianFeeeee/HologramAgent`）
-- **SDK 仓** `third_party/homeagent-sdk`（独立 git 仓、独立版本号）
+- **SDK 仓** `third_party/hologramagentsdk`（独立 git 仓、独立版本号）
 
 ### 33. 开工流程
 
@@ -846,10 +846,10 @@ pi 进程、sidecar、ssh 会话、workdir（含凭据残留检查）一个不�
 
 | 内容 | 路径 |
 |---|---|
-| SDK 源码 | `third_party/homeagent-sdk/sdk/` |
-| **可运行的示例插件** | `third_party/homeagent-sdk/example/`（a2a / acp / qq / plugindev…） |
-| 能力边界 | `third_party/homeagent-sdk/docs/guide/capability-boundary.md` |
-| 并发声明 | `third_party/homeagent-sdk/docs/guide/parallel-tool-declaration.md` |
+| SDK 源码 | `third_party/hologramagentsdk/sdk/` |
+| **可运行的示例插件** | `third_party/hologramagentsdk/example/`（a2a / acp / qq / plugindev…） |
+| 能力边界 | `third_party/hologramagentsdk/docs/guide/capability-boundary.md` |
+| 并发声明 | `third_party/hologramagentsdk/docs/guide/parallel-tool-declaration.md` |
 | 部署手册 | `docs/zh/deploy-runbook.md` |
 | sidecar 参考实现 | `internal/plugins/clawhubadapter/sidecar.go` |
 

@@ -251,7 +251,7 @@ ASSET_DIR=<产物目录> GITCODE_REPO=JianFeeeee/HologramAgent \
 # release 条目必须先存在（脚本向 releases/<tag>/upload_url 取 OBS 签名 URL）
 ```
 
-## 4. SDK 仓（third_party/homeagent-sdk）
+## 4. SDK 仓（third_party/hologramagentsdk）
 
 与主仓同构，差异：
 

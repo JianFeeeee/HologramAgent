@@ -407,6 +407,10 @@ func (r *Runtime) effectiveContentForTool(profileName, toolName string) ContentP
 	if ok && len(prof.SensitiveWords) > 0 {
 		p.SensitiveWords = append(append([]string{}, p.SensitiveWords...), prof.SensitiveWords...)
 	}
+	// 注入迹象：档位可为本轮显式开启（默认 false，理由见 Profile.DetectInjection）。
+	if ok && prof.DetectInjection {
+		p.DetectInjection = true
+	}
 	// 工具级追加（在整轮词表之上）。toolName 为空或档位没声明该工具 ⇒ 零影响。
 	if ok && toolName != "" && len(prof.ToolSensitiveWords) > 0 {
 		for pattern, words := range prof.ToolSensitiveWords {

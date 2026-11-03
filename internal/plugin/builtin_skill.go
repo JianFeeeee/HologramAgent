@@ -23,7 +23,7 @@ package plugin
 // ## 来源
 //
 // 源码树里约定 `<插件源码目录>/skill/<skillName>/SKILL.md`（与 SDK 示例
-// third_party/homeagent-sdk/example/editdoc/skill/office-tools 一致）。
+// third_party/hologramagentsdk/example/editdoc/skill/office-tools 一致）。
 // 但内置插件是**编译期内置**，运行时没有源码树，所以 SKILL 正文必须
 // 编进二进制（见各插件包里的 embed），由插件通过 SkillProvider 暴露。
 //

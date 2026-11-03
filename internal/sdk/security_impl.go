@@ -88,6 +88,7 @@ func (s *securityImpl) DeclareProfile(p pubsdk.SecurityProfile) error {
 		},
 		SensitiveWords:     p.SensitiveWords,
 		ToolSensitiveWords: p.ToolSensitiveWords,
+		DetectInjection:    p.DetectInjection,
 	}); err != nil {
 		return fmt.Errorf("security: declare profile %q: %w", name, err)
 	}

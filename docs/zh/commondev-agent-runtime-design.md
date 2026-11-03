@@ -14,7 +14,7 @@
 > - **［风险］** = 已知会让整套机制失效的点
 >
 > 撰写时间：2026-10-13。事实基线：TrueAgent `/home/program/TrueAgent`，
-> 生产实例 `/home/newqqagent`，SDK 仓 `third_party/homeagent-sdk`。
+> 生产实例 `/home/newqqagent`，SDK 仓 `third_party/hologramagentsdk`。
 
 ---
 
@@ -873,7 +873,7 @@ pi -p --session-dir /tmp/sd-store --session-id sd-01 "…"
 ls /root/.pi/agent/sessions/ | grep -i sd-test      # 期望无结果
 
 # §1.3 可接入面
-grep -n "func (s \*PluginSDK) RegisterInputChannel" third_party/homeagent-sdk/sdk/plugin.go
+grep -n "func (s \*PluginSDK) RegisterInputChannel" third_party/hologramagentsdk/sdk/plugin.go
 grep -rn "resident_agents" internal/plugin/proc/    # 期望无结果 ⇒ 插件调不到
 
 # §2.4 L4 归属

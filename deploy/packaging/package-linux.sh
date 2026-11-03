@@ -93,11 +93,11 @@ echo "Arch:    $ARCH"
 echo ""
 
 # ---- prepare go.mod for Linux build: point SDK replace at the in-repo SDK ----
-# SDK 仓库（含工具链/示例）以嵌套 git 仓库形式维护在 third_party/homeagent-sdk，
+# SDK 仓库（含工具链/示例）以嵌套 git 仓库形式维护在 third_party/hologramagentsdk，
 # 打包直接用该目录，不再 clone 到 /tmp。
 prepare_gomod() {
   local gomod="$PROJECT_ROOT/go.mod"
-  local sdk_local="$PROJECT_ROOT/third_party/homeagent-sdk"
+  local sdk_local="$PROJECT_ROOT/third_party/hologramagentsdk"
   local sdk_clone="/tmp/homeagent-sdk"
   local patched=0
 
@@ -442,7 +442,7 @@ stage_variant() {
     if [ -z "$hv" ]; then
       # 退而求其次：从 SDK 源码现编一个（CGO 无关，快）
       echo "  [hmapdev] build/ 下没有 hmapdev，尝试现编..."
-      ( cd "$PROJECT_ROOT/third_party/homeagent-sdk/tools/hmapdev" && \
+      ( cd "$PROJECT_ROOT/third_party/hologramagentsdk/tools/hmapdev" && \
         CGO_ENABLED=0 go build -trimpath -o "$BUILD_DIR/hmapdev" . ) || {
         echo "ERROR: 无法获得 hmapdev（插件工具链），拒绝打包。" >&2
         return 1; }
@@ -459,7 +459,7 @@ stage_variant() {
   # 「装完即可离线构建插件」，且版本与内核严格同源（防版本漂移）。
   stage_sdk() {
     local staging="$1"
-    local sdk_src="$PROJECT_ROOT/third_party/homeagent-sdk"
+    local sdk_src="$PROJECT_ROOT/third_party/hologramagentsdk"
     local sdk_dst="$staging/usr/lib/hologram/sdk"
     [ -d "$sdk_src" ] || { echo "ERROR: 找不到 SDK 源码 $sdk_src" >&2; return 1; }
     mkdir -p "$sdk_dst"

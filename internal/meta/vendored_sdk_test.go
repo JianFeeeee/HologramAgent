@@ -23,7 +23,7 @@ import (
 //   工作树里可能因为 vendoring 或本地试验而临时存在，那不算回归。
 
 // vendoredSDKRoot 是 vendored SDK 在主仓里的位置。
-const vendoredSDKRoot = "third_party/homeagent-sdk"
+const vendoredSDKRoot = "third_party/hologramagentsdk"
 
 // repoRoot 返回主仓根目录（本测试包在 internal/meta/，往上是两层）。
 func repoRoot(t *testing.T) string {
@@ -85,7 +85,7 @@ func TestVendoredSDKKeepsRequiredPackages(t *testing.T) {
 		"meta",          // 版本号：主仓与 SDK 版本一致性检查
 		"meta/meta.go",
 		// ★ 不列 tools/hmapdev/yaegi：.gitignore 第 33 行忽略了
-		//   third_party/homeagent-sdk/tools/，它从来没被跟踪过。
+		//   third_party/hologramagentsdk/tools/，它从来没被跟踪过。
 		//   而 grep 到的 yaegi 引用是 **SDK 仓自己的文件**在互相 import
 		//   （tools/hmapdev/yaegi/interp.go → .../mocksdk），不是主仓依赖。
 		//   我第一版把它当主仓依赖写进来，判据直接假红。

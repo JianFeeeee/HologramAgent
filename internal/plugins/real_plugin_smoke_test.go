@@ -71,7 +71,7 @@ func hostExecutableKind(path string) (string, bool) {
 // realPluginDir 返回某个 example 插件的 linux 产物路径。
 func realPluginBinary(t *testing.T, name string) string {
 	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", "..", "third_party", "homeagent-sdk", "example", name))
+	root, err := filepath.Abs(filepath.Join("..", "..", "third_party", "hologramagentsdk", "example", name))
 	if err != nil {
 		t.Fatalf("解析插件目录: %v", err)
 	}

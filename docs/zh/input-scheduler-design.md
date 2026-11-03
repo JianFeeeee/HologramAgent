@@ -32,7 +32,7 @@
 > 分支：`feature/input-semantics`
 > 状态：**设计稿 v1**（待确认项见 §12，未确认处按 §12 的「默认取值」推进）
 > 影响面：`internal/agent/core`、`internal/agent/io`、`internal/sdk`（**仅内部**）
-> 公开 SDK：**v1 不改**（`third_party/homeagent-sdk/sdk/` diff 必须保持为 0，理由见 §13）
+> 公开 SDK：**v1 不改**（`third_party/hologramagentsdk/sdk/` diff 必须保持为 0，理由见 §13）
 
 ---
 

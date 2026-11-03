@@ -494,7 +494,7 @@ Lua 脚本插件加载：`internal/plugin/` → gopher-lua 解释器执行 `main
 
 **只有必须使用内部 SDK 能力（公开 SDK 没有的接口面）的插件，才留在编译期内置清单。**
 
-内部 SDK（`internal/sdk`）比公开 SDK（third_party/homeagent-sdk）多出一批
+内部 SDK（`internal/sdk`）比公开 SDK（third_party/hologramagentsdk）多出一批
 **不对外授予**的能力面：`TrackerAPI` / `StatusAPI` /
 `SupervisorAPI` / `AdapterAPI` / `SelftestAPI` / `ToolAPI`，以及 **`Publish`
 （事件发布）**。外部插件走 proc 桥的收窄能力集，这些接口在类型层就不存在

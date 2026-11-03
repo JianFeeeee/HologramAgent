@@ -23,7 +23,7 @@ package plugins
 //
 // ## 判定标准：只有「必须用内部 SDK 能力」的才留在本清单（2026-10-19）
 //
-// 内部 SDK（internal/sdk）比公开 SDK（third_party/homeagent-sdk/sdk）
+// 内部 SDK（internal/sdk）比公开 SDK（third_party/hologramagentsdk/sdk）
 // 多出一批**不对外授予**的能力面。外部插件用的是 proc 桥的收窄能力集，
 // 这些接口在类型层就不存在（见 internal/plugin/proc/capability.go 的
 // withheldCapabilities）。所以：

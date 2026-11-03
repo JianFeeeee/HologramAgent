@@ -51,4 +51,4 @@ require (
 // （报 `used for two different module paths`）。所以主仓**所有** import 都已
 // 统一改为新名，旧的 homeagentsdk 路径不再保留。
 
-replace github.com/JianFeeeee/hologramagentsdk => ./third_party/homeagent-sdk
+replace github.com/JianFeeeee/hologramagentsdk => ./third_party/hologramagentsdk

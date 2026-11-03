@@ -17,15 +17,15 @@ import (
 // 三份 sdk.lua（内核内嵌 / 工具链模板 / 项目副本）历史上各自漂移过，
 // 表现为「mock 里有的 API，内核运行时是 nil」这类静默失配。
 // 事实源是 SDK 仓的 sdk/lua/sdk.lua，内核副本由
-// third_party/homeagent-sdk/scripts/sync-lua-sdk.sh 同步。
+// third_party/hologramagentsdk/scripts/sync-lua-sdk.sh 同步。
 func TestLuaSDKMockSingleSource(t *testing.T) {
-	canonical, err := os.ReadFile(filepath.Join("..", "..", "third_party", "homeagent-sdk", "sdk", "lua", "sdk.lua"))
+	canonical, err := os.ReadFile(filepath.Join("..", "..", "third_party", "hologramagentsdk", "sdk", "lua", "sdk.lua"))
 	if err != nil {
 		t.Skipf("SDK repo canonical sdk.lua not available: %v", err)
 	}
 	if string(canonical) != luaSDK.SDKSource {
 		t.Fatal("内核内嵌 sdk.lua 与 SDK 仓 sdk/lua/sdk.lua 不一致；" +
-			"请跑 third_party/homeagent-sdk/scripts/sync-lua-sdk.sh")
+			"请跑 third_party/hologramagentsdk/scripts/sync-lua-sdk.sh")
 	}
 }
 

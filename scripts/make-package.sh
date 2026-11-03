@@ -29,7 +29,7 @@ make build-cli >/dev/null
 CGO_ENABLED=0 go build -o "$ROOT/build/homed-upgrade" ./cmd/homed-upgrade/
 # hmapdev 来自 SDK 仓
 if [ ! -x "$ROOT/build/hmapdev" ]; then
-	(cd third_party/homeagent-sdk/tools/hmapdev && go build -o "$ROOT/build/hmapdev" .)
+	(cd third_party/hologramagentsdk/tools/hmapdev && go build -o "$ROOT/build/hmapdev" .)
 fi
 
 echo "== 组装 $NAME =="
@@ -41,7 +41,7 @@ install -m 0755 "$ROOT/build/waiter" "$OUT/bin/waiter"
 install -m 0755 "$ROOT/build/hmapdev" "$OUT/bin/hmapdev"
 install -m 0755 "$ROOT/build/homed-upgrade" "$OUT/bin/homed-upgrade"
 # 只带 SDK 源码，排除构建产物。
-SDK_SRC=third_party/homeagent-sdk
+SDK_SRC=third_party/hologramagentsdk
 mkdir -p "$OUT/sdk"
 (cd "$SDK_SRC" && tar -cf - \
 	--exclude='./example/*/rawfile' \

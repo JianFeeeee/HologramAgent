@@ -772,7 +772,7 @@ if ret, err := parent.ExecuteTool(name, args); err == nil {
   且注释明写"main 上此值始终是**下一个未发布中版本**"；
 - 仓内**无 `release/v1.4.x` 分支**，最新 tag 是 `v1.3.12`
   ⇒ 1.4.0 这一中版本**尚未发布**，正是承接本次改动的那个版本；
-- SDK `meta.Version` 同为 `1.4.0`（`third_party/homeagent-sdk/meta/meta.go`），
+- SDK `meta.Version` 同为 `1.4.0`（`third_party/hologramagentsdk/meta/meta.go`），
   两仓中版本已对齐 ⇒ **本次无需再次对齐动作**。
 
 ⇒ 动作只是把 `SDKCompatibleVersion`（`internal/meta/meta.go:54`）从 `1.3.0`

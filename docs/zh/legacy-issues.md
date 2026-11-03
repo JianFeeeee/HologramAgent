@@ -142,7 +142,7 @@ PluginContext（独立身份，共享管道）。
 
 **证据**：
 - `internal/plugin/proc/plugin.go:134`（`Spawn`，逐插件起进程）
-- manifest 无 `worker_group` 键（`third_party/homeagent-sdk/example/a2a/plugin.json`
+- manifest 无 `worker_group` 键（`third_party/hologramagentsdk/example/a2a/plugin.json`
   的键集合为 `author/description/entry/name/name_en/name_zh/platforms/tags/version`）
 
 **子任务**：
@@ -196,7 +196,7 @@ PluginContext（独立身份，共享管道）。
 **证据**：
 - `internal/plugin/proc/capability.go:149-150`（subscribe/unsubscribe 已授权）
 - `internal/plugin/proc/corehandler.go:46-58`（`EvtRingSubscriber` 接口）
-- `third_party/homeagent-sdk/example/` 下 21 个 example 中无事件订阅样例
+- `third_party/hologramagentsdk/example/` 下 21 个 example 中无事件订阅样例
 
 **子任务**：
 1. 写一个订阅 `stage` / `tool_call` 事件的 example 插件，跑真实负载
@@ -503,7 +503,7 @@ SDK 的 `remotedevice/src/ha_json.c`（368 行）经实测有**三个对协议�
 1. **C 实现放哪里 → 留在主仓 `csrc/`。** 用户澄清：C 实现本来就是**替换**内核的
    Go 实现（`csrc/` 是唯一权威源，Go 侧符号链接 + cgo 绑定，`codec_pure.go`
    已降级为黄金对照的规格基准）。SDK 从头到尾**未被触碰**
-   （`git diff main -- third_party/homeagent-sdk/sdk/` = 0 行）。
+   （`git diff main -- third_party/hologramagentsdk/sdk/` = 0 行）。
    所谓「进 SDK」只对**跨端复用**（鸿蒙/嵌入式/C SDK 也想调同一份实现）才有意义，
    而它们并不调用内核编解码层 ⇒ 该问题**关闭**，不作为待办。
 2. **`ha_json.c` 复用还是新写 → 新写。** 见上（三个致命缺陷 + 架构正交）。
@@ -515,7 +515,7 @@ SDK 的 `remotedevice/src/ha_json.c`（368 行）经实测有**三个对协议�
 `docs/zh/c-core/llm-orchestration-c.md`）。基础设施门禁已建成（见上）。
 下阶段扩大前，**三处需 jianf 拍板**（建议已附，见上）：
 
-1. **C 实现放主仓 `csrc/` 还是 SDK `third_party/homeagent-sdk/`？**
+1. **C 实现放主仓 `csrc/` 还是 SDK `third_party/hologramagentsdk/`？**
    - 当前已在主仓 `csrc/`（`ha_codec.{c,h}` 是权威源，Go 侧符号链接过去）
    - 若 SDK / 鸿蒙 / C SDK 侧也要复用，需定同步机制；搬进 SDK 则要走 SDK 冻结流程
 2. **`ha_json.c` 复用还是新写？**（复用会动 SDK 目录结构）

@@ -42,7 +42,7 @@ for arg in "$@"; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-EXAMPLES="$ROOT/third_party/homeagent-sdk/example"
+EXAMPLES="$ROOT/third_party/hologramagentsdk/example"
 GH_ORG="${GH_ORG:-HologramAgent}"
 TOKEN="${GH_ORG_TOKEN:-}"
 

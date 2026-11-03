@@ -114,4 +114,16 @@ type SecurityProfile struct {
 	//	    "qq_get_*":         {"客户名单"},
 	//	}
 	ToolSensitiveWords map[string][]string
+
+	// DetectInjection 开启内核内置的**提示词注入迹象**识别。
+	//
+	// 与 ToolSensitiveWords 的分工：词表是插件给的**数据**（它知道自己的
+	// 哪些词敏感），注入迹象是内核内置的**形态**规则（ignore previous /
+	// 角色劫持 / 索要系统提示 / 伪造更高优先级）。
+	//
+	// ★ 默认 false：注入识别会命中"扮演""你现在是"这类正常对话词，
+	// 默认开启会让常识对话充满误报 —— 由插件按自己的内容形态显式声明。
+	//
+	// ★ 当前处置是 B 档：命中只**标记并警示**，不阻断。
+	DetectInjection bool
 }

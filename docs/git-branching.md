@@ -7,7 +7,7 @@
 
 
 > 生效：2026-08-31，2026-09-04 修订（三级发布通道 + 单条发布分支），2026-09-06 修订（SDK 仓版本语义与发版联动，见 §七），2026-09-13 修订（发布线路牌随 patch 推进 + 版本号不得固化落库）。
-> 适用：**本仓（HologramAgent）与 third_party/homeagent-sdk（SDK 仓）**——两仓协作时分支策略必须一致，本规范两仓同用。
+> 适用：**本仓（HologramAgent）与 third_party/hologramagentsdk（SDK 仓）**——两仓协作时分支策略必须一致，本规范两仓同用。
 > 核心原则一句话：**main 唯一长命、永远可部署；一切新工作在特性分支；一个中版本一条发布分支，alpha/beta/正式由 tag 区分；hotfix 只进发布分支并 cherry-pick 回 main。**
 
 ---
@@ -50,7 +50,7 @@ main ──────────────── E ────────
 - **main 的 `internal/meta.Version` 始终是下一个未发布版本**，不随 patch 发布变动。
 - 合入门禁（**单人直推也遵守**，不强制 PR 但强制验证）：
   - `make test` 全绿
-  - 涉及插件/工具链时：接口冻结检查 `git diff third_party/homeagent-sdk/sdk/` 为空
+  - 涉及插件/工具链时：接口冻结检查 `git diff third_party/hologramagentsdk/sdk/` 为空
   - `go vet ./...` 无新增告警
 
 ### 2. `feature/xxx`（新特性/修复）
@@ -265,7 +265,7 @@ git switch main && git cherry-pick <sha>   # 遵守 §三：只 pick，不 merge
   6. 健康检查：版本号、插件清单无缺失、`/api/v1/status`、一次真实对话、`fatal error` 计数为 0
 - **改造期间现网不得部署 main 或 feature 的中间态**——只有发版才用发布分支的 tag。
 - alpha/beta tag 的产物**不上现网**（现网是 24/7 服务，预发布通道的存在就是为了不拿它冒险）。
-- 涉及 SDK 仓时：主仓 `go.mod` 的 `replace => ./third_party/homeagent-sdk` 指向本地 vendored 副本，
+- 涉及 SDK 仓时：主仓 `go.mod` 的 `replace => ./third_party/hologramagentsdk` 指向本地 vendored 副本，
   发版前确认 vendored SDK 与 SDK 仓 release tag 一致（**两仓中版本对齐是第一优先级**，见 §七）。
 - **客户端版本必须与内核同步**（GUI / 鸿蒙 / waiter 同一个号，当前皆为 `internal/meta.Version`）：
   内核版本是唯一事实源，客户端不得各写一个。拉齐用 `make sync-client-versions`，
@@ -308,14 +308,14 @@ git checkout feature/xxx && git cherry-pick <main 上那个 pick 的 sha>
 
 # 公开 SDK 接口改动（feature，不是 hotfix）：先进 main，再 pick 到发布分支
 git checkout -b feature/sdk-xxx main
-# ... 改 third_party/homeagent-sdk/sdk/ 与内核桥接层 ...
+# ... 改 third_party/hologramagentsdk/sdk/ 与内核桥接层 ...
 git checkout main && git merge --no-ff feature/sdk-xxx
 git checkout release/v1.1.x
 git cherry-pick <feature 的各 sha>                    # 只挑改动，不挑 main 的版本号
 git commit -am "chore(release): bump v1.1.1"          # 发布分支自己的版本号
 git tag -a v1.1.1 -m "..."
 # SDK 仓同步（仅在核心打正式 tag 时，见 §七.2/§七.3）
-cd third_party/homeagent-sdk
+cd third_party/hologramagentsdk
 git checkout -b release/v1.1.x main
 git commit -am "chore(release): SDK 1.1.0（1.1.x 线全程共用）"
 git tag -a v1.1.0 -m "..."
@@ -329,14 +329,14 @@ git branch -d release/v1.0.x                          # tag 已保存历史，�
 ## 六、本规范与「接口冻结」约束的关系
 
 > **接口冻结已到期（v1.1.x 起）**。冻结是**迁移期**的约束——它要保的是
-> 「换运行模型不动业务代码」，靠 `git diff third_party/homeagent-sdk/sdk/` 为空来守。
+> 「换运行模型不动业务代码」，靠 `git diff third_party/hologramagentsdk/sdk/` 为空来守。
 > 迁移完成（v1.0.0 上生产）后该约束按时失效，取而代之的是 §八的三条演进规则。
 > 本节保留历史条款，但**不再作为合回门禁**。
 
-- ~~feature 分支合回 main 的门禁（`git diff third_party/homeagent-sdk/sdk/` 为空）~~
+- ~~feature 分支合回 main 的门禁（`git diff third_party/hologramagentsdk/sdk/` 为空）~~
   —— **已失效**。现改为：公开接口的改动必须满足 §八（只增不减、签名不改、模板接线）。
 - `internal/sdk` **不受冻结约束**，可自由扩展（此条仍成立）；
-  公开 SDK 接口指 `third_party/homeagent-sdk/sdk/`。
+  公开 SDK 接口指 `third_party/hologramagentsdk/sdk/`。
 - **公开接口的改动本身是 feature，不是发布准备**：它必须走 `feature/xxx` → 合回 main 的路径，
   再 cherry-pick 到发布分支。不允许把接口新增当成"发布分支上的 bug 修复"直接提交进 release
   ——发布分支冻结功能（§2.3），接口是最典型的功能面。
@@ -367,7 +367,7 @@ git branch -d release/v1.0.x                          # tag 已保存历史，�
   插件开发者会照着一个还会变的接口写代码——**那是无效开发**。接口没定就没有可依赖的契约，
   发出去的版本号是一个假承诺。
 - 这条约束的对象是 **SDK 仓的发版动作**，不是核心二进制里有没有 SDK 代码。
-  主仓 `go.mod` 用 `replace => ./third_party/homeagent-sdk`，任何核心构建都必然含 vendored
+  主仓 `go.mod` 用 `replace => ./third_party/hologramagentsdk`，任何核心构建都必然含 vendored
   SDK 源码，这是构建机制决定的，不在本条约束范围内。
 
 ### 3. 正式发布时 SDK 随核心一起发
@@ -474,7 +474,7 @@ GITCODE_REPO=JianFeeeee/hologramagentsdk ASSET_DIR=<sdk>/dist/release \
 
 > 本节原在《外部插件接口不变矩阵》（迁移期临时文档，已随迁移完成删除）§九。
 > 那份文档记的是**迁移期**的约束（"换运行模型不动业务代码"，靠
-> `git diff third_party/homeagent-sdk/sdk/` 为空来守）。迁移完成后该约束**到期**——
+> `git diff third_party/hologramagentsdk/sdk/` 为空来守）。迁移完成后该约束**到期**——
 > 继续冻结等于让 SDK 永远停在迁移那天的能力面，多模态这类功能永远到不了插件手上。
 > 取代它的是下面三条更弱、但仍然硬的规则。
 

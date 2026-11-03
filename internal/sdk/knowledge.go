@@ -8,8 +8,8 @@ import (
 // KnowledgeAPI 是内置插件使用的全量知识库接口。
 //
 // 为什么不把多模态加进 pubsdk.KnowledgeAPI：那会改动
-// third_party/homeagent-sdk/sdk/ 的公开契约，而发布纪律要求
-// `git diff main -- third_party/homeagent-sdk/sdk/` 恒为 0
+// third_party/hologramagentsdk/sdk/ 的公开契约，而发布纪律要求
+// `git diff main -- third_party/hologramagentsdk/sdk/` 恒为 0
 // （改动它等于一次 major bump + 完整的外部发版流程）。
 // internal/sdk 明确不受此约束（"内部实现自由"），且这里本来就是
 // "内核侧接口 = 公共接口 + 内置插件额外能力" 的既有范式

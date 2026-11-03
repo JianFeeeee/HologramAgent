@@ -7,7 +7,7 @@ package all
 // 设施名同时存在于**两处**，且必须逐字一致：
 //
 //	内核：internal/kernelmod/facilities.go   （模块 Provides 用）
-//	SDK：third_party/homeagent-sdk/sdk/facilities.go （插件声明用）
+//	SDK：third_party/hologramagentsdk/sdk/facilities.go （插件声明用）
 //
 // 它们**不能合并**：SDK 是独立发布的模块（外部插件依赖它），
 // 而内核的 internal 规则又禁止内部包被外部 import。
@@ -67,7 +67,7 @@ func extractFacilities(t *testing.T, path string) map[string]string {
 func TestFacilityNamesMatchPublicSDK(t *testing.T) {
 	kernel := extractFacilities(t, filepath.Join("..", "facilities.go"))
 	sdk := extractFacilities(t, filepath.Join("..", "..", "..",
-		"third_party", "homeagent-sdk", "sdk", "facilities.go"))
+		"third_party", "hologramagentsdk", "sdk", "facilities.go"))
 
 	kernelVals := map[string]string{} // 值 → 内核常量名
 	for name, v := range kernel {
