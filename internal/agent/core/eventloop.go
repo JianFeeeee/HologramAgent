@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"runtime/debug"
@@ -64,6 +65,10 @@ func (a *Agent) interceptLoop() {
 				log.Printf("[agent] stop requested by %s/%s (queued=%d will be short-circuited at pre-action)",
 					evt.Source, evt.OutputChannel, n)
 				a.cancelCurrentLLM()
+				// ★ 同时停掉正在跑的工具：否则长阻塞工具会把整轮堵到它自己超时
+				// （实测 browser_start 夹到 10m），用户看到的就是「停止没反应」。
+				// 只在这里调（显式停止），不在下方 requestPreempt 分支调（R5）。
+				a.cancelRunningTools()
 				if text == "" {
 					// 纯停止：不进中断队列、不产生新任务。旧实现把空停止当成一条
 					// 中断入队，取消后会以空内容重跑一轮，停下之后又“活着”。
@@ -108,8 +113,9 @@ func (a *Agent) interceptLoop() {
 
 // cancelCurrentLLM 取消正在进行的 LLM 请求（若有）。
 //
-// 只有 LLM 流式步骤是可取消的；工具 RPC / ONNX / CAS 在 v1 是临界区，
-// 取消对它们无效——让位信号会等它们自然结束后的安全点（设计文档 D2）。
+// 边界（2026-10-31 更新）：它只停 LLM 流，**不停工具**。
+// 工具另有入口 `cancelCurrentTool`，且只由「用户按停止」触发 ——
+// 中断抢占用它会把正在执行副作用的工具掤断，那是用户裁定 R5 禁止的。
 func (a *Agent) cancelCurrentLLM() {
 	a.llmMu.Lock()
 	cancel := a.cancelLLM
@@ -117,6 +123,55 @@ func (a *Agent) cancelCurrentLLM() {
 	if cancel != nil {
 		cancel()
 		log.Printf("[agent] LLM request cancelled by preemption")
+	}
+}
+
+// registerToolCancel 登记一次工具调用的取消函数，返回注销用的句柄。
+//
+// 并发：工具执行在 schedulerLoop 的 goroutine（可能多个并发），停止指令在
+// interceptLoop 的 goroutine ⇒ 必须走 toolMu。
+func (a *Agent) registerToolCancel(cancel context.CancelFunc) uint64 {
+	a.toolMu.Lock()
+	defer a.toolMu.Unlock()
+	a.toolSeq++
+	id := a.toolSeq
+	if a.cancelTools == nil {
+		a.cancelTools = make(map[uint64]context.CancelFunc, 4)
+	}
+	a.cancelTools[id] = cancel
+	return id
+}
+
+// unregisterToolCancel 注销一次工具调用（正常返回与超时路径都要调）。
+func (a *Agent) unregisterToolCancel(id uint64) {
+	a.toolMu.Lock()
+	delete(a.cancelTools, id)
+	a.toolMu.Unlock()
+}
+
+// cancelRunningTools 取消当前所有在跑的工具调用。
+//
+// 为何存在：`cancelCurrentLLM` 停不了工具。而工具有可能长阻塞 —— 实测
+// `browser_start` 被模型要求 30m、被硬上限夹到 10m，那 10 分钟里用户看到
+// 的就是「按了停止毫无反应」（日志只有 `stop requested ... queued=1`）。
+//
+// 取消管道本已存在（`ExecuteToolCtx` → proc 桥 `CallContext` → 向插件发
+// `call.cancel`），缺的只是「谁来调它」：此前只有超时路径调，停止路径不调。
+//
+// ❗只在 stop 分支调（见 interceptLoop），不要在 `requestPreempt` 分支调：
+// 中断抢占下掐断工具会把副作用变成「决定执行但未执行」，用户裁定 R5 禁止。
+func (a *Agent) cancelRunningTools() {
+	a.toolMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(a.cancelTools))
+	for _, c := range a.cancelTools {
+		cancels = append(cancels, c)
+	}
+	a.toolMu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
+	if len(cancels) > 0 {
+		log.Printf("[agent] cancelled %d running tool(s) by stop", len(cancels))
 	}
 }
 

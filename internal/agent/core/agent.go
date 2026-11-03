@@ -218,6 +218,26 @@ type Agent struct {
 	cancelLLM context.CancelFunc
 	llmMu     sync.Mutex
 
+	// 进行中的**工具调用**取消函数集合（2026-10-31 加）。
+	//
+	// ❗为何需要它：`cancelCurrentLLM` 只能停 LLM 流。而工具可能是长阻塞的
+	// （实测：`browser_start` 被模型要求 30m、被硬上限夹到 10m）。
+	// 那种情况下用户按「停止」什么都不发生 —— 日志里只有
+	// `stop requested ... (queued=1 will be short-circuited at pre-action)`，
+	// 而当前轮仍卡在工具里直到自己超时。
+	//
+	// ❗为何是**集合**而不是单个槽：同一轮可并发执行多个工具
+	// （批内全部声明 ParallelSafe 时），单槽会互相覆盖，且先完成的那个
+	// 会把别人的取消函数清掉。
+	//
+	// ❗为何只给「停止」用、不给中断抢占用：工具执行期间不取消是用户
+	// 裁定（R5）—— 副作用不可回滚，中途掤断会把「决定执行但未执行」
+	// 变成尴尬状态。所以 `cancelRunningTools` 只在 stop 分支调，
+	// 不在 `requestPreempt` 分支调（见 eventloop.go）。
+	cancelTools map[uint64]context.CancelFunc
+	toolSeq     uint64
+	toolMu      sync.Mutex
+
 	// 模型思考模式（thinking/reasoning）
 	thinkingEnabled bool
 
