@@ -375,6 +375,24 @@ func (r *Runtime) effectiveContent() ContentPolicy {
 //
 // profileName 为空时退回旧行为（进程级 active），保持兼容。
 func (r *Runtime) effectiveContentFor(profileName string) ContentPolicy {
+	return r.effectiveContentForTool(profileName, "")
+}
+
+// effectiveContentForTool 按**指定档位 + 指定工具**合并敏感词。
+//
+// ## 为什么按工具再加一层（用户裁定 2026-11-03）
+//
+// > 「敏感词策略也应该是插件声明啊，每个插件声明自己轮次以及**自己工具**的
+// >   敏感词策略」
+//
+// 不同工具带回来的外部内容风险不同：web_fetch 拿的是网页正文（间接提示词
+// 注入的主入口），qq_get_message 拿的是聊天记录。插件最清楚自己每个工具的
+// 内容形态。
+//
+// ★ 语义**追加不覆盖**：整轮 SensitiveWords + 该工具追加的词。
+//
+//	当前处置是 B 档（标记+警示），多标一条只是多一句警示，漏标是安全缺口。
+func (r *Runtime) effectiveContentForTool(profileName, toolName string) ContentPolicy {
 	p := r.content
 	if r == nil {
 		return p
@@ -388,6 +406,15 @@ func (r *Runtime) effectiveContentFor(profileName string) ContentPolicy {
 	}
 	if ok && len(prof.SensitiveWords) > 0 {
 		p.SensitiveWords = append(append([]string{}, p.SensitiveWords...), prof.SensitiveWords...)
+	}
+	// 工具级追加（在整轮词表之上）。toolName 为空或档位没声明该工具 ⇒ 零影响。
+	if ok && toolName != "" && len(prof.ToolSensitiveWords) > 0 {
+		for pattern, words := range prof.ToolSensitiveWords {
+			if !matchTool(pattern, toolName) || len(words) == 0 {
+				continue
+			}
+			p.SensitiveWords = append(append([]string{}, p.SensitiveWords...), words...)
+		}
 	}
 	for _, sc := range r.scopes.Active() {
 		if len(sc.SensitiveWords) > 0 {
@@ -416,10 +443,48 @@ func (r *Runtime) ScanContent(ins Inspection, text string) ([]Finding, bool, str
 //
 // 两条路必须用同一个档位名，否则"工具禁了但敏感词没生效"这类半开状态。
 func (r *Runtime) ScanContentFor(ins Inspection, text, profileName string) ([]Finding, bool, string) {
+	return r.ScanContentForTool(ins, text, profileName, "")
+}
+
+// ScanContentForTool 按档位 + 工具审查内容（工具结果路径用）。
+//
+// toolName 是该结果出自哪个工具：档位可以为它单独追加敏感词。
+// ScanContentForAgent 按**执行体身份**审查内容（工具结果路径的正路）。
+//
+// ## 为什么这是正路（2026-11-03，用户裁定）
+//
+// > 「敏感词策略也应该是插件声明啊，每个插件声明自己轮次以及自己工具的
+// >   敏感词策略」
+//
+// 工具结果属于某个执行体，属于某一轮；但**调用方不该把轮次句柄搬过来**：
+//
+//	· 工具执行发生在 LLM 决定之后，插件已不在调用栈上；
+//	· 一个 agent 有多个工具执行路径（主链、批量、rtchild、子 agent）；
+//	  每加一条就要求调用方多传一次句柄 —— 那是把分层策略实现成
+//	  「跨层传参的莲藕」，本仓 profileActivator 的设计注释已明确反对：
+//	  内核在输入进来时记住，工具判定时**自己读**。
+//
+// 所以：security 按 agentID+isChild 取**它自己的** AgentScope，
+// 读 session > longtime 的生效档位（per-agent，天然不串档），
+// 再叠加该工具声明的词表。
+//
+// ★ 与 CheckToolForAgent 同一套身份推断，不引入第二个入口语义。
+func (r *Runtime) ScanContentForAgent(agentID string, isChild bool, ins Inspection, text string) ([]Finding, bool, string) {
 	if r == nil || text == "" {
 		return nil, false, ""
 	}
-	p := r.effectiveContentFor(profileName)
+	var profileName string
+	if sc := r.ForAgent(agentID, isChild); sc != nil {
+		profileName = sc.EffectiveProfile()
+	}
+	return r.ScanContentForTool(ins, text, profileName, ins.Tool)
+}
+
+func (r *Runtime) ScanContentForTool(ins Inspection, text, profileName, toolName string) ([]Finding, bool, string) {
+	if r == nil || text == "" {
+		return nil, false, ""
+	}
+	p := r.effectiveContentForTool(profileName, toolName)
 	findings := p.Scan(text, ins.where())
 	blocked, reason := p.BlockedBy(findings)
 	return findings, blocked, reason

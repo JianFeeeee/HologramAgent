@@ -95,4 +95,23 @@ type SecurityProfile struct {
 	//
 	// 用途：某些词只在特定身份下才敏感（如非所有者对话时不该看到内部代号）。
 	SensitiveWords []string
+
+	// ToolSensitiveWords 是**按工具**追加的敏感词（在 SensitiveWords 之上再追加）。
+	//
+	//	key   = 工具名模式，支持尾部 `*`（与 AllowTools/DenyTools 同一套匹配规则）
+	//	value = 该工具额外追加的词
+	//
+	// 用途：不同工具带回来的外部内容风险不同 —— `web_fetch` 拿的是网页正文
+	// （间接提示词注入的主入口），而 `qq_get_message` 拿的是聊天记录。
+	// 插件最清楚自己每个工具的内容形态，所以词表由插件按工具声明。
+	//
+	// ★ 语义是**追加不是覆盖**：整轮 SensitiveWords 仍然生效。
+	//   当前处置是 B 档（标记+警示，不阻断），多标一条只是多一句警示，
+	//   漏标则是安全缺口 —— 所以取宽不取窄。
+	//
+	//	ToolSensitiveWords: map[string][]string{
+	//	    "web_fetch":        {"内部代号", "机密"},
+	//	    "qq_get_*":         {"客户名单"},
+	//	}
+	ToolSensitiveWords map[string][]string
 }

@@ -47,6 +47,11 @@ type Profile struct {
 	Policy PrincipalPolicy
 	// SensitiveWords 是这一档追加的敏感词。
 	SensitiveWords []string
+	// ToolSensitiveWords 是**按工具**追加的敏感词（在 SensitiveWords 之上再追加）。
+	//
+	// key 是工具名模式（支持尾部 `*`），value 是该工具额外追加的词。
+	// 语义**追加不覆盖** —— 见 SDK 侧同名字段的说明。
+	ToolSensitiveWords map[string][]string
 	// DisableNetwork 在这一档内禁止网络意图。
 	DisableNetwork bool
 	// Sandbox 覆盖沙箱约束（零值 = 沿用全局）。

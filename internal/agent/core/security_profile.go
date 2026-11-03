@@ -313,9 +313,18 @@ const toolContentWarning = "⚠️ 危险内容，谨慎处理：本工具结果
 // 返回 nil 表示无命中或 security 未装配。**标记不阻断**（B 档），
 // 调用方负责在正文前加警示。
 //
-// 用不带档位的 Runtime 入口：工具执行链上没有轮次句柄（见
-// security.CheckToolForAgent 的说明），档位属于"某一条输入"的事实，
-// 硬塞一个"进程当前档"才是错的。所以这里只看全局词表 + 作用域追加词表。
+// ## 为什么不接收轮次句柄（2026-11-03，用户裁定）
+//
+// 前一版把 `*security.Round` 从 runInputTask 一路搬到这里
+// 并在 rtchild 里另补一条 —— 那是把分层策略实现成**跨层传参的莲藕**：
+// 每多一条工具执行路径，就要求调用方多传一次句柄。
+//
+// 用户原话：「你看看到底是同类错误还是你把分层设计实现成莲藕样式了」。
+//
+// security 模块本来就持有 per-agent 视图（AgentScope），能按
+// agentID+isChild 自取生效档位（session > longtime）。所以这里只递交
+// **事实**（我是谁、哪个工具、什么文本），档位由 security 自己判定 ——
+// 与 CheckToolForAgent 同一套身份推断，不引入第二个入口语义。
 func (a *Agent) reviewToolResultContent(tool, text string) []security.Finding {
 	if a == nil || a.security == nil || text == "" {
 		return nil
@@ -326,7 +335,7 @@ func (a *Agent) reviewToolResultContent(tool, text string) []security.Finding {
 		Tool:      tool,
 		AgentID:   string(a.id),
 	}
-	findings, _, _ := a.security.ScanContent(ins, text)
+	findings, _, _ := a.security.ScanContentForAgent(string(a.id), a.parentID != "", ins, text)
 	if len(findings) > 0 {
 		var kinds []string
 		for _, f := range findings {

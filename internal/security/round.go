@@ -353,11 +353,13 @@ func (rc *Round) CheckContent(ins Inspection, text string) ([]Finding, bool) {
 	} else {
 		name = rc.rt.ActiveProfile()
 	}
-	findings, blocked, reason := rc.rt.ScanContentFor(ins, text, name)
+	// 工具名从 Inspection 自取：工具结果路径会把 Tool 填好，
+	// 档位可为该工具单独追加敏感词（用户裁定 2026-11-03）。
+	findings, blocked, reason := rc.rt.ScanContentForTool(ins, text, name, ins.Tool)
 	if blocked && reason != "" {
 		// reason 已由 security 脱敏（不含命中原文），可直接进日志。
-		log.Printf("[security] content review hit: %s (profile=%q, B 档：仅标记不阻断)",
-			reason, name)
+		log.Printf("[security] content review hit: %s (profile=%q tool=%q, B 档：仅标记不阻断)",
+			reason, name, ins.Tool)
 	}
 	return findings, blocked
 }

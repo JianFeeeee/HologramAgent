@@ -336,7 +336,6 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 	// `executeToolCallOutcome` 的入向脱敏用 defer 同一理由。
 	round := a.beginSecurityRound(evt.Payload, evt.Source)
 	defer round.End()
-	_ = round // 句柄随后续轮次上下文下沉使用；当前先保证激活/归位正确
 
 	// ★ 内容审查（敏感词 / 注入迹象）接线（2026-11-02，用户裁定 B 档）。
 	//
