@@ -352,9 +352,41 @@ func (r *Runtime) Content() ContentPolicy {
 }
 
 // effectiveContent 把作用域里追加的敏感词并进基础策略。
+//
+// ⚠️ 它读的是**进程级 active 档位**（`profilePolicy`）。这是旧路径，
+// 只适用于单执行体场景。多 agent 并发时必须用 effectiveContentFor(profileName)，
+// 否则会话档（session）声明的敏感词根本并不过来 —— 见下面的说明。
 func (r *Runtime) effectiveContent() ContentPolicy {
+	return r.effectiveContentFor("")
+}
+
+// effectiveContentFor 按**指定档位**合并敏感词（per-agent 视图用）。
+//
+// ## 为什么必须拆出来（2026-11-02 实测）
+//
+// 2026-10-31 用户裁定「每个 agent 一个档位，分 sessionProfile 与
+// longtimeProfile」后，档位状态从进程级 `Runtime.active` 迁到了
+// `AgentScope`。工具策略同步改了（checkToolWithProfile 走
+// profilePolicyByName），**但内容审查没改** —— 它仍读 profilePolicy()。
+//
+// 后果：插件在 session 档里声明的敏感词，永远并不进审查词表。
+// 而 ScanContent 本身又没有调用方，两个缺陷叠在一起，
+// 表现为"敏感词声明了完全没反应"，且没有任何报错。
+//
+// profileName 为空时退回旧行为（进程级 active），保持兼容。
+func (r *Runtime) effectiveContentFor(profileName string) ContentPolicy {
 	p := r.content
-	if prof, ok := r.profilePolicy(); ok && len(prof.SensitiveWords) > 0 {
+	if r == nil {
+		return p
+	}
+	var prof Profile
+	var ok bool
+	if profileName != "" {
+		prof, ok = r.profilePolicyByName(profileName)
+	} else {
+		prof, ok = r.profilePolicy()
+	}
+	if ok && len(prof.SensitiveWords) > 0 {
 		p.SensitiveWords = append(append([]string{}, p.SensitiveWords...), prof.SensitiveWords...)
 	}
 	for _, sc := range r.scopes.Active() {
@@ -369,10 +401,25 @@ func (r *Runtime) effectiveContent() ContentPolicy {
 //
 // 返回值第二项表示"是否必须阻断"（敏感词，或策略要求阻断的注入迹象）。
 func (r *Runtime) ScanContent(ins Inspection, text string) ([]Finding, bool, string) {
+	return r.ScanContentFor(ins, text, "")
+}
+
+// ScanContentFor 按**指定档位**审查内容（per-agent 视图用）。
+//
+// profileName 是**该 agent 当前生效档位**（AgentScope.EffectiveProfile()）。
+// 传空串等价于 ScanContent（读进程级 active，单执行体场景）。
+//
+// 与 CheckTool 的分工对称：
+//
+//	CheckTool(tool)        ← AgentScope 用 EffectiveProfile 判工具
+//	ScanContentFor(ins,,p) ← 同一档位判内容
+//
+// 两条路必须用同一个档位名，否则"工具禁了但敏感词没生效"这类半开状态。
+func (r *Runtime) ScanContentFor(ins Inspection, text, profileName string) ([]Finding, bool, string) {
 	if r == nil || text == "" {
 		return nil, false, ""
 	}
-	p := r.effectiveContent()
+	p := r.effectiveContentFor(profileName)
 	findings := p.Scan(text, ins.where())
 	blocked, reason := p.BlockedBy(findings)
 	return findings, blocked, reason

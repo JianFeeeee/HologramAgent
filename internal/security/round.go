@@ -43,6 +43,7 @@ package security
 
 import (
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -316,4 +317,47 @@ func (r *Runtime) ClassifyPrincipalForTest(in RoundInput) Principal {
 // 只是入参来自 AgentScope 而不是 RoundInput。
 func (r *Runtime) classifyScopePrincipal(agentID string, isChild bool) Principal {
 	return r.classifyPrincipal(RoundInput{AgentID: agentID, IsChild: isChild})
+}
+
+// CheckContent 审查本轮的一段文本，返回命中（**纯标记，不阻断**）。
+//
+// ## 与 ScanContent 的分工（2026-11-02 接入）
+//
+//	ScanContent(ins, text)          —— 无轮次上下文时的入口（读进程级档位）
+//	Round.CheckContent(ins, text)   —— 正路：用**本轮档位**（session > longtime）
+//
+// 与 CheckTool 完全对称：调用方不再需要问“本轮档位是什么”。
+//
+// ★ 为什么不能让调用方自己取 EffectiveProfile() 再传给 ScanContentFor：
+//
+//	那是把「本轮该用哪个档位」这条策略语义又交回调用方手里 ——
+//	正是 §1.1 收敛掉的形态（agent 曾经自己抠 security_profile 字段）。
+//	档位是 security 的协议，解析与使用都必须留在 security 内部。
+//
+// ## 语义：标记，不阻断（用户裁定 2026-11-02）
+//
+// 敏感词是**插件按自己通道声明**的（Profile.SensitiveWords），不是部署方的
+// 全局红线；词表难免偏宽（"内部代号"在正常对话里也可能出现），
+// 直接阻断会误杀正常消息。所以返回 findings 供调用方自行处置
+// （主 agent 的处置是"正文前追加警示语"，见 ReviewInputContent）。
+//
+// 第二个返回值 blocked 仍按策略计算（敏感词默认即阻断、BlockInjection 可配），
+// **但当前接线刻意忽略它** —— 保留是为了将来接 A 档时不必改接口。
+func (rc *Round) CheckContent(ins Inspection, text string) ([]Finding, bool) {
+	if rc == nil || rc.rt == nil || text == "" {
+		return nil, false
+	}
+	var name string
+	if rc.scope != nil {
+		name = rc.scope.EffectiveProfile()
+	} else {
+		name = rc.rt.ActiveProfile()
+	}
+	findings, blocked, reason := rc.rt.ScanContentFor(ins, text, name)
+	if blocked && reason != "" {
+		// reason 已由 security 脱敏（不含命中原文），可直接进日志。
+		log.Printf("[security] content review hit: %s (profile=%q, B 档：仅标记不阻断)",
+			reason, name)
+	}
+	return findings, blocked
 }

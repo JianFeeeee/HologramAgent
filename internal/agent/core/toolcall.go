@@ -193,6 +193,23 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 					}
 				}
 			}
+			// ★ 内容审查的**第二条入向路径**（2026-11-02 接线）。
+			//
+			// future-plan §1.2 明确要求接两处，不能只接插件输入：
+			//
+			//	"入向有两条路——工具结果、插件输入事件。只接一条会留下
+			//	 「工具的返回被扫了、插件消息没扫」的缺口，而后者才是注入的
+			//	 主要入口。"
+			//
+			// 反过来同样成立：只扫插件消息、不扫工具结果，则**工具返回里的
+			// 注入**（网页/文档/邮件正文）完全没人看 —— 那正是最常见的注入载体。
+			//
+			// 放在这个 defer 里而不是某个 return 前面：本函数有多个出口
+			// （插件工具/io 工具/授权拒绝/不存在/panic），defer 是唯一能覆盖
+			// 全部分支的位置（与上面出向脱敏同一理由）。
+			if findings := a.reviewToolResultContent(tc.Name, out.Text); len(findings) > 0 {
+				out.Text = toolContentWarning + out.Text
+			}
 		}
 	}()
 
@@ -208,6 +225,14 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 	// **插件作者一行都不用改**：handler 签名不变。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // 正常返回也要放：否则 ctx 内部的 timer/子 goroutine 会泄漏
+	// ★ 登记给 Agent：让用户按「停止」能取消**正在跑的工具**。
+	//
+	// 此前只登记了 LLM 的 cancelLLM，工具没有入口 —— 于是长阻塞工具
+	// （实测 browser_start 被夹到 10m）会把整轮堵死，而停止只影响排队消息。
+	// 取消管道本身早已存在（ExecuteToolCtx → proc 桥发 call.cancel），
+	// 缺的只是「谁来调它」。
+	toolCancelID := a.registerToolCancel(cancel)
+	defer a.unregisterToolCancel(toolCancelID)
 
 	done := make(chan toolOutcome, 1)
 	go func() {

@@ -338,6 +338,17 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 	defer round.End()
 	_ = round // 句柄随后续轮次上下文下沉使用；当前先保证激活/归位正确
 
+	// ★ 内容审查（敏感词 / 注入迹象）接线（2026-11-02，用户裁定 B 档）。
+	//
+	// 必须在 beginSecurityRound **之后**：敏感词来自插件声明的档位
+	// （SecurityProfile.SensitiveWords），而档位是 BeginRound 按 payload
+	// 里的 security_profile 激活的。先扫后激活 = 扫的是空的词表。
+	//
+	// 命中不阻断（B 档），只在正文前追加警示语。详见 ReviewInputContent。
+	if txt, _ := evt.Payload["content"].(string); txt != "" {
+		ReviewInputContent(round, evt.Payload, evt.Source, txt)
+	}
+
 	f, term := a.prepareInputTask(evt)
 	switch term {
 	case terminalSkipped, terminalStageShortCircuit, terminalConsolidation:
