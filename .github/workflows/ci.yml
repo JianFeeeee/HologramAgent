@@ -192,7 +192,7 @@ jobs:
           # 存量基线（2026-11-04 实测 24 条 / 13 个文件）。**只许减不许增**：
           # 新增告警会让这一步红，存量告警在这里可见但暂不阻塞。
           # 收敛方向见 docs/zh/future-plan.md「staticcheck 存量」。
-          BASE=24
+          BASE=0
           n=$(printf '%s' "$out" | grep -cE '\.go:[0-9]+:' || true)
           echo "staticcheck 告警数: $n（基线 $BASE）"
           if [ "$n" -gt "$BASE" ]; then

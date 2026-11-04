@@ -346,9 +346,8 @@ func TestApplyRecordsDigests(t *testing.T) {
 	} else if got != wantSum {
 		t.Errorf("digest 记错：期望 %s 实际 %s", ShortSum(wantSum), ShortSum(got))
 	}
-	if !rec.HadDepGraph == true && rec.HadDepGraph {
-		// 占位：HadDepGraph 在本用例里没有 depgraph，应为 false
-	}
+	// （2026-11-04 删掉一个占位空 if：`!rec.HadDepGraph == true && rec.HadDepGraph`
+	//  是永假表达式，块体只有注释 ⇒ staticcheck SA9003。真正的断言在下一行。）
 	if rec.HadDepGraph {
 		t.Error("机器上本来没有 depgraph.bin，HadDepGraph 应为 false")
 	}

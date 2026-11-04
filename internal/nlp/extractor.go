@@ -61,7 +61,6 @@ func extractFromDep(result *ParseResult, sentence string) []Triple {
 	for _, vi := range verbIndices {
 		// Step 3: 沿依存弧收集主语（SBV/ATT）和宾语（VOB/IOB/FOB/POB）
 		var subjIndices, objIndices []int
-		var subjRels, objRels []string
 
 		for i, head := range result.Heads {
 			if head == 0 {
@@ -75,10 +74,8 @@ func extractFromDep(result *ParseResult, sentence string) []Triple {
 
 			if isSubjRel(rel) {
 				subjIndices = append(subjIndices, i)
-				subjRels = append(subjRels, rel)
 			} else if isObjRel(rel) {
 				objIndices = append(objIndices, i)
-				objRels = append(objRels, rel)
 			}
 		}
 
@@ -87,7 +84,6 @@ func extractFromDep(result *ParseResult, sentence string) []Triple {
 			for j := vi - 1; j >= 0; j-- {
 				if isNounLike(result.POS[j]) {
 					subjIndices = append(subjIndices, j)
-					subjRels = append(subjRels, "SBV_IMPLICIT")
 					break
 				}
 			}
@@ -101,7 +97,6 @@ func extractFromDep(result *ParseResult, sentence string) []Triple {
 				}
 				if head-1 == vi && isNounLike(result.POS[i]) && !isSubjRel(result.DepRels[i]) {
 					objIndices = append(objIndices, i)
-					objRels = append(objRels, "OBJ_IMPLICIT")
 				}
 			}
 		}

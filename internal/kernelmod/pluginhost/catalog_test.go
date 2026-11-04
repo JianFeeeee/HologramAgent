@@ -18,6 +18,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -314,8 +315,14 @@ func TestCatalogConcurrentRead(t *testing.T) {
 func TestNilSyncBusDoesNotPanic(t *testing.T) {
 	var nb *kstate.SyncBus // typed-nil
 	var iface kstate.SyncState = nb
-	if iface == nil {
-		t.Skip("接口就是 nil（不会有陷阱）—— 与本判据的前提不符")
+	// ★ 2026-11-04：原先写 `if iface == nil { t.Skip(...) }` —— 但这**永假**：
+	// 把一个 typed-nil 装进接口后，接口自身的 (type, value) 二元组都不为 nil，
+	// 所以 `iface == nil` 恒为 false（staticcheck SA4023）。
+	//
+	// 换句话说这道前置守卫从来没生效过 —— 而这正是本判据要演示的陷阱本身。
+	// 改成用反射检查，那才是判断 typed-nil 的正确方式。
+	if !reflect.ValueOf(iface).IsNil() {
+		t.Skip("不是 typed-nil（不会有陷阱）—— 与本判据的前提不符")
 	}
 	// ★ 确认陷阱真实存在（否则这条判据是空的）
 	func() {

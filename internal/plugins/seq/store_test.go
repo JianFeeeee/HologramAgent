@@ -140,9 +140,14 @@ func TestMaxCallDepthIsConstant(t *testing.T) {
 	if maxCallDepth <= 0 {
 		t.Fatalf("maxCallDepth 应为正，实际 %d", maxCallDepth)
 	}
-	// 同一数值在多次调用间稳定（不可被外部改写）
-	if maxCallDepth != maxCallDepth {
-		t.Fatal("maxCallDepth 不稳定")
+	// ★ 2026-11-04：原先写的是 `if maxCallDepth != maxCallDepth` —— 永假，
+	// 这条断言从诞生起就不可能失败（staticcheck SA4000）。
+	//
+	// 意图是"同一数值在多次调用间稳定（不可被外部改写）"。真正该测的是
+	// **读取两次得到同一个值**，于是改成显式取两次比较。
+	v1, v2 := maxCallDepth, maxCallDepth
+	if v1 != v2 {
+		t.Fatalf("maxCallDepth 读取不稳定：%d vs %d", v1, v2)
 	}
 }
 

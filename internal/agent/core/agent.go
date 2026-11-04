@@ -473,9 +473,7 @@ func New(cfg AgentConfig) *Agent {
 	if embedder == nil {
 		embedder = memory.NewStaticEmbedder(strings.Split(cfg.EmbeddingModelPath, ",")...)
 	}
-	if cfg.DocStore != nil {
-		// TF-IDF 内置为 fallback，无需外部注入
-	}
+	// DocStore 无需处理：TF-IDF 内置为 fallback，不需要外部注入向量器。
 	if cfg.Knowledge != nil {
 		cfg.Knowledge.SetVectorizer(embedder)
 		cfg.Knowledge.ReindexWithVectorizer(embedder)

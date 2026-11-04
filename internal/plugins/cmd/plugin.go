@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"runtime"
@@ -96,7 +97,18 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	p.maxOutput = 32000
 	if v, _ := s.Settings().Get("max_output_bytes"); v != nil {
 		if s, ok := v.(string); ok && s != "" {
-			if n, err := fmt.Sscanf(s, "%d", &p.maxOutput); err == nil && n > 0 {
+			// ★ 必须解析到临时变量再赋回（2026-11-04 修 staticcheck SA9003）。
+			//
+			// 原写法直接 Sscanf 到 &p.maxOutput 且分支体为空：
+			//   · 解析成功 → 值已写入，分支"什么都不做"看起来对
+			//   · 解析失败 → Sscanf 可能已把 maxOutput 写成 0 或部分值，
+			//     而空分支无法回滚 ⇒ 配置写错一个字符就把上限变成 0
+			//     （下游 maxLen := p.maxOutput 直接拿它算截断长度）
+			n := 0
+			if parsed, err := fmt.Sscanf(s, "%d", &n); err != nil || parsed != 1 || n <= 0 {
+				log.Printf("[cmd] max_output_bytes=%q 非法（期望正整数），保持默认 %d", s, p.maxOutput)
+			} else {
+				p.maxOutput = n
 			}
 		}
 	}

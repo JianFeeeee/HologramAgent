@@ -648,31 +648,50 @@ func (g *GraphDB) RecallBlocksFusedBFS(q BlockRecallQuery, query string, depth i
 		if appended >= bfsExpansionBudget {
 			break
 		}
+		// ★ 真正逐层 BFS（2026-11-04 修）。
+		//
+		// 原实现是 `for d := 1; d <= depth; d++ { ...; break }` ——
+		// 循环体末尾无条件 break，所以 d 循环**只执行一次**；而且
+		// NeighbourBlocks 始终传 `seed.BlockID`，每层取的都是同一批直接邻居。
+		//
+		// 后果两层：
+		//   ① depth 参数形同虚设，永远不会走到第 2 层
+		//   ② staticcheck SA4008「循环变量在条件里从不改变」—— 这正是它的价值：
+		//      它看出来了 `d` 除了打分没有参与寻址
+		//
+		// 现在 frontier 逐层推进：第 d 层从第 d-1 层新发现的节点继续。
+		frontier := []MemoryBlock{{ID: seed.BlockID, Text: seed.Text}}
 		for d := 1; d <= depth; d++ {
-			neighbors, err := g.NeighbourBlocks(seed.BlockID)
-			if err != nil {
-				// 联想失败不该让整次召回失败 —— 主路结果仍然有用。
-				break
-			}
-			for _, nb := range neighbors {
-				if seen[nb.ID] {
-					continue
+			var next []MemoryBlock
+			for _, cur := range frontier {
+				neighbors, err := g.NeighbourBlocks(cur.ID)
+				if err != nil {
+					// 联想失败不该让整次召回失败 —— 主路结果仍然有用。
+					break
 				}
-				seen[nb.ID] = true
-				if appended >= bfsExpansionBudget {
-					return hits, arb, nil
+				for _, nb := range neighbors {
+					if seen[nb.ID] {
+						continue
+					}
+					seen[nb.ID] = true
+					if appended >= bfsExpansionBudget {
+						return hits, arb, nil
+					}
+					hits = append(hits, FusedHit{
+						BlockID: nb.ID,
+						Text:    nb.Text,
+						Score:   base / float64(1+d),
+						Why: []string{"联想：" + cur.Text + " → " + nb.Text +
+							fmt.Sprintf("（%d 层）", d)},
+					})
+					appended++
+					next = append(next, nb)
 				}
-				hits = append(hits, FusedHit{
-					BlockID: nb.ID,
-					Text:    nb.Text,
-					Score:   base / float64(1+d),
-					Why: []string{"联想：" + seed.Text + " → " + nb.Text +
-						fmt.Sprintf("（%d 层）", d)},
-				})
-				appended++
 			}
-			// 只展开一层 —— 下一轮 d 由新追加的节点继续。
-			break
+			if len(next) == 0 {
+				break // 该层无新节点 ⇒ 再深也没有
+			}
+			frontier = next
 		}
 	}
 	return hits, arb, nil

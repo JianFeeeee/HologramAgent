@@ -209,7 +209,6 @@ func startIPCServer(dataDir, bootMode string, agent *agentCore.Agent) (*ipc.Serv
 	})
 	if err := ipcServer.Start(); err != nil {
 		log.Printf("[homed] warning: ipc heartbeat server: %v", err)
-	} else {
 	}
 
 	return ipcServer, func() {

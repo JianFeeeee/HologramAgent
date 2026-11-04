@@ -179,9 +179,8 @@ func splitDimFromVal(seg string) (dim, val string) {
 // 纯数字、百分比、版本、时长、日期、比率。
 func valueHints(seg string) []string {
 	var hints []string
-	r := []rune(seg)
 	hasDigit := false
-	for _, c := range r {
+	for _, c := range seg {
 		if c >= '0' && c <= '9' {
 			hasDigit = true
 			break

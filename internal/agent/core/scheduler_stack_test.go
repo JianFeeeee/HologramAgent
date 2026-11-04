@@ -74,8 +74,7 @@ func TestStack_NestedPreemptionResumesLIFO(t *testing.T) {
 	a := newPreemptAgent(t, sp)
 
 	// A（L1）开始运行
-	if _, _ = enqueueQueued(t, a, "qq", "任务A"); true {
-	}
+	enqueueQueued(t, a, "qq", "任务A")
 	at, _, _ := a.sched.nextRef()
 	doneA := make(chan struct{})
 	go func() { a.executeNewTask(at); close(doneA) }()

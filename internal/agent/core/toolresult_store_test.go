@@ -58,10 +58,10 @@ func TestOffloadReplacesFullTextWithPreview(t *testing.T) {
 	}
 
 	// ③ 记录挂在事件上（供 findToolResultStore 找到）
-	if len(a.context.events) == 0 {
-		// offloadToolResult 只是落盘并返回预览，不负责 append 事件；
-		// 事件由调用方（task.go）创建。这里直接验证帧上的 EventID 已分配。
-	}
+	//
+	// offloadToolResult 只是落盘并返回预览，**不负责 append 事件**
+	// —— 事件由调用方（task.go）创建。所以这里不能断言 len(events)>0，
+	// 直接验证帧上的 EventID 已分配。
 	if f.EventID == "" {
 		t.Fatal("落盘后帧上必须有 EventID，否则没法回读")
 	}

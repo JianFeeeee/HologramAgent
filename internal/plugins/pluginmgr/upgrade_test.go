@@ -223,7 +223,10 @@ func TestExtractFailureRollsBack(t *testing.T) {
 
 	// 畸形包在 validatePackage 层就拒绝，未达 extract——模拟 extract 失败：
 	// 直接注入非法平台文件触发 extractPackage 错误
-	bad := buildHmap(t, "rollback", "9.9.9")
+	// ★ 2026-11-04：原先这里先 `bad := buildHmap(...)` 再整体覆盖成
+	// 篡改后的字节 —— 第一次构造未被使用（staticcheck SA4006）。
+	// 本用例要的就是**篡改版**，直接构造它。
+	//
 	// 篡改使 extract 失败：附加一个越界路径
 	var rb bytes.Buffer
 	zw2 := zip.NewWriter(&rb)
@@ -233,7 +236,7 @@ func TestExtractFailureRollsBack(t *testing.T) {
 	mData, _ := json.Marshal(map[string]interface{}{"name": "rollback", "version": "9.9.9", "entry": "plugin.bin"})
 	mf.Write(mData)
 	zw2.Close()
-	bad = rb.Bytes()
+	bad := rb.Bytes()
 
 	r, _ := p.installFromData(bad, true)
 	m := r.(map[string]interface{})

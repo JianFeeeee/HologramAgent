@@ -176,8 +176,14 @@ func TestStop_ArmTwiceTakesMaxNotSum(t *testing.T) {
 	if n := a.sched.armStop(0); n != 2 {
 		t.Fatalf("重复 armStop=%d，期望仍为 2（取 max 不累加）", n)
 	}
-	if !a.sched.consumeCancel() || !a.sched.consumeCancel() {
-		t.Fatal("两次配额都应可消费")
+	// ★ 拆成两次独立调用（2026-11-04 修）。
+	//
+	// 原写法 `if !x() || !x()` 依赖短路：第一次返回 true 时第二次**根本不执行**，
+	// 于是"两次都能消费"这条断言实际只测了一次 —— 第二次是否被正确扣减从未验证。
+	// staticcheck SA4000 把它当"左右相同的表达式"报出来，正是这个形态。
+	first, second := a.sched.consumeCancel(), a.sched.consumeCancel()
+	if !first || !second {
+		t.Fatalf("两次配额都应可消费，实际 first=%v second=%v", first, second)
 	}
 	if a.sched.consumeCancel() {
 		t.Fatal("第三次不应再有配额")
@@ -212,8 +218,10 @@ func TestStop_ArmCountsPendingChannelInputs(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("armStop(2)=%d，期望 2（配额须包含 channel 中的待处理）", n)
 	}
-	if !a.sched.consumeCancel() || !a.sched.consumeCancel() {
-		t.Fatal("两条配额都应可消费")
+	// 同样拆开：短路求值会让第二次从不执行（见上方同型说明）。
+	c1, c2 := a.sched.consumeCancel(), a.sched.consumeCancel()
+	if !c1 || !c2 {
+		t.Fatalf("两条配额都应可消费，实际 c1=%v c2=%v", c1, c2)
 	}
 	if a.sched.consumeCancel() {
 		t.Fatal("不应有多余配额")

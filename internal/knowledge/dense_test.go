@@ -29,11 +29,10 @@ func (f *fakeMM) VectorizeDense(t string) ([]float64, error) {
 }
 
 func (f *fakeMM) EmbedImageDense(img []byte, mime string) ([]float64, error) {
-	key := string(img)
-	if err, ok := f.imgErr[key]; ok {
+	if err, ok := f.imgErr[string(img)]; ok {
 		return nil, err
 	}
-	if v, ok := f.img[key]; ok {
+	if v, ok := f.img[string(img)]; ok {
 		return v, nil
 	}
 	return f.img["__default"], nil

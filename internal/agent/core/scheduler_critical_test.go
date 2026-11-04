@@ -42,8 +42,7 @@ func TestPreempt_DeferredDuringToolExec(t *testing.T) {
 		StageHost:       sh,
 	})
 
-	if _, _ = enqueueQueued(t, a, "qq", "低优先级任务"); true {
-	}
+	enqueueQueued(t, a, "qq", "低优先级任务")
 	lt, _, _ := a.sched.nextRef()
 	done := make(chan struct{})
 	go func() { a.executeNewTask(lt); close(done) }()
@@ -149,8 +148,7 @@ func TestBatch_NotAbandonedWithoutPreemption(t *testing.T) {
 		StageHost:       sh,
 	})
 
-	if _, _ = enqueueQueued(t, a, "cli", "跑两个工具"); true {
-	}
+	enqueueQueued(t, a, "cli", "跑两个工具")
 	tt, _, _ := a.sched.nextRef()
 	a.executeNewTask(tt)
 

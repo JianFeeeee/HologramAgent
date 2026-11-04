@@ -65,10 +65,10 @@ func diffChunk(t *testing.T, in string, fastCK StreamChunk, fastOK bool, goCK St
 
 func checkPair(t *testing.T, in string) {
 	t.Helper()
-	fastCK, fastOK, _ := chunkParseFast(in)
-	if !fastCK.Done && !fastOK {
-		// handled=false ⇒ 走 Go。这里要区分「回退」与「快速路径给出失败」：
-	}
+	// ★ 2026-11-04：原先这里有 `fastCK, fastOK, _ := chunkParseFast(in)`
+	// 加一个只含注释的空 if 块（staticcheck SA4006 + SA9003）。
+	// 那三个返回值在本判据里从未被使用 —— 删掉，让判据只走真实入口。
+	// 若要单独验证快速路径的返回语义，应当另立一条判据直接断言它们。
 	// 真实入口（含回退）
 	gotCK, gotOK := parseOpenAICompatibleStreamChunkFull(in)
 	goCK, goOK := parseOpenAICompatibleStreamChunkFullGo(in)

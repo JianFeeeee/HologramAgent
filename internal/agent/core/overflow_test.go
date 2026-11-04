@@ -707,8 +707,10 @@ func TestOverflow_恢复裁剪保护本帧现场(t *testing.T) {
 //
 // 变异：恢复 handleUpstreamContextFull（直调 handleContextOverflow）⇒ 变红。
 func TestOverflow_上游与本地共用同一个处理函数(t *testing.T) {
-	a := newOverflowAgent(2000, 2, 20, 400) // 总量超页，但下面要看 force 的效果
-
+	// ★ 2026-11-04：原先这里先 `a := newOverflowAgent(...)` 再在下方
+	// `a = empty` 整体覆盖 —— 第一次构造从未被使用（staticcheck SA4006）。
+	// 删掉它；本判据需要的是"水位很低但上游报满"那个空上下文 agent。
+	//
 	// force=true 时**必须**进入处理，即使水位判定不成立。
 	// 这正是"上游说满了"的语义：不信本地估算，直接裁。
 	//
@@ -720,7 +722,7 @@ func TestOverflow_上游与本地共用同一个处理函数(t *testing.T) {
 		context:  NewRelevanceContext("", nil),
 	}
 	empty.context.Append(ContextEvent{Input: "短", Response: "短"})
-	a = empty
+	a := empty
 	if a.overflowRatioNow() >= overflowRatio {
 		t.Fatal("前置：水位应低于阈值")
 	}

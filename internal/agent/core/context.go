@@ -1177,16 +1177,17 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 	})
 
 	archived := 0
-	if coldcontextStore != nil && len(archive) > 0 {
-		// ★ 回填事件（NoMemory）**照常归档** —— 这是数据不丢的关键。
-		//
-		// 曾经在这里跳过它们（理由是"防自激"），那是错的：
-		// coldcontext_query 的 Consume 已经把 L2 副本删掉了，L1 是唯一副本。
-		// 跳过归档 = 裁掉即丢失（L1、L2、L3 三层都不在）。
-		//
-		// 自激的入口不在"归档"这一侧，而在"重新计算向量"那一侧 ——
-		// 那已经由 textForVector 里 `if evt.NoMemory { return "" }` 挡住。
-	}
+	// ★ 回填事件（NoMemory）**照常归档** —— 这是数据不丢的关键。
+	//
+	// 曾经在这里跳过它们（理由是"防自激"），那是错的：
+	// coldcontext_query 的 Consume 已经把 L2 副本删掉了，L1 是唯一副本。
+	// 跳过归档 = 裁掉即丢失（L1、L2、L3 三层都不在）。
+	//
+	// 自激的入口不在"归档"这一侧，而在"重新计算向量"那一侧 ——
+	// 那已经由 textForVector 里 `if evt.NoMemory { return "" }` 挡住。
+	//
+	// （2026-11-04：这里原先是一个**空 if 块**，条件与下面的 if 完全相同。
+	//   空块只有注释、没有语句 ⇒ staticcheck SA9003。注释移到真实分支上方。）
 	if coldcontextStore != nil && len(archive) > 0 {
 		entries := make([]coldcontext.ContextEntry, len(archive))
 		for i, s := range archive {

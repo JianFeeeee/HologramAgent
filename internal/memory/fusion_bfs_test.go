@@ -247,3 +247,73 @@ func TestSymbolScore_目标词能匹配到对应块(t *testing.T) {
 		}
 	}
 }
+
+// TestBFS召回_层深真实生效 钉住 depth 参数真的有语义。
+//
+// ## 守的是什么（2026-11-04 修的实测缺陷）
+//
+// 原实现：
+//
+//	for d := 1; d <= depth; d++ {
+//	    neighbors, _ := g.NeighbourBlocks(seed.BlockID)   // ← 永远是 seed
+//	    ...
+//	    break                                             // ← 只跑一轮
+//	}
+//
+// 三个问题叠在一起：
+//
+//	① 循环体末尾无条件 break ⇒ d 循环只执行一次
+//	② NeighbourBlocks 每层传的还是 seed.BlockID ⇒ 第 2 层取的是同一批邻居
+//	③ 于是 depth 参数**形同虚设**：传 2 和传 3 召回结果完全一样
+//
+// staticcheck 的 SA4008（"variable in loop condition never changes"）
+// 正是从这里报出来的 —— 它看出来 `d` 除了打分没有参与寻址。
+//
+// ## 判据为什么必须是"链"而不是"星型"
+//
+// 星型（一个中心连 N 个叶子）在 depth=1 就能召回全部叶子，第 2 层没有新节点
+// ⇒ 断不出"有没有真的走深"。必须是链：n0-n1-n2-n3，depth=d 恰好召回 d+1 个。
+func TestBFS召回_层深真实生效(t *testing.T) {
+	g := newTestGraph(t)
+	defer func() { _ = g.Close() }()
+
+	// 造一条 4 节点链：n0 → n1 → n2 → n3
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("n%d", i)
+		if err := g.PutMemoryBlocks([]MemoryBlock{{
+			ID: id, Modality: BlockText, Text: fmt.Sprintf("链节点%d", i),
+			Vector: []float64{1, 0}, Fingerprint: "fp1",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 {
+			if err := g.AddRelationBlockEdge(fmt.Sprintf("n%d", i-1), id, "next",
+				RelationEdgeData{SessionID: "s", Status: EdgeActive}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	q := BlockRecallQuery{Vector: []float64{1, 0}, TopK: 1, MinScore: -1}
+	got := map[int]int{}
+	for _, d := range []int{1, 2, 3} {
+		hits, _, err := g.RecallBlocksFusedBFS(q, "链节点0", d)
+		if err != nil {
+			t.Fatalf("depth=%d: %v", d, err)
+		}
+		got[d] = len(hits)
+	}
+
+	// depth=d 应召回命中(1) + d 层邻居 = d+1 个。
+	for _, d := range []int{1, 2, 3} {
+		if got[d] != d+1 {
+			t.Fatalf("★ depth=%d 召回 %d 个，期望 %d ——\n"+
+				"说明 BFS 没有真的逐层推进（depth 参数形同虚设）。\n"+
+				"实测各层: %v", d, got[d], d+1, got)
+		}
+	}
+	// 交叉验证：不同 depth 必须给出**不同**结果，否则参数无意义。
+	if got[1] == got[3] {
+		t.Fatalf("★ depth=1 与 depth=3 召回数相同（%d）—— depth 没生效", got[1])
+	}
+}
