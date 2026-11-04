@@ -1,10 +1,13 @@
-package webui
+package test
 
-import "testing"
+import (
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
+	"testing"
+)
 
 func mustReadEmbedded(t *testing.T, name string) []byte {
 	t.Helper()
-	b, err := dashboardFS.ReadFile(name)
+	b, err := webui.FrontendAsset(name)
 	if err != nil {
 		t.Fatalf("读 embed %s: %v", name, err)
 	}

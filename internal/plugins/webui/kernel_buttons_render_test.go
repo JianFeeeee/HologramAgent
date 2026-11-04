@@ -48,7 +48,11 @@ func TestKernelButtonsRenderedInPage(t *testing.T) {
 // 判定它处于顶层。jsdom 里的行为测试做不到这点（node 不强求），
 // 而浏览器里 onclick 走的是全局查找。
 func TestKernelFunctionsAreGlobal(t *testing.T) {
-	src := string(mustReadEmbedded(t, "dashboard.js"))
+	js, err := FrontendAsset("dashboard.js")
+	if err != nil {
+		t.Fatalf("读 dashboard.js: %v", err)
+	}
+	src := string(js)
 
 	for _, fn := range []string{"kernelRestart", "kernelShutdown", "doKernelControl", "waitForKernelBack"} {
 		// 顶层定义：行首（可有 async 前缀），不带缩进

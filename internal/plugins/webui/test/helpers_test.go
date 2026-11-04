@@ -6,10 +6,9 @@ package test
 // 而在"测试与源码分离"之后，它们不能再从包内符号借用。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"strings"
 	"testing"
-
-	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 )
 
 // stripJSComments 剥掉 // 行注释与 /* */ 块注释（粗粒度，但足够用于词频统计）。

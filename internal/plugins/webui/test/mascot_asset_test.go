@@ -1,9 +1,10 @@
-package webui
+package test
 
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ import (
 // 都在看。所以用容器格式本身来判定：判据看的是 VP8X 的 Alpha 标志位与
 // ALPH chunk 是否**一致存在**，而不是「渲染出来像不像透明」。
 func TestMascotAssetHasRealAlpha(t *testing.T) {
-	data, err := dashboardFS.ReadFile("mascot.webp")
+	data, err := webui.FrontendAsset("mascot.webp")
 	if err != nil {
 		t.Fatalf("读 mascot.webp: %v", err)
 	}

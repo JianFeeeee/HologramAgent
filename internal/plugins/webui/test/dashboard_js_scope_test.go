@@ -1,4 +1,4 @@
-package webui
+package test
 
 import (
 	"os"
@@ -43,15 +43,7 @@ import (
 // 判据做法：用 node 在沙箱里把 dashboard.js 跑一遍，抓未捕获异常。
 // node 不在时 t.Skip（CI 里 GO 环境可能没有 node）。
 
-// dashboardJSSource 取出待测脚本文本（测试内复用以免重复读 embed）。
-func dashboardJSSource(t *testing.T) string {
-	t.Helper()
-	b, err := dashboardFS.ReadFile("dashboard.js")
-	if err != nil {
-		t.Fatalf("读 dashboard.js: %v", err)
-	}
-	return string(b)
-}
+// dashboardJSSource 见 helpers_test.go（迁移时去重）。
 
 // TestDashboardJS_HasNoReferenceErrorInStrictMode 用 node 跑真脚本抓 ReferenceError。
 //
@@ -350,63 +342,4 @@ func TestDashboardJS_NoWriteOnlyGlobals(t *testing.T) {
 	}
 }
 
-func stripJSComments(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	inLine, inBlock := false, false
-	var inStr byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inLine {
-			if c == '\n' {
-				inLine = false
-				b.WriteByte(c)
-			}
-			continue
-		}
-		if inBlock {
-			if c == '*' && i+1 < len(s) && s[i+1] == '/' {
-				inBlock = false
-				i++
-			}
-			continue
-		}
-		if c == '\n' {
-			b.WriteByte(c)
-			continue
-		}
-		if inStr != 0 {
-			b.WriteByte(c)
-			if c == '\\' {
-				if i+1 < len(s) {
-					b.WriteByte(s[i+1])
-					i++
-				}
-				continue
-			}
-			if c == inStr {
-				inStr = 0
-			}
-			continue
-		}
-		if c == '"' || c == '\'' || c == '`' {
-			// 反引号也是字符串定界符，但它可跨行 —— 本判据只统计标识符，
-			// 跨行模板串里出现标识符属正常，此处按普通字符串处理即可。
-			inStr = c
-			b.WriteByte(c)
-			continue
-		}
-		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
-			inLine = true
-			i++
-			continue
-		}
-		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
-			inBlock = true
-			i++
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
-}
+// stripJSComments 见 helpers_test.go（迁移时去重）。
