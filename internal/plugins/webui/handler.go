@@ -177,7 +177,7 @@ type Handler struct {
 	// 由设置项 webui.trusted_proxies 配置（逗号分隔）。
 	trustedProxies []string
 
-	sseEvents *sseEventRing // SSE 事件环状缓冲区，Last-Event-ID 重放用
+	sseEvents *SSEEventRing // SSE 事件环状缓冲区，Last-Event-ID 重放用
 
 	chatMu      sync.Mutex
 	chatHistory []ChatMsg

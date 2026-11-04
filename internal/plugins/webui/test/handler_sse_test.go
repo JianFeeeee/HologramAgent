@@ -1,35 +1,36 @@
-package webui
+package test
 
 import (
 	"encoding/json"
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"reflect"
 	"testing"
 )
 
 func TestSSEEventRing_Append_Capacity(t *testing.T) {
-	r := newSSEEventRing(3)
+	r := webui.NewSSEEventRing(3)
 	data := json.RawMessage(`{"a":1}`)
 	for i := 0; i < 5; i++ {
 		r.Append("id-"+string(rune('0'+i)), "agent_output", data)
 	}
 	// cap=3，只保留 id-2,id-3,id-4
-	if len(r.buf) != 3 {
-		t.Fatalf("expected 3, got %d", len(r.buf))
+	if len(r.After("")) != 3 {
+		t.Fatalf("expected 3, got %d", len(r.After("")))
 	}
-	if r.buf[0].id != "id-2" {
-		t.Fatalf("expected id-2, got %s", r.buf[0].id)
+	if r.After("")[0].ID != "id-2" {
+		t.Fatalf("expected id-2, got %s", r.After("")[0].ID)
 	}
 }
 
 func TestSSEEventRing_After_Mid(t *testing.T) {
-	r := newSSEEventRing(10)
+	r := webui.NewSSEEventRing(10)
 	data := json.RawMessage(`{"x":"y"}`)
 	r.Append("id-1", "reasoning", data)
 	r.Append("id-2", "agent_output", data)
 	r.Append("id-3", "tool_call", data)
 
 	after := r.After("id-2")
-	if len(after) != 1 || after[0].id != "id-3" {
+	if len(after) != 1 || after[0].ID != "id-3" {
 		t.Fatalf("expected [id-3], got %v", after)
 	}
 
@@ -40,7 +41,7 @@ func TestSSEEventRing_After_Mid(t *testing.T) {
 }
 
 func TestSSEEventRing_After_NotFound_ReturnsAll(t *testing.T) {
-	r := newSSEEventRing(3)
+	r := webui.NewSSEEventRing(3)
 	data := json.RawMessage(`{}`)
 	r.Append("id-1", "agent_output", data)
 	r.Append("id-2", "agent_output", data)
@@ -52,7 +53,7 @@ func TestSSEEventRing_After_NotFound_ReturnsAll(t *testing.T) {
 }
 
 func TestSSEEventRing_After_Last_Tip(t *testing.T) {
-	r := newSSEEventRing(5)
+	r := webui.NewSSEEventRing(5)
 	data := json.RawMessage(`{"a":1}`)
 	for i := 0; i < 5; i++ {
 		r.Append("id-"+string(rune('0'+i)), "agent_output", data)
@@ -64,7 +65,7 @@ func TestSSEEventRing_After_Last_Tip(t *testing.T) {
 }
 
 func TestSSEEventRing_Concurrent(t *testing.T) {
-	r := newSSEEventRing(100)
+	r := webui.NewSSEEventRing(100)
 	done := make(chan struct{})
 	for i := 0; i < 8; i++ {
 		go func(n int) {
@@ -89,8 +90,8 @@ func TestSSEEventRing_Concurrent(t *testing.T) {
 }
 
 func TestSSEEventRecord_Type(t *testing.T) {
-	var got interface{} = sseEventRecord{}
+	var got interface{} = webui.SSEEventRecord{}
 	if reflect.TypeOf(got).Kind() != reflect.Struct {
-		t.Fatal("sseEventRecord should be a struct")
+		t.Fatal("webui.SSEEventRecord should be a struct")
 	}
 }
