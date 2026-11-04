@@ -149,10 +149,96 @@ jobs:
           python3 -c 'import yaml; print("  pyyaml", yaml.__version__)'
           python3 .github/scripts/check-ci-gates.py
 
+      # ── staticcheck（语义级静态分析）──
+      #
+      # ## 为什么必须补（2026-11-04）
+      #
+      # `go vet` 只跑标准检查器。实测今天撞到的一类缺陷它抓不到：
+      #
+      #   pluginHealthTracker 标记 Unhealthy=true 后，isHealthy 立刻用
+      #   LastReload（**从未被赋值**，恒为零值）判"冷却已过"而自愈
+      #
+      # 这正是 staticcheck 的 SA4xxx 家族（无用赋值 / 永真条件）的领域。
+      # 它不替代判据，但能在"写完了但逻辑自相矛盾"处提前报警。
+      #
+      # 版本钉死：staticcheck 有自己的语义假设，跟着 latest 走会让
+      # 别人的发布节奏决定我们的 CI 红绿。
+      - name: staticcheck（语义级静态分析）
+        run: |
+          set -euo pipefail
+          # ★ 版本必须匹配 Go 版本。实测：staticcheck 2025.1.1 在 Go 1.27.1 上
+          # 报 "export data version 4 is greater than maximum supported version 2"，
+          # 然后**静默返回退出码 0** —— 一道永远绿的门，比没有门更危险。
+          # 2026.2.2 能正确解析。
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          SC="$(go env GOPATH)/bin/staticcheck"
+          "$SC" -version
+
+          # ★ 只查"语义自相矛盾"类，不查风格类。
+          #   SA4xxx 无用赋值/永真条件、SA5xxx 可疑代码、SA6xxx 低效、
+          #   SA9xxx 必错分支。这四族在"写完了但逻辑打架"处最有效 ——
+          #   今天那个 pluginHealth 冷却锚点用零值字段的缺陷就属此类。
+          set +e
+          out=$("$SC" -checks 'SA4*,SA5*,SA6*,SA9*' ./internal/... ./cmd/... 2>&1)
+          rc=$?
+          set -e
+
+          if [ $rc -ne 0 ] && ! printf '%s' "$out" | grep -qE '\.go:[0-9]+'; then
+            echo "★ staticcheck 未能运行（不是发现缺陷）："
+            printf '%s\n' "$out" | head -20
+            exit 1
+          fi
+
+          # 存量基线（2026-11-04 实测 24 条 / 13 个文件）。**只许减不许增**：
+          # 新增告警会让这一步红，存量告警在这里可见但暂不阻塞。
+          # 收敛方向见 docs/zh/future-plan.md「staticcheck 存量」。
+          BASE=24
+          n=$(printf '%s' "$out" | grep -cE '\.go:[0-9]+:' || true)
+          echo "staticcheck 告警数: $n（基线 $BASE）"
+          if [ "$n" -gt "$BASE" ]; then
+            echo
+            echo "★ 新增了 $((n-BASE)) 条 staticcheck 告警（基线 $BASE）："
+            printf '%s\n' "$out" | head -40
+            echo
+            echo "这些是 SA4xx/SA5xx/SA6xx/SA9xx —— 语义自相矛盾类，不是风格问题。"
+            echo "如果确认是误报，请在此处加 -checks 例外并写明原因。"
+            exit 1
+          fi
+          if [ "$n" -lt "$BASE" ]; then
+            echo "✓ 比基线少了 $((BASE-n)) 条 —— 请把上面的 BASE 调低到 $n，否则门会越来越松"
+          fi
+
       # ./... 不点名 cmd/gui（该目录是纯 Electron，无 .go 文件）：
       # 显式 `go test ./cmd/gui` 会报 "no Go files"，那是误报，不是缺陷。
       - name: go test ./...
         run: go test ./... -count=1 -timeout 20m
+
+      # ── 覆盖率采集（只报数，不设阈值）──
+      #
+      # ## 为什么补（2026-11-04）
+      #
+      # 仓里 521 个测试文件、11.2 万行测试代码，但**没有任何覆盖率数据** ——
+      # 无法回答"哪些模块其实没被测到"。而本轮判据治理的起点正是
+      # "覆盖率/"判据形状"两者都看不清"。
+      #
+      # ★ 不设阈值：阈值会促成"为凑数写空判据"，那比没覆盖率更糟。
+      #   这里只把数字打出来，让人在做模块级决策时有个参照。
+      - name: 覆盖率（仅报告）
+        run: |
+          set -euo pipefail
+          go test ./... -count=1 -timeout 20m \
+              -coverprofile=/tmp/cover.out -covermode=atomic > /tmp/cover.log 2>&1 || {
+            echo "★ 覆盖率跑挂了（这条同时兜住了 go test 的失败）"
+            tail -40 /tmp/cover.log
+            exit 1
+          }
+          echo "=== 总覆盖率 ==="
+          go tool cover -func=/tmp/cover.out | tail -1
+          echo
+          echo "=== 覆盖率最低的 15 个包 ==="
+          go tool cover -func=/tmp/cover.out \
+            | awk -F'\t+' '/^github/ {split($1,a,":"); pkg=a[1]; sub(/\/[^\/]+$/,"",pkg); gsub(/.*HologramAgent\//,"",pkg); cov=$3; gsub(/%/,"",cov); n[pkg]++; s[pkg]+=cov} END {for (p in n) printf "%.1f%%\t%s\n", s[p]/n[p], p}' \
+            | sort -n | head -15
 
       # 整机启动图判据（internal/kernelmod/all/bootgraph_test.go）。
       #
