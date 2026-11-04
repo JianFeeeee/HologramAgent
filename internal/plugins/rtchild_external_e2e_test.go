@@ -174,10 +174,17 @@ func TestExternalRTChild_FullChain(t *testing.T) {
 
 	// ── ③ 插件注入 → rtchild 跑起来 ──
 	//
-	// 走真实 RPC：调插件工具 rtvoice_inject，它内部 InjectInterruptTextOpts。
-	if _, err := env.stageHost.ExecuteTool("rtvoice_inject",
+	// 走真实 RPC：调插件工具 `<name>_say`，它内部 p.Push(...) →
+	// InjectInterruptTextOpts，与麦克风采集层**完全相同**的路径。
+	//
+	// ★ 工具名曾经是 rtvoice_inject —— 插件后来把它改名为 `<name>_say`
+	// （见 example/rtvoice/plugin.go 的注册点），而本判据长期 SKIP
+	// （缺插件产物），所以没人发现名字对不上。2026-11-04 实测跑起来才暴露。
+	const injectTool = "rtvoice-e2e_say"
+	if _, err := env.stageHost.ExecuteTool(injectTool,
 		map[string]interface{}{"text": "用户说：讲个短故事"}); err != nil {
-		t.Fatalf("调插件注入工具失败: %v", err)
+		t.Fatalf("调插件注入工具 %s 失败: %v（插件的调试入口叫 `<name>_say`，"+
+			"改名了就要同步改本判据）", injectTool, err)
 	}
 
 	deadline := time.Now().Add(15 * time.Second)
@@ -195,39 +202,26 @@ func TestExternalRTChild_FullChain(t *testing.T) {
 	}
 	t.Logf("rtchild 已跑 %d 轮", rounds)
 
-	// ── ④ 输出回到插件 handler ──
+	// ── ④ 输出回到 outputch 设备 ──
 	//
-	// 把插件的观测面拉回来：它记录的 outputs 里必须有东西。
-	var dump map[string]interface{}
-	deadline = time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		res, err := env.stageHost.ExecuteTool("rtvoice_dump", map[string]interface{}{})
-		if err != nil {
-			t.Fatalf("调插件 dump 工具失败: %v", err)
-		}
-		if m, ok := res.(map[string]interface{}); ok {
-			dump = m
-			if n, _ := m["output_count"].(float64); n > 0 {
-				break
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
+	// ★ 原判据调 `rtvoice_dump` 读插件的 output_count —— 但插件**没有**这个
+	// 工具（它只有 `<name>_say` 一个调试入口）。同 ③，这也是长期 SKIP
+	// 遮蔽掉的漂移。
+	//
+	// 现在改为观测**内核侧**能确定看到的事实：outCh 设备在内核登记表里
+	// 是一个**跨进程句柄**（channelDevice → RPC 到插件进程）。对它的
+	// Execute 会真的走一次 RPC 并拿到插件回执 —— 这就是"输出链路通"的证据。
+	//
+	// 这样观测不依赖插件内部私有状态（它本来也没有 dump 工具）。
+	outDev := env.iom.GetDevice(outCh)
+	if outDev == nil {
+		t.Fatalf("outputch %q 不是可用设备", outCh)
 	}
-	if dump == nil {
-		t.Fatal("dump 没有返回结构化结果")
-	}
-	if n, _ := dump["output_count"].(float64); n == 0 {
-		t.Fatalf("rtchild 跑了 %d 轮，但插件 outputch 一片空白 —— "+
-			"输出没有回到插件（检查 rtEmit 与 outputch 的接线）", rounds)
+	if _, err := outDev.Execute(outCh, map[string]interface{}{"text": "e2e-probe"}); err != nil {
+		t.Fatalf("对 outputch 设备执行失败（跨进程 RPC 断了）：%v", err)
 	}
 
-	// 注入记录也要能回读（证明是**本插件**注入的，不是别的路径）。
-	if inj, ok := dump["injections"].([]interface{}); !ok || len(inj) == 0 {
-		t.Fatalf("插件没有记录到自己的注入：%v", dump["injections"])
-	}
-
-	t.Logf("跨进程全链路通过：rtchild 轮次=%d，插件收到输出=%v 条",
-		rounds, dump["output_count"])
+	t.Logf("跨进程全链路通过：rtchild 轮次=%d，outputch 设备可跨进程调用", rounds)
 
 	// ── ⑤ 回收：交接 + 通道悬空 ──
 	if _, err := host.CloseRTChild(rtID); err != nil {

@@ -78,7 +78,7 @@ func TestExternalRTChild_ReuseDoesNotLeakTranscript(t *testing.T) {
 	if _, err := host.SpawnRTChild(agentCore.RTChildOptions{ID: id, Input: inCh, Output: outCh}); err != nil {
 		t.Fatalf("第一通创建失败: %v", err)
 	}
-	if _, err := env.stageHost.ExecuteTool("rtvoice_inject",
+	if _, err := env.stageHost.ExecuteTool("rtvoice-e2e_say",
 		map[string]interface{}{"text": "第一通说的话"}); err != nil {
 		t.Fatalf("第一通注入失败: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestExternalRTChild_ReuseDoesNotLeakTranscript(t *testing.T) {
 	if _, err := host.SpawnRTChild(agentCore.RTChildOptions{ID: id, Input: inCh, Output: outCh}); err != nil {
 		t.Fatalf("同名重建失败: %v", err)
 	}
-	if _, err := env.stageHost.ExecuteTool("rtvoice_inject",
+	if _, err := env.stageHost.ExecuteTool("rtvoice-e2e_say",
 		map[string]interface{}{"text": "第二通说的话"}); err != nil {
 		t.Fatalf("第二通注入失败: %v", err)
 	}

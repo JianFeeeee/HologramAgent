@@ -298,32 +298,87 @@ func TestParentDeclaresChildPolicy(t *testing.T) {
 // 这条单列，因为本仓反复吃亏在"单数路径改了、复数路径漏了"：
 // `StopRTChild` 注销入站登记而 `StopRTChildren` 漏了，就是这么来的。
 //
-// 用源码断言：真销毁需要完整记忆栈/rt 通道，而"前置不满足就 skip"
-// 的判据等于没有（本仓已有同型先例：TestHiddenDependencyOnnxDeclared）。
+// ## 2026-11-04 适配：撤销动作已移入骨架
+//
+// R2/R3 把"撤销策略"从两个停止函数搬进了 `child.Registry.Cleanup`，
+// 由各类型注入的 `StopDeps.RevokePolicy` 触发。于是判据需要钉**两个环节**：
+//
+//	① 骨架真的会调用注入的 RevokePolicy（否则注入等于没接）
+//	② 各类型真的注入了它（否则骨架有地方调、但没人填）
+//
+// 只钉 ①：注入漏填时永远绿。
+// 只钉 ②：骨架不调时永远绿。
+//
+// 两个环节都缺失才是真实缺口，所以必须**成对**断言。
+//
+// 行为版判据放在 `internal/agent/core`（那里有真实脚手架），
+// 本处保留源码级断言，因为它能跨包检查"装配是否被人改掉"。
 func TestChildTeardownRevokesPolicy(t *testing.T) {
-	cases := []struct{ file, fn, why string }{
+	// ① 骨架：Cleanup 必须调用 deps.RevokePolicy。
+	//
+	// 变红条件：删掉 registry.go 里那两行 ⇒ 红。
+	reg := readMod(t, "../../agent/core/child/registry.go")
+	ci := strings.Index(reg, "func (r *Registry) Cleanup(")
+	if ci < 0 {
+		t.Fatal("找不到 Registry.Cleanup —— 符号改名了？判据需要跟着改")
+	}
+	cleanupBody := reg[ci:]
+	if end := strings.Index(cleanupBody, "\n}\n"); end > 0 {
+		cleanupBody = cleanupBody[:end]
+	}
+	if !strings.Contains(cleanupBody, "deps.RevokePolicy") {
+		t.Error("★ Cleanup 没有调用 deps.RevokePolicy —— 子策略永远不会被撤销。\n" +
+			"  后果：主体表以调用方给的名字为键，回收后同名重建会继承\n" +
+			"  上一代父留下的约束（而那个父可能已经不在了），且表单调增长。")
+	}
+
+	// ② 各类型：必须往 StopDeps 里填 RevokePolicy。
+	//
+	// rt 走 children.StopOne/StopAll ⇒ 由 rtStopDeps 提供。
+	// 驻留子走自己的 teardownResidentWith ⇒ 那里直接调。
+	cases := []struct{ file, anchor, needle, why string }{
+		{"../../agent/core/rtchild.go", "func (a *Agent) rtStopDeps(",
+			"RevokePolicy: a.revokeChildPolicy",
+			"rtchild 的 StopDeps 必须注入撤销动作"},
 		{"../../agent/core/resident.go", "func (a *Agent) teardownResidentWith(",
+			"revokeChildPolicy",
 			"驻留子销毁必须撤销父为它声明的策略"},
-		{"../../agent/core/rtchild.go", "func (a *Agent) StopRTChild(",
-			"rtchild 单数停止必须撤销策略"},
-		{"../../agent/core/rtchild.go", "func (a *Agent) StopRTChildren(",
-			"rtchild 批量停止必须与单数路径对称地撤销策略"},
 	}
 	for _, c := range cases {
 		src := readMod(t, c.file)
-		i := strings.Index(src, c.fn)
+		i := strings.Index(src, c.anchor)
 		if i < 0 {
-			t.Fatalf("%s 里找不到 %s —— 符号改名了？判据需要跟着改", c.file, c.fn)
+			t.Fatalf("%s 里找不到 %s —— 符号改名了？判据需要跟着改", c.file, c.anchor)
 		}
 		body := src[i:]
 		if end := strings.Index(body, "\n}\n"); end > 0 {
 			body = body[:end]
 		}
-		if !strings.Contains(body, "revokeChildPolicy") {
-			t.Errorf("★ %s 里没有 revokeChildPolicy —— %s。\n"+
+		if !strings.Contains(body, c.needle) {
+			t.Errorf("★ %s 里没有 %q —— %s。\n"+
 				"  后果：主体表以调用方给的名字为键，回收后同名重建会继承\n"+
-				"  上一代父留下的约束（而那个父可能已经不在了），且表单调增长。",
-				c.fn, c.why)
+				"  上一代父留下的约束，且表单调增长。", c.anchor, c.needle, c.why)
+		}
+	}
+
+	// ③ 单数与复数必须**共用同一条骨架路径**（这是"对称"的结构保证）。
+	//
+	// 变红条件：StopRTChildren 改回自己写一遍循环 + 撤销 ⇒ 红。
+	rt := readMod(t, "../../agent/core/rtchild.go")
+	for _, fn := range []string{
+		"func (a *Agent) StopRTChild(", "func (a *Agent) StopRTChildren(",
+	} {
+		i := strings.Index(rt, fn)
+		if i < 0 {
+			t.Fatalf("找不到 %s", fn)
+		}
+		body := rt[i:]
+		if end := strings.Index(body, "\n}\n"); end > 0 {
+			body = body[:end]
+		}
+		if !strings.Contains(body, "a.children.Stop") {
+			t.Errorf("★ %s 没走骨架的 StopOne/StopAll —— 单数与复数各写一遍时，"+
+				"必然出现\"改一处漏一处\"（engineering-lessons §2.3）", fn)
 		}
 	}
 }
