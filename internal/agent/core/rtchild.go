@@ -627,9 +627,17 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
 		StageHost:         a.stageHost,
-		AllowedOutputs:    []string{opts.Output},
-		KernelSource:      string(a.id),
-		ParentID:          string(a.id),
+		// ★ 技能索引必须**继承父的**（2026-11-04 修）。
+		//
+		// 不继承的后果与 Security 那次同型：子 agent 的 system prompt 里
+		// **完全没有 skill 索引**，于是它不知道该先读哪个 skill 就直接调工具。
+		// 实测症状：A2A 分诊助手手上没有 cmd_run（cmd 插件 auto_start=false），
+		// 又看不到 cmd-tools skill 里"先 plugin_start cmd"的说明，
+		// 就把 terminal_create 当成命令执行器用，一条命令开一个终端。
+		SkillIndexProvider: a.skillIndex,
+		AllowedOutputs:     []string{opts.Output},
+		KernelSource:       string(a.id),
+		ParentID:           string(a.id),
 		// ★ 安全运行时**必须继承父的**（2026-10-30 补）。
 		//
 		// rtchild 是高频、低延迟的执行体，且它照样能调工具（R3：rt 流不禁工具）。

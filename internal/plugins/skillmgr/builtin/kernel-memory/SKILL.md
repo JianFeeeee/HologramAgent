@@ -16,7 +16,7 @@ Four stores, one rule each:
 ## Retrieving
 
 | Need | Tool |
-|---|---|
+| --- | --- |
 | A past episode in full | `coldcontext_query` |
 | A fact or relation | `stablemem_recall` |
 | Written reference material | `knowledge_search` |
@@ -33,5 +33,5 @@ again later, it lives on in the timeline until pruning moves it back.
 ## Writing
 
 - Facts worth keeping: `stablemem_commit` (triples).
-- Written knowledge: `knowledge_write`.
+- Written knowledge: `knowledge_create`.
 - Do not commit transient chatter, tool output, or your own status lines.
