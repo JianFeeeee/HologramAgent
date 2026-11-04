@@ -26,9 +26,7 @@ import (
 // 可控。
 func pushToChild(t *testing.T, root *Agent, childID, channel, text string) {
 	t.Helper()
-	root.residentMu.Lock()
-	rc := root.residents[childID]
-	root.residentMu.Unlock()
+	rc := root.residentOf(childID)
 	if rc == nil || rc.agent == nil {
 		t.Fatalf("驻留子 %s 不存在", childID)
 	}
@@ -75,9 +73,7 @@ func spawnQuietResident(t *testing.T, root *Agent, dir, id string, inputChs ...s
 //	这里复用它的做法：cancel + 等静止，不用任何自定义标志位。）
 func parkChild(t *testing.T, root *Agent, childID string) {
 	t.Helper()
-	root.residentMu.Lock()
-	rc := root.residents[childID]
-	root.residentMu.Unlock()
+	rc := root.residentOf(childID)
 	if rc == nil || rc.agent == nil {
 		t.Fatalf("驻留子 %s 不存在", childID)
 	}
@@ -262,9 +258,7 @@ func TestResidualDrop_StillNotifiesSyncCaller(t *testing.T) {
 	info := spawnQuietResident(t, root, dir, "drop1", "qq")
 
 	respCh := make(chan *agentIO.OutputEvent, 1)
-	root.rtMu.Lock()
-	root.rtMu.Unlock() // 只是保持锁序一致（无实际作用）
-	child := root.residents[info.ID]
+	child := root.residentOf(info.ID)
 	child.agent.sched.enqueue(newInputTask(&agentIO.InputEvent{
 		Source: "cli", OutputChannel: "qq", Payload: map[string]interface{}{"content": "答我"},
 		ResponseCh: respCh,

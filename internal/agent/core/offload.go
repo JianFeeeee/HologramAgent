@@ -24,6 +24,7 @@ import (
 
 	"runtime/debug"
 
+	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/core/child"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
@@ -229,9 +230,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 //
 // 用排队语义（isInterrupt=false）：转投的是"待办工作"，不是"打断子"。
 func (a *Agent) forwardInputToResident(residentID string, evt *agentIO.InputEvent) error {
-	a.residentMu.Lock()
-	rc := a.residents[residentID]
-	a.residentMu.Unlock()
+	rc := a.residentOf(residentID)
 	if rc == nil || rc.agent == nil || rc.agent.io == nil {
 		return fmt.Errorf("驻留子 %s 不存在或不可用", residentID)
 	}
@@ -252,20 +251,20 @@ func (a *Agent) forwardInputToResident(residentID string, evt *agentIO.InputEven
 // 复用规则：优先复用"内核为转投而建"且仍 running、还没满的驻留子；
 // 都不可用时（在 MaxResidents 内）新建一个。
 func (a *Agent) ensureOffloadResident(opts OffloadOptions) (string, error) {
-	a.residentMu.Lock()
+	// 复用候选从统一登记表里挑"内核为转投而建"且仍 running 的。
 	var reusable []string
-	for id, rc := range a.residents {
-		if rc == nil || !rc.offloadOwned {
+	for _, e := range a.children.ByKind(childpkg.KindResident) {
+		rc, ok := e.(*residentChild)
+		if !ok || !rc.offloadOwned {
 			continue
 		}
 		rc.mu.Lock()
 		state := rc.state
 		rc.mu.Unlock()
 		if state == "running" {
-			reusable = append(reusable, id)
+			reusable = append(reusable, e.Base().ID)
 		}
 	}
-	a.residentMu.Unlock()
 
 	// 复用：按 id 稳定排序后取第一个，避免每次挑到不同的子（可预测性）。
 	if len(reusable) > 0 {
@@ -274,14 +273,12 @@ func (a *Agent) ensureOffloadResident(opts OffloadOptions) (string, error) {
 	}
 
 	// 计数：只为转投而建的子是否已达上限（人工建的子不计入）。
-	a.residentMu.Lock()
 	owned := 0
-	for _, rc := range a.residents {
-		if rc != nil && rc.offloadOwned {
+	for _, e := range a.children.ByKind(childpkg.KindResident) {
+		if rc, ok := e.(*residentChild); ok && rc.offloadOwned {
 			owned++
 		}
 	}
-	a.residentMu.Unlock()
 	if owned >= opts.MaxResidents {
 		return "", fmt.Errorf("转投专用驻留子已达上限 %d", opts.MaxResidents)
 	}

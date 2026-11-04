@@ -191,10 +191,8 @@ func TestP3_ChannelNameSlashIsIllegalForOutputGate(t *testing.T) {
 // residentOf 取父登记表里的驻留子（不存在则 fatal）。
 func residentOf(t *testing.T, parent *Agent, id string) *Agent {
 	t.Helper()
-	parent.residentMu.Lock()
-	rc, ok := parent.residents[id]
-	parent.residentMu.Unlock()
-	if !ok || rc == nil || rc.agent == nil {
+	rc := parent.residentOf(id)
+	if rc == nil || rc.agent == nil {
 		t.Fatalf("驻留子 %s 不存在", id)
 	}
 	return rc.agent

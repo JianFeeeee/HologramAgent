@@ -26,7 +26,7 @@ func TestChildContextFull_L4CarriesIdentityAndDispositions(t *testing.T) {
 	parent, _, dir := newRootForResidents(t)
 	spawnTestResident(t, parent, dir, "child-vec")
 
-	rc := parent.residents["child-vec"]
+	rc := parent.residentOf("child-vec")
 	child := rc.agent
 
 	// 把子的积累上下文推到窗口之上（同既有判据的手法：灌 a.context 而非拼好的消息）

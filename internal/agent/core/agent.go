@@ -9,6 +9,7 @@ import (
 
 	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core/child"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
@@ -60,32 +61,29 @@ type Agent struct {
 	// 与 kernelSource 同类：都是“这个 agent 在层级/类型上是谁”的不可变标记。
 	isRealtime bool
 
-	// 驻留子（父侧）：登记表 + 子侧钩子。
-	residentMu sync.Mutex
-	residents  map[string]*residentChild
+	// children 是**全部类型**的子 agent 的唯一登记表（重构 R1 起）。
+	//
+	// ## 为什么只有一张表
+	//
+	// 此前 residents 与 rtChildren 各自一张表 + 一把锁，每加一种类型就
+	// 多一张表、一把锁、一段路由分支。实测新增一种子 agent 要改 18 个生产
+	// 文件，并已因复制而漂移过一次（StopRTChildren 漏注销入站登记）。
+	//
+	// 现在类型差异下沉到 child.Entry / 各类型的 Dispose，骨架
+	// （单数/复数停止、撤销策略、注销入站）只写一遍。
+	children child.Registry
 
-	// rtchild（实时子 agent，plan.md 十一）：登记表 + 单槽输入。
+	// rt 的实例登记已并入 children（统一登记表）。
 	//
-	// ★ 为何与 residents 分开而不复用：两者的语义**相反**：
-	//   residents：有任务队列、有残余可回灌、父可 pull 状态面（不丢活）
-	//   rtChildren：无队列（单槽覆盖）、无残余、最新者胜（低延迟）
-	// 混在一张表里会让"该不该转残余"这类判断变成条件分叉。
-	rtMu       sync.Mutex
-	rtChildren map[string]*rtChild
-	// rtClosedTranscripts 是**已回收** rtchild 的上下文留档（id → 全文）。
+	// 这里只剩**已回收实例的上下文留档**：它不是登记表的一部分
+	// （实例已经不在了），而是"推信号 + 拉状态"交接协议的拉侧数据源。
 	//
-	// 为什么必须留档：交接是「推信号 + 拉状态」两步（见 CloseRTChild），
-	// 推完中断后实例已出登记表 —— 若不留档，主 agent 收到"可调用 rt_transcript
-	// 取回原文"的提示时，原文已经取不到了。
-	//
-	// ★ 键是 id，所以**同名复用会撞键**。串线的真因在读侧：RTTranscript 曾
-	// "先查留档、命中即返回"，于是新实例读到的永远是上一通已回收的原文
-	// （2026-10-30 实测复现）。现在改为**在跑实例优先**（见 RTTranscript）。
-	//
-	// ★ 刻意**不**在 Spawn 时 delete 这份留档：留档存在的意义就是"回收后
-	// 主 agent 按需取回原文"，提前删掉等于让推了信号却拉不到正文。
-	// 同名键只在下一次 CloseRTChild 写入时被自然覆写。
+	// ★ 键是调用方（模型）给的 id，所以同名复用会撞键。串线的真因在**读侧**
+	// （RTTranscript 曾"先查留档、命中即返回"），现在按"在跑实例优先"。
+	// 刻意**不**在 Spawn 时删留档：提前删掉等于让"推了信号却拉不到正文"。
+	rtArchiveMu         sync.Mutex
 	rtClosedTranscripts map[string][]agentAPI.Message
+
 	// rtSlot 是**本 agent 作为 rtchild 时**的输入槽（作为父时无用）。
 	rtSlot *rtSlot
 	// rtMaxTools 是本 agent 作为 rtchild 时的工具批数上限（0 = 不限）。

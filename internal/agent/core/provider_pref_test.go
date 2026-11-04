@@ -142,9 +142,7 @@ func TestPreferredProvider_InheritedByChildAgents(t *testing.T) {
 	parent.preferredProvider = "parent-pref"
 
 	spawnTestResident(t, parent, dir, "inh")
-	parent.residentMu.Lock()
-	rc := parent.residents["inh"]
-	parent.residentMu.Unlock()
+	rc := parent.residentOf("inh")
 	if rc == nil {
 		t.Fatal("驻留子未创建")
 	}
@@ -169,9 +167,7 @@ func TestPreferredProvider_RTChildOwnSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建 rtchild: %v", err)
 	}
-	parent.rtMu.Lock()
-	rc := parent.rtChildren[id]
-	parent.rtMu.Unlock()
+	rc := parent.rtChildOf(id)
 	if got := chainNames(rc.agent); len(got) == 0 || got[0] != "rt-fast" {
 		t.Fatalf("rtchild 未使用自己配置的源，首位 = %v", got)
 	}

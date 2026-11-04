@@ -171,7 +171,7 @@ func TestRTChannel_SDKRealtimeBecomesCapRT(t *testing.T) {
 
 	// 端到端：该通道能被 rtchild 划拨（这是"插件能接入"的判定点）。
 	id, _ := host.SpawnRTChild(RTChildOptions{ID: "sdk-child", Input: "sdk-rt", Output: "voice"})
-	rc := host.rtChildren[id]
+	rc := host.rtChildOf(id)
 	if err := rc.agent.AssignRealtime("sdk-rt"); err != nil {
 		t.Fatalf("插件声明的 rt 通道无法划给 rtchild：%v", err)
 	}
@@ -429,7 +429,7 @@ func TestRTChildrenTool_NotVisibleToChild(t *testing.T) {
 		Name: "voice-in", Plugin: "test", Capabilities: agentIO.CapRT | agentIO.CapText,
 	})
 	id := rtSpawn(t, host, "no-recurse")
-	rc := host.rtChildren[id]
+	rc := host.rtChildOf(id)
 	if rc == nil {
 		t.Fatal("实例不在登记表")
 	}

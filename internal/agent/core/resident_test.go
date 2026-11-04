@@ -117,7 +117,7 @@ func TestResident_LifecycleAndNoOrphans(t *testing.T) {
 	}
 
 	// 子的轻量内核：有共同面、没有整理面。
-	c1 := parent.residents["child-1"]
+	c1 := parent.residentOf("child-1")
 	if c1.agent.memory != nil {
 		t.Fatal("驻留子不该有记忆整理面")
 	}
@@ -181,7 +181,7 @@ func osStat(path string) (interface{}, error) {
 func TestResident_DeliveryBothDirections(t *testing.T) {
 	parent, _, dir := newRootForResidents(t)
 	spawnTestResident(t, parent, dir, "child-1")
-	child := parent.residents["child-1"].agent
+	child := parent.residentOf("child-1").agent
 
 	// 父 → 子：发送消息 ⇒ 子在 **L4** 上收到（父是子的内核级来源）。
 	if err := parent.SendToResident("child-1", "先停一下，改做 X"); err != nil {
@@ -207,7 +207,7 @@ func TestResident_DeliveryBothDirections(t *testing.T) {
 func TestResident_InputchTableAutoAndProactive(t *testing.T) {
 	parent, _, dir := newRootForResidents(t)
 	spawnTestResident(t, parent, dir, "child-1")
-	child := parent.residents["child-1"].agent
+	child := parent.residentOf("child-1").agent
 
 	// 说明：create 会把任务提示词作为**第一条输入**投给子（"create 即开工"），
 	// 所以这里先等那一轮写完 —— 表里每多一轮就多一条，正是"每轮必有记录"。
@@ -255,7 +255,7 @@ func TestResident_ContextFullAndDispositions(t *testing.T) {
 	// ① contextfull：把子的**积累上下文**（a.context，不是拼好的消息）灌到超过窗口 90%。
 	//    注意不能靠"拼好的消息很大"来触发：拼装前时间线已被 token 预算裁到 ~80% 窗口。
 	spawnTestResident(t, parent, dir, "child-1")
-	rc := parent.residents["child-1"]
+	rc := parent.residentOf("child-1")
 	child := rc.agent
 	child.context.Append(ContextEvent{
 		Timestamp: time.Now(), Source: "sub/in",
@@ -364,7 +364,7 @@ func TestResident_E2EAndStress(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				parent.residents[id].agent.io.InjectInput("sub/"+id+"/in", "text",
+				parent.residentOf(id).agent.io.InjectInput("sub/"+id+"/in", "text",
 					map[string]interface{}{"content": msg})
 			}
 		}
@@ -383,7 +383,7 @@ func TestResident_E2EAndStress(t *testing.T) {
 
 	// 双向通信在压力下也成立：让每个子都汇报一次（父侧 L3）。
 	for _, id := range ids {
-		parent.residents[id].agent.notifyParent("压力汇报 " + id)
+		parent.residentOf(id).agent.notifyParent("压力汇报 " + id)
 	}
 	waitForWithin(t, "父收到全部子的汇报", 10*time.Second, func() bool {
 		return parent.DumpScheduler().Stats.InterruptsByLevel[LevelInteractive] >= uint64(nResidents)
@@ -442,7 +442,7 @@ func TestLightKernel_TraditionalContextNoTrimming(t *testing.T) {
 	provider := &captureProvider{}
 	parent, _, dir := newRootWith(t, provider)
 	spawnTestResident(t, parent, dir, "child-1")
-	child := parent.residents["child-1"].agent
+	child := parent.residentOf("child-1").agent
 
 	if !child.isLightKernel() {
 		t.Fatal("驻留子必须被识别为轻量内核")

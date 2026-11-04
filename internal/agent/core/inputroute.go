@@ -29,9 +29,8 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 		return false // 未分配 / 归自己 ⇒ 本内核处理
 	}
 
-	a.residentMu.Lock()
-	rc := a.residents[entry.Owner]
-	a.residentMu.Unlock()
+	// 驻留子从**统一登记表**取（不再是专用表 + 专用锁）。
+	rc := a.residentOf(entry.Owner)
 
 	// ★ rtchild 分支：rt 通道的输入必须进 **rtSlot**（单槽覆盖），
 	// 而不是走 rc.agent.io.DeliverRouted（那会进四级中断阶梯）。
@@ -41,10 +40,8 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	// 语音/画面输入会永远打在父身上（rtchild 的轮次永远是 0）。
 	//
 	// 判据 TestRTChannel_PluginInputReachesRTSlot 钉它。
-	a.rtMu.Lock()
-	rt := a.rtChildren[entry.Owner]
-	a.rtMu.Unlock()
-	if rt != nil {
+	// rt 实例从**统一登记表**取（不再是专用表 + 专用锁）。
+	if rt := a.rtChildOf(entry.Owner); rt != nil {
 		// 不区分 isInterrupt：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
 		// 这正是 plan.md 十一.三 B 说的"rt 输入不进四级中断阶梯"的落点。
 		rt.slot.Push(evt)

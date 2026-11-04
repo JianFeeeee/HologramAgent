@@ -47,7 +47,7 @@ func TestRTChild_AskparentToolPresent(t *testing.T) {
 	host, _ := newRTHost(t, p)
 
 	id := rtSpawn(t, host, "ask")
-	rc := host.rtChildren[id]
+	rc := host.rtChildOf(id)
 	if rc == nil {
 		t.Fatal("实例不在登记表")
 	}
@@ -85,7 +85,7 @@ func TestRTChild_NotifyParentIsWired(t *testing.T) {
 	host, _ := newRTHost(t, p)
 
 	id := rtSpawn(t, host, "wire")
-	rc := host.rtChildren[id]
+	rc := host.rtChildOf(id)
 	if rc == nil || rc.agent.notifyParent == nil {
 		t.Fatal("rtchild 的 notifyParent 未接线 —— notify_parent 工具会永远失败")
 	}
@@ -123,7 +123,7 @@ func TestRTChild_ToolFaceNotNarrowedByRT(t *testing.T) {
 	host, _ := newRTHost(t, p)
 
 	id := rtSpawn(t, host, "face")
-	rc := host.rtChildren[id]
+	rc := host.rtChildOf(id)
 
 	all := rtToolNames(rc.agent.buildToolDefs())
 	kept := rtToolNames(rtStripOutputTools(rc.agent.buildToolDefs()))

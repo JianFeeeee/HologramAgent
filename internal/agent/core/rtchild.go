@@ -43,7 +43,9 @@ import (
 	"sync"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core/child"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -280,19 +282,35 @@ func (s *rtSlot) Wake() <-chan struct{} { return s.wake }
 
 // rtChild 是一个 rtchild 实例（通话场景的实时子 agent）。
 //
-// 它**不进** `a.residents`（那是驻留子的登记表，语义是"有任务队列、有残余"），
+// 它**不是驻留子**（驻留子的语义是"有任务队列、有残余"，与 rt 相反），
 // 而是自己一张轻表（见 Agent.rtChildren）。
 type rtChild struct {
-	id     string
-	agent  *Agent  // 跑 rt 轮次的载体（已标记 isRealtime）
+	// ★ 公共部分（id / Kind / ctx / IO / 入站通道 / 状态 / 轮次 / stopped）
+	// 来自 child.Child 的**嵌入**：骨架统一管理生命周期，类型只管差异。
+	// 嵌入而非命名成员：所有 rc.Base().ID 这类访问都能简化成 rc.ID。
+	*child.Child
+
+	agent *Agent // 跑 rt 轮次的载体（已标记 isRealtime）
+	// pump 是输出通道的**异步壳**（用户裁定 2026-11-04：rt 的所有调用都异步）。
+	//
+	// 它把"调用 outputch 设备"从 rtStream 的流式循环里摘出去：
+	// Push 立即返回，插件侧延迟不再节流模型生成。
+	pump *outputPump
+	// light / mainRO 是本实例的图记忆句柄（参照驻留子）。
+	//
+	// ★ 必须在 Dispose 里关闭：它们是 SQLite 句柄，不关就随每次
+	// create/stop 累积泄漏。驻留子那边由 teardownResident 关，
+	// rt 这边原先没有图记忆，所以从未需要处理 —— 接入后必须补。
+	light  *memory.LightMemory
+	mainRO *memory.GraphDB
 	slot   *rtSlot // 唯一输入入口：单槽覆盖
 	input  string  // inputch(rt) 的名字（采集侧灌入；成对的一半）
 	output string  // outputch(rt) 的设备名（内核把文本写进去）
 
 	// round 是本轮序号（单调递增），seq 是本轮所基于的输入 seq。
 	//
-	// ★ seq 是**可验证凭据**（plan.md 十一.四 空白 3）：输出回传它，
-	// 判据才能证明"这一轮是用最新输入跑的"，而不是旧输入的残余。
+	// ★ seq 是**可验证凭据**：输出回传它，判据才能证明"这一轮是用最新输入跑的"，
+	// 而不是旧输入的残余。
 	mu      sync.Mutex
 	round   uint64
 	lastSeq uint64
@@ -301,34 +319,90 @@ type rtChild struct {
 	// nil = 没有正在跑的轮次。
 	curCancel context.CancelFunc
 	// critical > 0 表示正在执行工具（不可打断，R5）。
-	// 用计数而非 bool：一轮里可能串行执行多个工具。
+	// 用计数而非 bool：一轮里可能并发执行多个工具。
 	critical int
 	// suppressedCancels 统计「因处于工具执行期而**故意没取消**」的次数。
 	//
 	// ★ 为什么需要这个计数器（否则 R6 的守卫是**不可验证**的）：
-	// 设备工具执行经 `a.io.ExecuteTool`（toolcall.go:377），它内部传的是
-	// `context.Background()` —— 工具**根本收不到** roundCtx。于是"工具不被
-	// 中途掐断"这件事在两条路径上都成立，判据无法区分：
+	// 设备工具执行经 `a.io.ExecuteTool`，它内部传的是 context.Background()
+	// —— 工具**根本收不到** roundCtx。于是"工具不被中途掐断"这件事在两条
+	// 路径上都成立，判据无法区分：
 	//   · 守卫生效（我们主动不取消）
 	//   · 守卫失效但取消也没效果（工具不消费 ctx）
 	// 这个计数器把"守卫真的被执行了"变成可观测事实（判据
 	// TestRTChild_CriticalSectionSuppressesCancel 钉它）。
 	suppressedCancels uint64
 
-	// history 是跨轮累积的对话消息（普通上下文，plan.md 十一.四 修订后）。
+	// history 是跨轮累积的对话消息（普通上下文）。
 	//
 	// 它**就是** rtchild 的全部上下文状态：一条通话是一条连续对话，
 	// 每轮把「本轮 user 输入 + 模型产出 + 工具结果」追加进去，
 	// 进模型前按窗口裁（见 buildRTContext / rtTrimToWindow）。
 	//
-	// 与另外两类子 agent 的差别只在**生命周期**：
-	//   普通子   —— 局部 msgs，跑完即弃
+	// 与另外几类子 agent 的差别只在**生命周期**：
+	//   工作式子 —— 局部 msgs，跑完即弃
 	//   rtchild  —— 同一份 msgs 跨轮保留（通话不能每轮失忆）
 	//
 	// 由 rtLoop 单 goroutine 串行改，锁只用于让外部读取（stats/判据）安全。
 	history []agentAPI.Message
-	// stopped 标记本实例已被 Stop（避免 Stop 后再启 loop）。
-	stopped bool
+}
+
+// ── child.Entry 实现（骨架通过它管理生命周期） ──
+
+// Base 返回公共部分。
+func (rc *rtChild) Base() *child.Child { return rc.Child }
+
+// Kind 返回类型标签。
+func (rc *rtChild) Kind() child.Kind { return child.KindRT }
+
+// Dispose 是 rt 的销毁语义：**无残余**（契约 3）。
+//
+// 与驻留子的关键差别：驻留子可 keep/drop 残余并回灌父，
+// rt 的未处理输入是过期状态，回灌只会污染主管线（计划 §七）。
+//
+// ★ 通道**悬空不归还**（用户裁定 2026-10-30）：
+// 主 agent 不持有 rt 能力，把它"归还为未分配"等于让一个没有 rtSlot 的
+// agent 成为潜在持有方（routeInputByOwner 的 Owner=="" 分支会把输入
+// 兜底给主 agent，静默改变语义）。悬空是**显式**状态，运维能一眼看出
+// "这条 rt 通道的宿主没了"。
+func (rc *rtChild) Dispose(_ child.ResidualPolicy) string {
+	// 契约 3：丢弃槽里未处理的输入，不转交。
+	if rc.slot != nil {
+		_, _, _ = rc.slot.Take()
+	}
+	// ★ 先排空输出队列再退出：Close 内部 wg.Wait() 会等消费 goroutine
+	// 把剩余片发完。不排空会把"最后半句"吞掉 —— 用户听到话说到一半就断了。
+	if rc.pump != nil {
+		rc.pump.Close()
+		rc.pump = nil
+	}
+	// 图记忆句柄必须关（SQLite 句柄，不关会随 create/stop 累积泄漏）。
+	//
+	// ★ 顺序：先关 temp（LightMemory 内部持有它），再关主库受限句柄。
+	// 反了会让 LightMemory.Close 去关一个已关的 main（它只关 temp，
+	// 但保持"子先于父"的顺序与本仓其它所有关闭路径一致）。
+	if rc.light != nil {
+		_ = rc.light.Close()
+		rc.light = nil
+	}
+	if rc.mainRO != nil {
+		_ = rc.mainRO.Close()
+		rc.mainRO = nil
+	}
+	return ""
+}
+
+// rtChildOf 按 id 取 rt 实例（不存在返回 nil）。
+//
+// 统一走 children 登记表，再做一次类型断言 —— 断言失败说明该 id 属于
+// 别的类型（如驻留子），对调用方而言同样"不是 rtchild"，返回 nil 是对的。
+func (a *Agent) rtChildOf(id string) *rtChild {
+	e, ok := a.children.Get(id)
+	if !ok {
+		return nil
+	}
+	rc, _ := e.(*rtChild)
+	return rc
 }
 
 // RTChildOptions 是创建一个 rtchild 的参数。
@@ -368,6 +442,32 @@ type RTChildOptions struct {
 	// 与 `spawn_child` 的 max_turns 同义，但默认值必须是 0（不限）：
 	// rt 是**常驻对话**而非一次性任务，跑满就结束是错的。
 	MaxTools int
+	// TempPath 是它 temp 图记忆的存储路径（空 = 不建 temp，只读父的主库）。
+	//
+	// ## 为什么 rt 也要有图记忆（用户裁定 2026-11-04）
+	//
+	// 参照驻留子（`SpawnResident` 的 LightMemory 装配）：驻留子是
+	// 「轻量内核 = 传统上下文 + 图记忆共同面」，rt 原先**零图记忆**
+	// （carrier 既没有 Memory 也没有 LightMemory ⇒ graphMem() == nil），
+	// 于是 memory_recall / memory_commit 这类共同面工具在 rt 里全部不可达。
+	//
+	// 但 rt 恰恰需要它：通话里用户会提到人、地点、约定、偏好，
+	// 那些正是图记忆该记住的东西；而 rt 的 history 只在**这一通电话**内有效，
+	// 通话一结束就只剩留档（父按需拉取）。不接图记忆 ⇒ 每通电话都从零开始。
+	//
+	// ## 为什么走 LightMemory 而不是直接给父的 *GraphDB
+	//
+	// 与驻留子同一理由：子写进去的东西必须与子同生共死、可被父采收，
+	// 而不能直接污染主库。给了 TempPath 就是 temp 实例（读写、销毁时丢弃），
+	// 同时**始终**带主库的受限只读句柄 ⇒ 子读得到父的全部记忆。
+	TempPath string
+	// AllowGraphWrite 声明是否允许写图记忆（默认 false = 只读）。
+	//
+	// 默认只读的理由：rt 是通话场景，一次通话几十轮高频写入会把图谱灌满
+	// 噪声（与 rtvoice 插件给 inputch 标 NoMemory 同一条考虑）。
+	// 需要「通话中记下用户说的事」时由父显式开 true。
+	AllowGraphWrite bool
+
 	// AllowedTools / DenyTools 是**父为这个 rtchild 声明**的工具策略。
 	//
 	// 与驻留子同理（见 ResidentOptions.AllowedTools）。rt 流不禁工具（用户裁定 R3），
@@ -395,13 +495,10 @@ const rtChildDefaultPrompt = `你正在与用户实时通话。
 
 // RTChildren 返回全部 rtchild 的 id（按 id 排序，便于断言与展示稳定）。
 func (a *Agent) RTChildren() []string {
-	a.rtMu.Lock()
-	defer a.rtMu.Unlock()
-	out := make([]string, 0, len(a.rtChildren))
-	for id := range a.rtChildren {
-		out = append(out, id)
+	out := make([]string, 0, 4)
+	for _, e := range a.children.ByKind(child.KindRT) {
+		out = append(out, e.Base().ID)
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -447,15 +544,9 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		}
 	}
 
-	a.rtMu.Lock()
-	if a.rtChildren == nil {
-		a.rtChildren = map[string]*rtChild{}
+	if _, dup := a.children.Get(opts.ID); dup {
+		return "", fmt.Errorf("rtchild %s 已存在（%w）", opts.ID, child.ErrChildExists)
 	}
-	if _, dup := a.rtChildren[opts.ID]; dup {
-		a.rtMu.Unlock()
-		return "", fmt.Errorf("rtchild %s 已存在", opts.ID)
-	}
-	a.rtMu.Unlock()
 
 	// ① 独立 ctx：**必须**从父的 ctx 派生（父停则子停，不留孤儿），
 	//    但**单独可取消**（打断 rtA 不波及父与 rtB）。见上面的注释。
@@ -474,11 +565,55 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		sysPrompt = rtChildDefaultPrompt
 	}
 
+	// ★ 图记忆装配（用户裁定 2026-11-04：参照驻留子接入）。
+	//
+	// 形态与驻留子**逐项对齐**（resident.go 的 SpawnResident ①）：
+	//
+	//	主库受限只读句柄  memory.OpenGraphDBReadOnly(a.mainGraph().Path())
+	//	temp 实例（可选）  memory.NewLightMemory(ro, TempPath, AllowGraphWrite)
+	//
+	// 三处差异是刻意的，且都有理由：
+	//  ① TempPath 可为空：rt 常常只读（通话中不写记忆），此时不开 temp，
+	//     只给受限只读句柄 —— 驻留子必须有 temp（它是长期干活的）。
+	//  ② AllowGraphWrite 默认 false：一次通话几十轮高频写入会把图谱灌满噪声
+	//     （与 rtvoice 插件给 inputch 标 NoMemory 同一条考虑）。
+	//  ③ 失败**必须回滚**：与驻留子同样拒绝创建一个"记忆装配半残"的执行体。
+	var (
+		rtLight  *memory.LightMemory
+		rtMainRO *memory.GraphDB
+	)
+	if gm := a.mainGraph(); gm != nil {
+		ro, err := memory.OpenGraphDBReadOnly(gm.Path())
+		if err != nil {
+			cancel()
+			return "", fmt.Errorf("rtchild 打开主库受限句柄失败: %w", err)
+		}
+		rtMainRO = ro
+		light, err := memory.NewLightMemory(ro, opts.TempPath, opts.AllowGraphWrite)
+		if err != nil {
+			_ = ro.Close()
+			cancel()
+			return "", fmt.Errorf("rtchild 装配图记忆失败: %w", err)
+		}
+		rtLight = light
+	}
+	// 统一回滚：任何后续失败都要把这些句柄关掉，否则每失败一次泄一个
+	// SQLite 句柄（驻留子那边用逐点 Close；这里集中成一个闭包，
+	// 因为它有 4 个失败点，逐点写必然漏一处）。
+	rollbackMem := func() {
+		if rtLight != nil {
+			_ = rtLight.Close()
+		}
+		if rtMainRO != nil {
+			_ = rtMainRO.Close()
+		}
+	}
+
 	carrier := New(AgentConfig{
 		// ★ 必须**逐字等于**登记表 key（opts.ID）。
 		//
 		// 曾经写成 "rt/"+opts.ID：于是 AssignRealtime 把通道 Owner 记成 "rt/xxx"，
-		// 而 routeInputByOwner 按 entry.Owner 去 a.rtChildren 里查（key 是 "xxx"）
+		// 而 routeInputByOwner 按 entry.Owner 去登记表里查（key 是 "xxx"）
 		// ⇒ **永远查不到** ⇒ 插件的 rt 输入被兜底给主 agent。
 		// 这是"两个地方各拼一次名字"的典型故障（与 resident 的 inboundChannelName 同型）。
 		ID:              types.AgentID(opts.ID),
@@ -501,8 +636,12 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// 不继承的后果与主 agent 同型：`securityDecisionFor` 恒走 nil ⇒ 恒放行。
 		// 而它比主 agent 更危险 —— 通话场景下它一边听用户说话一边执行工具，
 		// 没有任何人工复核的窗口。
-		Security:   a.security,
-		IsRealtime: true, // ★ 类型标签：只有它可被划 rt 通道
+		// ★ 图记忆共同面（与驻留子同一个字段、同一套语义）：
+		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.memory 保持 nil
+		// ⇒ 记忆整理面（块/媒体/流水线）全部不可达，只有 Recall/Commit 可用。
+		LightMemory: rtLight,
+		Security:    a.security,
+		IsRealtime:  true, // ★ 类型标签：只有它可被划 rt 通道
 	})
 	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 3 个记忆
 	//   整理循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。
@@ -544,9 +683,31 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	}
 
 	rc := &rtChild{
-		id: opts.ID, agent: carrier, slot: carrier.rtSlot,
+		Child: &child.Child{
+			ID:     opts.ID,
+			Kind:   child.KindRT,
+			IO:     childIO,
+			Ctx:    ctx,
+			Cancel: cancel,
+			// 入站通道：回调里投递用；Stop 时由骨架注销（单数/复数共用同一段）。
+			InboundCh: rtInboundCh,
+			ParentID:  string(a.id),
+		},
+		agent: carrier, slot: carrier.rtSlot,
+		light: rtLight, mainRO: rtMainRO,
 		input: opts.Input, output: opts.Output,
 	}
+	// ★ 输出异步壳（用户裁定：rt 的所有调用都异步）。
+	//
+	// resolve 是闭包而不是缓存的设备指针：插件崩溃时 releasePluginChannels
+	// 会注销设备，恢复后重新注册 —— 缓存指针会一直指向死设备，
+	// 现象是"插件重启后 rt 再也说不出话"。
+	rc.pump = newOutputPump(opts.Output, func() agentIO.Device {
+		if a.io == nil {
+			return nil
+		}
+		return a.io.GetDevice(opts.Output)
+	})
 
 	// ★ 成对划拨 rt 通道（这是"主 agent 把 rt 通道划给 rtchild"的**唯一**落点）。
 	//
@@ -570,7 +731,14 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 			}
 		}
 	}
+	// rollback 是**唯一**的失败回滚点：通道归属恢复 + 图记忆句柄释放。
+	//
+	// ★ 为什么把两者合成一个闭包而不逐个失败点各写一遍：
+	// 本函数有 4 个失败出口（两个 AssignRealtime、declareChildPolicy、
+	// children.Add）。逐点挂"关 memory 句柄"必然漏一处 —— 漏了就是
+	// 每失败一次泄一个 SQLite 句柄（且只在失败路径上，平时看不出来）。
 	rollback := func() {
+		rollbackMem()
 		reg := a.io.ChannelRegistry()
 		if reg == nil {
 			return
@@ -603,8 +771,11 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		return "", fmt.Errorf("为 rtchild %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
 	}
 
-	a.rtMu.Lock()
-	a.rtChildren[opts.ID] = rc
+	if err := a.children.Add(rc); err != nil {
+		cancel()
+		rollback()
+		return "", fmt.Errorf("登记 rtchild %s 失败: %w", opts.ID, err)
+	}
 	// ★ 这里**不**清留档（与一个曾被写错一版的修复相反，记录以示后人）。
 	//
 	// 我一度在这里加过 `delete(a.rtClosedTranscripts, opts.ID)`，理由是
@@ -621,7 +792,6 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//
 	// 现在的语义：留档只在**下一次 CloseRTChild 写同名键**时被覆写
 	// （自然淘汰），在那之前一直可取。
-	a.rtMu.Unlock()
 
 	go carrier.rtLoop(rc)
 
@@ -629,98 +799,54 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	return opts.ID, nil
 }
 
+// rtResidualPolicy：rt **没有**残余回灌（契约 3）。
+const rtResidualPolicy = child.ResidualDrop
+
+// rtStopDeps 组装骨架清理所需的注入动作。
+//
+// ★ 这里是 rt 侧唯一需要知道"撤销策略 / 注销入站"的地方，
+// 而**执行**它们的是骨架的 Cleanup —— 单数与复数路径共用那一段。
+func (a *Agent) rtStopDeps() child.StopDeps {
+	return child.StopDeps{
+		Residual:     rtResidualPolicy,
+		RevokePolicy: a.revokeChildPolicy,
+		UnregisterInbound: func(ch string) {
+			if a.io == nil {
+				return
+			}
+			if reg := a.io.ChannelRegistry(); reg != nil {
+				reg.Unregister(ch)
+			}
+		},
+	}
+}
+
 // StopRTChild 停止一个 rtchild 并清出登记表。
 //
 // 契约 3：**无残余回灌** —— 槽里未处理的那条输入直接丢弃（它是过期状态，
-// 回灌给父只会污染主管线，见计划 §七「插件那边的当前态默认不转交」）。
+// 回灌给父只会污染主管线）。
+//
+// ★ 通道**销毁后悬空**（用户裁定 2026-10-30）：不归还为空。
+// 主 agent 不持有 rt 能力，归还为空会让 routeInputByOwner 的 Owner==""
+// 分支把输入兜底给主 agent，静默改变语义。悬空是**显式**状态，可日志诊断。
+// 只注销本内核自建的入站登记（child/<id>），不碰插件声明的 rt 通道。
 func (a *Agent) StopRTChild(id string) error {
-	a.rtMu.Lock()
-	rc, ok := a.rtChildren[id]
-	if ok {
-		delete(a.rtChildren, id)
-	}
-	a.rtMu.Unlock()
-	if !ok {
-		return fmt.Errorf("rtchild %s 不存在", id)
-	}
-	// ★ 撤销父为它声明的主体策略（与 StopRTChild 同时）。
-	//
-	// 与 resident 同理：主体表以调用方给的名字为键，同名重建会继承旧策略。
-	// 而且若不撤销，`rt_children create id=x` → `stop x` → `create id=x`
-	// 这个循环会让策略表持续增长且语义错误。
-	a.revokeChildPolicy(id)
-	rc.mu.Lock()
-	rc.stopped = true
-	rc.mu.Unlock()
-
-	// 取消自己的 ctx ⇒ rtLoop 在下一个安全点退出、当前 ChatStream 被截断。
-	rc.agent.cancel()
-	// 契约 3：无残余。清空槽（丢弃未处理输入，不转交）。
-	_, _, _ = rc.slot.Take()
-	if a.io != nil {
-		if reg := a.io.ChannelRegistry(); reg != nil {
-			// ★ rt 通道**销毁后悬空**（用户裁定 2026-10-30），**不归还为空**。
-			//
-			// 为什么不归还：
-			//   · 主 agent **不持有** rt 能力 ⇒ 把它"归还为未分配"等于让一个
-			//     没有 rtSlot 的 agent 成为潜在持有方（routeInputByOwner 的
-			//     Owner=="" 分支会把输入兜底给主 agent，静默改变语义）
-			//   · 悬空（Owner 仍指向已销毁的 id）是**显式**状态：路由查不到
-			//     该 owner ⇒ 走既有的"owner 无匹配 agent"兜底 + 留日志，
-			//     运维能一眼看出"这条 rt 通道的宿主没了"
-			//
-			// 换言之：悬空 = 可用日志诊断的坏状态；归还 = 静默改路由的坏状态。
-			// 前者可查，后者不可查。
-			//
-			// 只注销入站登记（那是本内核自己建的 child/<id>，不是插件声明的 rt 通道）。
-			reg.Unregister(inboundChannelName("rt/" + id))
+	if err := a.children.StopOne(id, a.rtStopDeps()); err != nil {
+		if errors.Is(err, child.ErrChildNotFound) {
+			return fmt.Errorf("rtchild %s 不存在", id)
 		}
+		return err
 	}
-	log.Printf("[rtchild] %s stopped", id)
 	return nil
 }
 
 // StopRTChildren 停止全部 rtchild（父退出时必须；不留孤儿）。
 //
-// ★ 必须与 StopRTChild（单数）**行为对称**：那个会注销入站登记
-// （child/rt-<id>），本函数曾漏了这一步。
-//
-// 漏的后果与驻留子那边记录的是同一个形态：登记表是共享的、按 name 全局唯一，
-// 残留随 create/destroy 次数**单调累积**，而外部没有任何工具能单独注销
-// 一条 inputch —— 只能重启 homed 清。
+// ★ 与 StopRTChild（单数）**共用骨架的 Cleanup**：此前两条路径各写一遍，
+// 复数漏了注销入站登记，残留随 create/destroy 单调累积且只能重启清
+// （engineering-lessons.md §2.3）。现在"漏一步"在结构上不可能发生。
 func (a *Agent) StopRTChildren() int {
-	a.rtMu.Lock()
-	all := make([]*rtChild, 0, len(a.rtChildren))
-	for _, rc := range a.rtChildren {
-		all = append(all, rc)
-	}
-	a.rtChildren = map[string]*rtChild{}
-	a.rtMu.Unlock()
-	for _, rc := range all {
-		rc.mu.Lock()
-		rc.stopped = true
-		rc.mu.Unlock()
-		// ★ 撤销主体策略（必须与单数路径对称）。
-		//
-		// 这里曾漏过一步（入站登记未注销），与今天修的 StopRTChildren
-		// 不对称是同一类缺陷形态 —— 所以两处必须逐字对齐。
-		a.revokeChildPolicy(rc.id)
-		rc.agent.cancel()
-		_, _, _ = rc.slot.Take()
-		// 注销入站登记（与 StopRTChild 的单数路径逐字一致）。
-		//
-		// 不碰插件声明的 rt 通道本身（那两条销毁后**悬空**，用户裁定）：
-		// 这里只摘本内核自己建的 child/rt-<id>。
-		if a.io != nil {
-			if reg := a.io.ChannelRegistry(); reg != nil {
-				reg.Unregister(inboundChannelName("rt/" + rc.id))
-			}
-		}
-	}
-	if len(all) > 0 {
-		log.Printf("[rtchild] stopped all %d instance(s)", len(all))
-	}
-	return len(all)
+	return a.children.StopAll(child.KindRT, a.rtStopDeps())
 }
 
 // PushRTInput 投递一条 rt 输入（**覆盖式**，返回本次 seq）。
@@ -729,9 +855,7 @@ func (a *Agent) StopRTChildren() int {
 // 后者进四级中断阶梯（会被 preemptCooldown=2s 降级为入队），
 // 本函数直接覆盖单槽（最新者胜，永不排队）。见 plan.md 十一.三 B。
 func (a *Agent) PushRTInput(id, text string) (uint64, error) {
-	a.rtMu.Lock()
-	rc := a.rtChildren[id]
-	a.rtMu.Unlock()
+	rc := a.rtChildOf(id)
 	if rc == nil {
 		return 0, fmt.Errorf("rtchild %s 不存在", id)
 	}
@@ -781,9 +905,7 @@ type RTChildStats struct {
 
 // RTChildStats 返回该实例的状态快照。
 func (a *Agent) RTChildStats(id string) (RTChildStats, bool) {
-	a.rtMu.Lock()
-	rc := a.rtChildren[id]
-	a.rtMu.Unlock()
+	rc := a.rtChildOf(id)
 	if rc == nil {
 		return RTChildStats{}, false
 	}
@@ -824,7 +946,7 @@ func (a *Agent) RTChildStats(id string) (RTChildStats, bool) {
 func (a *Agent) rtLoop(rc *rtChild) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[rtchild] %s loop panic recovered: %v\n%s", rc.id, r, debug.Stack())
+			log.Printf("[rtchild] %s loop panic recovered: %v\n%s", rc.ID, r, debug.Stack())
 		}
 	}()
 
@@ -909,7 +1031,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 每轮进 LLM 前看一看：若这期间已有更新的输入进了槽，本轮就不必再跑了
 		// （新的一轮马上会用那条输入重开）。这是契约 1 在循环内的落点。
 		if a.rtSuperseded(rc, seq) {
-			log.Printf("[rtchild] %s round %d superseded by newer input before LLM", rc.id, round)
+			log.Printf("[rtchild] %s round %d superseded by newer input before LLM", rc.ID, round)
 			return
 		}
 
@@ -933,7 +1055,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 工具批数上限（0 = 不限）。rt 是常驻对话，默认不限；
 		// 给了上限是为了让调用方能约束"一次插话最多查几步"。
 		if a.rtMaxTools > 0 && turns >= a.rtMaxTools {
-			log.Printf("[rtchild] %s round %d reached max tool turns %d", rc.id, round, a.rtMaxTools)
+			log.Printf("[rtchild] %s round %d reached max tool turns %d", rc.ID, round, a.rtMaxTools)
 			return
 		}
 		turns++
@@ -942,17 +1064,35 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		msgs = append(msgs, agentAPI.Message{
 			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
 		})
-		for _, tc := range resp.ToolCalls {
-			// ★ 工具执行期间**不可打断**（R5 / plan.md 十一.三 A 的临界区）：
-			// 副作用不可回滚，打断只会让"决定执行但未执行"变成尴尬状态。
-			a.rtEnterCritical(rc)
-			out := a.executeToolCallOutcome(tc, rc.output)
-			a.rtExitCritical(rc)
+		// ★ 工具执行期间**不可打断**（R5 / plan.md 十一.三 A 的临界区）：
+		// 副作用不可回滚，打断只会让"决定执行但未执行"变成尴尬状态。
+		//
+		// ★★ 走共享的 runToolBatch（2026-11-04 重构）：
+		//
+		// 原实现是逐条直调 `executeToolCallOutcome`，它内部**没有任何 runStage**
+		// ⇒ rt 的工具调用对插件完全不可见：不能审计、不能拒绝、不能改参、不能脱敏。
+		// 而 README 承诺的 before_toolcall「审计、拒绝、改参」在这条路径上不成立。
+		//
+		// 现在整批经过 before/after_toolcall，且按声明并发（rt 的工具互不依赖）。
+		// 临界区改为**覆盖整批**：语义不变（副作用仍不可被打断），
+		// 但不再需要"每个工具进一次"的计数抖动。
+		a.rtEnterCritical(rc)
+		results := a.runToolBatch(roundCtx, resp.ToolCalls, batchOpts{
+			Channel: rc.output,
+			// rt 无场景（它不吃 RelevanceContext）。
+			Scenes: nil,
+		})
+		a.rtExitCritical(rc)
 
-			log.Printf("[rtchild] %s round %d tool %s -> %d bytes",
-				rc.id, round, tc.Name, len(out.Text))
+		// 按**索引顺序**落消息：并发只作用于执行，落消息必须保序，
+		// 否则 assistant(tool_calls) 与 tool 结果的配对会被上游 400 拒绝。
+		for i, r := range results {
+			if i < len(resp.ToolCalls) {
+				log.Printf("[rtchild] %s round %d tool %s -> %d bytes",
+					rc.ID, round, r.Name, len(r.Text))
+			}
 			msgs = append(msgs, agentAPI.Message{
-				Role: "tool", ToolCallID: tc.ID, Content: out.Text,
+				Role: "tool", ToolCallID: r.CallID, Content: r.Text,
 			})
 		}
 		// 这一批（assistant(tool_calls) + 配对 tool 结果）是**不可分割的一组**，
@@ -995,12 +1135,28 @@ func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []
 	// ctx 由调用方（rtRunOnce）按**整轮**提供，本函数不再自己派生：
 	// 否则工具执行期间 curCancel 已被清空，R6 的临界区守卫会变成死代码
 	// （见 rtRunOnce 里 roundCtx 的注释）。
-	ch, err := a.provider.ChatStream(ctx, req)
+	//
+	// ★ 走**候选链**而不是裸 a.provider（2026-11-04 修）：
+	//
+	// 原实现是 `a.provider.ChatStream(...)`，即只认本 agent 构造时拿到的那一个源。
+	// 后果有两层，都不是“少一个优化”而是**功能失效**：
+	//
+	//	① PreferredProvider 完全无效。SpawnRTChild 把它写进了 carrier
+	//	   （注释写着“rt 可以有自己更快的源”），配置项 core.agent.llm.resident_provider
+	//	   的显示名就是「实时子 agent 模型源」—— 但 rtStream 从不读它。
+	//	   实测：carrier 候选链首位已是 fast-rt，实际被调用的仍是 default 源。
+	//	② 零回退。单源裸调用意味着该源抖动一次，通话就断一次 ——
+	//	   而多源回退链正是本仓为此建立的机制。
+	//
+	// 判据 TestRTChild_PreferredProviderIsUsed / _ProviderFallsBackOnFailure /
+	// _InterruptDoesNotFallback 钉住这三条。
+	providers := a.resolveProviders(req)
+	ch, err := a.streamWithFallback(ctx, req, providers)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, false
 		}
-		log.Printf("[rtchild] %s round %d stream connect failed: %v", rc.id, round, err)
+		log.Printf("[rtchild] %s round %d stream connect failed: %v", rc.ID, round, err)
 		return nil, false
 	}
 
@@ -1035,6 +1191,66 @@ func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []
 	}
 }
 
+// streamWithFallback 在候选链上逐个尝试**建立**流（拿到 channel 即成功）。
+//
+// ## 与 callLLMWithFallback 的差别（刻意不同，不是偷工减料）
+//
+//	① 不重试同一个源：rt 的首字预算是 500ms 级，而 callLLMWithFallback
+//	   的瞬时错误重试要等 2s —— 对通话那是灾难（用户听到 2 秒静默）。
+//	   换源通常比等同一个源恢复快，所以这里直接下一个。
+//	② 不切换 active provider：a.provider 是 carrier 的长期字段，
+//	   改写它会污染**后续所有轮次**的选择（rt 是长期实例，不是一次性调用）。
+//	③ 不改写 req.Model（除逐次浅拷贝的临时值）：model 是 provider 的属性，
+//	   不是请求的共享字段 —— 复用同一个 req 会让回退源收到上一个源
+//	   的 model，实测会被网关以 403 model_not_allowed 拒掉（见
+//	   callLLMWithFallback 的 2026-10-27 真机记录）。这里每次尝试用浅拷贝。
+//
+// ## 取消为什么**不**换源
+//
+// context.Canceled 在 rt 里的含义是「用户又说话了，上一轮作废」（契约 1），
+// 不是「这个源坏了」。若把它当可回退错误，用户一插话就会把新请求打到
+// 第二个源上，而第一个源其实完全健康 —— 判据
+// TestRTChild_InterruptDoesNotFallback 钉住这条。
+func (a *Agent) streamWithFallback(ctx context.Context, req *agentAPI.CompletionRequest, providers []agentAPI.Provider) (<-chan agentAPI.StreamChunk, error) {
+	if len(providers) == 0 {
+		// resolveProviders 在 manager 为空时会兜底成 [a.provider]，
+		// 走到这里说明连 a.provider 都是 nil（装配错误）。
+		return nil, fmt.Errorf("rtchild 没有可用的 provider")
+	}
+	var lastErr error
+	for i, p := range providers {
+		if i > 0 {
+			log.Printf("[rtchild] stream fallback: trying provider %q (#%d/%d, previous error: %v)",
+				p.Name(), i, len(providers)-1, lastErr)
+		}
+		// 每次尝试一份浅拷贝，只改 Model：不污染调用方的 req，
+		// 也不让上一个源的 model 泄给下一个源。
+		attempt := *req
+		if rp, ok := p.(agentAPI.RoutableProvider); ok {
+			if m := rp.Model(); m != "" {
+				attempt.Model = m
+			}
+		}
+
+		ch, err := p.ChatStream(ctx, &attempt)
+		if err == nil {
+			if i > 0 && a.providerManager != nil {
+				// 首选源失败但回退成功：清掉它的不可用标记，避免它
+				// 因为一次抖动被永久降级。
+				a.providerManager.ResetAvailability(p.Name())
+			}
+			return ch, nil
+		}
+		// 取消/超时：用户中断（或整轮被停），**不换源**。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		lastErr = err
+		log.Printf("[rtchild] provider %q stream failed: %v", p.Name(), err)
+	}
+	return nil, lastErr
+}
+
 // rtFlushToolCalls 把累积的 tool call 过滤掉 nil。
 func rtFlushToolCalls(acc []*agentAPI.ToolCall) []agentAPI.ToolCall {
 	out := make([]agentAPI.ToolCall, 0, len(acc))
@@ -1051,9 +1267,20 @@ func rtFlushToolCalls(acc []*agentAPI.ToolCall) []agentAPI.ToolCall {
 // ★ 内核只产出**文本**（R6）。这里不判断设备是否 CapAudio，也不做 TTS：
 // 插件拿到 text 后怎么呈现（文字/语音/字幕）完全是它的事。
 func (a *Agent) rtEmit(rc *rtChild, text string) {
-	if text == "" {
+	if text == "" || rc == nil {
 		return
 	}
+	// ★ 走异步壳（用户裁定 2026-11-04：rt 的所有调用都异步）。
+	//
+	// 原实现直接 `dev.Execute(...)`，插件侧延迟（TTS/网络编码/字幕渲染）
+	// **直接节流模型的 token 消费** —— 「不攒整段」的收益全被吃掉。
+	// pump.Push 立即返回，交付由 pump 的消费 goroutine 负责。
+	if rc.pump != nil {
+		rc.pump.Push(text)
+		return
+	}
+	// 兜底（pump 未建时，如某些判据直接构造 rtChild）：保持原同步行为，
+	// 但必须留痕 —— 否则"异步没生效"会静默。
 	if a.io == nil {
 		return
 	}
@@ -1062,7 +1289,7 @@ func (a *Agent) rtEmit(rc *rtChild, text string) {
 		return
 	}
 	if _, err := dev.Execute(rc.output, map[string]interface{}{"text": text}); err != nil {
-		log.Printf("[rtchild] %s emit to %s failed: %v", rc.id, rc.output, err)
+		log.Printf("[rtchild] %s emit to %s failed: %v (pump 未建，走了同步兜底)", rc.ID, rc.output, err)
 	}
 }
 
@@ -1327,9 +1554,7 @@ const rtTranscriptToolMaxRunes = 500
 //
 // 返回交接了多少条消息（0 表示没有历史）。
 func (a *Agent) CloseRTChild(id string) (int, error) {
-	a.rtMu.Lock()
-	rc := a.rtChildren[id]
-	a.rtMu.Unlock()
+	rc := a.rtChildOf(id)
 	if rc == nil {
 		return 0, fmt.Errorf("rtchild %s 不存在", id)
 	}
@@ -1357,12 +1582,12 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 	// ★★ 同名键在这里**自然覆写**（2026-10-30）：留档以 id 为键，同名回收
 	//   会替换掉上一次的留档。串线问题不在写侧而在**读侧**（见 RTTranscript
 	//   的"在跑实例优先"），所以这里不需要额外清理动作。
-	a.rtMu.Lock()
+	a.rtArchiveMu.Lock()
 	if a.rtClosedTranscripts == nil {
 		a.rtClosedTranscripts = map[string][]agentAPI.Message{}
 	}
 	a.rtClosedTranscripts[id] = transcript
-	a.rtMu.Unlock()
+	a.rtArchiveMu.Unlock()
 
 	a.raiseVector(VectorRTChildClosed, vectorArgs{RTID: id, RTCount: n, RTChars: chars})
 	log.Printf("[rtchild] %s closed: %d messages (%d chars) kept for on-demand transcript", id, n, chars)
@@ -1383,10 +1608,10 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 // 两条都保留，缺一条就会在某个时序下拿不到原文。二者的先后由
 // "实例还在不在" 决定，而不是由"留档里有没有" 决定。
 func (a *Agent) RTTranscript(id string) ([]agentAPI.Message, bool) {
-	a.rtMu.Lock()
-	rc := a.rtChildren[id]
+	rc := a.rtChildOf(id)
+	a.rtArchiveMu.Lock()
 	archived := a.rtClosedTranscripts[id]
-	a.rtMu.Unlock()
+	a.rtArchiveMu.Unlock()
 
 	if rc != nil {
 		rc.mu.Lock()
@@ -1507,12 +1732,7 @@ const rtTranscriptDefaultLimit int = 40
 func (a *Agent) executeRTChildren(tc agentAPI.ToolCall) string {
 	switch action := strArg(tc, "action"); action {
 	case "", "list":
-		a.rtMu.Lock()
-		ids := make([]string, 0, len(a.rtChildren))
-		for id := range a.rtChildren {
-			ids = append(ids, id)
-		}
-		a.rtMu.Unlock()
+		ids := a.RTChildren()
 		if len(ids) == 0 {
 			return "当前没有实时子 agent（rtchild）。"
 		}

@@ -108,16 +108,12 @@ func TestRTTranscript_PrefersLiveInstanceOverArchive(t *testing.T) {
 	rtSpawn(t, host, id)
 
 	// ② 再注入同 id 的陈旧留档 —— "活实例与留档共存"的那一瞬。
-	host.rtMu.Lock()
 	if host.rtClosedTranscripts == nil { // 懒初始化：没人回收过就该是 nil
 		host.rtClosedTranscripts = map[string][]agentAPI.Message{}
 	}
 	host.rtClosedTranscripts[id] = []agentAPI.Message{
 		{Role: "user", Content: "上一通的陈旧原话"},
 	}
-	host.rtMu.Unlock()
-
-	// ③ 让活实例真的说一句（否则 history 为空，判据会假绿）。
 	host.PushRTInput(id, "正在说的这句")
 	waitFor(t, "活实例第一轮完成", func() bool { return p.rounds() >= 1 })
 

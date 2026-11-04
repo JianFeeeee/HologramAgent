@@ -23,6 +23,7 @@ import (
 	"time"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/core/child"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -107,20 +108,81 @@ type ResidentInfo struct {
 }
 
 type residentChild struct {
-	id        string
-	agent     *Agent
-	light     *memory.LightMemory
-	mainRO    *memory.GraphDB
-	tempPath  string
-	dir       string
-	inputChs  []string
-	allowed   []string
-	createdAt time.Time
+	// ★ 公共部分（id / Kind / ctx / IO / 入站通道 / 状态 / 轮次 / stopped）
+	// 来自 childpkg.Child 的**嵌入**：骨架统一管理生命周期，类型只管差异。
+	*childpkg.Child
+
+	agent    *Agent
+	light    *memory.LightMemory
+	mainRO   *memory.GraphDB
+	tempPath string
+	dir      string
+	inputChs []string
+	allowed  []string
 	// offloadOwned 标记这是内核为转投拉起的子（见 offload.go）。
 	offloadOwned bool
 
+	// mu 只保护**驻留子特有的**状态（不与 childpkg.Child 的 mu 混用：
+	// 两把锁各自保护自己的字段，避免一处加锁跨到另一处的字段）。
 	mu    sync.Mutex
 	state string // running | contextfull | stopped
+}
+
+// ── childpkg.Entry 实现（骨架通过它管理生命周期） ──
+
+// Base 返回公共部分。
+func (rc *residentChild) Base() *childpkg.Child { return rc.Child }
+
+// Kind 返回类型标签。
+func (rc *residentChild) Kind() childpkg.Kind { return childpkg.KindResident }
+
+// Dispose 是驻留子的销毁语义：残余处置 + 通道处置 + 记忆句柄释放。
+//
+// ## 与 rt 的关键差别（不能统一）
+//
+//	rt       ：无残余（未处理输入是过期状态，丢弃）；通道**悬空**不归还
+//	驻留子   ：残余 keep/drop（不丢活）；通道按父的决定 **三选一**释放/挂起/接回
+//
+// 这三种通道处置是驻留子独有的语义（ChannelDisposition），
+// 由父在销毁时决定，写在 `residentDisposition` 上供本方法读取。
+func (rc *residentChild) Dispose(policy childpkg.ResidualPolicy) string {
+	// 关记忆句柄：temp 与子同生共死（连同目录一起丢弃）。
+	//
+	// ★ 通道处置**不在这里**：它需要父的 sched / io（接回时要把暂存任务
+	// 转进父的队列），而 residentChild 只有子自己的载体。所以那一段留在
+	// Agent 侧（teardownResidentWith），由骨架的 OnDispose 钩子调用 ——
+	// 强行搬进来会让本类型持有对父的隐式反向引用，比现在更糟。
+	if rc.light != nil {
+		_ = rc.light.Close()
+		rc.light = nil
+	}
+	if rc.mainRO != nil {
+		_ = rc.mainRO.Close()
+		rc.mainRO = nil
+	}
+	if rc.dir != "" && strings.Contains(rc.tempPath, rc.Base().ID) {
+		_ = os.RemoveAll(rc.dir)
+	}
+	return ""
+}
+
+// residentEntryOf 按 id 取驻留子（含"是否存在"）。
+//
+// 统一走 children 登记表，再做一次类型断言 —— 断言失败说明该 id 属于
+// 别的类型（如 rtchild），对调用方而言同样"不是驻留子"。
+func (a *Agent) residentEntryOf(id string) (*residentChild, bool) {
+	e, ok := a.children.Get(id)
+	if !ok {
+		return nil, false
+	}
+	rc, ok := e.(*residentChild)
+	return rc, ok
+}
+
+// residentOf 按 id 取驻留子（不存在返回 nil）。
+func (a *Agent) residentOf(id string) *residentChild {
+	rc, _ := a.residentEntryOf(id)
+	return rc
 }
 
 // mainGraph 返回父自己的完整图记忆库（驻留子的受限句柄由它派生）。
@@ -139,15 +201,9 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		return ResidentInfo{}, fmt.Errorf("父没有图记忆，无法为驻留子提供主库只读视图")
 	}
 
-	a.residentMu.Lock()
-	if a.residents == nil {
-		a.residents = map[string]*residentChild{}
+	if _, dup := a.children.Get(opts.ID); dup {
+		return ResidentInfo{}, fmt.Errorf("驻留子 %s 已存在（%w）", opts.ID, childpkg.ErrChildExists)
 	}
-	if _, dup := a.residents[opts.ID]; dup {
-		a.residentMu.Unlock()
-		return ResidentInfo{}, fmt.Errorf("驻留子 %s 已存在", opts.ID)
-	}
-	a.residentMu.Unlock()
 
 	// ① 轻量内核的记忆装配：主库**受限句柄**（结构上写不进）+ 自己的 temp 实例。
 	// temp 目录由内核创建（调用方只给路径）——与子同生共死，销毁时整目录丢弃。
@@ -224,11 +280,21 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	})
 
 	rc := &residentChild{
-		id: opts.ID, agent: child, light: light, mainRO: mainRO,
+		Child: &childpkg.Child{
+			ID:   opts.ID,
+			Kind: childpkg.KindResident,
+			IO:   childIO,
+			// 驻留子的 ctx 用**子自己载体的**（它已 Start，有自己的调度循环）。
+			// 与 rt 不同：rt 的 carrier 不 Start，ctx 由骨架单独派生。
+			Ctx:      child.ctx,
+			Cancel:   child.cancel,
+			ParentID: string(a.id),
+		},
+		agent: child, light: light, mainRO: mainRO,
 		tempPath: opts.TempPath, dir: filepath.Dir(opts.TempPath),
-		inputChs:  append([]string(nil), opts.InputChs...),
-		allowed:   append([]string(nil), opts.AllowedOutputs...),
-		createdAt: time.Now(), state: "running",
+		inputChs:     append([]string(nil), opts.InputChs...),
+		allowed:      append([]string(nil), opts.AllowedOutputs...),
+		state:        "running",
 		offloadOwned: opts.OffloadOwned,
 	}
 
@@ -271,9 +337,13 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	// ⑤ 子的 contextfull → 父侧的**内核级事件**（L4，带子标识）。
 	child.onContextFull = func() { a.handleChildContextFull(rc) }
 
-	a.residentMu.Lock()
-	a.residents[opts.ID] = rc
-	a.residentMu.Unlock()
+	if err := a.children.Add(rc); err != nil {
+		child.Stop()
+		_ = light.Close()
+		_ = mainRO.Close()
+		_ = os.RemoveAll(filepath.Dir(opts.TempPath))
+		return ResidentInfo{}, fmt.Errorf("登记驻留子 %s 失败: %w", opts.ID, err)
+	}
 
 	child.Start()
 
@@ -318,16 +388,14 @@ func (a *Agent) DestroyResident(id string) error {
 
 // DestroyResidentWith 按父的决定处置通道后销毁驻留子。
 func (a *Agent) DestroyResidentWith(id string, disp ChannelDisposition) error {
-	a.residentMu.Lock()
-	rc, ok := a.residents[id]
-	if ok {
-		delete(a.residents, id)
-	}
-	a.residentMu.Unlock()
-	if !ok {
+	e := a.children.Remove(id)
+	if e == nil {
 		return fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	a.teardownResidentWith(rc, disp, nil)
+	rc, _ := e.(*residentChild)
+	if rc != nil {
+		a.teardownResidentWith(rc, disp, nil)
+	}
 	return nil
 }
 
@@ -385,9 +453,7 @@ const (
 // 一旦取走，不再调 ApplyResidual 就等于把它们丢了。控制面工具走 ApplyResidual
 // （取+处置一步完成）以避免这个误用。
 func (a *Agent) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
-	a.residentMu.Lock()
-	rc := a.residents[id]
-	a.residentMu.Unlock()
+	rc := a.residentOf(id)
 	if rc == nil || rc.agent == nil {
 		return nil, fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -435,9 +501,7 @@ func (a *Agent) FinishResident(id string, policy ResidualPolicy, onDestroy func(
 // 若拆成两次调用，中间窗口里通道可能已被别人接管，暂存任务就跑到了
 // 一个跟它无关的 agent 手里。**一次定完，没有窗口。**
 func (a *Agent) FinishResidentWith(id string, policy ResidualPolicy, disp ChannelDisposition, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
-	a.residentMu.Lock()
-	rc := a.residents[id]
-	a.residentMu.Unlock()
+	rc := a.residentOf(id)
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -481,9 +545,7 @@ func (a *Agent) ApplyResidual(id string, policy ResidualPolicy) (int, string, er
 	// 否则"取完到销毁之间"子还会收新任务，那些任务的结果随销毁丢失。
 	//
 	// 保留它是为了 TakeResidual 的配对语义（先取后自己决定），以及既有判据。
-	a.residentMu.Lock()
-	rc := a.residents[id]
-	a.residentMu.Unlock()
+	rc := a.residentOf(id)
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -608,7 +670,7 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 	// 不撤销的后果：主体表以**调用方给的名字**为键，回收后同名重建是常规
 	// 操作 ⇒ 新一代用上一代父留的约束运行；且表随 create/destroy 单调增长。
 	// 与 rtchild 留档串线（rtClosedTranscripts）同一形态。
-	a.revokeChildPolicy(rc.id)
+	a.revokeChildPolicy(rc.ID)
 
 	rc.agent.Stop() // 停子的调度器（取消其运行中的任务）
 	if rc.light != nil {
@@ -618,7 +680,7 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 		_ = rc.mainRO.Close()
 	}
 	// temp 与子同生共死：连同目录一起丢弃（回收/销毁都不保留）。
-	if rc.dir != "" && strings.Contains(rc.tempPath, rc.id) {
+	if rc.dir != "" && strings.Contains(rc.tempPath, rc.ID) {
 		_ = os.RemoveAll(rc.dir)
 	}
 	// 处置划入的 inputch（按父的决定：释放 / 挂起 / 接回）。
@@ -629,11 +691,11 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 				// 接回父：通道归父，并把该通道上的暂存任务交出。
 				drained, err := reg.AssignAndDrainStash(ch, string(a.id), 0)
 				if err != nil {
-					log.Printf("[resident] %s 接回通道 %s 失败: %v", rc.id, ch, err)
+					log.Printf("[resident] %s 接回通道 %s 失败: %v", rc.ID, ch, err)
 					continue
 				}
 				if len(drained) > 0 {
-					log.Printf("[resident] %s 接回通道 %s，释放暂存任务 %d 条", rc.id, ch, len(drained))
+					log.Printf("[resident] %s 接回通道 %s，释放暂存任务 %d 条", rc.ID, ch, len(drained))
 					if onDrained != nil {
 						onDrained(drained)
 					} else {
@@ -651,7 +713,7 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 				// 且日志明确写出"已挂起"，让运维能查到它没有在跑。
 				_ = reg.Assign(ch, "", 0)
 				log.Printf("[resident] %s 通道 %s 已挂起（暂存 %d 条，等接回时释放）",
-					rc.id, ch, reg.StashLen(ch))
+					rc.ID, ch, reg.StashLen(ch))
 			default: // ChannelRelease
 				_ = reg.Assign(ch, "", 0)
 			}
@@ -663,36 +725,32 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 		// 次数单调累积脏数据。实测：destroy 后 child/<id> 仍挂在根 agent 名下，
 		// 而外部没有任何工具能单独注销 inputch，只能重启 homed 清。
 		// 注意用纯函数算名字，不要再走 residentInboundChannel（会重新登记）。
-		reg.Unregister(inboundChannelName(rc.id))
+		reg.Unregister(inboundChannelName(rc.ID))
 	}
 }
 
 // StopResidents 销毁全部驻留子（父退出时必须；不留孤儿）。
+// ★ 与 DestroyResident（单数）共用 teardownResident —— 两者都由骨架的
+// Cleanup 驱动撤销策略/注销入站，本函数只补通道处置那一段（需要父的 sched）。
 func (a *Agent) StopResidents() int {
-	a.residentMu.Lock()
-	all := make([]*residentChild, 0, len(a.residents))
-	for _, rc := range a.residents {
-		all = append(all, rc)
-	}
-	a.residents = map[string]*residentChild{}
-	a.residentMu.Unlock()
-	for _, rc := range all {
-		a.teardownResident(rc)
+	all := a.children.ByKind(childpkg.KindResident)
+	for _, e := range all {
+		a.children.Remove(e.Base().ID)
+		if rc, ok := e.(*residentChild); ok {
+			a.teardownResident(rc)
+		}
 	}
 	return len(all)
 }
 
 // Residents 返回登记表的快照（按 id 排序，便于断言与展示稳定）。
 func (a *Agent) Residents() []ResidentInfo {
-	a.residentMu.Lock()
-	all := make([]*residentChild, 0, len(a.residents))
-	for _, rc := range a.residents {
-		all = append(all, rc)
-	}
-	a.residentMu.Unlock()
-	out := make([]ResidentInfo, 0, len(all))
-	for _, rc := range all {
-		out = append(out, rc.info())
+	entries := a.children.ByKind(childpkg.KindResident)
+	out := make([]ResidentInfo, 0, len(entries))
+	for _, e := range entries {
+		if rc, ok := e.(*residentChild); ok {
+			out = append(out, rc.info())
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -700,9 +758,7 @@ func (a *Agent) Residents() []ResidentInfo {
 
 // ResidentTable 是父**查看**子的 inputch 处理表（pull，不打断子）。
 func (a *Agent) ResidentTable(id string) ([]InputchRecord, error) {
-	a.residentMu.Lock()
-	rc, ok := a.residents[id]
-	a.residentMu.Unlock()
+	rc, ok := a.residentEntryOf(id)
 	if !ok {
 		return nil, fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -712,9 +768,7 @@ func (a *Agent) ResidentTable(id string) ([]InputchRecord, error) {
 // SendToResident 是父的"发送消息"：经输出通道寻址到该子的 inputch，
 // 对子而言是 **L4 中断**（取消当前状态 + 插入新消息）。
 func (a *Agent) SendToResident(id, text string) error {
-	a.residentMu.Lock()
-	rc, ok := a.residents[id]
-	a.residentMu.Unlock()
+	rc, ok := a.residentEntryOf(id)
 	if !ok {
 		return fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -749,9 +803,7 @@ func (a *Agent) SendToResident(id, text string) error {
 // 为什么先出计划再执行：摘要要调 LLM（可能几十秒），期间不能持锁、也不能
 // 先把事件摘掉 —— 那样一旦失败/取消，上下文就被破坏了一半。
 func (a *Agent) CompressResident(id string) (int, error) {
-	a.residentMu.Lock()
-	rc, ok := a.residents[id]
-	a.residentMu.Unlock()
+	rc, ok := a.residentEntryOf(id)
 	if !ok {
 		return 0, fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -810,16 +862,14 @@ func (a *Agent) harvestResidentMemory(rc *residentChild, keep ...func([]InputchR
 	if len(selected) == 0 {
 		return 0, nil
 	}
-	if _, _, err := a.mainGraph().Commit(selected, "reclaim/"+rc.id, 0); err != nil {
+	if _, _, err := a.mainGraph().Commit(selected, "reclaim/"+rc.ID, 0); err != nil {
 		return 0, fmt.Errorf("合入主记忆失败: %w", err)
 	}
 	return len(selected), nil
 }
 
 func (a *Agent) ReclaimResident(id string, keep func([]InputchRecord, []memory.Triple) []memory.Triple) (ResidentInfo, error) {
-	a.residentMu.Lock()
-	rc, ok := a.residents[id]
-	a.residentMu.Unlock()
+	rc, ok := a.residentEntryOf(id)
 	if !ok {
 		return ResidentInfo{}, fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -848,7 +898,7 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 	rc.mu.Lock()
 	rc.state = "contextfull"
 	rc.mu.Unlock()
-	a.raiseVector(VectorChildContextFull, vectorArgs{ChildID: rc.id})
+	a.raiseVector(VectorChildContextFull, vectorArgs{ChildID: rc.ID})
 }
 
 // checkContextFull 判断本 agent 的**积累上下文是否已经装不下窗口**，是则触发一次 contextfull。
@@ -990,9 +1040,9 @@ func (rc *residentChild) info() ResidentInfo {
 	// 每次状态轮询为每个子算一次，成本可忽略（驻留子数量是个位数）。
 	sc := rc.agent.schedulerStatus()
 	info := ResidentInfo{
-		ID: rc.id, State: state, InputChs: append([]string(nil), rc.inputChs...),
+		ID: rc.ID, State: state, InputChs: append([]string(nil), rc.inputChs...),
 		AllowedOutputs: append([]string(nil), rc.allowed...),
-		ContextFull:    full, CreatedAt: rc.createdAt, TableSize: len(table),
+		ContextFull:    full, CreatedAt: time.Unix(0, rc.CreatedAt), TableSize: len(table),
 		SchedReady:   sc.ReadyQueueDepth,
 		SchedPending: sc.PendingInterrupts,
 		SchedStack:   sc.SuspendStack,

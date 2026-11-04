@@ -448,9 +448,7 @@ func TestResidentInheritsParentSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建驻留子失败: %v", err)
 	}
-	root.residentMu.Lock()
-	rc := root.residents[info.ID]
-	root.residentMu.Unlock()
+	rc := root.residentOf(info.ID)
 	if rc == nil || rc.agent == nil {
 		t.Fatal("驻留子不可用")
 	}
@@ -480,9 +478,7 @@ func TestResidualKeepReturnsTasksToParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建驻留子失败: %v", err)
 	}
-	root.residentMu.Lock()
-	child := root.residents[info.ID].agent
-	root.residentMu.Unlock()
+	child := root.residentOf(info.ID).agent
 
 	// ★ 必须先停住子的调度器，再入队 —— 否则它不是确定性测试。
 	//
@@ -548,9 +544,7 @@ func TestResidualDropNotifiesSyncCaller(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建驻留子失败: %v", err)
 	}
-	root.residentMu.Lock()
-	child := root.residents[info.ID].agent
-	root.residentMu.Unlock()
+	child := root.residentOf(info.ID).agent
 
 	// ★ 同 TestResidualKeepReturnsTasksToParent：先停住子调度器再入队。
 	// 否则子可能先把这条取走执行，于是"残余任务"为 0 条，断言失效。

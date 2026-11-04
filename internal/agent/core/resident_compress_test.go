@@ -74,9 +74,7 @@ func newResidentWithProvider(t *testing.T, prov agentAPI.Provider, id string) (*
 	t.Helper()
 	parent, _, dir := newRootWith(t, prov)
 	spawnTestResident(t, parent, dir, id)
-	parent.residentMu.Lock()
-	rc := parent.residents[id]
-	parent.residentMu.Unlock()
+	rc := parent.residentOf(id)
 	if rc == nil {
 		t.Fatalf("驻留子 %s 没创建成功", id)
 	}
@@ -176,9 +174,7 @@ func TestCompressResident_UsesChildProvider(t *testing.T) {
 
 	// ③ 此时创建的子会继承 parentProv（SpawnResident 里 Provider: a.provider）。
 	spawnTestResident(t, parent, dir, "own-provider")
-	parent.residentMu.Lock()
-	rc := parent.residents["own-provider"]
-	parent.residentMu.Unlock()
+	rc := parent.residentOf("own-provider")
 	if rc == nil {
 		t.Fatal("驻留子没创建成功")
 	}

@@ -19,7 +19,7 @@ func TestResident_InputchRoutingIsExclusive(t *testing.T) {
 		t.Fatal(err)
 	}
 	spawnTestResident(t, parent, dir, "r-route", "sub/in")
-	child := parent.residents["r-route"].agent
+	child := parent.residentOf("r-route").agent
 
 	before := parent.DumpScheduler().Stats.Enqueued
 	// 插件往"已划给子"的 inputch 投输入
@@ -29,14 +29,14 @@ func TestResident_InputchRoutingIsExclusive(t *testing.T) {
 		if child.DumpScheduler().Stats.Executed > 0 {
 			return true
 		}
-		return parent.residents["r-route"].info().TableSize > 0
+		return parent.residentOf("r-route").info().TableSize > 0
 	})
 	if got := parent.DumpScheduler().Stats.Enqueued; got != before {
 		t.Fatalf("划给子的 inputch，父不应再入队（before=%d after=%d）", before, got)
 	}
 	// 轮次必须真的涨：此前 info() 根本没填 Rounds ⇒ 父永远读到 0
 	// （现场：子处理表已有 2 条，轮次却显示 0，被误判成"子没干活"）。
-	if got := parent.residents["r-route"].info().Rounds; got <= 0 {
+	if got := parent.residentOf("r-route").info().Rounds; got <= 0 {
 		t.Fatalf("子处理的轮次应 > 0，实际 %d", got)
 	}
 }

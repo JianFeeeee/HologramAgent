@@ -206,22 +206,38 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			reachedLimit = true
 		}
 
-		for _, ct := range resp.ToolCalls {
-			var result string
-			switch {
-			case strings.HasPrefix(ct.Name, "output_send__") || ct.Name == "output_list_channels":
-				result = fmt.Sprintf("子 Agent 不允许调用输出工具: %s", ct.Name)
-			case ct.Name == "spawn_child" || ct.Name == "plgreload":
-				result = fmt.Sprintf("子 Agent 不允许调用系统工具: %s", ct.Name)
-			default:
-				result = a.executeToolCall(ct, parentChannel)
-			}
-			// 子 Agent 的工具调用必须自记一行。此前子侧全程静默：父内核日志里
-			// 只有「started / done」两行，子任务失败时无法判断倒在哪一步（是搜不到、
-			// 解析失败，还是被轮上限截断）——只能看到一句「超时」。
-			log.Printf("[child] %s turn %d/%d: %s -> %d bytes", taskID, turn+1, maxTurns, ct.Name, len(result))
-			msgs = append(msgs, agentAPI.Message{Role: "assistant", Content: resp.Content, ToolCalls: []agentAPI.ToolCall{ct}})
-			msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: ct.ID, Content: result})
+		// ★★ 走共享的 runToolBatch（2026-11-04 重构）：
+		//
+		// 原实现逐条直调 `executeToolCall`（= executeToolCallOutcome 的文本壳），
+		// 内无任何 runStage ⇒ 普通子的工具调用同样**跳过 before/after_toolcall**，
+		// 与 rt 同型缺陷（见 toolbatch.go 头注释的对照表）。
+		//
+		// 保留两处**子专属**的差异，通过 batchOpts 注入而不是各写一遍执行逻辑：
+		//   ① 禁用输出工具与系统工具（子把结果回父，不直接回用户）
+		//   ② 强制串行（NoBatch）—— 子历史上是串行的，改并发会改变它已上线
+		//      行为的时序假设，不在本次重构范围内（判据 TestWorkerToolsStaySerial 钉住）
+		results := a.runToolBatch(a.ctx, resp.ToolCalls, batchOpts{
+			Channel: parentChannel,
+			NoBatch: true,
+			ToolFilter: func(ct agentAPI.ToolCall) string {
+				switch {
+				case strings.HasPrefix(ct.Name, "output_send__") || ct.Name == "output_list_channels":
+					return fmt.Sprintf("子 Agent 不允许调用输出工具: %s", ct.Name)
+				case ct.Name == "spawn_child" || ct.Name == "plgreload":
+					return fmt.Sprintf("子 Agent 不允许调用系统工具: %s", ct.Name)
+				}
+				return ""
+			},
+		})
+		// 子 Agent 的工具调用必须自记一行。此前子侧全程静默：父内核日志里
+		// 只有「started / done」两行，子任务失败时无法判断倒在哪一步（是搜不到、
+		// 解析失败，还是被轮上限截断）——只能看到一句「超时」。
+		for _, r := range results {
+			log.Printf("[child] %s turn %d/%d: %s -> %d bytes",
+				taskID, turn+1, maxTurns, r.Name, len(r.Text))
+			msgs = append(msgs, agentAPI.Message{Role: "assistant", Content: resp.Content,
+				ToolCalls: []agentAPI.ToolCall{{ID: r.CallID, Name: r.Name}}})
+			msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: r.CallID, Content: r.Text})
 		}
 	}
 

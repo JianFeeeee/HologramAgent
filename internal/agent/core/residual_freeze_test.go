@@ -141,10 +141,7 @@ func TestFinishResidentIsAtomic(t *testing.T) {
 	if _, _, err := root.FinishResident(info.ID, ResidualKeep, nil); err != nil {
 		t.Fatalf("FinishResident 失败: %v", err)
 	}
-
-	root.residentMu.Lock()
-	_, still := root.residents[info.ID]
-	root.residentMu.Unlock()
+	still := root.residentOf(info.ID) != nil
 	if still {
 		t.Fatal("★ FinishResident 之后子仍在登记表 —— 销毁没被纳入同一事务，" +
 			"取残余到销毁之间的窗口仍存在")

@@ -64,7 +64,7 @@ func TestResident_InheritsParentOutputChannels(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("创建驻留子失败: %v", err)
 	}
-	child := parent.residents["r-out"].agent
+	child := parent.residentOf("r-out").agent
 
 	// ① 看得见：修复前这里是 0（childIO 空壳）
 	if caps := child.io.GetChannelCapabilities("fakeout"); caps == 0 {
@@ -138,7 +138,7 @@ func TestResident_DefaultOutputsAreFull(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("创建驻留子失败: %v", err)
 	}
-	child := parent.residents["r-full"].agent
+	child := parent.residentOf("r-full").agent
 	if out := child.executeOutputSendTool(outputSendTool("anywhere", "默认授权")); out != "ok" {
 		t.Fatalf("默认应完整授权，得到 %q", out)
 	}
