@@ -36,7 +36,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
@@ -180,14 +179,16 @@ func TestUnhealthyPluginSkipStillRecordsResult(t *testing.T) {
 	// 这是**另一个独立缺陷**（插件崩溃熔断实际从不生效），不在本次修复范围
 	// （本次只修 tool 配对）。这里直达状态，把判据聚焦在被测分支上；
 	// 熔断那个缺陷应单独修并单独钉。
-	// LastReload 必须设成"刚刚"，否则 isHealthy 的冷却判据
-	//（time.Since(LastReload) > reloadCooldown）立刻判为已冷却 ⇒ 自愈。
-	a.pluginHealth.mu.Lock()
-	a.pluginHealth.records[pluginName] = &pluginHealthRecord{
-		Unhealthy:  true,
-		LastReload: time.Now(), // 冷却期未过 ⇒ 熔断生效
+	// ★ 走**真实状态机**，不直接改字段：
+	// 现在 isHealthy 的冷却锚点是 LastCrash（见 plugin_health.go），
+	// 连续 recordCrash 达到阈值就会进入真正的熔断态。
+	//
+	// 这条判据曾经只能手工置 Unhealthy —— 因为当时 recordCrash 标完
+	// 立刻被 isHealthy 的自愈逻辑撤销（那是另一个缺陷，已单独修）。
+	// 现在熔断真生效了，就用它自己的入口构造前置条件。
+	for i := 0; i < maxPluginCrashes; i++ {
+		a.pluginHealth.recordCrash(pluginName)
 	}
-	a.pluginHealth.mu.Unlock()
 	if a.pluginHealth.isHealthy(pluginName) {
 		t.Fatalf("★ 置 Unhealthy 后 %s 仍被判健康，判据前置条件不成立", pluginName)
 	}
