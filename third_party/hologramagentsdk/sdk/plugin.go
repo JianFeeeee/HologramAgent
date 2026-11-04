@@ -638,6 +638,11 @@ type PluginSDK struct {
 	// 起的 goroutine。
 	proxyReg ProxyRegistrar
 
+	// proxyWarn 是「RegisterProxy 调用但无注册回调」时的告警钩子。
+	// 外部插件（子进程）就是这种情况 —— 见 RegisterProxy 的说明。
+	// 未注入时为 nil（工具链/单测保持安静）。
+	proxyWarn ProxyRegistrarMissing
+
 	// apiMu 保护上面这些由内核注入的 API 字段，以及 autoRestart。
 	//
 	// 这些字段的写方与读方天然跨 goroutine：

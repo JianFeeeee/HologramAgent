@@ -22,8 +22,25 @@ import (
 //     插件、或旧 HologramAgent 读新插件都不会报错。
 //
 // 与 ToolDef / ChannelDef / ConfigDef 同族：SDK 定义声明契约，内核实现行为。
-// 声明方式与其它能力一致 —— 在 Start() 里调 RegisterProxy(name, def)，
-// 或写进 plugin.json 的 proxies 字段（外部插件两种都支持）。
+//
+// # 两种声明入口，以及各自**谁能用**（重要）
+//
+//   - **plugin.json 的 proxies 字段**：这是**外部插件唯一的入口**。
+//     由 HologramAgent 加载插件时读取 plugin.json 聚合，不经过插件进程的 SDK。
+//
+//   - **RegisterProxy(name, def)**：**仅对内置插件有效**（编译进内核、
+//     没有插件目录与 plugin.json 的那些，如 remotedevice）。
+//     外部插件（独立 plugin.bin 子进程）调它**不会生效**，也不会报错。
+//
+// 为什么外部插件不能用运行期注册：插件跑在子进程里，声明要跨 RPC 协议回传
+// 才可能落地，而 proc 协议目前**没有** proxy 注册方法（grep "proxy" in
+// internal/plugin/proc/protocol.go 零命中），生成到插件工程的运行时模板也
+// 不注入该注册回调（同 grep 零命中）。所以外部插件的 RegisterProxy 是
+// 一个**空实现**。
+//
+// 历史提醒：本文件早期版本写的是「外部插件两种都支持」，那是错的，
+// 造成了“声明了却没被反代、排查时只查端口”的真实困境。若将来要让运行期
+// 声明对外部插件生效，必须先补协议，而不是只把这句话改回去。
 //
 // 安全性：**不声明 = 不被反代**。声明本身就是能力声明，因此不需要在
 // capabilities 里另外开一个开关——最小权限默认生效。
@@ -328,6 +345,28 @@ func ValidateProxyDef(d ProxyDef) string {
 //   - 内置插件 → RegisterProxy（运行期，随 Start 注册）
 type ProxyRegistrar func(name string, def ProxyDef)
 
+// ProxyRegistrarMissing 是「RegisterProxy 被调用、但没有注册回调」时的告警钩子。
+//
+// 存在理由：外部插件跑在子进程里，内核从未向它注入 ProxyRegistrar
+// （proc 协议无 proxy 注册方法），于是它的 RegisterProxy 是空实现。
+// 不告警的话，声明就**彻底静默消失** —— 用户只能看到“声明了却没被反代”。
+//
+// sdk 包不直接打日志（它被插件进程与工具链复用，不应绑定日志实现），
+// 由内核侧通过 SetProxyRegistrarMissing 注入。未注入时保持完全安静
+// （工具链、单元测试不需要噪声）。
+type ProxyRegistrarMissing func(name string, def ProxyDef)
+
+// SetProxyRegistrarMissing 由内核注入「声明无处落地」的告警实现。
+// 插件不调用它。
+func (s *PluginSDK) SetProxyRegistrarMissing(fn ProxyRegistrarMissing) {
+	if s == nil {
+		return
+	}
+	s.apiMu.Lock()
+	s.proxyWarn = fn
+	s.apiMu.Unlock()
+}
+
 // SetProxyRegistrar 由内核注入。插件不直接调它（与 SetInputChannelRegistrar 同族）。
 func (s *PluginSDK) SetProxyRegistrar(r ProxyRegistrar) {
 	if s == nil {
@@ -350,19 +389,42 @@ func (s *PluginSDK) SetProxyRegistrar(r ProxyRegistrar) {
 //	    Host: "myapp", Target: "127.0.0.1:12100",
 //	})
 //
-// 声明立即生效（反代表在下一次请求时重建）。**不做去重**：同一 Host/Path
+// ## ⚠ 仅对内置插件有效
+//
+// 插件跑在**子进程**里时（外部插件 / plugin.bin），本方法没有任何效果：
+// 内核从未向插件进程注入 proxyReg 回调（proc 协议里没有 proxy 注册方法）。
+// 调用会静默返回，不报错。
+//
+// **外部插件请写 plugin.json 的 proxies 字段** —— 那是唯一生效的入口。
+// 详见包注释的「两种声明入口，以及各自谁能用」。
+//
+// 内置插件（编译进内核、无 plugin.json）用本方法声明，立即生效
+// （反代表在下一次请求时重建）。**不做去重**：同一 Host/Path
 // 被两条声明占用时由反代层判定冲突并明确报错，而不是在这里静默吞掉 ——
 // 插件作者需要看见冲突。
-//
-// 与 plugin.json 的 proxies 字段等价：写哪个都行，两者会合并（同名以本调用为准）。
 func (s *PluginSDK) RegisterProxy(name string, def ProxyDef) {
 	if s == nil {
 		return
 	}
 	s.apiMu.RLock()
 	r := s.proxyReg
+	warn := s.proxyWarn
 	s.apiMu.RUnlock()
 	if r != nil {
 		r(name, def)
+		return
+	}
+	// ★ 没有注册回调时必须**留痕**，不能静默丢弃。
+	//
+	// 外部插件（独立 plugin.bin 子进程）就是这样：内核从未向插件进程注入
+	// proxyReg（proc 协议无 proxy 注册方法），所以本调用永远走不到上面
+	// 那个分支。历史实测代价：插件作者按旧文档写的声明完全没生效，
+	// 排查时只想到端口/防火墙/base_domain —— 因为**没有任何信号**说
+	// 「声明根本没发出去」。
+	//
+	// 这里只调可选钩子而不直接打日志：sdk 包不依赖 log（它被插件进程与
+	// 工具链复用），日志实现由内核侧注入。
+	if warn != nil {
+		warn(name, def)
 	}
 }

@@ -159,6 +159,73 @@ func proxyHostLabel(host, base string) string {
 	return label
 }
 
+// proxyBaseDomains 返回**全部**应当被当子域基座接受的基域，按优先级排列。
+//
+// ## 为什么需要多个（2026-11-04 生产实测缺陷）
+//
+// 生成链接与路由匹配之前用了**两个不同的源**：
+//
+//	生成链接  resolveEntry → base_url 的主机名 → huawei-smarthome.homeagent.jianfgit.xyz
+//	路由匹配  proxyBaseDomain(settings) → base_domain → localhost
+//
+// 生产实例上 base_url=https://homeagent.jianfgit.xyz、base_domain=localhost，
+// 于是面板里给出的子域链接**100% 进不了反代**（落到门户 mux → 302 /login），
+// 而按 localhost 手拼的链接却能进反代。用户看到的是「点开是登录页」。
+//
+// 修法不是二选一（改成只认 base_url 会让 *.localhost 失效，而那是 RFC 6761
+// 的零配置基座），而是**两者都认**：明确列出本次部署可能用到的基域。
+//
+// 顺序有意义：configBase 在前（用户显式配置的 base_domain），
+// 其次是 base_url 的主机名，最后回落到 localhost。
+func proxyBaseDomains(settings sdk.SettingsAPI) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(d string) {
+		d = strings.Trim(strings.ToLower(strings.TrimSpace(d)), ".")
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+
+	configured := ""
+	if settings != nil {
+		if v, err := settings.Get("base_domain"); err == nil && v != nil {
+			if s, ok := v.(string); ok {
+				configured = strings.Trim(strings.ToLower(strings.TrimSpace(s)), ".")
+			}
+		}
+	}
+	add(configured)
+
+	// base_url 的主机名：外部入口是 homeagent.example.com 时，
+	// 插件服务自然是 <标签>.homeagent.example.com。面板生成的链接正是这个，
+	// 所以路由**必须**认它，否则链接与路由分叉。
+	if bu := baseURLSetting(settings); bu != "" {
+		if u, err := url.Parse(bu); err == nil && u.Hostname() != "" {
+			add(u.Hostname())
+		}
+	}
+
+	add("localhost")
+	return out
+}
+
+// proxyHostLabelAny 在多个基域中任一个匹配时返回子域标签。
+//
+// 为什么不是「先算 base 再调用 proxyHostLabel」：基域是**一组**候选，
+// 调用方（serveProxyHost）不该自己拼循环，否则它一改就会与生成链接的
+// 逻辑再次分叉 —— 那正是本次缺陷的形成方式。
+func proxyHostLabelAny(host string, bases []string) string {
+	for _, b := range bases {
+		if label := proxyHostLabel(host, b); label != "" {
+			return label
+		}
+	}
+	return ""
+}
+
 // buildProxyTable 由「插件声明 + 手填条目」构建路由表。
 //
 // 冲突与非法条目的处理原则：**宁可报出来，不可静默丢弃**。被拒绝的条目
@@ -359,6 +426,28 @@ func newReverseProxy(u *url.URL, auth, stripPrefix string) *httputil.ReverseProx
 					resp.Header.Add("Set-Cookie", c.String())
 				}
 			}
+			// ★ 前缀模式下必须把上游的**根绝对路径重定向**改回挂载前缀下。
+			//
+			// 实测（2026-11-04，NapCat）：
+			//	  GET 上游 /        → 301 Location: /webui
+			//	  浏览器跟随       → https://<门户>/webui  ← 已经跑出 /napcat 挂载点
+			//	  门户 mux 接住    → 302 /login          ← 用户看到登录页，以为是认证问题
+			//
+			// 这就是「路径形态白屏」的直接成因。httputil.ReverseProxy
+			// **不**改写 Location（实测反向确认过），必须自己做。
+			//
+			// 只改**以 / 开头的相对绝对路径**：
+			//   - "http://..." 绝对 URL 可能指向上游之外，原样保留；
+			//   - 已经是 stripPrefix+"/" 开头的（上游自己就带了）不重复加，
+			//     否则重定向会变成 /napcat/napcat/webui；
+			//   - 空值与相对路径（不带前导 /）原样保留。
+			if stripPrefix != "" {
+				if loc := resp.Header.Get("Location"); strings.HasPrefix(loc, "/") &&
+					!strings.HasPrefix(loc, "//") &&
+					!(loc == stripPrefix || strings.HasPrefix(loc, stripPrefix+"/")) {
+					resp.Header.Set("Location", stripPrefix+loc)
+				}
+			}
 			return nil
 		},
 	}
@@ -551,6 +640,14 @@ func (h *Handler) serveProxyHost(w http.ResponseWriter, r *http.Request) bool {
 	if h.settings != nil {
 		base = proxyBaseDomain(h.settings)
 	}
+	// ★ 路由匹配必须接受**全部**候选基域，不能只认 base_domain。
+	//
+	// 生成链接用的是 base_url 的主机名（resolveEntry），而这里曾只认
+	// base_domain ⇒ 生产实例 base_url=homeagent.jianfgit.xyz /
+	// base_domain=localhost 时，面板给出的子域链接 **100% 进不了反代**
+	// （落到门户 mux → 302 /login），而手拼 *.localhost 却能进。
+	// 用户看到的是「点开是登录页」。详见 proxyBaseDomains 的说明。
+	bases := proxyBaseDomains(h.settings)
 	// ★ 发现端点必须先于路径挂载判定。
 	//
 	// 否则它会被 /api/v1/device 这类前缀接走：声明该前缀的服务通常
@@ -603,7 +700,7 @@ func (h *Handler) serveProxyHost(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	label := proxyHostLabel(r.Host, base)
+	label := proxyHostLabelAny(r.Host, bases)
 	if label == "" {
 		return false
 	}

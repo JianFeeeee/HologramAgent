@@ -545,7 +545,15 @@ var TABS = {
 	},
 	starmap: { fetch: [], render: ["renderStarmapTab"] },
 	plugins: {
-		fetch: ["status", "kernel", "plugins", "runtime"],
+		// ★ proxyServices 必须在这里：renderPlugins 的第一行就是
+		//   renderProxyServicesCard()（读 state.proxyServices）。
+		//   漏了它 ⇒「服务入口」卡片永远显示「暂无被反代的插件服务」，
+		//   而 /api/v1/proxy/services 根本没被请求过（生产实测）。
+		//   历史：86690da 的懒加载重构把依赖分析写成了注释，注释里
+		//   列的 renderPlugins 依赖是 kernel/installedPlugins/disabledPlugins/
+		//   pluginInfo —— 漏了 proxyServices，因为它是**间接**经
+		//   renderProxyServicesCard 读的。见 TestTabsFetchCoversRenderDeps。
+		fetch: ["status", "kernel", "plugins", "runtime", "proxyServices"],
 		render: ["renderPlugins"],
 	},
 	settings: { fetch: ["settings", "status"], render: ["renderOneSettings"] },

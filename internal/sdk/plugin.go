@@ -437,6 +437,14 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	// 反代声明收集：内置插件（无 plugin.json）在 Start 里用 RegisterProxy
 	// 声明自己的服务，落到本包的登记表；外部插件走 plugin.json 自动发现。
 	base.SetProxyRegistrar(func(svc string, d pubsdk.ProxyDef) { RegisterBuiltinProxy(name, svc, d) })
+	// 告警钩子：内置插件路径不会用到它；它真正的用处在插件进程侧
+	// （外部插件的 RegisterProxy 没有回调可落，声明会静默消失）。
+	// 这里也注入一份，使**任何**走到本 SDK 实例却无处落地的声明都留痕。
+	base.SetProxyRegistrarMissing(func(svc string, d pubsdk.ProxyDef) {
+		log.Printf("[sdk] %s 的 RegisterProxy(%q) 未生效：当前无注册回调。"+
+			"外部插件请在 plugin.json 的 proxies 里声明（host=%q target=%q）",
+			name, svc, d.Host, d.Target)
+	})
 	if cfg.IOManager != nil {
 		base.SetIOInjector(ioAdapter{iom: cfg.IOManager})
 	}
