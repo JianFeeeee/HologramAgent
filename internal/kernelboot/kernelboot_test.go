@@ -15,6 +15,7 @@ package kernelboot
 import (
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"sort"
 	"strings"
 	"sync"
@@ -40,7 +41,7 @@ type fakeModule struct {
 func (m *fakeModule) Name() string       { return m.name }
 func (m *fakeModule) Provides() []string { return m.provides }
 func (m *fakeModule) Requires() []string { return m.requires }
-func (m *fakeModule) Init(_ *KernelState) error {
+func (m *fakeModule) Init(_ *kstate.State) error {
 	if m.initCount != nil {
 		atomic.AddInt32(m.initCount, 1)
 	}

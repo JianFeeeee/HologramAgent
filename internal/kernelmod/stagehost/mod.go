@@ -16,11 +16,12 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	cli "github.com/JianFeeeee/HologramAgent/internal/plugins/cli"
 	webui "github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
+	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -34,8 +35,15 @@ func (Module) Requires() []string {
 }
 func (Module) Provides() []string { return []string{kernelmod.FacStageHost} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	stageHost := agentCore.NewStageHost()
+
+	// 插件声明式系统提示词段的注册表：本模块产出，挂到内核挂载点。
+	//
+	// ★ 不往下传参：读方（agent 模块、SDK）自己去 ks 取 ——
+	// 与 StageHost / PluginRegistry 完全同型。往构造点传指针会让
+	// "记得接这一根线"成为每种 agent 类型的义务（那正是之前的老毛病）。
+	ks.PromptSections = promptsec.NewRegistry()
 
 	pluginReg := plugin.NewRegistry()
 	pluginReg.SetIOManager(ks.IO)

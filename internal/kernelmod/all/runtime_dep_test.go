@@ -26,6 +26,7 @@ package all
 
 import (
 	"errors"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,10 +69,10 @@ func layerNames(layer []kernelboot.Module) []string {
 // 变异，模块会真的跑到写盘那一行。不填的话 text-memory 会往**仓内**
 // 当前目录下的 memory/text 写（实测产生过 internal/kernelmod/all/memory/）。
 // 夹具不能往仓库里漏文件。
-func emptyState(t *testing.T) *kernelboot.KernelState {
+func emptyState(t *testing.T) *kstate.State {
 	t.Helper()
 	dir := t.TempDir()
-	ks := kernelboot.NewKernelState()
+	ks := kstate.New()
 	ks.Cfg = &types.Config{}
 	ks.Cfg.Daemon.DataDir = dir
 	ks.Cfg.Plugin.Dir = filepath.Join(dir, "plugins")

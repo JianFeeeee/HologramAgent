@@ -8,8 +8,8 @@ package supervisor
 import (
 	"log"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 )
 
@@ -20,7 +20,7 @@ func (Module) Name() string       { return "supervisor" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
 func (Module) Provides() []string { return []string{kernelmod.FacSupervisor} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	sup := supervisor.New(ks.Cfg)
 	if err := sup.Start(); err != nil {
 		log.Fatalf("start supervisor: %v", err)

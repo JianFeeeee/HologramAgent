@@ -7,8 +7,8 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
 )
 
@@ -19,7 +19,7 @@ func (Module) Name() string       { return "lua" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
 func (Module) Provides() []string { return []string{kernelmod.FacLua} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	luaVM := luapkg.NewVM(filepath.Join(ks.Cfg.Daemon.DataDir, "adapters"))
 	if err := luaVM.Start(); err != nil {
 		log.Printf("[homed] warning: lua vm init failed: %v", err)

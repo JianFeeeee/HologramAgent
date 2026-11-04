@@ -31,8 +31,8 @@ import (
 	"sort"
 	"syscall"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/systemd"
 )
 
@@ -68,7 +68,7 @@ type DirInfo struct {
 	Kind  string `json:"kind"` // data | runtime | optional | mount
 }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	// 体检结果放在 KernelState 上，供工具/WebUI 读（可选能力，nil 安全）
 	ks.MigrationPreflight = func(target string) (interface{}, error) {
 		return Preflight(ks.DataDir, target)

@@ -25,6 +25,7 @@ package kernelboot
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"log"
 	"sync/atomic"
 	"time"
@@ -87,7 +88,7 @@ type PluginQuiescer interface {
 //	defer sess.End()          // 无论成功失败都唤醒
 //	// ... 外部脚本迁移 ...
 type MigrateSession struct {
-	ks      *KernelState
+	ks      *kstate.State
 	plugins PluginQuiescer
 	paused  []string
 	stopped []string // 已运行态停掉的插件（按停止顺序，唤醒时逆序）
@@ -97,7 +98,7 @@ type MigrateSession struct {
 // BeginMigration 进入伪关机：停插件（运行态）→ 逆序暂停内核写者 → 等在途归零。
 //
 // 返回的 session 必须由调用方 `defer sess.End()`。
-func (s *KernelState) BeginMigration(pq PluginQuiescer) (*MigrateSession, error) {
+func BeginMigration(s *kstate.State, pq PluginQuiescer) (*MigrateSession, error) {
 	sess := &MigrateSession{ks: s, plugins: pq}
 
 	// ① 先停**插件**（运行态停启，可逆）。

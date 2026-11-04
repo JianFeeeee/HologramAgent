@@ -134,3 +134,4 @@ dist/
 
 # 内核升级 CLI 的本地构建产物（与 /homed 同理，不入库）
 /homed-upgrade
+/kernelplan.md

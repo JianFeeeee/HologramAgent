@@ -12,7 +12,7 @@ import (
 //
 // ★ 定义在 internal/update 而不是 kernelmod：三端（CLI/WebAPI/agent 工具）
 // 都要用，而 KernelState 只有内核启动一条路径。模块通过
-// kernelboot.UpdateStateProvider 接口把它暴露给内核，避免 import 循环。
+// kstate.UpdateStateProvider 接口把它暴露给内核，避免 import 循环。
 type State struct {
 	BinaryPath   string
 	DepGraphPath string

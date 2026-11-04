@@ -173,132 +173,26 @@ func appendPromptBlock(prompt, block string) string {
 	return strings.TrimRight(prompt, "\n") + "\n\n" + block
 }
 
+// buildSystemPrompt 生成发给 LLM 的 system prompt。
+//
+// ★ 2026-11-04 起**不再自己拼块**：所有内容（内核的十几块 + 插件声明的段）
+// 统一由 renderSystemPrompt 按 Order 排序渲染。本函数只负责把当轮上下文
+// （memContext）递进去。
+//
+// 为什么要统一（用户裁定）：
+//
+//	「把现在内核所有 systemprompt 的相关注入都接入到这个统一的
+//	  systemprompt 管理器上」
+//
+// 此前两套并存（内核硬拼 + 插件声明），后果是**顺序不可控**：插件段只能
+// 整块插在某个固定位置；内核那十几块的相对顺序由函数体书写顺序决定，
+// 改顺序得挪代码。现在顺序由 Order 常量决定，内核只是"另一个声明者"。
+//
+// userInput 参数保留：它是部分内核块（如记忆上下文的相关性）的输入，
+// 由调用方在 buildMemoryContext 里使用后传入，渲染层不需要它。
 func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
-	prompt := expandPromptVars(a.systemPrompt)
-	if prompt == "" {
-		prompt = "You are HologramAgent, a household-manager AI assistant. Never use Unicode emoji; express affect with kaomoji only, and end sentences with a soft particle. The WebUI overview page shows your portrait."
-	}
-
-	// 驻留子：在**固定提示词之上**注入任务提示词（设计 §7「创建」）。
-	if a.taskPrompt != "" {
-		prompt = appendPromptBlock(prompt, "[Task] "+a.taskPrompt)
-	}
-
-	if a.personality != nil {
-		if pp := a.personality.InjectPrompt(); pp != "" {
-			// 人格卡同样展开版本占位符：人格里写死版本号会随发版说谎
-			// （实测线上人格卡写 v1.0.3，内核早已 1.3.x）。
-			prompt = appendPromptBlock(prompt, expandPromptVars(pp))
-		}
-	}
-
-	if memContext != "" {
-		prompt = appendPromptBlock(prompt, memContext)
-	}
-
-	// 【三层记忆】是**内核运行时块**（提示词分层规范：内核行为由内核生成）。
-	//
-	// 它讲的是内核的真实执行语义（哪些内容在哪一层、何时会进上下文、
-	// 哪个工具会做什么），不是工具用法 —— 工具用法归各 ToolDef.Description。
-	//
-	// 为什么必须有这一段：此前系统提示词从未解释 L1/L2/L3 是什么，
-	// agent 只能从工具名猜。生产日志实测：agent 几乎从不调用 coldcontext_query，
-	// 即使调用了也只看返回值、不知道原文已被回填到对话时序。
-	// 【三层记忆】只留**模型据此选择工具**的语义。
-	//
-	// 技术性内容（L1/L2/L3 编号、向量空间、消费式删除、缩略语）全部下沉到
-	// 对应工具的 description 与 skill：模型只需要知道"哪里有原文、哪里有
-	// 关系、用什么去取"，不需要知道内核怎么存。
-	//
-	// ★ 但有一件事必须说：coldcontext_query 会把历史事件**插回时序**，而不是返回
-	//   一段摘要 —— 这与模型对"检索工具"的默认预期相反，不说就会误用。
-	prompt = appendPromptBlock(prompt, "[Memory] Recent turns are above. For older conversations use `coldcontext_query` - it **re-inserts them into your timeline at their original timestamps**, so read them there, not in the return value. "+
-		"Facts and relations: `stablemem_recall`. Written knowledge: `knowledge_search`.")
-
-	// 记忆维护：具体选哪个工具、各有什么副作用，都写在 memory_* 的工具描述里
-	//（【记忆清理】前缀）。这里只保留那条**不看描述也会犯**的错：只描述计划不执行。
-	prompt = appendPromptBlock(prompt, "[Memory maintenance] To tidy or clear memory, call the memory_* tools - a described plan is not the work. Report the result in one sentence.")
-
-	// L2（冷上下文）预填充已并入 buildMemoryContext（输入路/工具路共用一次），
-	// 这里不再重复注入，否则同一批摘要会出现两遍。
-
-	prompt = appendPromptBlock(prompt, "[Interrupt] During long tasks a system message prefixed [Interrupt] may arrive (new message, terminal output, timer). It is not user speech, but handle it: pause, respond, or consciously continue.")
-
-	// 工具执行顺序（阶段 2.5）。必须在**并行执行落地之后**才加：
-	// 反序会让本段对模型说谎——说"并发"而内核仍串行，模型据此推断
-	// 安全性并写出真正依赖顺序的调用。宁可晚改，不可错改。
-	//
-	// ⚠️ 措辞必须与 batchRunnable 的**真实**判据一致（全批 ParallelSafe
-	// 才并发 + 同通道保序），否则只是把"没说"换成"说错"。
-	// 【工具执行顺序】只留**模型必须据此作决定**的三条。
-	//
-	// 技术性内容（ParallelSafe 声明、批内降级、内核如何判据）全部下沉：
-	// 那是实现细节，模型既不需要也改不了 —— 讲它只会让回复带上说明书腔。
-	// 判断依据仍是真实的 batchRunnable 语义（勿写反）。
-	prompt = appendPromptBlock(prompt, "[Tool order] Calls in one reply run **in parallel** by default. **Never depend on order**: if one needs another's result, use two turns. "+
-		"Outputs to the same channel **keep their order**, so \"acknowledge, then conclude\" fits in one turn.")
-
-	prompt = appendPromptBlock(prompt, "[Output rules]\n")
-	// ★ 这一句是本段最重要的：用户明确要求「必须显式调用 outputch 才会输出给用户」。
-	// 模型最常见的错误不是不会调工具，而是**以为返回文本就等于回复了**——
-	// 异步通道下那等于自言自语（用户永远收不到）。
-	prompt += "**Content reaches the user only when you explicitly call `output_send__{channel}`.** " +
-		"Returning plain text only speaks inside this reasoning step; the user cannot see it - except on the synchronous channels described below.\n"
-	prompt += "- Don't assume a fixed channel: one conversation may span devices and channels. If unsure, call output_list_channels.\n"
-	prompt += "- Sync channels (webui / cli / terminal): return plain text. **The only exception.**\n"
-	prompt += "- Async channels (qq / wechat / groups): call output_send__{channel} with the right user_id or group_id.\n"
-	prompt += "- One call may send several messages: pass an array as payload. Unclear how to send? output_send__{channel}_help.\n"
-	// ❗这里**不得**限制"一轮只能发一次"。设计上输出是 agent 的**主动调用**：
-	// 收到一次输入后，可以往**任意（已授权的）通道**发**任意多次**（分段播报、
-	// 先回执后结论、同时通知多个通道都合法）。此前这里写着"每轮对话通常只需调用
-	// 一次 output_send"——那是一条**凭空的限制**，会让模型自己收起合理的多次输出。
-	// 真正需要提醒的只有两件事：单条长度上限（超长拆成完整段落）与"别反复重发
-	// 完全相同的内容"（自律，不是判据）。
-	prompt += "- **You choose how many outputs and which channels.** **No \"one output per turn\" limit.** Keep messages whole; don't resend identical content.\n"
-	prompt += "- Multi-step work: acknowledge on the current channel **first**, then run the real tools. An acknowledgement is not completion - finish and report.\n"
-
-	if a.indexer != nil {
-		prompt += "\n\n" + a.indexer.BuildToolPrompt()
-	}
-
-	// seq 的触发条件**刻意不写在这里**（用户裁定：seq 知识应在 skill 中）。
-	//
-	// 一度加过【加速序列】块，理由是"skill 索引只给一行摘要，模型不知道何时该用"。
-	// 那个理由站不住：紧邻下方的【可用技能】已明确要求"准备调用某个插件的工具时
-	// 先看同名技能"，seq 的"什么时候用"写在 skill 正文里会被这条规则正确带到
-	// 模型面前。再加一块提示词 = 同一件事记两处，且必然漂移。
-	//
-	// 副作用证据：加块后 TestSystemPromptStaysCompact 报 2022 > 2000。
-	// 那个超限**本身就是信号**——该去掉的是内容，不是调高上限。
-
-	// 技能索引（方案B）：轻量注入已加载技能列表，LLM 匹配到场景时
-	// 主动 skill_info 拉取全文按文档执行
-	if a.skillIndex != nil {
-		if idx := a.skillIndex.SkillIndex(); idx != "" {
-			// ★ 措辞从"用户请求匹配某技能时"改成"**调用插件工具之前**"。
-			//
-			// 旧措辞把人带偏成"只有用户点名要某个技能才去读"，而 skill 的真实
-			// 用途是**工具的使用说明**：里面写着参数怎么填、有哪些已知坑
-			// （例如 QQ 的"拉私聊历史只传 user_id，不要传 group_id"）、
-			// 以及按需插件要先 plugin_start 拉起。
-			//
-			// 不看 skill 就直接调工具，是这个仓库反复吃过亏的一类错误。
-			prompt = appendPromptBlock(prompt, "[Skills] Usage manuals for plugins. Before calling a plugin's tool (or when it fails), read the same-named skill with skill_info(\"skill-name\") and follow it. "+
-				"Never guess from the name.\n\n"+idx)
-		}
-	}
-
-	// 首启人格门禁（跨通道唯一闸口）：人格未确认时，要求模型主动询问用户。
-	// 系统提示词每轮重建，因此 WebUI / QQ / CLI / ACP / 邮件等所有通道都会带上它；
-	// 模型调用 persona_set（或用户在 WebUI 向导里选）落地后，标记置位，本段消失。
-	if a.personaStore != nil && !a.personaStore.PersonaInitialized() {
-		prompt = appendPromptBlock(prompt, "[First-run persona setup] Your **persona is not confirmed**. Ask once this turn: default persona, or a custom one? Then **call persona_set**: "+
-			"default -> mode=default; custom -> mode=custom with the text in content; later -> mode=later. Until answered, don't assume it is set and don't repeat the question.")
-	}
-
-	prompt += a.buildToolCatalog()
-
-	return prompt
+	_ = userInput
+	return a.renderSystemPrompt(memContext)
 }
 
 func cleanParams(params map[string]interface{}) map[string]interface{} {

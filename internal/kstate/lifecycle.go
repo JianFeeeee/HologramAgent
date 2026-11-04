@@ -1,4 +1,4 @@
-package kernelboot
+package kstate
 
 import (
 	"fmt"
@@ -50,7 +50,7 @@ type Quiescer struct {
 }
 
 // AddQuiescer 登记一个可暂停/恢复的写者（在模块 Init 里调用）。
-func (s *KernelState) AddQuiescer(name string, pause, resume func() error) {
+func (s *State) AddQuiescer(name string, pause, resume func() error) {
 	if pause == nil {
 		return
 	}
@@ -64,7 +64,7 @@ func (s *KernelState) AddQuiescer(name string, pause, resume func() error) {
 // 返回成功暂停的清单 —— Resume 只唤醒这些（没有的不要"凭空唤醒"）。
 // 任何一个 Pause 失败都会**停止继续暂停**并返回错误：宁可只关一半
 // 让调用方放弃迁移，也不要"看起来关了但仍有写者在跑"。
-func (s *KernelState) Quiesce() ([]string, error) {
+func (s *State) Quiesce() ([]string, error) {
 	s.quiesceMu.Lock()
 	qs := make([]Quiescer, len(s.Quiescers))
 	copy(qs, s.Quiescers)
@@ -90,7 +90,7 @@ func (s *KernelState) Quiesce() ([]string, error) {
 }
 
 // Resume 唤醒：按**暂停的逆序**（即原启动顺序）恢复。
-func (s *KernelState) Resume(paused []string) error {
+func (s *State) Resume(paused []string) error {
 	s.quiesceMu.Lock()
 	qs := make([]Quiescer, len(s.Quiescers))
 	copy(qs, s.Quiescers)
@@ -110,7 +110,7 @@ func (s *KernelState) Resume(paused []string) error {
 	return firstErr
 }
 
-func (s *KernelState) resumeOne(qs []Quiescer, name string) error {
+func (s *State) resumeOne(qs []Quiescer, name string) error {
 	for _, q := range qs {
 		if q.Name == name {
 			if q.Resume == nil {

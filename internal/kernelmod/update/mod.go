@@ -18,6 +18,7 @@
 package update
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"log"
 	"path/filepath"
 
@@ -41,7 +42,7 @@ func (Module) Requires() []string { return nil } // 第 0 层：不依赖任何�
 func (Module) Provides() []string { return []string{FacilityVersion} }
 
 // Init 执行版本自检，必要时回滚上一次升级。
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	// ⓪ 把内核**真实**的 dataDir 注入 update 包。
 	//
 	// 必须最先做：pending 标记/备份/回滚验全都靠它。进程内调用方

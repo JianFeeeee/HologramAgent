@@ -20,12 +20,12 @@ package memory
 // 判据改为直接跑真实模块（经 kernelboot.Run），确保测的是**真实入口**。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"os"
 	"path/filepath"
 	"testing"
 
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 )
 
 // ★★★ 判据：模块 Init 返回后蒸馏器**仍在运行**（无 defer Stop 残留）。
@@ -38,7 +38,7 @@ func TestMemoryModuleKeepsDistillerRunning(t *testing.T) {
 	// 而它对 nil 会现在**明确报错**（而不是 panic 在 strings.Split）。
 	reg := internalConfig.NewConfigRegistry(filepath.Join(dir, "config.db"))
 	defer reg.Close()
-	ks := &kernelboot.KernelState{DataDir: dir, CfgReg: reg}
+	ks := &kstate.State{DataDir: dir, CfgReg: reg}
 
 	if err := (Module{}).Init(ks); err != nil {
 		t.Fatalf("memory 模块 Init: %v", err)
@@ -73,7 +73,7 @@ func TestMemoryModuleRegistersCloser(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "memory"), 0o755)
 	reg := internalConfig.NewConfigRegistry(filepath.Join(dir, "config.db"))
 	defer reg.Close()
-	ks := &kernelboot.KernelState{DataDir: dir, CfgReg: reg}
+	ks := &kstate.State{DataDir: dir, CfgReg: reg}
 	if err := (Module{}).Init(ks); err != nil {
 		t.Fatal(err)
 	}

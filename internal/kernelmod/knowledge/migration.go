@@ -16,8 +16,8 @@ package knowledge
 import (
 	"path/filepath"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
 // MigrationModule 做知识库目录改名迁移。
@@ -27,7 +27,7 @@ func (MigrationModule) Name() string       { return "knowledge-migration" }
 func (MigrationModule) Requires() []string { return []string{kernelmod.FacConfig} }
 func (MigrationModule) Provides() []string { return []string{kernelmod.FacMigrated} }
 
-func (MigrationModule) Init(ks *kernelboot.KernelState) error {
+func (MigrationModule) Init(ks *kstate.State) error {
 	root := filepath.Join(ks.Cfg.Daemon.DataDir, "knowledge")
 	runKnowledgeMigration(root)
 	return nil

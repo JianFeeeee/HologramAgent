@@ -1,5 +1,7 @@
 package kernelboot
 
+import "github.com/JianFeeeee/HologramAgent/internal/kstate"
+
 // 把既有的内核 `init*` 函数**适配**成 Module，而不必重写它们的签名。
 //
 // ## 为什么不直接改 init* 的签名
@@ -20,7 +22,7 @@ package kernelboot
 //     Name:     "lua",
 //     Requires: []string{"config"},
 //     Provides: []string{"lua"},
-//     Init: func(ks *kernelboot.KernelState) error {
+//     Init: func(ks *kstate.State) error {
 //         vm, closeFn := initLuaVM(ks.Cfg)   // 依赖的产物：直接读字段
 //         ks.LuaVM = vm                       // 自己的产物：写回字段
 //         ks.AddCloser(closeFn)               // 关闭函数统一登记
@@ -45,7 +47,7 @@ type FuncSpec struct {
 	Requires []string
 	Provides []string
 	// Init 执行装配：从 ctx 取依赖、调既有函数、把产物 Put 回 ctx。
-	Init func(ks *KernelState) error
+	Init func(ks *kstate.State) error
 }
 
 // funcModule 是 FuncSpec 的 Module 实现。
@@ -56,7 +58,7 @@ type funcModule struct {
 func (m *funcModule) Name() string       { return m.spec.Name }
 func (m *funcModule) Provides() []string { return m.spec.Provides }
 func (m *funcModule) Requires() []string { return m.spec.Requires }
-func (m *funcModule) Init(ks *KernelState) error {
+func (m *funcModule) Init(ks *kstate.State) error {
 	if m.spec.Init == nil {
 		return nil
 	}

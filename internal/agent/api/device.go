@@ -71,3 +71,25 @@ type BuiltinToolHandlers interface {
 	ExecutePluginReload() string
 	ExecuteGetPluginTools(pluginName string) string
 }
+
+// DeviceMounter 是"能把数据面挂到自己身上"的最小面。
+//
+// ## 为什么需要它（2026-11-04）
+//
+// `kstate.State.Agent` 存 `any`（挂载点不能依赖 agent/core，否则成环）。
+// 消费方要调 `MountDevice` 就必须断言回具体类型 —— 但 device 模块断言成
+// `*agentCore.Agent` 会让 device 依赖 core 的全部实现细节，而它真正需要
+// 的只有这一个方法。
+//
+// 用一个单方法接口把需求显式化：
+//
+//	· device 只依赖 api.DeviceMounter（叶子包，零环）
+//	· core 的 *Agent 天然实现它（方法名与签名一致）
+//	· 谁想提供"可挂载数据面的宿主"，实现这一个方法即可
+//
+// ★ 与 ToolHost 的分工：ToolHost 是**执行面**（工具定义与执行），
+// DeviceMounter 是**装配面**（挂上数据面）。两者用途不同，不合并。
+type DeviceMounter interface {
+	// MountDevice 挂载工具/通道数据面（装配期调用一次）。
+	MountDevice(d DeviceSurface)
+}

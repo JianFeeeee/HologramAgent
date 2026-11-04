@@ -357,7 +357,7 @@ func TestSkillIndex(t *testing.T) {
 
 	// The plugin now materializes the four kernel skills before scanning. They are
 	// part of the built-in skill index, so an empty user registry is not empty.
-	idx := p.SkillIndex()
+	idx := p.buildIndex()
 	for _, want := range []string{"kernel-memory", "kernel-output", "kernel-plugins", "kernel-tool-order"} {
 		if !strings.Contains(idx, want) {
 			t.Fatalf("built-in skill missing from index: %q", idx)
@@ -370,14 +370,14 @@ func TestSkillIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx = p.SkillIndex()
+	idx = p.buildIndex()
 	if !strings.Contains(idx, "idx-test v0.2.0") || !strings.Contains(idx, "用于测试的演示技能。") {
 		t.Fatalf("index missing name/desc: %q", idx)
 	}
 
 	// 禁用后不出现在索引里
 	spy.call(t, "skill_disable", map[string]interface{}{"name": "idx-test"})
-	if idx := p.SkillIndex(); strings.Contains(idx, "idx-test") {
+	if idx := p.buildIndex(); strings.Contains(idx, "idx-test") {
 		t.Fatalf("disabled skill should be excluded from index: %q", idx)
 	}
 }

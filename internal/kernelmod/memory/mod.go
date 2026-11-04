@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/distill"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
@@ -34,7 +34,7 @@ func (Module) Name() string       { return "memory" }
 func (Module) Requires() []string { return []string{kernelmod.FacKernelIO} }
 func (Module) Provides() []string { return []string{kernelmod.FacMemory} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	// ★ 读取前检查（用户指定的做法："结构体成员初始置 nil 加读取前检查"）。
 	//
 	// 为何要检查 CfgReg：它是 **Group 0** 的产物（不由任何调度模块提供），
@@ -78,7 +78,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		distiller.Start()
 	}
 
-	ks.Memory = &kernelboot.MemoryBundle{
+	ks.Memory = &kstate.MemoryBundle{
 		DB:        memDB,
 		Indexer:   memIdx,
 		Social:    socialStore,

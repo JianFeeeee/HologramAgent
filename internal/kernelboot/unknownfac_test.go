@@ -12,13 +12,14 @@ package kernelboot
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"strings"
 	"testing"
 )
 
 // ★★★ 判据：**拼错的设施名在 Submit 时被拒绝**（不再静默挂起）。
 func TestSchedulerRejectsUnknownFacility(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkDeclared([]string{"config", "llm", "memory"}) // 内核注册过这些
 
 	var launched []string
@@ -57,7 +58,7 @@ func TestSchedulerRejectsUnknownFacility(t *testing.T) {
 
 // ★★★ 判据：**正确的设施名不受影响**（不能把正常路径也拦了）。
 func TestSchedulerAcceptsKnownFacility(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkDeclared([]string{"config", "llm"})
 	// ★ 必须同时 MarkLayerReady —— 真实路径里 Run 两者都会做：
 	// MarkDeclared（执行前，登记名字）与 MarkLayerReady（每层完成，标记就绪）。
@@ -86,7 +87,7 @@ func TestSchedulerAcceptsKnownFacility(t *testing.T) {
 // ★ 这条很重要：llm 声明了但还在第 1 层时，Known 为 true、Ready 为 false。
 // 若把"未就绪"当"拼错"，所有多依赖插件都会在提交时被误拒。
 func TestSchedulerAcceptsDeclaredButNotYetReady(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkDeclared([]string{"config", "llm"}) // 两者都已声明
 	bus.MarkLayerReady([]string{"config"})      // 只有 config 就绪
 
@@ -111,7 +112,7 @@ func TestSchedulerAcceptsDeclaredButNotYetReady(t *testing.T) {
 // 那些设施名就从未被 MarkLayerReady 登记 ⇒ 会**误报**"内核从未注册过"。
 // 所以 Run 必须**执行前**就 MarkDeclared。
 func TestRunDeclaresAllFacilitiesUpfront(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	mods := []Module{
 		&fakeModule{name: "a", provides: []string{"fa"}},
 		&fakeModule{name: "b", provides: []string{"fb"}, requires: []string{"fa"},

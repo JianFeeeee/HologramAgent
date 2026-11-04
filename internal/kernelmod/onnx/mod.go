@@ -17,8 +17,8 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 )
 
@@ -29,7 +29,7 @@ func (Module) Name() string       { return "onnx-parser" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
 func (Module) Provides() []string { return []string{kernelmod.FacONNX} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	modelPath := ks.CfgReg.GetString("core.agent.onnx_model_path", "")
 	onnxParser, err := nlp.NewONNXParser(nlp.ONNXConfig{
 		ModelPath: modelPath,

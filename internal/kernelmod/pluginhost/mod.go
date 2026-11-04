@@ -2,6 +2,8 @@ package pluginhost
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"log"
 	"os"
 	"path/filepath"
@@ -44,7 +46,7 @@ func (Module) Requires() []string {
 
 func (Module) Provides() []string { return []string{FacPlugins} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	// ── 前置检查（用户要求："nil 加读取前检查"）──
 	if ks.PluginRegistry == nil || ks.StageHost == nil {
 		return fmt.Errorf("plugin-host：ks.PluginRegistry/StageHost 为 nil —— " +
@@ -111,8 +113,8 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	//
 	// 这样声明的插件仍在依赖就绪时尽早启动（本步的核心收益不变），
 	// 而未声明的**恢复原行为**（等内核完全初始化）。
-	var bus kernelboot.SyncState
-	var busConcrete *kernelboot.SyncBus // 保留具体类型以便订阅 OnUpdate
+	var bus kstate.SyncState
+	var busConcrete *kstate.SyncBus // 保留具体类型以便订阅 OnUpdate
 	if ks.SyncBus != nil {
 		bus = ks.SyncBus
 		busConcrete = ks.SyncBus
@@ -122,7 +124,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 		// 所以这里必须显式判 `!= nil` 再赋给接口变量。
 		log.Printf("[pluginhost] warning: SyncBus is nil -- non-production assembly path, " +
 			"退化为立即加载（依赖未就绪的插件在 Start 时自行处理）")
-		fallback := kernelboot.NewSyncBus()
+		fallback := kstate.NewSyncBus()
 		fallback.MarkKernelComplete()
 		bus = fallback
 		busConcrete = fallback
@@ -172,7 +174,7 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 	// 不在 catalog 里，只有 LoadSkipping 的工厂分支能加载它们）。
 	skip := buildSkipSet(catalog, groups)
 	var loadOnce sync.Once
-	loadRest := func(st kernelboot.SyncState) {
+	loadRest := func(st kstate.SyncState) {
 		if !st.KernelComplete() {
 			return
 		}
@@ -296,7 +298,7 @@ func buildSkipSet(c *PluginCatalog, g formGroups) map[string]bool {
 // ★ 这里**刻意不做** SetStatusProvider —— 它依赖 agent，
 // 由 agent 模块**后补注入**（见其注释）。这不是遗漏，是有意的分层：
 // 让插件加载不必等 agent 那 35 秒。
-func injectBaseDeps(ks *kernelboot.KernelState) {
+func injectBaseDeps(ks *kstate.State) {
 	reg := ks.PluginRegistry
 	reg.SetLuaVM(ks.LuaVM)
 	reg.SetBaseAPIKey(ks.BaseAPIKey)
@@ -305,7 +307,17 @@ func injectBaseDeps(ks *kernelboot.KernelState) {
 	}
 	reg.SetTracker(ks.Tracker)
 	reg.SetConfig(ks.Cfg)
-	reg.SetStageHost(ks.StageHost)
+	// StageHost 在挂载点里存 any（kstate 不依赖 agent/core，否则成环）。
+	// 断言成 sdk.ToolSource（plugin 真正需要的只读工具视图）。
+	//
+	// 断言失败时**不静默跳过**：SetStageHost 不设的后果是插件加载后
+	// 工具表为空，而那与"插件没注册工具"无法区分。所以这里响亮记录。
+	// （Init 里已检查过 StageHost != nil，此处失败是类型不合约，属装配缺陷。）
+	if ts, ok := ks.StageHost.(sdk.ToolSource); ok && ts != nil {
+		reg.SetStageHost(ts)
+	} else {
+		log.Printf("[plugin-host] WARNING: ks.StageHost 未实现 sdk.ToolSource —— 插件工具将不可见")
+	}
 
 	if ks.Memory != nil {
 		reg.SetIndexer(ks.Memory.Indexer)
@@ -350,7 +362,7 @@ func classify(c *PluginCatalog) formGroups {
 }
 
 // loadOne 加载单个插件（走既有 LoadOneDir 路径，不绕过任何机制）。
-func loadOne(ks *kernelboot.KernelState, dir, name string) (bool, error) {
+func loadOne(ks *kstate.State, dir, name string) (bool, error) {
 	if err := ks.PluginRegistry.LoadOneDir(filepath.Join(dir, name), name); err != nil {
 		return false, err
 	}
@@ -358,7 +370,7 @@ func loadOne(ks *kernelboot.KernelState, dir, name string) (bool, error) {
 }
 
 // planCatalog 取元数据缓存（类型断言集中一处，便于排查"缓存没建起来"）。
-func planCatalog(ks *kernelboot.KernelState) *PluginCatalog {
+func planCatalog(ks *kstate.State) *PluginCatalog {
 	c, _ := ks.PluginCatalog.(*PluginCatalog)
 	return c
 }
@@ -368,7 +380,7 @@ func planCatalog(ks *kernelboot.KernelState) *PluginCatalog {
 // 失败只记日志、不阻断：系统本身仍可正常接受输入，只是依赖本事件的
 // 订阅者（如 seq 的开机序列）不会自动执行。**必须可见** ——
 // 静默失败会让"为什么开机序列没跑"完全无从查起。
-func publishToolsReady(ks *kernelboot.KernelState) {
+func publishToolsReady(ks *kstate.State) {
 	if ks == nil || ks.EventBus == nil {
 		log.Printf("[pluginhost] tools_ready NOT published: EventBus is nil " +
 			"(subscribers such as seq boot sequences will not run)")

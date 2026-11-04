@@ -18,8 +18,8 @@ package config
 import (
 	"fmt"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
 // Module 提供配置快照。
@@ -29,7 +29,7 @@ func (Module) Name() string       { return "config" }
 func (Module) Requires() []string { return nil } // 前提由 Group 0 保证
 func (Module) Provides() []string { return []string{kernelmod.FacConfig} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	// ★ 检查而不是假设（用户说的"nil 加读取前检查"）：
 	// ks.Cfg 为 nil 说明 Group 0 段没跑或顺序错了。响亮报错远好于让后续
 	// 模块拿到 nil —— 那会在很远的地方变成"模型没有配置"之类的模糊症状。

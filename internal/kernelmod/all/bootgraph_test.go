@@ -131,6 +131,7 @@ package all
 // 源码怎么组织都无所谓 —— 只认"装配起来之后发生了什么"。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -158,8 +159,8 @@ import (
 // machine 是一台**真实装配起来**的内核（全部模块都是 kernelmod 里的真货）。
 type machine struct {
 	t   *testing.T
-	ks  *kernelboot.KernelState
-	bus *kernelboot.SyncBus
+	ks  *kstate.State
+	bus *kstate.SyncBus
 	// plan 是真实登记表算出的分层计划（启动图）。
 	plan *kernelboot.Plan
 	// res 是执行结果（层数 / 峰值并发 / 完成顺序）。
@@ -203,7 +204,7 @@ func bootMachine(t *testing.T) *machine {
 	// （实测：3 轮后 goroutine 数 2→5，逐轮 +1，全部来自 database/sql）。
 	// 关闭点放到 shutdown()（与生产的停机序列同处），并由 machine 保证只关一次。
 
-	ks := kernelboot.NewKernelState()
+	ks := kstate.New()
 	ks.CfgReg = reg
 	ks.DataDir = dir
 	ks.AgentWorkDir = filepath.Join(dir, "agentfs")
@@ -225,7 +226,7 @@ func bootMachine(t *testing.T) *machine {
 		t.Fatalf("★ 真实登记表算不出启动图（漏挂模块 / 缺依赖 / 环）: %v", err)
 	}
 
-	bus := kernelboot.NewSyncBus()
+	bus := kstate.NewSyncBus()
 	// 与生产 RunKernelModules 同序：先 MarkDeclared（让拼错校验有真相源），
 	// 再 Run（Run 内部还会 MarkDeclared，幂等）。
 	var declared []string
@@ -869,7 +870,7 @@ func removeAllWithRetry(dir string, tries int) error {
 // 只读反射（不 Set、不 Interface），用于把"关闭时挂订阅"这种泄漏
 // 变成可断言的数字。字段名/类型变化时本函数会 fatalf —— 那是判据
 // 失去观测点，必须显式修，不能静默变成 0。
-func countBusSubscribers(t *testing.T, bus *kernelboot.SyncBus) int {
+func countBusSubscribers(t *testing.T, bus *kstate.SyncBus) int {
 	t.Helper()
 	if bus == nil {
 		return 0

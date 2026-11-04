@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
 // 没有 EventBus 时必须**响亮报错而不是静默返回** ——
@@ -26,7 +26,7 @@ func TestPublishToolsReadyWithoutBusDoesNotPanic(t *testing.T) {
 		}
 	}()
 	publishToolsReady(nil)
-	publishToolsReady(&kernelboot.KernelState{})
+	publishToolsReady(&kstate.State{})
 }
 
 // 有 EventBus 时必须真的发布一条 tools_ready，且带 plugin_count。
@@ -35,7 +35,7 @@ func TestPublishToolsReadyPublishes(t *testing.T) {
 	var got []*events.Event
 	bus.Subscribe(events.EventToolsReady, func(e *events.Event) { got = append(got, e) })
 
-	ks := &kernelboot.KernelState{EventBus: bus}
+	ks := &kstate.State{EventBus: bus}
 	publishToolsReady(ks)
 
 	if len(got) != 1 {

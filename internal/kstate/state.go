@@ -1,13 +1,14 @@
-package kernelboot
+package kstate
 
 import (
 	"context"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"sync"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
@@ -19,8 +20,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HologramAgent/internal/plugin"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -33,7 +33,7 @@ import (
 // 它们的持有者都假设彼此一致）。拆开会让"只填了 db 忘了 indexer"变成可能。
 //
 // ★ 为何放在 kernelboot 而不是 cmd/homed：
-// KernelState 要引用它的类型 ⇒ 类型必须与 KernelState 同包
+// State 要引用它的类型 ⇒ 类型必须与 State 同包
 // （否则 kernelboot 得 import cmd/homed，那是不可能的）。
 type MemoryBundle struct {
 	DB        *memory.GraphDB
@@ -42,7 +42,7 @@ type MemoryBundle struct {
 	Distiller *pipeline.Distiller
 }
 
-// KernelState 是内核**唯一的公共数据持有者**（用户设计）。
+// State 是内核**唯一的公共数据持有者**（用户设计）。
 //
 // ## 设计意图（用户原话）
 //
@@ -94,7 +94,7 @@ type MemoryBundle struct {
 //
 // 内核**不**在字段上加锁：加锁会给调用方"可以乱写"的错觉，
 // 正确约束是"各模块只写自己的字段"（由代码审查 + 判据守）。
-type KernelState struct {
+type State struct {
 	// ── Group 0 产出（core 自己立起来的东西，所有模块只读） ──
 
 	// Cfg 是配置快照（config 模块产出）。
@@ -213,10 +213,71 @@ type KernelState struct {
 	UpdateCapabilities any
 
 	// StageHost 是阶段管道（stage-host 模块产出）。
-	StageHost *agentCore.StageHost
+	//
+	// ## 为什么是 any 而不是 *agentCore.StageHost（2026-11-04）
+	//
+	// 本包是**统一挂载点**，必须能被任何人 import。而 `*agentCore.StageHost`
+	// 让本包依赖 `internal/agent/core` ⇒ 反过来 `core` 就不能 import 本包：
+	//
+	//	kstate ──▶ agent/core ──▶ …  （core 想读共享数据就只能自建通道）
+	//
+	// 实测确认过这是真的环（`go build` 报 import cycle not allowed）。
+	// 而"底层包自己把产物挂上来"才是本包的设计意图（用户裁定）：
+	//
+	// > 是其他包在kstate挂共享内容啊
+	//
+	// 所以：存 any，**取用处断言**回 `*agentCore.StageHost`。
+	// 与本包已有的 PluginCatalog / PluginScheduler / UpdateCapabilities 同型，
+	// 代价是一次断言，收益是本包零业务依赖。
+	StageHost any
 
 	// PluginRegistry 是插件注册表（stage-host 模块产出）。
+	//
+	// ★ 为什么可以是具体类型（2026-11-04 实测，不是推测）：
+	//
+	// 判据是"它会不会反过来依赖 internal/agent/core"。实测：
+	//
+	//	go list -deps internal/plugin | grep agent/core  →  空
+	//
+	// 所以 plugin 不依赖 core ⇒ 本包依赖 plugin **不构成环**，
+	// core 仍能 import 本包。类型化字段让"拼错/取错类型"是编译错误
+	// （本结构体的设计原则，见包注释）。
+	//
+	// 对照：StageHost / Agent 曾被改成 any 是因为它们**就是** core 的类型
+	// （core 是链的一极，那才是真环）。
 	PluginRegistry *plugin.Registry
+
+	// PromptSections 是**插件声明式系统提示词段**的注册表（stage-host 模块产出）。
+	//
+	// ## 为什么挂在这里（用户指出的设计）
+	//
+	// > 所有共享数据统一挂载一个 kernel 提供的挂载点上暴露
+	//
+	// 与 StageHost / PluginRegistry / EventBus 同层同型：模块产出、挂上 State、
+	// 任何读方直接 ks.PromptSections 取，**没有 Set* 传参、没有构造点传递**。
+	//
+	// ## 它解决什么（真实生产故障）
+	//
+	// 此前技能索引是 Agent 上的一个字段（Agent.skillIndex），由
+	// cmd/homed/bootstrap.go 用 type-assert 手工接给**根 agent**：
+	//
+	//	if prov, ok := sp.(agentCore.SkillIndexProvider); ok {
+	//	    agent.SetSkillIndexProvider(prov)
+	//	}
+	//
+	// 于是 rtchild、驻留子、工作式子各自构造时都得记得再传一遍 ——
+	// 漏传不报错、不崩，只是那个 agent 的提示词里一条 skill 都没有。
+	//
+	// 生产症状（日志实录）：A2A 分诊助手（驻留子）手上没有 cmd_run
+	// （cmd 插件 auto_start=false，需先 plugin_start），而 cmd-tools skill
+	// 正文里写着"先 plugin_start cmd"。它看不到这条 skill，于是把
+	// terminal_create 当成一次性命令执行器：每条 `cd … && echo … && grep …`
+	// 开一个新终端，命令结束终端退出，terminal_read 立刻撞
+	// `read /dev/ptmx: input/output error`，然后为下一条命令再开一个。
+	//
+	// 现在：插件声明 → 注册表 → 任何 agent 每轮重建提示词时读同一份。
+	// 加一种 agent 类型是**零接线**。
+	PromptSections *promptsec.Registry
 
 	// PluginCatalog 是**插件元数据缓存**（plugin-host 模块产出）。
 	//
@@ -242,13 +303,13 @@ type KernelState struct {
 	//
 	// ## ★ 为什么它必须在这里（而不只是 Run 的局部变量）
 	//
-	// 模块的 `Init(ks)` 只能看到 KernelState —— 若 bus 只在 Run 里，
+	// 模块的 `Init(ks)` 只能看到 State —— 若 bus 只在 Run 里，
 	// **模块拿不到它**，于是无法：
 	//   · 订阅状态变化（plugin-host 要据此拉起"等更晚设施"的插件）
 	//   · 标记就绪（虽然 Run 会自动做，但模块可能需要主动补标）
 	//
 	// 实测撞到：plugin-host 想在 Init 里挂"等 agent 就绪再拉起某些插件"的
-	// 回调，却找不到 bus。把它放进 KernelState（内核公共数据，用户设计）
+	// 回调，却找不到 bus。把它放进 State（内核公共数据，用户设计）
 	// 是最自然的落点 —— 它本来就是**内核级共享状态**。
 	SyncBus *SyncBus
 
@@ -268,7 +329,16 @@ type KernelState struct {
 	PluginsReady bool
 
 	// Agent 是主 agent（agent 模块产出）。
-	Agent *agentCore.Agent
+	//
+	// 存 any 的理由与 StageHost 完全相同（见上）：本包不能依赖 agent/core。
+	// 取用处断言回 `*agentCore.Agent`。
+	//
+	// 实际使用面极小，只有两处：
+	//   · device 模块：`ks.Agent.MountDevice(rt)` —— 挂上数据面
+	//   · agent 模块：`k.PluginRegistry.SetStatusProvider(k.Agent)` —— 状态面
+	// 若日后使用面扩大，应抽一个最小接口到叶子包（如 internal/agent/api）
+	// 而不是把 core 拉回本包。
+	Agent any
 
 	// Security 是**安全防火墙运行时**（security 模块产出）。
 	//
@@ -279,6 +349,10 @@ type KernelState struct {
 	// 而类型化字段能让"取错类型/拼错字段"变成编译错误 —— 这正是本结构体
 	// 存在的理由（见包注释）。未装配时为 nil；配置显式关闭时是
 	// Disabled Runtime（所有审查零成本透传），不是 nil。
+	// Security 是**安全防火墙运行时**（security 模块产出）。
+	//
+	// ★ 具体类型而非接口/any（实测 plugin 也不依赖 core，同样的判据）：
+	// 类型化字段让取错类型成为编译错误。
 	Security *security.Runtime
 
 	// Device 是**工具/通道数据面**（device 模块产出）。
@@ -315,7 +389,7 @@ type KernelState struct {
 	// （两个 goroutine 同时读到旧 len、各自写同一槽）⇒ 某个模块的
 	// 关闭函数永远不被调用 ⇒ **资源泄漏**（且无任何报错）。
 	//
-	// 为什么不用 KernelState 上"模块只写自己字段"的约定来避免：
+	// 为什么不用 State 上"模块只写自己字段"的约定来避免：
 	// Closers 不属于任一模块 —— 它是**共享的回收站**。
 	// 共享可变状态就必须有锁（这与"各写各的字段"是两条不同的保证）。
 	Closers []func()
@@ -338,16 +412,16 @@ type KernelState struct {
 	quiesceMu sync.Mutex
 }
 
-// NewKernelState 创建公共结构体（所有字段零值 = nil，由各模块填充）。
-func NewKernelState() *KernelState {
-	return &KernelState{}
+// NewState 创建公共结构体（所有字段零值 = nil，由各模块填充）。
+func New() *State {
+	return &State{}
 }
 
 // AddCloser 注册一个关闭函数（模块在 Init 里调用）。
 //
 // 关闭时按**注册顺序的逆序**执行（LIFO，与 `defer` 语义一致）：
 // 先初始化的一般是底层（config → memory → llm），停机应反向拆。
-func (s *KernelState) AddCloser(fn func()) {
+func (s *State) AddCloser(fn func()) {
 	if fn == nil {
 		return
 	}
@@ -362,10 +436,10 @@ func (s *KernelState) AddCloser(fn func()) {
 // ★ 失败策略：**继续执行剩余关闭**（返回首个错误）。
 // 一个模块关不掉不该阻止其他模块关 —— 那会造成更多泄漏。
 // 关闭函数 panic 也被隔离（否则一个模块的问题会连带其他模块都关不掉）。
-func (s *KernelState) CloseAll() error {
+func (s *State) CloseAll() error {
 	// ★ 先取快照再执行（不持锁执行回调）：关闭函数可能很慢
 	// （停进程/flush 数据库），持锁会让并发调用 AddCloser 的模块卡住；
-	// 且回调可能反查 KernelState ⇒ 死锁。
+	// 且回调可能反查 State ⇒ 死锁。
 	s.closerMu.Lock()
 	fns := make([]func(), len(s.Closers))
 	copy(fns, s.Closers)

@@ -9,6 +9,7 @@ package kernelboot
 // 静默改变启动时机 = 静默引入竞态。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"reflect"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ import (
 // 反例（若实现错误）：把"未声明"当成"依赖集为空"，而空集在数学上已满足
 // ⇒ 第一层完成后就拉起 ⇒ 比现状早得多。
 func TestSchedulerUndeclaredWaitsForKernelComplete(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	var launched []string
 	var mu sync.Mutex
 	sch := NewScheduler(bus, func(p PluginSpec) error {
@@ -63,7 +64,7 @@ func TestSchedulerUndeclaredWaitsForKernelComplete(t *testing.T) {
 //
 // 断言"早于内核完成" —— 否则这条判据在"等内核完成"的实现下也会通过（假绿）。
 func TestSchedulerDeclaredLaunchesEarly(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	var launched []string
 	var mu sync.Mutex
 	sch := NewScheduler(bus, func(p PluginSpec) error {
@@ -98,7 +99,7 @@ func TestSchedulerDeclaredLaunchesEarly(t *testing.T) {
 
 // ★★★ 判据：**依赖未齐则挂起**，不会误拉起。
 func TestSchedulerWaitsForMissingDependency(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	var launched []string
 	sch := NewScheduler(bus, func(p PluginSpec) error {
 		launched = append(launched, p.Name)
@@ -128,21 +129,21 @@ func TestSchedulerWaitsForMissingDependency(t *testing.T) {
 
 // ★★★ 判据：**只读隔离**（编译期保证，不是约定）。
 //
-// 断言 Scheduler 拿到的接口**没有**写方法 —— 如果给它 *SyncBus，
+// 断言 Scheduler 拿到的接口**没有**写方法 —— 如果给它 *kstate.SyncBus，
 // 它就能谎报内核状态，让插件在依赖不存在时启动（病 A）。
 func TestSchedulerCannotWriteSyncState(t *testing.T) {
 	// ★ 检查必须是**接口类型的方法集**，不是某个具体值。
 	//
-	// 我第一次写错了：用 `var st SyncState = NewSyncBus()` 再断言 `st.(writer)` ——
-	// 那检查的是**动态类型**（*SyncBus 当然有 MarkReady），判据当场报假红。
-	// 要约束的是"拿到 SyncState 的人**能不能**调写方法" ⇒ 必须查接口的方法集。
-	rt := reflect.TypeOf((*SyncState)(nil)).Elem()
+	// 我第一次写错了：用 `var st kstate.SyncState = kstate.NewSyncBus()` 再断言 `st.(writer)` ——
+	// 那检查的是**动态类型**（*kstate.SyncBus 当然有 MarkReady），判据当场报假红。
+	// 要约束的是"拿到 kstate.SyncState 的人**能不能**调写方法" ⇒ 必须查接口的方法集。
+	rt := reflect.TypeOf((*kstate.SyncState)(nil)).Elem()
 	forbidden := []string{"MarkReady", "MarkKernelComplete", "MarkLayerReady"}
 	for i := 0; i < rt.NumMethod(); i++ {
 		m := rt.Method(i).Name
 		for _, bad := range forbidden {
 			if m == bad {
-				t.Fatalf("★ SyncState（插件管理器拿到的接口）暴露了写方法 %s —— "+
+				t.Fatalf("★ kstate.SyncState（插件管理器拿到的接口）暴露了写方法 %s —— "+
 					"它能谎报内核状态，让插件在依赖不存在时启动（病 A）", m)
 			}
 		}
@@ -150,23 +151,23 @@ func TestSchedulerCannotWriteSyncState(t *testing.T) {
 	// 反向确认：读方法必须在（否则接口退化到没用了）
 	for _, want := range []string{"IsReady", "Snapshot", "AllReady", "KernelComplete"} {
 		if _, ok := rt.MethodByName(want); !ok {
-			t.Errorf("SyncState 缺少读方法 %s", want)
+			t.Errorf("kstate.SyncState 缺少读方法 %s", want)
 		}
 	}
-	// Scheduler 持有的字段类型也必须是 SyncState（不能是 *SyncBus）
+	// Scheduler 持有的字段类型也必须是 kstate.SyncState（不能是 *kstate.SyncBus）
 	st := reflect.TypeOf(Scheduler{})
 	f, ok := st.FieldByName("bus")
 	if !ok {
 		t.Fatal("Scheduler 应有 bus 字段")
 	}
-	if f.Type.String() != "kernelboot.SyncState" {
-		t.Fatalf("★ Scheduler.bus 的类型是 %s —— 必须是只读的 SyncState", f.Type)
+	if f.Type.String() != "kstate.SyncState" {
+		t.Fatalf("★ Scheduler.bus 的类型是 %s —— 必须是只读的 kstate.SyncState", f.Type)
 	}
 }
 
 // ★★★ 判据：**不伴随启动的插件即使依赖齐了也不自动拉起**（§2.6.6）。
 func TestSchedulerAutoStartFalseIsNotLaunched(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	var launched []string
 	sch := NewScheduler(bus, func(p PluginSpec) error {
 		launched = append(launched, p.Name)
@@ -196,7 +197,7 @@ func TestSyncBusReadyOrderIsDeterministic(t *testing.T) {
 	// 模拟"层内并发完成"：同一层 8 个设施，用 goroutine 乱序 MarkReady
 	var first []string
 	for round := 0; round < 5; round++ {
-		bus := NewSyncBus()
+		bus := kstate.NewSyncBus()
 		var wg sync.WaitGroup
 		fac := []string{"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"}
 		for i, f := range fac {
@@ -225,7 +226,7 @@ func TestSyncBusReadyOrderIsDeterministic(t *testing.T) {
 	// ★ 真正的可复现性断言：MarkLayerReady 一次性写入
 	var order []string
 	for round := 0; round < 3; round++ {
-		bus := NewSyncBus()
+		bus := kstate.NewSyncBus()
 		bus.MarkLayerReady([]string{"a", "b", "c"})
 		bus.MarkLayerReady([]string{"d", "e"})
 		got := bus.ReadyInOrder()
@@ -250,7 +251,7 @@ func TestSyncBusReadyOrderIsDeterministic(t *testing.T) {
 	//
 	// 这条是补的：变异"去掉幂等检查"第一次没被咬住 —— 因为原判据
 	// 只跑了一份声明、没重复标记，测不到幂等性。
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkLayerReady([]string{"a", "b"})
 	bus.MarkLayerReady([]string{"a", "b"}) // 重复
 	bus.MarkLayerReady([]string{"c"})
@@ -263,7 +264,7 @@ func TestSyncBusReadyOrderIsDeterministic(t *testing.T) {
 //
 // 这条守的是：装配中途失败 ⇒ 未声明依赖的插件**不**被拉起。
 func TestRunDoesNotMarkCompleteOnFailure(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	mods := []Module{
 		&fakeModule{name: "A", provides: []string{"a"}},
 		&fakeModule{name: "B", provides: []string{"b"}, initErr: errFake},
@@ -285,7 +286,7 @@ func TestRunDoesNotMarkCompleteOnFailure(t *testing.T) {
 // 为何由 Run 做：模块自己标记会漏（静默漏一个设施 ⇒ 插件永远等不到），
 // 且顺序取决于层内并发完成序。
 func TestRunPublishesFacilitiesAtLayerBoundary(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	mods := []Module{
 		&fakeModule{name: "config", provides: []string{"config", "config-write"}},
 		&fakeModule{name: "llm", provides: []string{"llm"}, requires: []string{"config"}},
@@ -311,7 +312,7 @@ func TestRunPublishesFacilitiesAtLayerBoundary(t *testing.T) {
 //
 // 若这条反了，未声明依赖的插件会被提前拉起（见第一条判据）。
 func TestAllReadyEmptyIsFalse(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkKernelComplete()
 	if bus.AllReady(nil) {
 		t.Fatal("★ AllReady(空) 返回 true —— \"没有依赖\"被当成\"依赖全就绪\"，未声明插件会提前拉起")
@@ -328,7 +329,7 @@ func TestAllReadyEmptyIsFalse(t *testing.T) {
 
 // ★★★ 判据：**拉起失败不阻塞其他插件**（一个坏插件不该拖垮全局）。
 func TestSchedulerLaunchFailureDoesNotBlockOthers(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	var okLaunched []string
 	sch := NewScheduler(bus, func(p PluginSpec) error {
 		if p.Name == "bad" {
@@ -357,7 +358,7 @@ func TestSchedulerLaunchFailureDoesNotBlockOthers(t *testing.T) {
 
 // ★★★ 判据：**重复 Submit 不重复拉起**（幂等）。
 func TestSchedulerIsIdempotent(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	n := 0
 	sch := NewScheduler(bus, func(PluginSpec) error { n++; return nil })
 	bus.MarkKernelComplete()
@@ -378,11 +379,11 @@ func TestSchedulerIsIdempotent(t *testing.T) {
 // （单个设施的标记），若它持锁回调，只有"既调 MarkReady 又订阅"的场景才会卡住。
 // 补这条判据把两条路径都盖住。
 func TestSyncBusMarkReadyNotifiesWithoutDeadlock(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	got := make(chan string, 4)
 
 	// 订阅者**读状态**（真实回调必然会读，这正是死锁触发条件）
-	bus.OnUpdate(func(s SyncState) {
+	bus.OnUpdate(func(s kstate.SyncState) {
 		_ = s.Snapshot() // 持锁调用的话，这里会等 RLock ⇒ 死锁
 		got <- "ok"
 	})

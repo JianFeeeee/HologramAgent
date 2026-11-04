@@ -27,6 +27,9 @@ package all
 
 import (
 	"strings"
+
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"testing"
 
 	agentcore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
@@ -118,7 +121,13 @@ func TestAgentAssemblyWiresSecurity(t *testing.T) {
 	const deniedTool = "boot_probe_denied_tool"
 
 	// ① 先证明这个工具名**没被注册**（否则下面"not permitted"可能来自别处）。
-	out, _ := ks.Agent.ExecuteTool(deniedTool, nil)
+	// ks.Agent 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环）。
+	// 本判据要真实执行工具，断言回具体类型。
+	agentImpl, _ := ks.Agent.(*agentCore.Agent)
+	if agentImpl == nil {
+		t.Fatal("ks.Agent 不是 *agentCore.Agent")
+	}
+	out, _ := agentImpl.ExecuteTool(deniedTool, nil)
 	if strings.Contains(out, "not permitted") {
 		t.Fatalf("前置不成立：未配黑名单时就已被拒（%q）—— 检查环境里的实际策略", out)
 	}
@@ -127,7 +136,7 @@ func TestAgentAssemblyWiresSecurity(t *testing.T) {
 	//    如果 Agent 里拿的是另一个实例（或 nil），它看不到这条 ⇒ 判据红。
 	ks.Security.SetPolicy(security.Policy{ToolDeny: []string{deniedTool}})
 
-	out, _ = ks.Agent.ExecuteTool(deniedTool, nil)
+	out, _ = agentImpl.ExecuteTool(deniedTool, nil)
 	if !strings.Contains(out, "not permitted") {
 		t.Fatalf("★ 已给 ks.Security 配 %q 黑名单，Agent 的执行链却没拦住（实际返回 %q）。\n"+
 			"  可能原因（按概率）：\n"+
@@ -140,7 +149,7 @@ func TestAgentAssemblyWiresSecurity(t *testing.T) {
 
 	// ③ 反向：未命中的工具必须放行。
 	//    否则是"全拒"型假绿（闸门写死了），而不是接线正确。
-	if out, _ := ks.Agent.ExecuteTool("boot_probe_unlisted_tool", nil); strings.Contains(out, "not permitted") {
+	if out, _ := agentImpl.ExecuteTool("boot_probe_unlisted_tool", nil); strings.Contains(out, "not permitted") {
 		t.Fatalf("未命中黑名单的工具被误拒（%q）—— 判定逻辑坏了，不是接线问题", out)
 	}
 }
@@ -182,7 +191,7 @@ func TestAgentAssemblyRefusesNilSecurity(t *testing.T) {
 	//
 	// 为什么这样做而不是直接用 base：Init 成功时会覆盖 base.Agent，
 	// 破坏后续判据的上下文。新建一份是干净的。
-	var probe kernelboot.KernelState
+	var probe kstate.State
 	probe.Cfg = base.Cfg
 	probe.CfgReg = base.CfgReg
 	probe.DataDir = base.DataDir

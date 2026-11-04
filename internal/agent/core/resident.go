@@ -266,14 +266,12 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
 		StageHost:         a.stageHost,
-		// ★ 技能索引必须继承父的：不继承时子的 system prompt 里没有索引，
-		// 模型看不到"按需插件要先 plugin_start"这类说明（同 rtchild）。
-		SkillIndexProvider: a.skillIndex,
-		LightMemory:        light, // 轻量内核：只有图记忆共同面
-		AllowedOutputs:     opts.AllowedOutputs,
-		KernelSource:       parentID, // 子的 L4 只属于父
-		ParentID:           parentID,
-		TaskPrompt:         opts.TaskPrompt,
+		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
+		LightMemory:    light, // 轻量内核：只有图记忆共同面
+		AllowedOutputs: opts.AllowedOutputs,
+		KernelSource:   parentID, // 子的 L4 只属于父
+		ParentID:       parentID,
+		TaskPrompt:     opts.TaskPrompt,
 		// ★ 安全运行时必须继承（2026-10-30 补）。
 		//
 		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、

@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"log"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ type kernelAssembleHooks struct {
 	//
 	// 有了本回调，调度器在 **Run 之前**订阅 syncbus ⇒ 内核每完成一层
 	// 都会触发它重新评估 ⇒ 声明了 config 的插件不必等 agent 层。
-	BeforeRun func(bus *kernelboot.SyncBus) error
+	BeforeRun func(bus *kstate.SyncBus) error
 
 	// OnLayerDone 在每层完成后调用（供 main 在 **stage-host 就绪** 的那一刻
 	// 接上插件拉起动作）。
@@ -66,7 +67,7 @@ type kernelAssembleHooks struct {
 	OnLayerDone func(idx int, layer []kernelboot.Module)
 }
 
-func RunKernelModules(ks *kernelboot.KernelState, hooks kernelAssembleHooks) (*kernelboot.SyncBus, error) {
+func RunKernelModules(ks *kstate.State, hooks kernelAssembleHooks) (*kstate.SyncBus, error) {
 	mods, err := buildModuleList()
 	if err != nil {
 		return nil, err
@@ -88,7 +89,7 @@ func RunKernelModules(ks *kernelboot.KernelState, hooks kernelAssembleHooks) (*k
 		return nil, err
 	}
 
-	bus := kernelboot.NewSyncBus()
+	bus := kstate.NewSyncBus()
 
 	// ★★ 先把**全部模块声明的设施**登记为"内核注册过"，**再**调用 BeforeRun。
 	//

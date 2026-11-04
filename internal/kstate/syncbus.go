@@ -1,4 +1,4 @@
-package kernelboot
+package kstate
 
 // syncbus：内核就绪状态的同步快照，驱动插件调度（设计 §2.6）。
 //

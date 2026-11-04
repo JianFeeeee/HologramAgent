@@ -25,17 +25,18 @@ package kernelboot
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// ★★★ 压力：**SyncBus 读写并发**（内核写 + N 个插件读 + 订阅回调）。
+// ★★★ 压力：**kstate.SyncBus 读写并发**（内核写 + N 个插件读 + 订阅回调）。
 //
 // 用 -race 跑时，任何未保护的状态都会报数据竞争。
 func TestStressSyncBusConcurrentReadWrite(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	const readers = 64
 	const facilities = 200
 
@@ -43,7 +44,7 @@ func TestStressSyncBusConcurrentReadWrite(t *testing.T) {
 	// 订阅者**读状态**（这正是死锁的触发条件：若 fire 持锁调用回调，
 	// 回调里 Snapshot() 会等读锁 ⇒ 死锁。压力下必现）
 	for i := 0; i < 8; i++ {
-		bus.OnUpdate(func(s SyncState) {
+		bus.OnUpdate(func(s kstate.SyncState) {
 			_ = s.Snapshot()
 			_ = s.AllReady([]string{"llm"})
 			atomic.AddInt64(&callbacks, 1)
@@ -109,7 +110,7 @@ func TestStressSyncBusConcurrentReadWrite(t *testing.T) {
 //	· 不丢插件（全部最终被拉起）
 //	· 无数据竞争
 func TestStressSchedulerConcurrentSubmit(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkDeclared([]string{"config", "llm", "memory"})
 	// ★ 必须 MarkLayerReady：MarkDeclared 只登记"名字存在"，
 	// 不代表就绪。插件要求 config **就绪**才拉起。
@@ -164,7 +165,7 @@ func TestStressSchedulerConcurrentSubmit(t *testing.T) {
 
 // ★★★ 压力：**状态变化 + 提交并发**（真实时序：内核在标记就绪的同时插件在提交）。
 func TestStressSchedulerConcurrentStateChange(t *testing.T) {
-	bus := NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkDeclared([]string{"config", "llm", "memory", "stagehost"})
 
 	var launched int64
@@ -291,9 +292,9 @@ func TestStressRunRespectsMaxParallelAtScale(t *testing.T) {
 	t.Logf("%d 个模块同层，上限 %d，观测峰值 %d", n, maxP, observed)
 }
 
-// ★★★ 压力：**KernelState 同层并行写**（各写自己字段，无竞争）。
+// ★★★ 压力：**kstate.State 同层并行写**（各写自己字段，无竞争）。
 func TestStressKernelStateParallelWrites(t *testing.T) {
-	ks := NewKernelState()
+	ks := kstate.New()
 	const n = 256
 
 	var wg sync.WaitGroup

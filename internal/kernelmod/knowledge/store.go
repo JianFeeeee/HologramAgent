@@ -5,9 +5,9 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
 // StoreModule 提供知识库。
@@ -20,7 +20,7 @@ func (StoreModule) Requires() []string {
 }
 func (StoreModule) Provides() []string { return []string{kernelmod.FacKnowledge} }
 
-func (StoreModule) Init(ks *kernelboot.KernelState) error {
+func (StoreModule) Init(ks *kstate.State) error {
 	ks.Knowledge = knowledge.NewStore(filepath.Join(ks.Cfg.Daemon.DataDir, "knowledge"))
 	if err := ks.Knowledge.Start(); err != nil {
 		log.Printf("[homed] warning: knowledge store: %v", err)

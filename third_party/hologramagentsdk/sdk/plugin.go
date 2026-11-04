@@ -627,6 +627,7 @@ type PluginSDK struct {
 	social         SocialAPI
 	secrets        SecretsAPI
 	security       SecurityAPI
+	sysPrompt      SystemPromptAPI
 	rawFiles       RawFilesAPI
 	events         EventSubscriber
 	plgMgr         PluginMgrAPI
@@ -738,6 +739,24 @@ func (s *PluginSDK) Security() SecurityAPI {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()
 	return s.security
+}
+
+// SystemPrompt 返回**系统提示词声明面**（插件声明自己的段；渲染由内核做）。
+//
+// ★ 只声明、不渲染：本接口没有"设置整个 system prompt"的方法。
+// 插件能改的只有自己那段（段名以插件名开头，内核强制），
+// 否则任一插件都能改写别人的人格/安全说明。
+func (s *PluginSDK) SystemPrompt() SystemPromptAPI {
+	s.apiMu.RLock()
+	defer s.apiMu.RUnlock()
+	return s.sysPrompt
+}
+
+// SetSystemPromptAPI 由内核注入声明面的实现（插件不调用）。
+func (s *PluginSDK) SetSystemPromptAPI(v SystemPromptAPI) {
+	s.apiMu.Lock()
+	defer s.apiMu.Unlock()
+	s.sysPrompt = v
 }
 
 func (s *PluginSDK) Social() SocialAPI {

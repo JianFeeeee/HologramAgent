@@ -39,8 +39,8 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	sec "github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
@@ -51,7 +51,7 @@ func (Module) Name() string       { return "security" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
 func (Module) Provides() []string { return []string{kernelmod.FacSecurity} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	if ks.DataDir == "" {
 		return fmt.Errorf("security module: ks.DataDir is empty - Group 0 must set the data dir first")
 	}

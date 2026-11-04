@@ -8,8 +8,8 @@ import (
 	"os"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -21,7 +21,7 @@ func (Module) Name() string       { return "llm" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig, kernelmod.FacLua} }
 func (Module) Provides() []string { return []string{kernelmod.FacLLM} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	// ★ 敏感信息防火模块的装配点。
 	//
 	// 原 main 注释："必须在任何 provider 注册之前装配"—— provider 的出向

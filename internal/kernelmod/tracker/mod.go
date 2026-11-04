@@ -8,8 +8,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 )
 
@@ -20,7 +20,7 @@ func (Module) Name() string       { return "tracker" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
 func (Module) Provides() []string { return []string{kernelmod.FacTracker} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	trk := tracker.NewTracker(ks.Cfg.Daemon.DataDir, ks.AgentWorkDir,
 		tracker.WithKeepChangesets(100),
 		tracker.WithMaxChangesetAge(30*24*time.Hour),

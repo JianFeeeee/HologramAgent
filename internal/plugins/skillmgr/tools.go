@@ -111,6 +111,7 @@ func (p *Plugin) registerLoad() {
 		if err != nil {
 			return nil, err
 		}
+		p.publishIndex() // 索引变了：重新声明，否则新 skill 模型看不到
 		return fmt.Sprintf("已加载技能 %s v%s", e.sk.Name(), e.sk.Version()), nil
 	})
 }
@@ -139,6 +140,7 @@ func (p *Plugin) registerUnload() {
 		if !p.removeOne(name) {
 			return nil, fmt.Errorf("skill %q not loaded", name)
 		}
+		p.publishIndex() // 索引变了
 		msg := fmt.Sprintf("已卸载技能 %s（内存）", name)
 		if delFiles {
 			if err := os.RemoveAll(path); err != nil {
@@ -176,14 +178,20 @@ func (p *Plugin) registerSetEnabled(v bool) {
 		},
 	}, func(args map[string]interface{}) (interface{}, error) {
 		skillName, _ := args["name"].(string)
+		// ★ 不用 defer：下面要在**持锁之外**调 publishIndex，
+		// 而 publishIndex → buildIndex → snapshot 会再取 RLock。
+		// sync.RWMutex 不可重入 ⇒ defer 持写锁到函数结束会直接死锁。
 		p.mu.Lock()
-		defer p.mu.Unlock()
 		e, ok := p.skills[skillName]
 		if !ok {
+			p.mu.Unlock()
 			return nil, fmt.Errorf("skill %q not loaded", skillName)
 		}
 		e.enabled = v
 		e.sk.SetEnabled(v)
+		p.mu.Unlock()
+
+		p.publishIndex() // 启/停改变了索引内容
 		return fmt.Sprintf("已%s技能 %s", word, skillName), nil
 	})
 }
@@ -232,6 +240,7 @@ func (p *Plugin) registerCreate() {
 			if err != nil {
 				return nil, err
 			}
+			p.publishIndex() // 新建/覆盖技能：索引变了
 			return fmt.Sprintf("技能 %s 已写入并加载生效（v%s）。用 skill_info 可查看全文。", e.sk.Name(), e.sk.Version()), nil
 		}
 
@@ -327,6 +336,7 @@ func (p *Plugin) registerInstall() {
 				os.RemoveAll(dst)
 				return nil, fmt.Errorf("installed but load failed: %w", err)
 			}
+			p.publishIndex() // 安装：索引变了
 			return fmt.Sprintf("已从本地目录安装技能 %s v%s", e.sk.Name(), e.sk.Version()), nil
 
 		case strings.HasSuffix(strings.ToLower(source), PackExt):
@@ -351,6 +361,7 @@ func (p *Plugin) registerInstall() {
 				os.RemoveAll(dst)
 				return nil, fmt.Errorf("unpacked %d files but load failed: %w", n, err)
 			}
+			p.publishIndex() // 安装：索引变了
 			return fmt.Sprintf("已安装 %d 个文件，技能 %s v%s 生效", n, e.sk.Name(), e.sk.Version()), nil
 
 		default:

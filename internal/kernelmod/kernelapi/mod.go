@@ -12,8 +12,8 @@ import (
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
 // Module 提供 IO 抽象层与事件总线。
@@ -23,7 +23,7 @@ func (Module) Name() string       { return "kernel-api" }
 func (Module) Requires() []string { return nil }
 func (Module) Provides() []string { return []string{kernelmod.FacKernelIO} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	iom := agentIO.NewIOManager()
 	evBus := events.NewBus()
 	log.Printf("[homed] kernel API ready: IOManager + EventBus")

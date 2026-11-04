@@ -21,13 +21,13 @@ import (
 	"testing"
 
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
 // ★★★ 判据：**CfgReg 为 nil 时给可操作错误，而不是 panic**。
 func TestMemoryModuleRejectsNilCfgReg(t *testing.T) {
 	dir := t.TempDir()
-	ks := &kernelboot.KernelState{DataDir: dir} // CfgReg 故意为 nil
+	ks := &kstate.State{DataDir: dir} // CfgReg 故意为 nil
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -54,7 +54,7 @@ func TestMemoryModuleRejectsNilCfgReg(t *testing.T) {
 func TestMemoryModuleRejectsEmptyDataDir(t *testing.T) {
 	dir := t.TempDir()
 	reg := newTestReg(t, dir)
-	ks := &kernelboot.KernelState{CfgReg: reg} // DataDir 空
+	ks := &kstate.State{CfgReg: reg} // DataDir 空
 
 	err := (Module{}).Init(ks)
 	if err == nil {

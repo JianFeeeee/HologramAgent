@@ -24,8 +24,8 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
@@ -40,7 +40,7 @@ func (Module) Requires() []string {
 }
 func (Module) Provides() []string { return []string{kernelmod.FacTextMem} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	textMem := text.New(filepath.Join(ks.Cfg.Daemon.DataDir, "memory", "text"))
 	if err := textMem.Start(); err != nil {
 		log.Printf("[homed] warning: text memory start: %v", err)

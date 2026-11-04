@@ -7,8 +7,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
@@ -20,7 +20,7 @@ func (Module) Name() string       { return "multimodal" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
 func (Module) Provides() []string { return []string{kernelmod.FacMultimodal} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
+func (Module) Init(ks *kstate.State) error {
 	cfgReg := ks.CfgReg
 	var multimodalSpace vector.MultimodalEmbedder
 	// 这两个值只用于状态报告（healthcheck_kernel 的 onnx 段）：

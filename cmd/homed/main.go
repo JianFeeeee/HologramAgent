@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"log"
 	"path/filepath"
 	"strings"
@@ -164,10 +166,10 @@ func main() {
 	// 与 bootstrap_order_test.go 的结构性判据。
 	//
 	// 从 cfg 起全部改为**模块自声明依赖 + 注册表 + BFS 分层**：
-	//   · 公共数据统一在 kernelboot.KernelState（不再散落各包包级变量）
+	//   · 公共数据统一在 kstate.State（不再散落各包包级变量）
 	//   · 每个模块在 internal/kernelmod/<name>/ 里**自己声明** Requires/Provides
 	//   · 注册表是乱序的（顺序无意义，仅供查询"内核有哪些模块"）
-	ks := kernelboot.NewKernelState()
+	ks := kstate.New()
 	ks.CfgReg = cfgReg
 	ks.DataDir = opt.dataDir
 	ks.AgentWorkDir = agentWorkDir
@@ -260,7 +262,9 @@ func main() {
 	trk := ks.Tracker
 	ctx := ks.Ctx
 	pluginReg := ks.PluginRegistry
-	agent := ks.Agent
+	// Agent 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环）。
+	// cmd/homed 本来就 import core，这里断言回具体类型即可。
+	agent, _ := ks.Agent.(*agentCore.Agent)
 
 	// 候选消费管线：常驻 goroutine，把 eventbus 的 memory_candidate 写进
 	// 文本记忆并喂给蒸馏管线。原顺序里它在 textmem 之后、provider 之前。

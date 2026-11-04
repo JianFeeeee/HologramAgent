@@ -145,19 +145,26 @@ func loadPlugins(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, plugi
 	log.Printf("[homed] stage host ready with %d registered tools", stageHost.ToolCount())
 }
 
-// startAgentRuntime 接线技能索引、起日志管理、启动 agent，返回逆序关停的 cleanup。
+// startAgentRuntime 起日志管理、启动 agent，返回逆序关停的 cleanup。
 //
 // 本函数体是 main() 里对应启动阶段的整块平移：语句、日志文本、错误语义不变，
 // 只把「*dataDir」变成参数、把 defer 变成由调用点注册的 cleanup。
+//
+// ★ 2026-11-04 删掉了这里的"技能索引接线"（原 5 行）。
+//
+// 那 5 行是「内核能力靠启动代码手工接给根 agent」的典型：skillmgr 实现了
+// agentCore.SkillIndexProvider，main 在插件加载后 type-assert 它、再塞进
+// 根 agent 的字段。于是 rtchild、驻留子各自构造时都得记得再传一遍 ——
+// 漏传不报错、不崩，只是那个 agent 的提示词里一条 skill 都没有。
+//
+// 生产症状：A2A 分诊助手（驻留子）不知道 cmd 插件要先 plugin_start，
+// 拿 terminal_create 当一次性命令执行器，一条命令开一个终端。
+//
+// 现在系统提示词段是**插件声明式**的（sdk.SystemPromptAPI）：插件声明进
+// 内核级注册表（KernelState.PromptSections），任何 agent 每轮重建提示词时
+// 读同一份 —— 启动代码不需要知道有哪些插件、也不需要 type-assert 任何东西。
 func startAgentRuntime(cfgReg *internalConfig.ConfigRegistry, pluginReg *plugin.Registry,
 	agent *agentCore.Agent, logDir string, ctx context.Context) func() {
-	// 技能索引接线：skillmgr 插件实现 SkillIndexProvider 时注入 agent（方案B prompt 注入）
-	if sp := pluginReg.Get("skillmgr"); sp != nil {
-		if prov, ok := sp.(agentCore.SkillIndexProvider); ok {
-			agent.SetSkillIndexProvider(prov)
-			log.Printf("[homed] skill index wired from skillmgr plugin")
-		}
-	}
 
 	// 日志管理：层级压缩 + 保留策略
 	logManager := logpkg.NewManager(logDir, cfgReg)

@@ -224,6 +224,7 @@ func (r *Registry) SetIOManager(iom *agentIO.IOManager) {
 	defer r.mu.Unlock()
 	r.iom = iom
 }
+
 func (r *Registry) SetEventBus(evBus *events.Bus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

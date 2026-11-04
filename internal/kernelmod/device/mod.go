@@ -30,8 +30,8 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	sec "github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
@@ -46,9 +46,12 @@ func (Module) Requires() []string {
 
 func (Module) Provides() []string { return []string{kernelmod.FacDevice} }
 
-func (Module) Init(ks *kernelboot.KernelState) error {
-	if ks.Agent == nil {
-		return fmt.Errorf("device module: ks.Agent is nil (requires %s)", kernelmod.FacAgent)
+func (Module) Init(ks *kstate.State) error {
+	// Agent 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环）。
+	// 这里断言成**最小接口**而不是具体类型：device 只需要"能挂数据面"。
+	host, ok := ks.Agent.(api.DeviceMounter)
+	if !ok || host == nil {
+		return fmt.Errorf("device module: ks.Agent is not a DeviceMounter (requires %s)", kernelmod.FacAgent)
 	}
 	if ks.Security == nil {
 		// 安全模块必须已装配（配置关闭时是 Disabled Runtime，**不是** nil）。
@@ -57,9 +60,15 @@ func (Module) Init(ks *kernelboot.KernelState) error {
 			"assembled first (when disabled it installs a Disabled Runtime, not nil)")
 	}
 
-	rt := New(ks.Agent, ks.Security)
+	// ExecuteTool 面：ToolHost 与 DeviceMounter 是两个不同用途的接口
+	// （执行 vs 装配），此处两个断言都要成功。
+	toolHost, ok := ks.Agent.(api.ToolHost)
+	if !ok || toolHost == nil {
+		return fmt.Errorf("device module: ks.Agent is not a ToolHost (requires %s)", kernelmod.FacAgent)
+	}
+	rt := New(toolHost, ks.Security)
 	ks.Device = rt
-	ks.Agent.MountDevice(rt)
+	host.MountDevice(rt)
 
 	if ks.EventBus != nil {
 		ks.EventBus.Publish(&events.Event{

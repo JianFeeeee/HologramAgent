@@ -14,6 +14,7 @@ package kernelboot
 // （判据的"数量"不是指标，"每条原判据都有对应"才是）。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,7 @@ import (
 // 为何逆序：先初始化的一般是底层（config → memory → llm），
 // 停机应**反向拆**，否则可能拆掉别人还在用的东西。
 func TestKernelStateCloseAllIsReverseOrder(t *testing.T) {
-	ks := NewKernelState()
+	ks := kstate.New()
 	var mu sync.Mutex
 	var order []string
 
@@ -48,7 +49,7 @@ func TestKernelStateCloseAllIsReverseOrder(t *testing.T) {
 
 // ★★★ 判据：**CloseAll 不因单个关闭函数 panic 而中断**。
 func TestKernelStateCloseAllSurvivesPanic(t *testing.T) {
-	ks := NewKernelState()
+	ks := kstate.New()
 	closed := false
 	ks.AddCloser(func() { panic("关闭时炸了") })
 	ks.AddCloser(func() { closed = true })
@@ -61,7 +62,7 @@ func TestKernelStateCloseAllSurvivesPanic(t *testing.T) {
 
 // ★★★ 判据：**CloseAll 幂等**（清空后再次调用不重复执行）。
 func TestKernelStateCloseAllIsIdempotent(t *testing.T) {
-	ks := NewKernelState()
+	ks := kstate.New()
 	var n int32
 	ks.AddCloser(func() { atomic.AddInt32(&n, 1) })
 
@@ -78,7 +79,7 @@ func TestKernelStateCloseAllIsIdempotent(t *testing.T) {
 // 第 1 层有 8 个模块并行，其中 5 个注册关闭函数 ⇒ 并发 append
 // ⇒ 数据竞争 + 可能丢失元素（某个模块的关闭函数永不调用 ⇒ 资源泄漏）。
 func TestKernelStateAddCloserConcurrent(t *testing.T) {
-	ks := NewKernelState()
+	ks := kstate.New()
 	const n = 500
 
 	var wg sync.WaitGroup
@@ -99,7 +100,7 @@ func TestKernelStateAddCloserConcurrent(t *testing.T) {
 
 // ★★★ 判据：**nil 关闭函数被忽略**（不 panic、不占位）。
 func TestKernelStateAddCloserIgnoresNil(t *testing.T) {
-	ks := NewKernelState()
+	ks := kstate.New()
 	ks.AddCloser(nil)
 	if len(ks.Closers) != 0 {
 		t.Fatalf("nil 关闭函数应被忽略，实际记录 %d 个", len(ks.Closers))

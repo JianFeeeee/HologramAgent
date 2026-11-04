@@ -13,6 +13,7 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"log"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,6 @@ import (
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -58,7 +58,7 @@ func (Module) Requires() []string {
 }
 func (Module) Provides() []string { return []string{kernelmod.FacAgent} }
 
-func (Module) Init(k *kernelboot.KernelState) error {
+func (Module) Init(k *kstate.State) error {
 	if k.Memory == nil {
 		return errMissing("agent", kernelmod.FacMemory)
 	}
@@ -99,7 +99,7 @@ Answer only from what the tools actually return. If something could not be retri
 
 Reply in natural language, like a person talking: do not enumerate which tools you called, their parameters, or timings unless the user explicitly asks. For how to address the user and what tone to use, see [Persona].`
 
-func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
+func buildAgent(k *kstate.State) *agentCore.Agent {
 	cfg := k.Cfg
 	cfgReg := k.CfgReg
 	provider := k.LLMProvider
@@ -117,7 +117,9 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 	multimodalSpace := k.MultimodalSpace
 	mmProviderName := k.MultimodalProviderName
 	mmErr := k.MultimodalErr
-	stageHost := k.StageHost
+	// StageHost 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环），
+	// 取用处断言回具体类型。装配顺序由依赖图保证（FacStageHost）。
+	stageHost, _ := k.StageHost.(*agentCore.StageHost)
 	evBus := k.EventBus
 	secRT := k.Security
 
@@ -308,8 +310,12 @@ func buildAgent(k *kernelboot.KernelState) *agentCore.Agent {
 // pluginhost 同时可能正在加载插件（buildSDK 读 status）⇒ 写读依然并发。
 // 所以 registry 侧 Set*/读侧的锁是**真正的修复**，去重只是消除了一处
 // 无意义的重复写。两件事都做，缺一不可。
-func wirePluginSDK(k *kernelboot.KernelState) {
-	k.PluginRegistry.SetStatusProvider(k.Agent)
+func wirePluginSDK(k *kstate.State) {
+	// Agent 是本包自己的类型，构造期已知；不走挂载点断言。
+	a, _ := k.Agent.(*agentCore.Agent)
+	if a != nil {
+		k.PluginRegistry.SetStatusProvider(a)
+	}
 }
 
 // loadPersonality 载入人格（原 cmd/homed 的整块平移）。

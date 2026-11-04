@@ -286,9 +286,6 @@ type Agent struct {
 	// fusionCfg 控制文本路与视觉路的跨模态融合权重，可按模型实测结果配置。
 	fusionCfg CrossModalFusionConfig
 
-	// 技能索引提供者：由 skillmgr 插件实现，向 system prompt 注入轻量技能索引
-	skillIndex SkillIndexProvider
-
 	// device 是挂载上来的工具/通道数据面（kernelmod/device 产出）。
 	// 类型是低层接口：core 不认识具体模块，避免 core ↔ kernelboot 成环。
 	device agentAPI.DeviceSurface
@@ -321,14 +318,6 @@ type Agent struct {
 	// 不是单次调用的属性，必须跨轮次、跨任务累积才有意义。
 	// 单次用量一直在 StageCtx 与 LLM chain 事件里，缺的正是这个落点。
 	usageLedger usageLedger
-}
-
-// SkillIndexProvider 提供已加载技能的精炼索引，供 buildSystemPrompt 注入。
-// 实现方（skillmgr）需线程安全并快速返回（每次 LLM 调用都会调用）。
-type SkillIndexProvider interface {
-	// SkillIndex 返回多行文本的技能索引，每行形如 "name vX.Y - description"；
-	// 无技能时返回空串。
-	SkillIndex() string
 }
 
 type AgentConfig struct {
@@ -448,8 +437,6 @@ type AgentConfig struct {
 	StageHost          *StageHost
 	EventBus           *events.Bus
 	ThinkingEnabled    bool
-
-	SkillIndexProvider SkillIndexProvider
 
 	InputProcessing types.InputProcessingConfig // 非文本输入处理配置
 
@@ -576,7 +563,6 @@ func New(cfg AgentConfig) *Agent {
 		maxContextSize:    cfg.MaxContextSize,
 		ctxTuning:         cfg.CtxTuning,
 		stageHost:         cfg.StageHost,
-		skillIndex:        cfg.SkillIndexProvider,
 		eventBus:          cfg.EventBus,
 		selfInputCh:       make(chan selfInputMsg, 64),
 		childTasks:        make(map[string]*childTaskState),
@@ -606,9 +592,6 @@ func New(cfg AgentConfig) *Agent {
 	}
 	return a
 }
-
-// SetSkillIndexProvider 注入技能索引提供者（skillmgr 插件加载后由 main 接线）。
-func (a *Agent) SetSkillIndexProvider(p SkillIndexProvider) { a.skillIndex = p }
 
 func (a *Agent) Start() {
 	go a.schedulerLoop()

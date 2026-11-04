@@ -21,9 +21,11 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
 
-func newTestKS() *KernelState { return NewKernelState() }
+func newTestKS() *kstate.State { return kstate.New() }
 
 // ★★★ 判据：Quiesce 逆序暂停、Resume 逆序恢复。
 func TestQuiescePausesInReverseOrder(t *testing.T) {
@@ -121,7 +123,7 @@ func TestMigrateSessionEndIsIdempotent(t *testing.T) {
 		return nil
 	})
 
-	sess, err := ks.BeginMigration(nil)
+	sess, err := BeginMigration(ks, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +187,7 @@ func TestMigrationStopsAndRestoresAllPlugins(t *testing.T) {
 	ks := newTestKS()
 	fp := &fakePlugins{running: []string{"webui", "rss", "calendar", "commondev"}}
 
-	sess, err := ks.BeginMigration(fp)
+	sess, err := BeginMigration(ks, fp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +211,7 @@ func TestMigrationRollsBackPluginsOnFailure(t *testing.T) {
 	// 让 calendar 失败 ⇒ 已停的 commondev 必须被拉回
 	fp := &fakePlugins{running: []string{"webui", "rss", "calendar", "commondev"}, failOn: "calendar"}
 
-	if _, err := ks.BeginMigration(fp); err == nil {
+	if _, err := BeginMigration(ks, fp); err == nil {
 		t.Fatal("停插件失败时 BeginMigration 必须返回错误")
 	}
 	got := fp.RunningPlugins()

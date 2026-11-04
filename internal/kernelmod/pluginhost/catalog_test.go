@@ -12,6 +12,7 @@ package pluginhost
 //  ④ 关键顺序：failback 白名单必须在插件拉起前生效
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -311,8 +312,8 @@ func TestCatalogConcurrentRead(t *testing.T) {
 // ⇒ 判据：把 typed-nil 传给 Scheduler 前必须已被拦截。
 // 这里直接验证**拦截逻辑本身**（不依赖 produciton 装配）。
 func TestNilSyncBusDoesNotPanic(t *testing.T) {
-	var nb *kernelboot.SyncBus // typed-nil
-	var iface kernelboot.SyncState = nb
+	var nb *kstate.SyncBus // typed-nil
+	var iface kstate.SyncState = nb
 	if iface == nil {
 		t.Skip("接口就是 nil（不会有陷阱）—— 与本判据的前提不符")
 	}
@@ -378,7 +379,7 @@ func TestUndeclaredPluginsWaitForKernelComplete(t *testing.T) {
 		t.Fatalf("两个自动启动插件都应进调度器（含**未声明**的），实际 %d 个", len(specs))
 	}
 
-	bus := kernelboot.NewSyncBus()
+	bus := kstate.NewSyncBus()
 	bus.MarkDeclared([]string{"config", "agent"})
 	bus.MarkReady("config")
 

@@ -39,6 +39,12 @@ type ToolCall = pubsdk.ToolCall
 type ToolResult = pubsdk.ToolResult
 type ToolError = pubsdk.ToolError
 type ToolDef = pubsdk.ToolDef
+
+// PromptSection 是插件声明式系统提示词段（见 pubsdk.SystemPromptAPI）。
+//
+// 与 ToolDef / Stage 同型：用别名 re-export，避免每个内置插件都去 import
+// 对外的 SDK 包（它们已经 import 本包了）。
+type PromptSection = pubsdk.PromptSection
 type IOInjector = pubsdk.IOInjector
 type ToolRegistrar = pubsdk.ToolRegistrar
 type StageRegistrar = pubsdk.StageRegistrar

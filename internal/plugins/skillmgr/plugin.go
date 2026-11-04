@@ -104,6 +104,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 			log.Printf("[skillmgr] detected skill %s: %v", path, err)
 			return
 		}
+		p.publishIndex()
 		log.Printf("[skillmgr] registered via %s event: %s", detectEvent, filepath.Base(path))
 	})
 
@@ -112,11 +113,18 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	//   后续事件重复到达时 loadOne 幂等跳过）
 	n := p.scanExisting()
 	p.registerTools()
+	// 首次声明：把当前索引推给内核的统一注册表。
+	// 不调它的后果：模型看不到任何 skill 索引，而 skill_list 仍能列出
+	// —— "工具能列但模型不知道"，是最难查的一类降级。
+	p.publishIndex()
 	log.Printf("[skillmgr] started, dir=%s, loaded %d native skills", p.skillsDir, n)
 	return nil
 }
 
 func (p *Plugin) Stop() error {
+	// 先撤声明再退订：顺序反过来的话，退订期间仍有事件在加载 skill，
+	// 那部分会来不及进索引（虽然进程即将退出，但热重载路径下不退出）。
+	p.unpublishIndex()
 	if p.unsub != nil {
 		p.unsub()
 		p.unsub = nil
@@ -250,9 +258,26 @@ func (p *Plugin) get(name string) (*SkillEntry, bool) {
 	return e, ok
 }
 
-// SkillIndex 实现 agentCore.SkillIndexProvider：返回已启用技能的精炼索引。
-// 每次 LLM 调用都会执行，必须轻量（只读锁 + 字符串拼接，无 IO）。
-func (p *Plugin) SkillIndex() string {
+// skillSectionName 是本插件声明的系统提示词段名。
+//
+// 命名规则由 SDK 强制：`<owner>.<名字>`，owner 必须等于插件名。
+// 因此别的插件无法覆盖本段（attempting 会被内核拒绝）。
+const skillSectionName = "skillmgr.skills"
+
+// skillSectionOrder 让技能索引排在**工具与技能使用说明**区段（100–199）。
+//
+// 为什么不是更靠前：索引里列的是工具名，模型要先知道"这轮有哪些工具"
+// 再读"怎么用"才有意义。顺序约定见 sdk/systemprompt.go 的 PromptSection.Order。
+const skillSectionOrder = 100
+
+// buildIndex 生成已启用技能的精炼索引（名称 + 版本 + 一行描述）。
+//
+// 这是**声明内容**，由 publishIndex 推给内核；不再是让内核来 pull 的接口。
+func (p *Plugin) buildIndex() string {
+	const header = "[Skills] Usage manuals for plugins. Before calling a plugin's tool " +
+		"(or when it fails), read the same-named skill with skill_info(\"skill-name\") " +
+		"and follow it. Never guess from the name."
+
 	entries := p.snapshot()
 	var b strings.Builder
 	for _, e := range entries {
@@ -266,7 +291,70 @@ func (p *Plugin) SkillIndex() string {
 		desc = p.truncateDesc(desc)
 		fmt.Fprintf(&b, "%s v%s - %s\n", e.sk.Name(), e.sk.Version(), desc)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	list := strings.TrimRight(b.String(), "\n")
+	if list == "" {
+		// 没有技能时**不声明**（而不是声明一段只有标题的空段）。
+		return ""
+	}
+	return header + "\n\n" + list
+}
+
+// publishIndex 把当前技能索引声明到内核的**统一系统提示词注册表**。
+//
+// ## 为什么是"声明"而不是"让内核来问"
+//
+// 此前是内核定义 `SkillIndexProvider` 接口、skillmgr 实现它、bootstrap
+// 手工把它接给根 agent。那条路有三个问题：
+//
+//  1. **双向耦合**：内核硬编码插件的产出，插件又 import 内核接口
+//  2. **子 agent 漏接**：rtchild / 驻留子 / 工作式子各自构造，都要记得传；
+//     漏传不报错也不崩，只是那个 agent 的提示词里一条 skill 都没有
+//  3. **顺序不可控**：插件内容只能整块插在内核硬拼流程的某个固定位置
+//
+// 现在是声明式：插件声明自己的段，内核每轮重建时按 Order 渲染。
+// 任何 agent（含未来新类型）读同一份注册表 —— **零接线**。
+//
+// ## 为什么每个变更点都要调
+//
+// 段内容是**静态字符串快照**（不是回调），所以技能集合变了必须重新声明。
+// 漏调的症状是"新装的 skill 在提示词里看不到"，而 skill_list 工具却能列出
+// —— 模型于是不知道有这个 skill 可用。这是本仓踩过的同类问题
+// （built-in skill 不更新：机制在，但没推给读到的地方）。
+//
+// 内核侧同段重复声明是**覆盖**（幂等），所以无条件调用是安全的。
+func (p *Plugin) publishIndex() {
+	if p.sdk == nil {
+		return
+	}
+	api := p.sdk.SystemPrompt()
+	if api == nil {
+		return
+	}
+	content := p.buildIndex()
+	if err := api.DeclarePromptSection(sdk.PromptSection{
+		Section:  skillSectionName,
+		Owner:    p.name,
+		Order:    skillSectionOrder,
+		Content:  content,
+		Volatile: true, // 内容随 skill 增删/启停变化（诊断用）
+	}); err != nil {
+		// 不静默：声明失败意味着模型看不到任何 skill 索引，
+		// 而 skill_list 仍能列出 —— 这种"工具能列但模型不知道"最难查。
+		log.Printf("[skillmgr] WARN: 系统提示词段声明失败（模型将看不到技能索引）: %v", err)
+	}
+}
+
+// unpublishIndex 撤销本插件的声明（Stop / 停用时）。
+//
+// 不撤销的后果：插件已停用，但提示词里还留着"用 skill_info 读某 skill"，
+// 模型于是去调一个不存在的工具。那比"没有说明"更糟。
+func (p *Plugin) unpublishIndex() {
+	if p.sdk == nil {
+		return
+	}
+	if api := p.sdk.SystemPrompt(); api != nil {
+		_ = api.RemovePromptSection(skillSectionName)
+	}
 }
 
 // truncateDesc truncates a skill description to 80 runes and appends an ellipsis.

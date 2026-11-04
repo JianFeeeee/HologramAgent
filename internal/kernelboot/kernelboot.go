@@ -36,6 +36,7 @@ package kernelboot
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"sort"
 	"strings"
 	"sync"
@@ -60,7 +61,7 @@ type Module interface {
 	// 模块从中**读**已就绪的依赖，把自己产出的公共数据**写**回它的字段。
 	//
 	// 返回错误表示装配失败（**必须传播，不得吞掉**）。
-	Init(ks *KernelState) error
+	Init(ks *kstate.State) error
 }
 
 // Plan 是一次依赖解析的结果：分好层的调度计划。
@@ -278,7 +279,7 @@ type RunOptions struct {
 	//
 	// 为何由调用方传入而不是 Run 内部自建：产物在 Run 返回后**仍然要用**
 	// （如 LuaVM、Memory 要一直活着），所以它必须比 Run 活得久。
-	State *KernelState
+	State *kstate.State
 
 	// Bus 是状态同步总线。非 nil 时，Run 会在**每个层边界**把该层模块贡献的
 	// 设施标记为就绪（设计 §2.6.2）。
@@ -287,7 +288,7 @@ type RunOptions struct {
 	// 若模块自己 MarkReady，顺序取决于**层内并发的完成顺序** ⇒ 不可复现；
 	// 而且模块可能"忘记标记"（静默漏掉一个设施 ⇒ 插件永远等不到它就绪）。
 	// 由 Run 在层边界统一写，既确定又不可能漏。
-	Bus *SyncBus
+	Bus *kstate.SyncBus
 }
 
 // RunResult 是执行结果。
@@ -381,7 +382,7 @@ func Run(plan *Plan, opts RunOptions) (*RunResult, error) {
 
 	ks := opts.State
 	if ks == nil {
-		ks = NewKernelState()
+		ks = kstate.New()
 	}
 
 	// ★ 执行前把**全部**模块声明的设施登记为"内核注册过"。

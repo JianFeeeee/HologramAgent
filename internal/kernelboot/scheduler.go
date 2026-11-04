@@ -29,6 +29,7 @@ package kernelboot
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"sort"
 	"strings"
 	"sync"
@@ -56,7 +57,7 @@ type PluginSpec struct {
 // Scheduler 按 syncbus 状态调度插件。
 type Scheduler struct {
 	mu       sync.Mutex
-	bus      SyncState
+	bus      kstate.SyncState
 	pending  []PluginSpec
 	launched map[string]bool
 	launch   func(PluginSpec) error
@@ -67,9 +68,9 @@ type Scheduler struct {
 
 // NewScheduler 创建调度器。launch 是实际拉起动作（由插件管理器提供）。
 //
-// ★ bus 参数类型是 **SyncState**（只读接口），不是 *SyncBus。
+// ★ bus 参数类型是 **kstate.SyncState**（只读接口），不是 *kstate.SyncBus。
 // 这就是设计 §2.6.3 的权限隔离：调度器**在编译期就没有**写 syncbus 的能力。
-func NewScheduler(bus SyncState, launch func(PluginSpec) error) *Scheduler {
+func NewScheduler(bus kstate.SyncState, launch func(PluginSpec) error) *Scheduler {
 	s := &Scheduler{
 		bus:      bus,
 		launch:   launch,
@@ -82,8 +83,8 @@ func NewScheduler(bus SyncState, launch func(PluginSpec) error) *Scheduler {
 	//
 	// 若 bus 不支持订阅（只传了个只读快照实现），退化为"只在 Submit 时评估"——
 	// 那种情况下调度器仍可用，只是不会自动跟进后续状态变化。
-	if sub, ok := bus.(interface{ OnUpdate(func(SyncState)) }); ok {
-		sub.OnUpdate(func(SyncState) { s.evaluate() })
+	if sub, ok := bus.(interface{ OnUpdate(func(kstate.SyncState)) }); ok {
+		sub.OnUpdate(func(kstate.SyncState) { s.evaluate() })
 	}
 	return s
 }
@@ -293,7 +294,7 @@ func (s *Scheduler) WaitString(p PluginSpec) string {
 	if len(p.RequiresFacilities) == 0 {
 		return "等内核完全初始化"
 	}
-	// AllReady 需要 *SyncBus；这里只做只读渲染，用 Snapshot 判断
+	// AllReady 需要 *kstate.SyncBus；这里只做只读渲染，用 Snapshot 判断
 	snap := s.bus.Snapshot()
 	var missing []string
 	for _, f := range p.RequiresFacilities {
