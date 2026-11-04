@@ -135,3 +135,9 @@ dist/
 # 内核升级 CLI 的本地构建产物（与 /homed 同理，不入库）
 /homed-upgrade
 /kernelplan.md
+
+# dshplgadapter 规划书（工作文档，不进仓库）
+# 与 /plan.md、/kernelplan.md 同一惯例：规划/设计在交接前会反复改，
+# 入库后要么产生一堆"改文档"提交，要么与实际实现漂移。
+# 实际实现落地时，结论会进 docs/zh/ 下的正式设计文档。
+/dshplgadapter-plan.md
