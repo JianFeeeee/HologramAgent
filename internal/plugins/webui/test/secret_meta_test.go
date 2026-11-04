@@ -1,4 +1,4 @@
-package webui
+package test
 
 // 判据：**Secret 标志必须活着到达 WebUI 的 meta**。
 //
@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	internalSDK "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -25,6 +27,7 @@ func TestSecretFlagReachesSettingsMeta(t *testing.T) {
 	reg := internalConfig.NewConfigRegistry(dir + "/config.db")
 	reg.SetCodec(internalConfig.NewTestCodec(t))
 	defer reg.Close()
+	seedWebUIConfig(reg)
 
 	// 插件用**两种写法**各声明一个敏感项
 	sett := internalSDK.NewSettings("secplug", reg)
@@ -35,11 +38,15 @@ func TestSecretFlagReachesSettingsMeta(t *testing.T) {
 		Key: "by_type", Type: "password", DisplayName: "类型式",
 	})
 
-	// 走真实 HTTP 处理器
-	h := &Handler{settings: internalSDK.NewSettings("webui", reg)}
-	req := httptest.NewRequest(http.MethodGet, "/api/settings?prefix=plugin.secplug", nil)
+	// 走**真实 HTTP 处理器**：NewHandler + Handler() 都是导出接口，
+	// 请求经完整路由分发，不直接调未导出的 handleSettings。
+	h := webui.NewHandler(internalSDK.New("webui", internalSDK.SDKConfig{
+		Settings: internalSDK.NewSettings("webui", reg),
+		EventBus: events.NewBus(),
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings?prefix=plugin.secplug", nil)
 	w := httptest.NewRecorder()
-	h.handleSettings(w, req)
+	serveRoutes(t, h, w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 %d: %s", w.Code, w.Body.String())
 	}
@@ -82,6 +89,7 @@ func TestSecretPlainInUIButCipherOnDisk(t *testing.T) {
 	reg := internalConfig.NewConfigRegistry(dir + "/config.db")
 	reg.SetCodec(internalConfig.NewTestCodec(t))
 	defer reg.Close()
+	seedWebUIConfig(reg)
 
 	sett := internalSDK.NewSettings("webui", reg)
 	sett.RegisterDef(internalSDK.ConfigDef{Key: "apikey", Type: "password"})
@@ -89,20 +97,24 @@ func TestSecretPlainInUIButCipherOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &Handler{settings: internalSDK.NewSettings("webui", reg)}
-	req := httptest.NewRequest(http.MethodGet, "/api/settings?prefix=plugin.webui", nil)
+	h := webui.NewHandler(internalSDK.New("webui", internalSDK.SDKConfig{
+		Settings: internalSDK.NewSettings("webui", reg),
+		EventBus: events.NewBus(),
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings?prefix=plugin.webui", nil)
 	w := httptest.NewRecorder()
-	h.handleSettings(w, req)
+	serveRoutes(t, h, w, req)
 
 	if strings.Contains(w.Body.String(), "ui-visible-secret-123456") {
 		t.Fatal("E-3：设置列表不应回显敏感明文")
 	}
-	if !strings.Contains(w.Body.String(), SecretPlaceholder) {
+	if !strings.Contains(w.Body.String(), webui.SecretPlaceholder) {
 		t.Fatal("设置列表应显示敏感值占位符")
 	}
 	// 显式揭示仍可核对（单键、当前 WebUI 插件范围）。
 	reveal := httptest.NewRecorder()
-	h.handleSettingsReveal(reveal, httptest.NewRequest(http.MethodGet, "/api/settings/reveal?key=plugin.webui.apikey", nil))
+	serveRoutes(t, h, reveal, httptest.NewRequest(http.MethodGet,
+		"/api/v1/settings/reveal?key=plugin.webui.apikey", nil))
 	if reveal.Code != http.StatusOK || !strings.Contains(reveal.Body.String(), "ui-visible-secret-123456") {
 		t.Fatalf("显式 reveal 应返回当前插件的明文: status=%d body=%s", reveal.Code, reveal.Body.String())
 	}
@@ -114,4 +126,41 @@ func TestSecretPlainInUIButCipherOnDisk(t *testing.T) {
 	if strings.Contains(raw, "ui-visible-secret") {
 		t.Errorf("磁盘上不应有明文: %q", raw)
 	}
+}
+
+// serveRoutes 通过**导出的 RegisterRoutes** 建一个只含业务路由的 mux，
+// 跳过 logged / gzipMW / proxyDispatch 三层中间件。
+//
+// 为什么不用 Handler()：那三层中间件依赖完整装配（history store、settings
+// 里的 webui username/password、data dir 等）。本判据测的是 settings 的
+// meta 与 reveal，不是请求日志与反代 —— 用全链路会把无关依赖拖进来，
+// 一个缺配置就 nil 解引用，红的不是被测对象。
+//
+// RegisterRoutes 是导出的，所以这仍是**黑箱**：拿到的是真实路由表，
+// 只是不带外层中间件。
+func serveRoutes(t *testing.T, h *webui.Handler, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	// 带 API key 通过 requireAPI（这是生产上非浏览器客户端的正常路径，
+	// 见 requireWeb/requireAPI 里 validAPIKey 优先于 cookie session）。
+	r.Header.Set("X-API-Key", testAPIKey)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	mux.ServeHTTP(w, r)
+}
+
+// testAPIKey 与 seedWebUIConfig 写进配置的值一致。
+const testAPIKey = "test-api-key"
+
+// seedWebUIConfig 在 webui 插件配置里登记并设置 api_key / username / password。
+//
+// 与包内 handler_test.go 的同名辅助保持一致 —— requireAPI 会读它，
+// 没配就返回 503「webui api_key not configured」。
+func seedWebUIConfig(reg *internalConfig.ConfigRegistry) {
+	c := reg.PluginConfig("webui")
+	c.RegisterDef(internalConfig.ConfigDef{Key: "api_key", Default: ""})
+	c.RegisterDef(internalConfig.ConfigDef{Key: "username", Default: ""})
+	c.RegisterDef(internalConfig.ConfigDef{Key: "password", Default: ""})
+	c.Set("api_key", testAPIKey)
+	c.Set("username", "admin")
+	c.Set("password", "pw-for-test")
 }
