@@ -25,7 +25,18 @@ package core
 import (
 	"testing"
 	"time"
+
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
+
+// toolDefWithTimeout 造一个带 Timeout 声明的 ToolDef。
+//
+// 原先它单独放在 zz_timeout_helper_test.go —— 文件名前缀 `zz_` 是
+// 临时调试残留的惯例，放一个**长期使用**的辅助函数在那种命名的文件里，
+// 会让后来人以为它可删。辅助函数跟着唯一的调用方走。
+func toolDefWithTimeout(name, timeout string) sdk.ToolDef {
+	return sdk.ToolDef{Name: name, Description: "test", Timeout: timeout}
+}
 
 // fakeStageHost 提供可控的 ToolDef 查询。
 type fakeStageHost struct {
@@ -36,7 +47,7 @@ type fakeStageHost struct {
 func newFakeAgent(defs map[string]string) *Agent {
 	h := NewStageHost()
 	for name, to := range defs {
-		h.RegisterTool(name, sdkToolDefWithTimeout(name, to), func(map[string]interface{}) (interface{}, error) {
+		h.RegisterTool(name, toolDefWithTimeout(name, to), func(map[string]interface{}) (interface{}, error) {
 			return nil, nil
 		})
 	}

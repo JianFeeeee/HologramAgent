@@ -1,8 +1,9 @@
-package sdk
+package test
 
 import (
 	"encoding/json"
 	"fmt"
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,7 @@ import (
 //
 // 为什么这一层需要压测：SDK 是**被多个 goroutine 同时使用的共享对象**。
 // 一个插件的典型形态是 Start() 里起若干后台 goroutine（轮询、监听、定时器），
-// 它们各自持同一个 *PluginSDK 往里注入消息；内核侧同时还有 stage 扇出、
+// 它们各自持同一个 *sdk.PluginSDK 往里注入消息；内核侧同时还有 stage 扇出、
 // 工具调用、以及读 AutoRestart() 决定崩溃后是否重启。
 // 单线程单测全绿不代表这些并发路径成立。
 //
@@ -42,8 +43,8 @@ type injectCall struct {
 	source  string
 	channel string
 	text    string
-	blocks  []ContentBlock
-	opts    InjectOptions // 调用点声明的记忆/裁剪行为
+	blocks  []sdk.ContentBlock
+	opts    sdk.InjectOptions // 调用点声明的记忆/裁剪行为
 }
 
 func (r *recordingInjector) record(c injectCall) {
@@ -73,58 +74,58 @@ func (r *recordingInjector) InjectInputSync(s, c, t string) string {
 	return "reply:" + t
 }
 
-func (r *recordingInjector) SetToolBlocks(blocks []ContentBlock) {
+func (r *recordingInjector) SetToolBlocks(blocks []sdk.ContentBlock) {
 	r.record(injectCall{kind: "toolBlocks", blocks: blocks})
 }
 
-func (r *recordingInjector) InjectInputMedia(s, c, t string, b []ContentBlock) {
+func (r *recordingInjector) InjectInputMedia(s, c, t string, b []sdk.ContentBlock) {
 	r.nMedia.Add(1)
 	r.record(injectCall{kind: "media", source: s, channel: c, text: t, blocks: b})
 }
 
-func (r *recordingInjector) InjectInputMediaSync(s, c, t string, b []ContentBlock) string {
+func (r *recordingInjector) InjectInputMediaSync(s, c, t string, b []sdk.ContentBlock) string {
 	r.nMedia.Add(1)
 	r.nSync.Add(1)
 	r.record(injectCall{kind: "mediaSync", source: s, channel: c, text: t, blocks: b})
 	return "reply:" + t
 }
 
-func (r *recordingInjector) InjectInterruptMedia(s, c, t string, b []ContentBlock) {
+func (r *recordingInjector) InjectInterruptMedia(s, c, t string, b []sdk.ContentBlock) {
 	r.nMedia.Add(1)
 	r.record(injectCall{kind: "interruptMedia", source: s, channel: c, text: t, blocks: b})
 }
 
-// ---- 带 InjectOptions 的注入：记录 opts 以便测试断言标志位确实传到了内核 ----
+// ---- 带 sdk.InjectOptions 的注入：记录 opts 以便测试断言标志位确实传到了内核 ----
 
-func (r *recordingInjector) InjectTextOpts(s, c, t string, o InjectOptions) {
+func (r *recordingInjector) InjectTextOpts(s, c, t string, o sdk.InjectOptions) {
 	r.nText.Add(1)
 	r.record(injectCall{kind: "textOpts", source: s, channel: c, text: t, opts: o})
 }
 
-func (r *recordingInjector) InjectInterruptTextOpts(s, c, t string, o InjectOptions) {
+func (r *recordingInjector) InjectInterruptTextOpts(s, c, t string, o sdk.InjectOptions) {
 	r.nInterrupt.Add(1)
 	r.record(injectCall{kind: "interruptTextOpts", source: s, channel: c, text: t, opts: o})
 }
 
-func (r *recordingInjector) InjectInputSyncOpts(s, c, t string, o InjectOptions) string {
+func (r *recordingInjector) InjectInputSyncOpts(s, c, t string, o sdk.InjectOptions) string {
 	r.nSync.Add(1)
 	r.record(injectCall{kind: "syncOpts", source: s, channel: c, text: t, opts: o})
 	return "reply:" + t
 }
 
-func (r *recordingInjector) InjectInputMediaOpts(s, c, t string, b []ContentBlock, o InjectOptions) {
+func (r *recordingInjector) InjectInputMediaOpts(s, c, t string, b []sdk.ContentBlock, o sdk.InjectOptions) {
 	r.nMedia.Add(1)
 	r.record(injectCall{kind: "mediaOpts", source: s, channel: c, text: t, blocks: b, opts: o})
 }
 
-func (r *recordingInjector) InjectInputMediaSyncOpts(s, c, t string, b []ContentBlock, o InjectOptions) string {
+func (r *recordingInjector) InjectInputMediaSyncOpts(s, c, t string, b []sdk.ContentBlock, o sdk.InjectOptions) string {
 	r.nMedia.Add(1)
 	r.nSync.Add(1)
 	r.record(injectCall{kind: "mediaSyncOpts", source: s, channel: c, text: t, blocks: b, opts: o})
 	return "reply:" + t
 }
 
-func (r *recordingInjector) InjectInterruptMediaOpts(s, c, t string, b []ContentBlock, o InjectOptions) {
+func (r *recordingInjector) InjectInterruptMediaOpts(s, c, t string, b []sdk.ContentBlock, o sdk.InjectOptions) {
 	r.nMedia.Add(1)
 	r.record(injectCall{kind: "interruptMediaOpts", source: s, channel: c, text: t, blocks: b, opts: o})
 }
@@ -135,13 +136,13 @@ func (r *recordingInjector) snapshot() []injectCall {
 	return append([]injectCall{}, r.calls...)
 }
 
-var _ IOInjector = (*recordingInjector)(nil)
+var _ sdk.IOInjector = (*recordingInjector)(nil)
 
 // imageBlock 构造一个带可识别 URL 的图片块。
-func imageBlock(tag string) ContentBlock {
-	return ContentBlock{
+func imageBlock(tag string) sdk.ContentBlock {
+	return sdk.ContentBlock{
 		Type:     "image_url",
-		ImageURL: &ImageURL{URL: "data:image/png;base64," + tag, Detail: "auto"},
+		ImageURL: &sdk.ImageURL{URL: "data:image/png;base64," + tag, Detail: "auto"},
 	}
 }
 
@@ -156,7 +157,7 @@ func TestStress_MediaInjectionConcurrentNoCrossTalk(t *testing.T) {
 	const workers, perWorker = 32, 200
 
 	inj := &recordingInjector{}
-	s := &PluginSDK{name: "stress"}
+	s := sdk.New("stress", nil, nil, nil, nil, nil)
 	s.SetIOInjector(inj)
 
 	var wg sync.WaitGroup
@@ -169,13 +170,13 @@ func TestStress_MediaInjectionConcurrentNoCrossTalk(t *testing.T) {
 				tag := fmt.Sprintf("w%d-i%d", w, i)
 				switch i % 3 {
 				case 0:
-					s.InjectInputMedia("src", "ch", tag, []ContentBlock{imageBlock(tag)})
+					s.InjectInputMedia("src", "ch", tag, []sdk.ContentBlock{imageBlock(tag)})
 				case 1:
-					if got := s.InjectInputMediaSync("src", "ch", tag, []ContentBlock{imageBlock(tag)}); got != "reply:"+tag {
+					if got := s.InjectInputMediaSync("src", "ch", tag, []sdk.ContentBlock{imageBlock(tag)}); got != "reply:"+tag {
 						t.Errorf("同步注入回复错位: got %q want %q", got, "reply:"+tag)
 					}
 				default:
-					s.InjectInterruptMedia("src", "ch", tag, []ContentBlock{imageBlock(tag)})
+					s.InjectInterruptMedia("src", "ch", tag, []sdk.ContentBlock{imageBlock(tag)})
 				}
 			}
 		}(w)
@@ -194,7 +195,7 @@ func TestStress_MediaInjectionConcurrentNoCrossTalk(t *testing.T) {
 			continue
 		}
 		if c.blocks[0].ImageURL == nil {
-			t.Fatalf("媒体块 ImageURL 丢失: %+v", c.blocks[0])
+			t.Fatalf("媒体块 sdk.ImageURL 丢失: %+v", c.blocks[0])
 		}
 		if !strings.HasSuffix(c.blocks[0].ImageURL.URL, c.text) {
 			t.Fatalf("文本与媒体块错位: text=%q url=%q", c.text, c.blocks[0].ImageURL.URL)
@@ -215,7 +216,7 @@ func TestStress_MediaInjectionConcurrentNoCrossTalk(t *testing.T) {
 // 此时插件的后台 goroutine 仍在注入。这条路径若无同步就是对 s.io 的数据竞争，
 // 在 -race 下会被抓出；生产表现是偶发 nil 解引用崩溃。
 func TestStress_InjectorSwapDuringInjection(t *testing.T) {
-	s := &PluginSDK{name: "stress"}
+	s := sdk.New("stress", nil, nil, nil, nil, nil)
 	s.SetIOInjector(&recordingInjector{})
 
 	stop := make(chan struct{})
@@ -231,7 +232,7 @@ func TestStress_InjectorSwapDuringInjection(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					s.InjectInputMedia("src", "ch", "x", []ContentBlock{imageBlock("x")})
+					s.InjectInputMedia("src", "ch", "x", []sdk.ContentBlock{imageBlock("x")})
 					s.InjectText("src", "ch", "y")
 				}
 			}
@@ -266,7 +267,7 @@ func TestStress_InjectorSwapDuringInjection(t *testing.T) {
 // 内核侧 registry 在另一个 goroutine 读 AutoRestart() 决定崩溃后是否重启。
 // 这是一对跨 goroutine 的读写，必须同步。
 func TestStress_AutoRestartFlagConcurrent(t *testing.T) {
-	s := &PluginSDK{name: "stress", autoRestart: true}
+	s := sdk.New("stress", nil, nil, nil, nil, nil)
 
 	var wg sync.WaitGroup
 	for w := 0; w < 16; w++ {
@@ -298,7 +299,7 @@ func TestStress_AutoRestartFlagConcurrent(t *testing.T) {
 // 执行两次的后果从"重复写文件"到"close 已关闭的 channel 直接 panic"。
 func TestStress_StopHandlersExactlyOnce(t *testing.T) {
 	const n = 300
-	s := &PluginSDK{name: "stress"}
+	s := sdk.New("stress", nil, nil, nil, nil, nil)
 
 	var counters [n]atomic.Int64
 	for i := 0; i < n; i++ {
@@ -327,7 +328,7 @@ func TestStress_StopHandlersExactlyOnce(t *testing.T) {
 // 断言用"每个 handler 的执行次数 <= 1"而非"总数相等"——
 // 与 RunStopHandlers 竞争的注册可能落在快照之后，那属于合法的未执行。
 func TestStress_StopHandlersRegisterWhileRunning(t *testing.T) {
-	s := &PluginSDK{name: "stress"}
+	s := sdk.New("stress", nil, nil, nil, nil, nil)
 	const n = 500
 	var counters [n]atomic.Int64
 
@@ -359,7 +360,7 @@ func TestStress_StopHandlersRegisterWhileRunning(t *testing.T) {
 
 func TestStress_OnRemoveHandlersExactlyOnce(t *testing.T) {
 	const n = 200
-	s := &PluginSDK{name: "stress"}
+	s := sdk.New("stress", nil, nil, nil, nil, nil)
 
 	var counters [n]atomic.Int64
 	for i := 0; i < n; i++ {
@@ -384,15 +385,15 @@ func TestStress_OnRemoveHandlersExactlyOnce(t *testing.T) {
 	}
 }
 
-// ---------- 5. StageContext 并发读改写 ----------
+// ---------- 5. sdk.StageContext 并发读改写 ----------
 
-// StageContext 是全部 stage handler 共享的可变状态，字段全导出、靠调用方自觉
+// sdk.StageContext 是全部 stage handler 共享的可变状态，字段全导出、靠调用方自觉
 // 持 Lock/RLock。媒体链路让 Extra 成为新热点（media_blocks 挂在这里），
 // 而 map 的并发写在 Go 里是直接 fatal，recover 都接不住。
 //
 // 这条测试锁定的不变量：按约定持锁的并发读改写不丢更新、不 fatal。
 func TestStress_StageContextConcurrentExtraAndFinalText(t *testing.T) {
-	ctx := &StageContext{Extra: map[string]interface{}{}}
+	ctx := &sdk.StageContext{Extra: map[string]interface{}{}}
 
 	const workers, rounds = 16, 200
 	var wg sync.WaitGroup
@@ -403,7 +404,7 @@ func TestStress_StageContextConcurrentExtraAndFinalText(t *testing.T) {
 			for i := 0; i < rounds; i++ {
 				// 写：模拟插件往 Extra 塞媒体块并追加文本（读-改-写）
 				ctx.Lock()
-				ctx.Extra[fmt.Sprintf("k%d-%d", w, i)] = []ContentBlock{imageBlock("x")}
+				ctx.Extra[fmt.Sprintf("k%d-%d", w, i)] = []sdk.ContentBlock{imageBlock("x")}
 				ctx.FinalText += "."
 				ctx.Unlock()
 
@@ -429,18 +430,15 @@ func TestStress_StageContextConcurrentExtraAndFinalText(t *testing.T) {
 
 // ---------- 6. OwnTools scope 包装器的并发正确性 ----------
 
-// StageScopeOwnTools 的包装闭环里要读 ctx.ToolCalls 判断归属。
+// sdk.StageScopeOwnTools 的包装闭环里要读 ctx.ToolCalls 判断归属。
 // 并发下若判断与执行之间状态被改写，就会出现"别人的工具触发了我的 handler"——
 // 后果是插件对不属于自己的工具结果动手，且没有任何错误。
 func TestStress_OwnToolsScopeNoCrossPluginLeak(t *testing.T) {
-	var registered StageHandler
-	s := &PluginSDK{
-		name:     "mine",
-		regStage: func(stage Stage, h StageHandler) { registered = h },
-	}
+	var registered sdk.StageHandler
+	s := sdk.New("mine", nil, nil, func(stage sdk.Stage, h sdk.StageHandler) { registered = h }, nil, nil)
 
 	var fired atomic.Int64
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error {
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error {
 		fired.Add(1)
 		ctx.RLock()
 		defer ctx.RUnlock()
@@ -449,7 +447,7 @@ func TestStress_OwnToolsScopeNoCrossPluginLeak(t *testing.T) {
 			t.Errorf("handler 被别的插件的工具触发: %+v", ctx.ToolCalls)
 		}
 		return nil
-	}, StageScopeOwnTools)
+	}, sdk.StageScopeOwnTools)
 
 	if registered == nil {
 		t.Fatal("handler 未注册")
@@ -470,8 +468,8 @@ func TestStress_OwnToolsScopeNoCrossPluginLeak(t *testing.T) {
 					owner = "mine"
 					mineCount.Add(1)
 				}
-				ctx := &StageContext{Extra: map[string]interface{}{}}
-				ctx.ToolCalls = []ToolCall{{Plugin: owner, Name: "t"}}
+				ctx := &sdk.StageContext{Extra: map[string]interface{}{}}
+				ctx.ToolCalls = []sdk.ToolCall{{Plugin: owner, Name: "t"}}
 				if err := registered(ctx); err != nil {
 					t.Errorf("handler 返回错误: %v", err)
 				}
@@ -498,7 +496,7 @@ func TestStress_MediaTypesJSONRoundTripAtScale(t *testing.T) {
 		for i := range data {
 			data[i] = byte(i * 7 % 256)
 		}
-		att := MediaAttachment{
+		att := sdk.MediaAttachment{
 			Digest: strings.Repeat("a", 64),
 			MIME:   "image/png",
 			Data:   data,
@@ -508,7 +506,7 @@ func TestStress_MediaTypesJSONRoundTripAtScale(t *testing.T) {
 		if err != nil {
 			t.Fatalf("size=%d marshal: %v", n, err)
 		}
-		var back MediaAttachment
+		var back sdk.MediaAttachment
 		if err := json.Unmarshal(b, &back); err != nil {
 			t.Fatalf("size=%d unmarshal: %v", n, err)
 		}
@@ -536,37 +534,37 @@ func TestStress_MediaTypesOmitEmpty(t *testing.T) {
 		present []string
 	}{
 		{
-			name:    "Triple 无媒体",
-			v:       Triple{Subject: "甲方", Relation: "签署", Object: "合同"},
+			name:    "sdk.Triple 无媒体",
+			v:       sdk.Triple{Subject: "甲方", Relation: "签署", Object: "合同"},
 			absent:  []string{"media_digests", "sentence_text", "confidence", "subject_type", "object_type"},
 			present: []string{"subject", "relation", "object"},
 		},
 		{
-			name:    "Triple 带媒体",
-			v:       Triple{Subject: "甲方", Relation: "包含", Object: "图", MediaDigests: []string{"abc12345"}, SentenceText: "句子"},
+			name:    "sdk.Triple 带媒体",
+			v:       sdk.Triple{Subject: "甲方", Relation: "包含", Object: "图", MediaDigests: []string{"abc12345"}, SentenceText: "句子"},
 			absent:  []string{"confidence"},
 			present: []string{"media_digests", "sentence_text"},
 		},
 		{
-			name:    "Doc 读路径无字节",
-			v:       Doc{ID: "d1", Title: "标题", Content: "正文", Attachments: []MediaAttachment{{Digest: "abc12345", MIME: "image/png"}}},
+			name:    "sdk.Doc 读路径无字节",
+			v:       sdk.Doc{ID: "d1", Title: "标题", Content: "正文", Attachments: []sdk.MediaAttachment{{Digest: "abc12345", MIME: "image/png"}}},
 			absent:  []string{"\"data\"", "media_digests", "score"},
 			present: []string{"attachments", "digest", "mime"},
 		},
 		{
-			name:    "TextEvent 无附件",
-			v:       TextEvent{Role: "user", Content: "hi"},
+			name:    "sdk.TextEvent 无附件",
+			v:       sdk.TextEvent{Role: "user", Content: "hi"},
 			absent:  []string{"attachments", "channel"},
 			present: []string{"role", "content"},
 		},
 		{
-			name:    "ContentBlock 纯文本",
-			v:       ContentBlock{Type: "text", Text: "hi"},
+			name:    "sdk.ContentBlock 纯文本",
+			v:       sdk.ContentBlock{Type: "text", Text: "hi"},
 			absent:  []string{"image_url", "audio_url"},
 			present: []string{"type", "text"},
 		},
 		{
-			name:    "ContentBlock 图片",
+			name:    "sdk.ContentBlock 图片",
 			v:       imageBlock("AAA"),
 			absent:  []string{"audio_url", "\"text\""},
 			present: []string{"image_url", "detail"},
@@ -591,7 +589,7 @@ func TestStress_MediaTypesOmitEmpty(t *testing.T) {
 	}
 }
 
-// 媒体块在并发序列化下必须各自独立：ImageURL/AudioURL 是指针，
+// 媒体块在并发序列化下必须各自独立：sdk.ImageURL/sdk.AudioURL 是指针，
 // 若某处复用同一个指针再改写，序列化结果会互相污染。
 func TestStress_ContentBlockConcurrentMarshal(t *testing.T) {
 	const workers, rounds = 16, 300
@@ -602,17 +600,17 @@ func TestStress_ContentBlockConcurrentMarshal(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < rounds; i++ {
 				tag := fmt.Sprintf("w%d-i%d", w, i)
-				blocks := []ContentBlock{
+				blocks := []sdk.ContentBlock{
 					{Type: "text", Text: tag},
 					imageBlock(tag),
-					{Type: "audio_url", AudioURL: &AudioURL{URL: "data:audio/wav;base64," + tag}},
+					{Type: "audio_url", AudioURL: &sdk.AudioURL{URL: "data:audio/wav;base64," + tag}},
 				}
 				b, err := json.Marshal(blocks)
 				if err != nil {
 					t.Errorf("marshal: %v", err)
 					return
 				}
-				var back []ContentBlock
+				var back []sdk.ContentBlock
 				if err := json.Unmarshal(b, &back); err != nil {
 					t.Errorf("unmarshal: %v", err)
 					return
@@ -648,15 +646,12 @@ func TestStress_RegisterToolConcurrentPluginDefaulting(t *testing.T) {
 	var mu sync.Mutex
 	got := map[string]string{} // toolName -> def.Plugin
 
-	s := &PluginSDK{
-		name: "mine",
-		regTool: func(name string, def ToolDef, h ToolHandler) error {
-			mu.Lock()
-			got[name] = def.Plugin
-			mu.Unlock()
-			return nil
-		},
-	}
+	s := sdk.New("mine", nil, func(name string, def sdk.ToolDef, h sdk.ToolHandler) error {
+		mu.Lock()
+		got[name] = def.Plugin
+		mu.Unlock()
+		return nil
+	}, nil, nil, nil)
 
 	const workers, perWorker = 16, 100
 	var wg sync.WaitGroup
@@ -666,7 +661,7 @@ func TestStress_RegisterToolConcurrentPluginDefaulting(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
 				name := fmt.Sprintf("tool_w%d_i%d", w, i)
-				def := ToolDef{Description: "d", Parameters: map[string]interface{}{}}
+				def := sdk.ToolDef{Description: "d", Parameters: map[string]interface{}{}}
 				// 一半显式指定归属，一半靠 SDK 填默认值
 				if i%2 == 0 {
 					def.Plugin = "explicit"
@@ -713,7 +708,7 @@ func isEvenSuffix(name string) bool {
 // 这是"媒体存储可关闭"在 SDK 层的对应物：内核未注入某个 API 时
 // （精简部署、插件权限不足、子进程握手尚未完成），插件的调用不该崩。
 func TestStress_NilDependenciesDegradeSilently(t *testing.T) {
-	s := &PluginSDK{name: "bare"}
+	s := sdk.New("bare", nil, nil, nil, nil, nil)
 
 	const workers = 16
 	var wg sync.WaitGroup
@@ -728,7 +723,7 @@ func TestStress_NilDependenciesDegradeSilently(t *testing.T) {
 				if got := s.InjectInputSync("s", "c", "t"); got != "" {
 					t.Errorf("无 injector 时同步注入应返回空串，got %q", got)
 				}
-				s.InjectInputMedia("s", "c", "t", []ContentBlock{imageBlock("x")})
+				s.InjectInputMedia("s", "c", "t", []sdk.ContentBlock{imageBlock("x")})
 				if got := s.InjectInputMediaSync("s", "c", "t", nil); got != "" {
 					t.Errorf("无 injector 时媒体同步注入应返回空串，got %q", got)
 				}
@@ -746,13 +741,13 @@ func TestStress_NilDependenciesDegradeSilently(t *testing.T) {
 				_ = s.Settings()
 
 				// 注册面无 registrar 时应返回 nil error
-				if err := s.RegisterTool("t", ToolDef{}, nil); err != nil {
+				if err := s.RegisterTool("t", sdk.ToolDef{}, nil); err != nil {
 					t.Errorf("无 registrar 时 RegisterTool 应返回 nil，got %v", err)
 				}
 				if err := s.RegisterPluginAPI("a"); err != nil {
 					t.Errorf("无 registrar 时 RegisterPluginAPI 应返回 nil，got %v", err)
 				}
-				s.RegisterStage(StageOnInput, func(*StageContext) error { return nil })
+				s.RegisterStage(sdk.StageOnInput, func(*sdk.StageContext) error { return nil })
 			}
 		}()
 	}

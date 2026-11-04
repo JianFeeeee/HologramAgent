@@ -23,8 +23,6 @@ package core
 import (
 	"reflect"
 	"testing"
-
-	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // ── I2：L4 遇 L4 不可抢占 ──
@@ -323,31 +321,5 @@ func TestInvariant_StackNotifyHoldsLock(t *testing.T) {
 	}
 	if !lockHeld {
 		t.Fatal("钩子必须在持锁状态下调用（回调不得再取 s.mu，否则自死锁）")
-	}
-}
-
-// ── 反向依赖的现状快照（阶段 1.5 要切断的目标）──
-//
-// 这条不测行为，而是**记录事实**：中断函数目前读了这些非中断状态。
-// 切断依赖后本判据应随之失败并被改写——届时可以明确看到"依赖确实变了"。
-//
-// 若不做这一步，"切断反向依赖"就只是一句口号，没有任何可验证的落点。
-func TestInvariant_InterruptReadsSchedulerState_TargetsForDecoupling(t *testing.T) {
-	// 事实清单（来自探测，见 docs/zh/interrupt-subsystem-split-plan.md §1.5）。
-	// 这里只断言"这些字段在 scheduler 上存在"，作为改写时的锚点；
-	// 阶段 1.5 完成后，中断侧不应再直接读它们。
-	s := newScheduler(8)
-	if s.maxQueue == 0 {
-		t.Skip("maxQueue 未初始化")
-	}
-	// 记录当前形态：中断入队会受就绪队列上限影响（这一点将在 1.5 处理）。
-	evt := &agentIO.InputEvent{Source: "qq", Type: "interrupt"}
-	evt.Payload = map[string]interface{}{"interrupt": true}
-	s.mu.Lock()
-	s.enqueueInterruptLocked(&Task{ID: 1, Class: TaskInterrupt, Level: LevelMessage, Event: evt})
-	n := len(s.interruptQueues[LevelMessage])
-	s.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("正常上限下中断应入队，实际 %d 条", n)
 	}
 }

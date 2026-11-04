@@ -1,16 +1,17 @@
-package sdk
+package test
 
 import (
+	sdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 	"testing"
 )
 
 func TestRegisterStageGlobalDefault(t *testing.T) {
 	called := false
-	regStage := func(stage Stage, handler StageHandler) {
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		called = true
 	}
-	s := &PluginSDK{regStage: regStage, name: "test"}
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error { return nil })
+	s := sdk.New("test", nil, nil, regStage, nil, nil)
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error { return nil })
 
 	if !called {
 		t.Error("global scope: handler not registered")
@@ -19,11 +20,11 @@ func TestRegisterStageGlobalDefault(t *testing.T) {
 
 func TestRegisterStageGlobalExplicit(t *testing.T) {
 	called := false
-	regStage := func(stage Stage, handler StageHandler) {
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		called = true
 	}
-	s := &PluginSDK{regStage: regStage, name: "test"}
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error { return nil }, StageScopeGlobal)
+	s := sdk.New("test", nil, nil, regStage, nil, nil)
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error { return nil }, sdk.StageScopeGlobal)
 
 	if !called {
 		t.Error("global scope: handler not registered")
@@ -31,19 +32,19 @@ func TestRegisterStageGlobalExplicit(t *testing.T) {
 }
 
 func TestRegisterStageOwnToolsMatch(t *testing.T) {
-	var registered StageHandler
-	regStage := func(stage Stage, handler StageHandler) {
+	var registered sdk.StageHandler
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		registered = handler
 	}
-	s := &PluginSDK{regStage: regStage, name: "myplugin"}
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error { return nil }, StageScopeOwnTools)
+	s := sdk.New("myplugin", nil, nil, regStage, nil, nil)
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error { return nil }, sdk.StageScopeOwnTools)
 
 	if registered == nil {
 		t.Fatal("handler not registered")
 	}
 
-	ctx := &StageContext{}
-	ctx.ToolCalls = []ToolCall{{Plugin: "myplugin", Name: "my_tool"}}
+	ctx := &sdk.StageContext{}
+	ctx.ToolCalls = []sdk.ToolCall{{Plugin: "myplugin", Name: "my_tool"}}
 	ctx.ToolResults = nil
 
 	err := registered(ctx)
@@ -53,24 +54,24 @@ func TestRegisterStageOwnToolsMatch(t *testing.T) {
 }
 
 func TestRegisterStageOwnToolsSkipOtherPlugin(t *testing.T) {
-	var registered StageHandler
-	regStage := func(stage Stage, handler StageHandler) {
+	var registered sdk.StageHandler
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		registered = handler
 	}
-	s := &PluginSDK{regStage: regStage, name: "myplugin"}
+	s := sdk.New("myplugin", nil, nil, regStage, nil, nil)
 
 	callCount := 0
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error {
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error {
 		callCount++
 		return nil
-	}, StageScopeOwnTools)
+	}, sdk.StageScopeOwnTools)
 
 	if registered == nil {
 		t.Fatal("handler not registered")
 	}
 
-	ctx := &StageContext{}
-	ctx.ToolCalls = []ToolCall{{Plugin: "other", Name: "other_tool"}}
+	ctx := &sdk.StageContext{}
+	ctx.ToolCalls = []sdk.ToolCall{{Plugin: "other", Name: "other_tool"}}
 
 	err := registered(ctx)
 	if err != nil {
@@ -82,33 +83,33 @@ func TestRegisterStageOwnToolsSkipOtherPlugin(t *testing.T) {
 }
 
 func TestRegisterStageOwnToolsNonToolcallDegrades(t *testing.T) {
-	regStage := func(stage Stage, handler StageHandler) {
-		if stage != StagePreAction {
-			t.Errorf("expected StagePreAction, got %s", stage)
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
+		if stage != sdk.StagePreAction {
+			t.Errorf("expected sdk.StagePreAction, got %s", stage)
 		}
 	}
-	s := &PluginSDK{regStage: regStage, name: "test"}
-	s.RegisterStage(StagePreAction, func(ctx *StageContext) error { return nil }, StageScopeOwnTools)
+	s := sdk.New("test", nil, nil, regStage, nil, nil)
+	s.RegisterStage(sdk.StagePreAction, func(ctx *sdk.StageContext) error { return nil }, sdk.StageScopeOwnTools)
 }
 
 func TestRegisterStageOwnToolsStageBeforeToolcallNoToolCalls(t *testing.T) {
-	var registered StageHandler
-	regStage := func(stage Stage, handler StageHandler) {
+	var registered sdk.StageHandler
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		registered = handler
 	}
-	s := &PluginSDK{regStage: regStage, name: "myplugin"}
+	s := sdk.New("myplugin", nil, nil, regStage, nil, nil)
 
 	callCount := 0
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error {
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error {
 		callCount++
 		return nil
-	}, StageScopeOwnTools)
+	}, sdk.StageScopeOwnTools)
 
 	if registered == nil {
 		t.Fatal("handler not registered")
 	}
 
-	ctx := &StageContext{}
+	ctx := &sdk.StageContext{}
 
 	err := registered(ctx)
 	if err != nil {
@@ -120,24 +121,24 @@ func TestRegisterStageOwnToolsStageBeforeToolcallNoToolCalls(t *testing.T) {
 }
 
 func TestRegisterStageOwnToolsStageAfterToolcallMatch(t *testing.T) {
-	var registered StageHandler
-	regStage := func(stage Stage, handler StageHandler) {
+	var registered sdk.StageHandler
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		registered = handler
 	}
-	s := &PluginSDK{regStage: regStage, name: "myplugin"}
+	s := sdk.New("myplugin", nil, nil, regStage, nil, nil)
 
 	callCount := 0
-	s.RegisterStage(StageAfterToolcall, func(ctx *StageContext) error {
+	s.RegisterStage(sdk.StageAfterToolcall, func(ctx *sdk.StageContext) error {
 		callCount++
 		return nil
-	}, StageScopeOwnTools)
+	}, sdk.StageScopeOwnTools)
 
 	if registered == nil {
 		t.Fatal("handler not registered")
 	}
 
-	ctx := &StageContext{}
-	ctx.ToolResults = []ToolResult{{Plugin: "myplugin", Name: "my_tool"}}
+	ctx := &sdk.StageContext{}
+	ctx.ToolResults = []sdk.ToolResult{{Plugin: "myplugin", Name: "my_tool"}}
 
 	err := registered(ctx)
 	if err != nil {
@@ -149,20 +150,20 @@ func TestRegisterStageOwnToolsStageAfterToolcallMatch(t *testing.T) {
 }
 
 func TestRegisterStageOwnToolsStageAfterToolcallSkip(t *testing.T) {
-	var registered StageHandler
-	regStage := func(stage Stage, handler StageHandler) {
+	var registered sdk.StageHandler
+	regStage := func(stage sdk.Stage, handler sdk.StageHandler) {
 		registered = handler
 	}
-	s := &PluginSDK{regStage: regStage, name: "myplugin"}
+	s := sdk.New("myplugin", nil, nil, regStage, nil, nil)
 
 	callCount := 0
-	s.RegisterStage(StageAfterToolcall, func(ctx *StageContext) error {
+	s.RegisterStage(sdk.StageAfterToolcall, func(ctx *sdk.StageContext) error {
 		callCount++
 		return nil
-	}, StageScopeOwnTools)
+	}, sdk.StageScopeOwnTools)
 
-	ctx := &StageContext{}
-	ctx.ToolResults = []ToolResult{{Plugin: "other", Name: "other_tool"}}
+	ctx := &sdk.StageContext{}
+	ctx.ToolResults = []sdk.ToolResult{{Plugin: "other", Name: "other_tool"}}
 
 	err := registered(ctx)
 	if err != nil {
@@ -174,13 +175,13 @@ func TestRegisterStageOwnToolsStageAfterToolcallSkip(t *testing.T) {
 }
 
 func TestRegisterStageOwnToolsNilRegStage(t *testing.T) {
-	s := &PluginSDK{name: "test"}
-	s.RegisterStage(StageBeforeToolcall, func(ctx *StageContext) error { return nil }, StageScopeOwnTools)
+	s := sdk.New("test", nil, nil, nil, nil, nil)
+	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error { return nil }, sdk.StageScopeOwnTools)
 }
 
 func TestToolDefCleaner(t *testing.T) {
 	called := false
-	def := ToolDef{
+	def := sdk.ToolDef{
 		Name:        "test_clean",
 		Description: "A test tool with cleaner",
 		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
@@ -202,7 +203,7 @@ func TestToolDefCleaner(t *testing.T) {
 }
 
 func TestToolDefNoMemory(t *testing.T) {
-	def := ToolDef{
+	def := sdk.ToolDef{
 		Name:        "test_nomem",
 		Description: "A test tool with NoMemory",
 		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
@@ -217,7 +218,7 @@ func TestToolDefNoMemory(t *testing.T) {
 }
 
 func TestToolDefNoMemoryDefaultFalse(t *testing.T) {
-	def := ToolDef{
+	def := sdk.ToolDef{
 		Name:        "test_default",
 		Description: "A test tool with defaults",
 		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
@@ -228,13 +229,13 @@ func TestToolDefNoMemoryDefaultFalse(t *testing.T) {
 }
 
 func TestToolDefRegisterPreservesNoMemory(t *testing.T) {
-	var capturedDef ToolDef
-	regTool := func(name string, def ToolDef, handler ToolHandler) error {
+	var capturedDef sdk.ToolDef
+	regTool := func(name string, def sdk.ToolDef, handler sdk.ToolHandler) error {
 		capturedDef = def
 		return nil
 	}
-	s := &PluginSDK{regTool: regTool, name: "test"}
-	def := ToolDef{
+	s := sdk.New("test", nil, regTool, nil, nil, nil)
+	def := sdk.ToolDef{
 		Name:        "test_tool",
 		Description: "test desc",
 		Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},

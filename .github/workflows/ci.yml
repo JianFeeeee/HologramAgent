@@ -62,6 +62,60 @@ jobs:
       - name: go vet ./...
         run: go vet ./...
 
+      # ── gofmt 门 ──
+      #
+      # ## 为什么必须有这一步（2026-11-04 补）
+      #
+      # 提交纪律第 3 条要求 `gofmt -l` 干净，但此前三个 workflow 里
+      # `gofmt` 出现 **0 次** —— 这条纪律只靠人自觉，CI 不兜底。
+      # 纪律没有 CI 兜底就只是建议：一次疏忽就让未格式化的代码进主干，
+      # 而 reviewer 在 diff 里看不出（gofmt 差异会淹没真实改动）。
+      #
+      # ★ 只查本仓自管的目录：third_party/hologramagentsdk 是**独立仓**，
+      #   格式由它自己的 CI 管；主仓只 vendor 其中 22 个文件，
+      #   在这里报红等于要求主仓为别人的仓负责。
+      - name: gofmt（格式门）
+        run: |
+          set -euo pipefail
+          bad=$(gofmt -l internal/ cmd/ pkg/ third_party/hologramagentsdk/sdk/ third_party/hologramagentsdk/meta/ || true)
+          if [ -n "$bad" ]; then
+            echo "★ 以下文件未按 gofmt 格式化："
+            echo "$bad"
+            echo
+            echo "本地修复：gofmt -w <文件>"
+            exit 1
+          fi
+          echo "gofmt: 全部干净"
+
+      # ── SDK 判据（独立 module）──
+      #
+      # ## 为什么主仓 CI 要跑 SDK 的测试（2026-11-04 补）
+      #
+      # `third_party/hologramagentsdk/` 有**自己独立的 go.mod**
+      # （模块 github.com/JianFeeeee/hologramagentsdk），因此：
+      #
+      #     go list ./... | grep third_party   →  0 个
+      #
+      # 主仓的 `go test ./...` **永远不包含** SDK 的任何测试。
+      # 实测 SDK 有 30 个判据文件、6 个包，主仓 CI 一次都没跑过。
+      #
+      # ## 这不是"重复跑 SDK 自己的 CI"
+      #
+      # SDK 仓的 CI 测的是"SDK 仓自己一致"。这里测的是
+      # **"主仓 vendor 的这份 SDK 副本"是否还自洽** —— 主仓的
+      # go.mod 用 `replace => ./third_party/hologramagentsdk`，
+      # 实际编译、实际跑判据用的都是这份副本。
+      #
+      # 关键约束：**只跑主仓 git 跟踪的文件**。SDK 目录在工作机上是
+      # 完整的独立仓（187 个文件 + 独立 .git），CI 上只有 22 个
+      # vendored 文件 —— 若这里依赖完整树，CI 会因缺文件而假红。
+      # 实测（git archive 出 22 个文件后）：`go test ./sdk/ ./meta/` 全绿。
+      - name: SDK 判据（独立 module，go test ./... 覆盖不到）
+        working-directory: third_party/hologramagentsdk
+        run: |
+          set -euo pipefail
+          go test ./sdk/ ./meta/ -count=1 -timeout 5m
+
       # ── CI 配置门禁自检（.github/scripts/check-ci-gates.py）──
       #
       # ## 为什么 CI 要检查自己的配置文件
