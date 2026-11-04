@@ -1,4 +1,4 @@
-package webui
+package test
 
 import (
 	"os"
@@ -93,7 +93,7 @@ func TestStarmapNoPerFrameFullScan(t *testing.T) {
 	checkStarmapSharedBlock(t, src)
 
 	// Worker 脚本必须存在且用同一套网格算法
-	wb, err := os.ReadFile(filepath.Join("static", "starmap-layout-worker.js"))
+	wb, err := os.ReadFile(filepath.Join("..", "static", "starmap-layout-worker.js"))
 	if err != nil {
 		t.Fatalf("缺少 static/starmap-layout-worker.js: %v", err)
 	}
@@ -130,13 +130,11 @@ func extractFunc(t *testing.T, src, name string) string {
 	return rest[:end]
 }
 
+// readDashboardJS 经导出的 webui.FrontendAsset 读嵌入资源
+// （原先读磁盘相对路径 "dashboard.js"，迁移到 test 包后失效）。
 func readDashboardJS(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("dashboard.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
+	return dashboardJSSource(t)
 }
 
 // checkStarmapSharedBlock 校验本文件里的共享块与 shared/starmap/layout.js 逐字节一致。
@@ -156,7 +154,7 @@ func checkStarmapSharedBlock(t *testing.T, src string) {
 	}
 	block := src[b : e+len(end)]
 	// 共享源必须被完整包进块里（抽首尾两段特征串判，避免把整份源码抄进断言）。
-	shared, err := os.ReadFile(filepath.Join("..", "..", "..", "shared", "starmap", "layout.js"))
+	shared, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "shared", "starmap", "layout.js"))
 	if err != nil {
 		t.Fatalf("读共享源失败: %v", err)
 	}

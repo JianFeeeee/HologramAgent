@@ -1,4 +1,4 @@
-package webui
+package test
 
 // 判据：「插件」页签的「服务入口」必须真的被请求到数据。
 //

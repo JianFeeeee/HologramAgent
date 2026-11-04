@@ -1,4 +1,4 @@
-package webui
+package test
 
 // 聊天受理超时的判据（2026-10-17 内测故障）。
 //
@@ -29,24 +29,13 @@ package webui
 //   没有可注入的时钟。扫描至少能防住"有人把 15s 改回来"。
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-func dashboardJS(t *testing.T) string {
-	t.Helper()
-	// webui 包目录 → 同目录下 dashboard.js
-	p := filepath.Join("dashboard.js")
-	b, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatalf("读 dashboard.js: %v", err)
-	}
-	return string(b)
-}
+// dashboardJS 见 helpers_test.go 的同名函数（经 webui.FrontendAsset 读嵌入资源）。
 
 // ★★★ 判据：受理超时必须 ≥ 5 分钟。
 //

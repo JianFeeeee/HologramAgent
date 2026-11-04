@@ -80,6 +80,34 @@ document.getElementById('login-form').addEventListener('submit',async(e)=>{e.pre
 document.getElementById('password').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('login-form').dispatchEvent(new Event('submit'))});
 </script></body></html>`
 
+// FrontendAsset 返回打包进二进制的前端资源原文
+// （dashboard.js / dashboard.css / dashboard.html / mascot.webp / logo.svg）。
+//
+// ## 为什么需要导出（2026-11-04）
+//
+// 前端刻意没有构建链 —— 资源经 go:embed 进二进制。判据要检查的是
+// 「**实际会被发出去的那份文本**」：dashboard.js 在严格模式下会不会抛
+// ReferenceError、mascot.webp 的魔数是否合法、剥离 HTML 后的属性里
+// 有没有残留转义引号。
+//
+// 这些无法通过 HTTP 端点可靠断言（要登录态、且拿到的是拼接后的整页，
+// 定位不到单个 asset）。而留在包内测就得读 `dashboardFS` 这个未导出变量
+// —— 那正是"测试耦合实现"的形态。
+//
+// 导出它，测试就能以「输入 asset 名 → 输出字节」断言，
+// 与资源存在哪个变量、怎么 embed 完全无关。
+func FrontendAsset(name string) ([]byte, error) {
+	return dashboardFS.ReadFile(name)
+}
+
+// DashboardPage 返回**组装完成的控制台整页**（外壳 + 内联 CSS/JS）。
+//
+// 这是浏览器实际收到的那份 HTML。与 FrontendAsset 的分工：
+// 那个取单个源资产，这个取组装后的成品。两者都是对外产物。
+func DashboardPage() string {
+	return dashboardHTML
+}
+
 // dashboardHTML 是组装好的控制台页面：dashboard.html 外壳 + dashboard.css + dashboard.js。
 //
 // 前端刻意没有构建链，所以拆分的办法是：外壳里留 {{DASHBOARD_CSS}} / {{DASHBOARD_JS}}

@@ -1,4 +1,4 @@
-package webui
+package test
 
 // 聊天图片附件的 HTML 必须**能被浏览器正确切分**（2026-10-30）。
 //

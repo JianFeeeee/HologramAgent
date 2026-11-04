@@ -350,11 +350,6 @@ func TestDashboardJS_NoWriteOnlyGlobals(t *testing.T) {
 	}
 }
 
-// stripJSComments 剥掉 // 行注释与 /* */ 块注释（粗粒度，但足够用于词频统计）。
-//
-// 不做完整的 JS 词法分析：本判据只用于「统计某个标识符出现次数」，
-// 粗粒度剥离已经足够，且不会误伤字符串里的 //（本文件没有这类内容，
-// 若将来有，宁可少剥也不能多剥 —— 多剥会让判据漏报）。
 func stripJSComments(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

@@ -1,4 +1,4 @@
-package webui
+package test
 
 import (
 	"path/filepath"
