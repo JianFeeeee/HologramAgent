@@ -1,10 +1,11 @@
-package webui
+package test
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 )
 
 // 星图数据源必须来自块体系（memory_blocks），而不是停写的旧表 entities。
@@ -26,14 +27,21 @@ func TestGraphDataExposesBlocksForStarmap(t *testing.T) {
 			{ID: 2, SourceKind: "block", SourceID: "blk_src_a", TargetKind: "block", TargetID: "blk_ent_c", Type: "contains"},
 		},
 	}
-	out := graphDataForVisual(data)
+	out := webui.GraphDataForVisual(data)
 	// 前端读的是 memory_blocks 字段
 	blocks, ok := out["memory_blocks"]
 	if !ok {
 		t.Fatal("GraphData 必须下发 memory_blocks（前端星图的真实数据源）")
 	}
 	raw, _ := json.Marshal(blocks)
-	var got []graphBlockView
+	// 只用 JSON 结构断言下发内容，不引用包内私有类型。
+	var got []struct {
+		ID       string `json:"id"`
+		Modality string `json:"modality"`
+		Text     string `json:"text"`
+		HasData  bool   `json:"has_data"`
+		Size     int64  `json:"size"`
+	}
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}

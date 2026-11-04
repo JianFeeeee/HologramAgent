@@ -143,12 +143,18 @@ type graphBlockView struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// graphDataForVisual 把 GraphData 的原始 map 裁成可视化视图（去掉稠密向量）。
+// GraphDataForVisual 把 GraphData 的原始 map 裁成可视化视图（去掉稠密向量）。
+//
+// ★ 导出（2026-11-04）：这是本包唯一「输入 raw map → 输出 visual map」的
+// 纯转换，也是判据 `TestGraphDataExposesBlocksForStarmap` 想测的东西。
+// 走 HTTP 端点测不了它 —— 端点的输入来自 h.memory.GraphData()，而 h.memory
+// 是私有字段，包外无法注入合成数据。导出这层转换比导出整个 Handler 的
+// 装配更小、也更贴合它真实的对外语义。
 //
 // 用 map 断言而不是泛型/反射：GraphData 返回 map[string]interface{}，
 // 里面的具体类型是包内私有的 graphEntity/[]*memory.MemoryBlock，
 // 断言不中就原样透传（宁可多发也不让接口挂掉）。
-func graphDataForVisual(data map[string]interface{}) map[string]interface{} {
+func GraphDataForVisual(data map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(data))
 	for k, v := range data {
 		out[k] = v
@@ -196,7 +202,7 @@ func (h *Handler) handleMemoryGraph(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "data": graphDataForVisual(data)})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "data": GraphDataForVisual(data)})
 }
 
 // handleMemoryGraphPulse 是给星图「跟随 agent 动」用的**轻量**活动端点。

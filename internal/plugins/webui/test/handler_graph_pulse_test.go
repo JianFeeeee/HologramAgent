@@ -1,4 +1,4 @@
-package webui
+package test
 
 import (
 	"bytes"
@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -90,8 +93,26 @@ func graphFixture() map[string]interface{} {
 	}
 }
 
-func newGraphHandler(m *fakeGraphMemory) *Handler {
-	return &Handler{memory: m}
+// newGraphHandler 通过**导出入口**装配 Handler：Memory 经 SDKConfig 注入，
+// 不再直接设 h.memory 私有字段。
+func newGraphHandler(t *testing.T, m *fakeGraphMemory) *webui.Handler {
+	t.Helper()
+	reg := internalConfig.NewConfigRegistry("")
+	seedWebUIConfig(reg)
+	return webui.NewHandler(sdk.New("webui", sdk.SDKConfig{
+		Memory:   m,
+		Settings: sdk.NewSettings("webui", reg),
+		EventBus: events.NewBus(),
+	}))
+}
+
+// serveGraph 经导出的 RegisterRoutes 分发请求。
+func serveGraph(t *testing.T, h *webui.Handler, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	r.Header.Set("X-API-Key", testAPIKey)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	mux.ServeHTTP(w, r)
 }
 
 // TestHandleMemoryGraph_StripsVector 钉住「不下发稠密向量」。
@@ -99,9 +120,9 @@ func newGraphHandler(m *fakeGraphMemory) *Handler {
 // 生产实测：8 块记忆的 vector 占 79,314 B / 408,146 B = 19%，而星图
 // （本接口唯一消费者）从不读 vector。这部分纯属白付带宽 + 堆内存。
 func TestHandleMemoryGraph_StripsVector(t *testing.T) {
-	h := newGraphHandler(&fakeGraphMemory{data: graphFixture()})
+	h := newGraphHandler(t, &fakeGraphMemory{data: graphFixture()})
 	rr := httptest.NewRecorder()
-	h.handleMemoryGraph(rr, httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph", nil))
+	serveGraph(t, h, rr, httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -120,10 +141,10 @@ func TestHandleMemoryGraph_StripsVector(t *testing.T) {
 //
 // 这是星图「新记忆生长」的数据源；它必须比全量图谱小两个数量级。
 func TestHandleMemoryGraphPulse_OnlyRecent(t *testing.T) {
-	h := newGraphHandler(&fakeGraphMemory{data: graphFixture()})
+	h := newGraphHandler(t, &fakeGraphMemory{data: graphFixture()})
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph/pulse", nil)
-	h.handleMemoryGraphPulse(rr, req)
+	serveGraph(t, h, rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
@@ -153,10 +174,10 @@ func TestHandleMemoryGraphPulse_OnlyRecent(t *testing.T) {
 
 // TestHandleMemoryGraphPulse_SinceWidens 钉住 since 参数能放大窗口。
 func TestHandleMemoryGraphPulse_SinceWidens(t *testing.T) {
-	h := newGraphHandler(&fakeGraphMemory{data: graphFixture()})
+	h := newGraphHandler(t, &fakeGraphMemory{data: graphFixture()})
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph/pulse?since=86400", nil)
-	h.handleMemoryGraphPulse(rr, req)
+	serveGraph(t, h, rr, req)
 	var resp struct {
 		Data struct {
 			Nodes []struct {
@@ -174,9 +195,9 @@ func TestHandleMemoryGraphPulse_SinceWidens(t *testing.T) {
 
 // TestHandleMemoryGraphPulse_NoVector 钉住 pulse 响应同样不带 vector。
 func TestHandleMemoryGraphPulse_NoVector(t *testing.T) {
-	h := newGraphHandler(&fakeGraphMemory{data: graphFixture()})
+	h := newGraphHandler(t, &fakeGraphMemory{data: graphFixture()})
 	rr := httptest.NewRecorder()
-	h.handleMemoryGraphPulse(rr, httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph/pulse", nil))
+	serveGraph(t, h, rr, httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph/pulse", nil))
 	if bytes.Contains(rr.Body.Bytes(), []byte(`"vector"`)) {
 		t.Fatalf("pulse response contains vector:\n%s", rr.Body.String())
 	}
@@ -192,7 +213,7 @@ func TestGraphDataForVisual_PassthroughWhenTypeMismatch(t *testing.T) {
 		"nodes":         []map[string]interface{}{{"id": 1}},
 		"memory_blocks": []*memory.MemoryBlock{{ID: "x"}},
 	}
-	out := graphDataForVisual(in)
+	out := webui.GraphDataForVisual(in)
 	if out["memory_blocks"] == nil {
 		t.Fatalf("memory_blocks dropped on type mismatch")
 	}
@@ -237,9 +258,9 @@ func TestGraphPulse_IgnoresFrozenLegacyNodes(t *testing.T) {
 		},
 	}
 
-	h := newGraphHandler(&fakeGraphMemory{data: fixture})
+	h := newGraphHandler(t, &fakeGraphMemory{data: fixture})
 	rr := httptest.NewRecorder()
-	h.handleMemoryGraphPulse(rr, httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph/pulse", nil))
+	serveGraph(t, h, rr, httptest.NewRequest(http.MethodGet, "/api/v1/memory/graph/pulse", nil))
 
 	var resp struct {
 		Success bool `json:"success"`
