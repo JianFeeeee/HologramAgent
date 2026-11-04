@@ -226,7 +226,22 @@ jobs:
       - name: 覆盖率（仅报告）
         run: |
           set -euo pipefail
+          # ★ 必须带 -coverpkg=./...（2026-11-04 实测发现漏统计）。
+          #
+          # 不带它时，`go test ./... -coverprofile` **只统计每个包内自测的覆盖**。
+          # 而本仓正在把判据迁到 `<pkg>/test/` 外部包 —— 那样一来：
+          #
+          #     internal/agent/core/child        显示 0.0%
+          #     internal/agent/core/child/test   覆盖了它 87.6%
+          #
+          # 主报告里 child 是 0%，因为覆盖它的测试在**另一个包**里。
+          # 实测：加 -coverpkg=./... 后 child 从 0.0% → 85.7%，
+          # 全局从 56.9% → 63.0%。即之前的数字是**低估**的。
+          #
+          # 代价：-coverpkg=./... 会为每个测试二进制插桩全部包，跑得更慢
+          # （实测 20m 门内仍有余量）。这个代价换"数字是真的"，值得。
           go test ./... -count=1 -timeout 20m \
+              -coverpkg=./... \
               -coverprofile=/tmp/cover.out -covermode=atomic > /tmp/cover.log 2>&1 || {
             echo "★ 覆盖率跑挂了（这条同时兜住了 go test 的失败）"
             tail -40 /tmp/cover.log

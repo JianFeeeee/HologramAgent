@@ -352,6 +352,34 @@ files, _ := filepath.Glob("*.go")     // childkind_test.go
 标准库符号。**正确做法是一次只迁一个，逐步看编译器报什么，手工修。**
 慢，但不会留下半成品（agent/core 已因此完全回滚过一次）。
 
+### 5.3.2 覆盖率必须用 `-coverpkg=./...`
+
+把判据迁到 `<pkg>/test/` 之后，**默认的覆盖率统计会把它们算丢**：
+
+```bash
+go test ./... -coverprofile=cover.out
+```
+
+只统计"每个包内自测的覆盖"。而覆盖 `child` 的测试在 `child/test/` —— 另一个包。
+于是主报告里：
+
+```text
+internal/agent/core/child        0.0%     ← 假的
+internal/agent/core/child/test   87.6%    ← 真的在覆盖 child
+```
+
+加 `-coverpkg=./...` 之后：
+
+```text
+internal/agent/core/child       85.7%
+全局                             56.9% → 63.0%
+```
+
+**即此前的数字是系统性低估的。** 而低估比高估更危险 —— 它会促使人
+"为凑覆盖率写空判据"，而那正是 §1.1 记的坑。
+
+⇒ 判据分离（§5.3）与覆盖率采集必须同时改。只改前者，度量会退化成谎报。
+
 ### 5.4 CI 必须覆盖每个独立 module
 
 **实测缺口（2026-11-04）**：主仓有 `third_party/hologramagentsdk/`，
