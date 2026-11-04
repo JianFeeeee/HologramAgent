@@ -37,7 +37,7 @@ package plugins
 //   pluginmgr       failback 恢复链必需（webui/pluginmgr/recoverydiag）
 //   seq             ToolAPI（工具表直接操作）
 //   remotedevice    RegisterChannel（内核 IO 通道注册面）
-//   clawhubadapter  InjectInputSync（OC 主动注入）
+//   clawhubadapter  已迁出为外部插件（HologramAgent/clawhubadapter，2026-11-04）
 //   agentcli        ★ EventPublish —— 见下
 //   cfgmgr / skillmgr / seemedia  （保留）
 //
@@ -94,7 +94,6 @@ package plugins
 import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/agentcli"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/cfgmgr"
-	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/clawhubadapter"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/cli"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/healthcheck"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/kbtree"

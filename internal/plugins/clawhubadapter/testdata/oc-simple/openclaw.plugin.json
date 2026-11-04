@@ -1,6 +1,0 @@
-{
-  "name": "oc-simple",
-  "version": "1.0.0",
-  "entry": "index.js",
-  "description": "Simple OpenClaw test plugin"
-}

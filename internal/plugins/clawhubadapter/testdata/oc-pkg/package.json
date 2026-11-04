@@ -1,8 +1,0 @@
-{
-  "name": "oc-pkg",
-  "version": "2.0.0",
-  "description": "OC plugin with package.json entry discovery",
-  "openclaw": {
-    "extensions": ["lib/entry.js"]
-  }
-}
