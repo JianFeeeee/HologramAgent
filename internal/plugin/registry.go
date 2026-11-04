@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"os"
@@ -80,6 +81,16 @@ type Registry struct {
 	// kernelCtl 是内核重启/关机通道（装配时注入，可 nil）。
 	// 只对声明了该能力的内置插件可见（目前是 WebUI）。
 	kernelCtl sdk.KernelControlAPI
+
+	// promptSections 是插件声明式系统提示词段的注册表（内核级共享）。
+	//
+	// ★ 为什么由 plugin 持有并传给 SDK：kstate 持有 *plugin.Registry
+	// （State.PluginRegistry），所以 plugin 不能 import kstate（会成环）。
+	// 方向只能是：plugin-host 模块从 ks.PromptSections 取出来注入。
+	//
+	// nil 合法：未装配时插件的 DeclarePromptSection 会拿到明确 error
+	//（而不是静默成功 —— 静默成功的症状是"插件以为声明了、模型看不到"）。
+	promptSections *promptsec.Registry
 
 	// secretStore 是**变量库**（凭据别名），供 sdk.SecretsAPI 桥接。
 	//
@@ -361,6 +372,13 @@ func (r *Registry) SetSecurityRuntime(rt *security.Runtime) {
 	r.securityRT = rt
 }
 
+// SetPromptSections 注入插件声明式提示词段注册表（plugin-host 模块装配时调用）。
+func (r *Registry) SetPromptSections(reg *promptsec.Registry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.promptSections = reg
+}
+
 // SetSecretStore 注入变量库（plugin-host 模块装配时调用）。
 func (r *Registry) SetSecretStore(s *security.Store) {
 	r.mu.Lock()
@@ -596,6 +614,7 @@ type sdkDeps struct {
 	kernelCtl        sdk.KernelControlAPI
 	secretStore      *security.Store
 	securityRT       *security.Runtime
+	promptSections   *promptsec.Registry
 }
 
 // snapshotDeps 在一次 RLock 内取走 buildSDK 需要的全部依赖。
@@ -627,6 +646,7 @@ func (r *Registry) snapshotDeps() sdkDeps {
 		kernelCtl:        r.kernelCtl,
 		secretStore:      r.secretStore,
 		securityRT:       r.securityRT,
+		promptSections:   r.promptSections,
 	}
 }
 
@@ -803,6 +823,7 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		// 内核未启用安全模块时为 nil ⇒ Available()==false（不是 nil API）。
 		Secrets:         sdk.NewSecretsAPI(deps.secretStore, codecOf(deps.securityRT)),
 		SecurityRuntime: deps.securityRT,
+		PromptSections:  deps.promptSections,
 		// ★ 策略声明面：插件**声明**档位（qq.owner / qq.guest…），
 		// 判定仍在内核 security.Runtime。Owner 由内核用真实插件名填，
 		// 插件无法伪造身份（见 internal/sdk/security_impl.go）。

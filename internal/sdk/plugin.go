@@ -1,6 +1,8 @@
 package sdk
 
 import (
+	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"sync"
@@ -228,6 +230,37 @@ func (s *PluginSDK) Knowledge() KnowledgeAPI   { return s.know }
 // LLM 返回大模型源。媒体字节请走 Memory().MediaBytes(ref)（CAS 已淘汰）。
 func (s *PluginSDK) LLM() LLMAPI { return s.llm }
 
+// promptSectionAdapter 把内核的 promptsec.Registry 适配成公共 SDK 的
+// SystemPromptAPI。
+//
+// ★ 为什么需要适配层：SDK 是对外契约（外部插件照它编译），不能 import
+// 内核内部包；而 Registry 要能被内核其它部分直接读。两边共享的只有
+// "段"这个数据形状。
+type promptSectionAdapter struct{ reg *promptsec.Registry }
+
+func (a promptSectionAdapter) DeclarePromptSection(s pubsdk.PromptSection) error {
+	if a.reg == nil {
+		// 未装配时**报错而不是静默丢弃**：静默丢的后果是"插件以为声明
+		// 成功了，模型却看不到"，与不声明无法区分。
+		return fmt.Errorf("system prompt registry 未装配")
+	}
+	return a.reg.Declare(promptsec.Section{
+		Section:  s.Section,
+		Owner:    s.Owner,
+		Order:    s.Order,
+		Content:  s.Content,
+		Volatile: s.Volatile,
+	})
+}
+
+func (a promptSectionAdapter) RemovePromptSection(section string) error {
+	if a.reg == nil {
+		return fmt.Errorf("system prompt registry 未装配")
+	}
+	a.reg.Remove(section)
+	return nil
+}
+
 // ioAdapter 桥接 IOManager 到公共 SDK 的 IOInjector 接口，
 // 确保外部插件通过 s.InjectText() 等方法的调用能被路由到内核 IO 层。
 type ioAdapter struct{ iom *agentIO.IOManager }
@@ -348,13 +381,18 @@ type SDKConfig struct {
 	// "单例装的时机"与"插件加载的时机"隐式耦合 —— 装晚了插件就用默认
 	// 最小策略，而日志里一个字都没有。
 	SecurityRuntime *security.Runtime
-	Memory          MemoryAPI
-	TextMemory      TextMemoryAPI
-	DocMemory       DocMemoryAPI
-	Knowledge       KnowledgeAPI
-	LLM             LLMAPI
-	Settings        SettingsAPI
-	Secrets         pubsdk.SecretsAPI
+	// PromptSections 是插件声明式系统提示词段的注册表（内核级共享）。
+	//
+	// sdk 不能 import kstate（kstate 依赖 plugin → 依赖 sdk，成环），
+	// 所以由 plugin.Registry 从 ks.PromptSections 取出来传进来。
+	PromptSections *promptsec.Registry
+	Memory         MemoryAPI
+	TextMemory     TextMemoryAPI
+	DocMemory      DocMemoryAPI
+	Knowledge      KnowledgeAPI
+	LLM            LLMAPI
+	Settings       SettingsAPI
+	Secrets        pubsdk.SecretsAPI
 	// Security 是**策略声明面**（插件声明安全档位；判定由内核执行）。
 	//
 	// ★ 只声明、不判定：本接口没有 CheckTool 之类的方法 —— 那属于内核。
@@ -386,6 +424,12 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	}
 	if cfg.Security != nil {
 		base.SetSecurityAPI(cfg.Security)
+	}
+	// ★ 系统提示词声明面（2026-11-04）。不接这一行，插件的
+	// DeclarePromptSection 会拿到 nil API ⇒ skillmgr 的索引**静默不入**
+	// 系统提示词（测试全绿因为测试自己 Mount 了挂载点，生产是坏的）。
+	if cfg.PromptSections != nil {
+		base.SetSystemPromptAPI(promptSectionAdapter{reg: cfg.PromptSections})
 	}
 	if cfg.RawFiles != nil {
 		base.SetRawFilesAPI(cfg.RawFiles)

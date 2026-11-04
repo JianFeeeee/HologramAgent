@@ -384,6 +384,15 @@ func Run(plan *Plan, opts RunOptions) (*RunResult, error) {
 	if ks == nil {
 		ks = kstate.New()
 	}
+	// ★ 装入统一挂载点（2026-11-04）。
+	//
+	// 这是**唯一**的挂载入口：底层包（agent/core 等）读不到 kernelboot
+	// （会成环），只能通过 kstate.Get() 拿共享数据。不在这里 Mount，
+	// Get() 就永远返回 nil —— 而"永远 nil"的症状是**静默不生效**
+	// （插件声明的系统提示词段全部不渲染），不是报错。
+	//
+	// 判据 TestKstateIsMountedByRun 钉住这一点。
+	kstate.Mount(ks)
 
 	// ★ 执行前把**全部**模块声明的设施登记为"内核注册过"。
 	//

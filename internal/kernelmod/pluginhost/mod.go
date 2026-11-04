@@ -307,6 +307,16 @@ func injectBaseDeps(ks *kstate.State) {
 	}
 	reg.SetTracker(ks.Tracker)
 	reg.SetConfig(ks.Cfg)
+	// 插件声明式系统提示词段：从内核挂载点取，注入给插件 SDK。
+	//
+	// ★ 不接这一行的后果：sdk.SystemPrompt() 返回 nil ⇒ skillmgr 的
+	// publishIndex 静默什么都不做 ⇒ 模型看不到任何 skill 索引。
+	// 而那正是本次重构要修的生产故障（分诊助手拿 terminal_create 当
+	// cmd_run 用）。症状是"静默不生效"，不是报错。
+	if ks.PromptSections != nil {
+		reg.SetPromptSections(ks.PromptSections)
+	}
+
 	// 变量库注入：sdk.SecretsAPI 桥接到它（不再读包级单例）。
 	// ks.Security 可能为 nil（未启用安全模块），那正是"不可用"语义。
 	if ks.Security != nil {
