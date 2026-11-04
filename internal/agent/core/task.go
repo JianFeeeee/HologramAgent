@@ -746,6 +746,21 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		})
 	}
 
+	// ★ 发送前自检：assistant(tool_calls) 必须紧跟它全部的 tool 结果。
+	//
+	// 为什么必须在**这里**（唯一一次组装请求的位置，task.go:750）：
+	// 上游对这个约束是硬拒绝（HTTP 400），一句错误信息带不出任何定位信息，
+	// 而 f.Msgs 是**多条路径**拼出来的（prepare 重建、rebase 中断恢复、
+	// 批末 flush、占位补全），任何一条漏掉配对都表现为同一个 400。
+	//
+	// 实测（2026-11-04）：历史 context.json 已经干净（0 个 result 多于 call
+	// 的帧），但 A2A 新会话仍报 400 ⇒ 问题不在 L1 历史渲染，在 f.Msgs。
+	//
+	// 这里做的是**止损 + 定位**：把没有配对结果的 tool_calls 剔掉（连同
+	// 该 assistant 消息里其余仍有效的 call 一起重排），并记录被剔的是谁。
+	// 不静默——日志里能看出是哪一轮、哪个工具。
+	f.Msgs = dropUnpairedToolCalls(f.Msgs)
+
 	req := &agentAPI.CompletionRequest{
 		Messages:        f.Msgs,
 		MaxTokens:       4096,
