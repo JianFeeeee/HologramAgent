@@ -1589,3 +1589,34 @@ func TestRuntimeEndpoint(t *testing.T) {
 		t.Fatalf("无状态源应回 503，实际 %d", w2.Code)
 	}
 }
+
+// testAuthAPIKey 是 seedWebUIConfig 写进配置的 api_key 值。
+//
+// ★ 2026-11-04：原先只在 openai_compat_test.go 里定义，那个文件迁到 test/
+// 后本包 4 个测试文件（auth_hardening / gzip / legacy_proxy ×2）仍在用它。
+const testAuthAPIKey = "test-api-key"
+
+// newOpenAITestServer 起一个带完整路由的 /v1/* 测试服务器。
+//
+// ★ 2026-11-04：原先定义在 openai_compat_test.go 里，那个文件迁到 test/
+// 之后本包仍有判据（auth_hardening_test.go）要用它，于是在这里重建一份包内版本。
+// 两份都保留是有意的：包内版本用包内的 seedWebUIConfig/testSDK，
+// test/ 版本用那边的 helper —— 各自独立，避免跨包共享测试辅助。
+func newOpenAITestServer(t *testing.T) (*httptest.Server, *agentIO.IOManager, *events.Bus) {
+	t.Helper()
+	cfgReg := internalConfig.NewConfigRegistry("")
+	seedWebUIConfig(cfgReg)
+
+	iom := agentIO.NewIOManager()
+	bus := events.NewBus()
+	h := NewHandler(testSDK(sdk.SDKConfig{
+		Settings:  sdk.NewSettings("webui", cfgReg),
+		IOManager: iom,
+		EventBus:  bus,
+	}))
+	h.RegisterRoutes(http.NewServeMux())
+
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(func() { srv.Close() })
+	return srv, iom, bus
+}

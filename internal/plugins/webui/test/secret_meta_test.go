@@ -147,20 +147,3 @@ func serveRoutes(t *testing.T, h *webui.Handler, w http.ResponseWriter, r *http.
 	h.RegisterRoutes(mux)
 	mux.ServeHTTP(w, r)
 }
-
-// testAPIKey 与 seedWebUIConfig 写进配置的值一致。
-const testAPIKey = "test-api-key"
-
-// seedWebUIConfig 在 webui 插件配置里登记并设置 api_key / username / password。
-//
-// 与包内 handler_test.go 的同名辅助保持一致 —— requireAPI 会读它，
-// 没配就返回 503「webui api_key not configured」。
-func seedWebUIConfig(reg *internalConfig.ConfigRegistry) {
-	c := reg.PluginConfig("webui")
-	c.RegisterDef(internalConfig.ConfigDef{Key: "api_key", Default: ""})
-	c.RegisterDef(internalConfig.ConfigDef{Key: "username", Default: ""})
-	c.RegisterDef(internalConfig.ConfigDef{Key: "password", Default: ""})
-	c.Set("api_key", testAPIKey)
-	c.Set("username", "admin")
-	c.Set("password", "pw-for-test")
-}

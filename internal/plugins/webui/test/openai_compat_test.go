@@ -1,4 +1,4 @@
-package webui
+package test
 
 import (
 	"bufio"
@@ -13,6 +13,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -48,12 +49,12 @@ func newOpenAITestServer(t *testing.T) (*httptest.Server, *agentIO.IOManager, *e
 
 	iom := agentIO.NewIOManager()
 	bus := events.NewBus()
-	cfg := sdk.SDKConfig{
+	cfg := sdk.New("webui", sdk.SDKConfig{
 		Settings:  sdk.NewSettings("webui", cfgReg),
 		IOManager: iom,
 		EventBus:  bus,
-	}
-	h := NewHandler(testSDK(cfg))
+	})
+	h := webui.NewHandler(cfg)
 	h.RegisterRoutes(http.NewServeMux())
 
 	srv := httptest.NewServer(h.Handler())
