@@ -982,6 +982,26 @@ func (a *Agent) stepToolBatch(f *TaskFrame) stepOutcome {
 		f.CurResult = r.text
 		f.CurRaw = r.raw
 		f.ToolIdx = i
+		// ★ 必须先记录**调用**，再记结果（2026-11-04 生产故障修复）。
+		//
+		// 此前的缺陷：并发路径只 append ToolResults，**从不调
+		// appendToolCallRecord** ⇒ 上下文里 ToolResults 多于 ToolCalls。
+		//
+		// 后果链（实测）：
+		//   渲染时每个 tool result 都会产生一条 role="tool" 消息，
+		//   而与其配对的 assistant(tool_calls) 里没有这个 call_id
+		//   ⇒ 上游 400：An assistant message with 'tool_calls' must be
+		//     followed by tool messages responding to each 'tool_call_id'
+		//   ⇒ 所有 provider 全部失败，A2A 会话彻底不可用。
+		//
+		// 同时漏掉的还有 ToolsUsed（它和 ToolCalls 在 appendToolCallRecord
+		// 里同处维护）：并发批次的工具从未被记进"用过的工具"，
+		// 记忆/统计/页化都在少算。
+		//
+		// 为什么放在这里而不是 fan-out 里：注释已说明 f.Msgs / f.ToolResults
+		// 在 goroutine 期间一律不碰。这里是 join 之后的顺序收尾段，
+		// 按索引串行，与单步路径的语义一致。
+		f.appendToolCallRecord(f.CurTool)
 		f.ToolResults = append(f.ToolResults, ToolResultItem{CallID: f.CurTool.ID, Name: r.name, Output: r.text})
 		if out := a.stepToolAfter(f); out != outcomeContinue {
 			return out

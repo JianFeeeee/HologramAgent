@@ -402,3 +402,100 @@ func TestBatchAfterToolcallSeesOwnResult(t *testing.T) {
 		t.Errorf("after_toolcall 读到别的工具的结果: %v", bad)
 	}
 }
+
+// 回归：并发批次的 **ToolCalls 与 ToolResults 必须配对**。
+//
+// ## 这条判据补的是一个真实生产故障（2026-11-04）
+//
+// stepToolBatch 只 append ToolResults，**从不调 appendToolCallRecord**
+// ⇒ 帧里的 ToolCalls 少于 ToolResults。
+//
+// 后果链：
+//
+//	finishInputTask 把 f.ToolCalls / f.ToolResults 原样写进 ContextEvent
+//	⇒ 渲染时每条 tool result 产生一条 role="tool" 消息，
+//	  而配对的 assistant(tool_calls) 里没有该 call_id
+//	⇒ 上游 400 "must be followed by tool messages responding to each tool_call_id"
+//	⇒ 所有 provider 失败 ⇒ A2A 长会话彻底不可用
+//
+// ## 为什么已有的 TestBatchToolCallIDsAllPaired 没抓到
+//
+// 它只看 `f.Msgs`。而 Msgs 里的 assistant 消息由 ensureBatchAssistant
+// 单独写入（含全部 PendingTools），**不经过 f.ToolCalls** ——
+// 所以 Msgs 侧配平，落 context 的那份数据不配平。
+//
+// ## 为什么查 f.ToolCalls 而不是 a.context
+//
+// process() 走 runTaskSteps 直接返回，**不经过 finishInputTask**，
+// 因此不会写 context。而 f.ToolCalls / f.ToolResults 正是
+// finishInputTask 原样搬进 ContextEvent 的两个字段
+// （task.go:605-606 `ToolResults: f.ToolResults, ToolCalls: f.ToolCalls`）——
+// 查它们等价于查落盘数据，且不依赖完整调度循环。
+func TestBatchContextEventPairsCallsWithResults(t *testing.T) {
+	tcA := agentAPI.ToolCall{ID: "c1", Name: "tool_alpha", Arguments: map[string]interface{}{}}
+	tcB := agentAPI.ToolCall{ID: "c2", Name: "tool_beta", Arguments: map[string]interface{}{}}
+	sp := &batchProvider{responses: []*agentAPI.CompletionResponse{
+		{ToolCalls: []agentAPI.ToolCall{tcA, tcB}},
+		{Content: "final"},
+	}}
+	a, _ := newBatchAgent(t, sp)
+
+	// ★ 必须让工具声明 ParallelSafe，否则 batchRunnable 判false ⇒ 走
+	// 串行路径（stepToolExec），而 bug 只在**并发路径**（stepToolBatch）里。
+	// 第一版判据没声明，删掉修复行仍然通过 —— 那次验证无效。
+	for _, name := range []string{"tool_alpha", "tool_beta"} {
+		if err := a.stageHost.RegisterTool(name, sdk.ToolDef{
+			Name: name, Description: name, ParallelSafe: true,
+			Parameters: map[string]interface{}{"type": "object"},
+		}, func(args map[string]interface{}) (interface{}, error) {
+			return "ok", nil
+		}); err != nil {
+			t.Fatalf("注册 %s: %v", name, err)
+		}
+	}
+
+	f := a.newTaskFrame("go", a.stageCtxFromInput("go", "", ""))
+	if out := a.runTaskSteps(f); out != outcomeDone {
+		t.Fatalf("runTaskSteps = %v, err=%v", out, f.Err)
+	}
+
+	// 断言真的走了并发路径（否则本判据测不到目标代码）
+	if a.stageHost != nil {
+		if safe, ok := a.stageHost.ConcurrencySafeOf("tool_alpha"); !ok || !safe {
+			t.Fatal("前置不成立：tool_alpha 未被判为并发安全，本判据会走串行路径而测不到 bug")
+		}
+	}
+
+	// ① 调用记录必须齐全（并发路径漏 appendToolCallRecord 就会少于 2）
+	declared := map[string]bool{}
+	for _, tc := range f.ToolCalls {
+		declared[tc.CallID] = true
+	}
+	if len(declared) != 2 {
+		t.Fatalf("★ f.ToolCalls 只有 %d 个（%v），期望 2 个。\n"+
+			"并发路径（stepToolBatch）漏了 appendToolCallRecord。\n"+
+			"下游后果：落进 ContextEvent 后，渲染出无配对的 role=\"tool\" 消息\n"+
+			"⇒ 上游 400 must be followed by tool messages ⇒ 所有 provider 失败。",
+			len(declared), declared)
+	}
+
+	// ② 每条结果都必须有配对
+	for _, tr := range f.ToolResults {
+		if !declared[tr.CallID] {
+			t.Fatalf("★ 工具结果 %q (call_id=%s) 在 ToolCalls 里找不到配对 ——\n"+
+				"这正是生产故障的成因：上游会拒绝这样的消息序列。\n"+
+				"declared=%v", tr.Name, tr.CallID, declared)
+		}
+	}
+
+	// ③ 双向：每个调用也必须有结果（否则是悬空 call，上游同样拒绝）
+	answered := map[string]bool{}
+	for _, tr := range f.ToolResults {
+		answered[tr.CallID] = true
+	}
+	for id := range declared {
+		if !answered[id] {
+			t.Fatalf("★ 调用 %s 没有对应结果 —— 悬空 tool_call，上游会拒绝", id)
+		}
+	}
+}
