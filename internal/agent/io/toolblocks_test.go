@@ -1,6 +1,7 @@
 package io
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -84,11 +85,23 @@ func TestConsumeToolBlocksFor_ConcurrentNoCrossTalk(t *testing.T) {
 	m := NewIOManager()
 	const n = 32
 
+	// ★ 每个 goroutine 必须用**唯一**的 id（2026-11-04 修）。
+	//
+	// 原来写的是 `id := string(rune('A' + i%26))` —— n=32 而字母只有 26 个，
+	// 于是 i=0 与 i=26 都得到 'A'，6 个 id 各被两个 goroutine 共用。
+	// 两者共享同一个 key：后 Set 的覆盖先 Set 的、先 Consume 的拿到空或
+	// 别人的值 ⇒ 判据约 1/8 概率假红。
+	//
+	// 实测该失败在**本次改动之前**的基线上同样复现（12 次内中 1 次），
+	// 报错 `call E 期望 [block-4-E]，实际 []`。这是**测试自身的缺陷**，
+	// 不是 SetToolBlocksFor / ConsumeToolBlocksFor 的并发缺陷 ——
+	// 两个 goroutine 抢同一个 key 本就该串话（那是覆盖语义，不是串话）。
 	var wg sync.WaitGroup
 	errs := make(chan string, n)
 	for i := 0; i < n; i++ {
-		id := string(rune('A' + i%26))
-		want := "block-" + string(rune('0'+i%10)) + "-" + id
+		// id 唯一 ⇒ 每个调用有自己独立的 key，断言才有意义。
+		id := "call-" + strconv.Itoa(i)
+		want := "block-" + strconv.Itoa(i%10) + "-" + id
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -103,6 +116,50 @@ func TestConsumeToolBlocksFor_ConcurrentNoCrossTalk(t *testing.T) {
 	close(errs)
 	for e := range errs {
 		t.Error(e)
+	}
+}
+
+// TestConsumeToolBlocksFor_KeysAreIsolated 钉住"不同 key 互不干扰"这条契约。
+//
+// ## 为什么单开一条（2026-11-04）
+//
+// 上面那条并发判据原先用 `i%26` 生成 id，n=32 ⇒ 6 个 id 重复，两个 goroutine
+// 抢同一个 key ⇒ 约 1/8 概率假红。它红了半年没人管，因为"偶发"通常被当成
+// 环境问题。
+//
+// 根因是判据**自己违反了它想验证的前提**：想测"不同 key 不串话"，
+// 却让多个 goroutine 共用 key。
+//
+// 这条判据把前提本身钉住：一次性写入 N 个**互不相同**的 key，
+// 逐个读回必须各得其所。它不涉及并发，所以失败一定是真缺陷。
+func TestConsumeToolBlocksFor_KeysAreIsolated(t *testing.T) {
+	m := NewIOManager()
+	const n = 64
+	want := make([]string, n)
+	for i := 0; i < n; i++ {
+		id := "call-" + strconv.Itoa(i)
+		want[i] = "block-" + strconv.Itoa(i)
+		m.SetToolBlocksFor(id, []interface{}{want[i]})
+	}
+	for i := 0; i < n; i++ {
+		id := "call-" + strconv.Itoa(i)
+		got := m.ConsumeToolBlocksFor(id)
+		if len(got) != 1 || got[0] != want[i] {
+			t.Fatalf("★ key %s 期望 [%s]，实际 %s ——\n"+
+				"不同 key 之间串话了（或写入被覆盖）", id, want[i], toStr(got))
+		}
+	}
+}
+
+// TestConsumeToolBlocksFor_ConsumeIsOneShot 钉住消费语义：读一次后清空。
+func TestConsumeToolBlocksFor_ConsumeIsOneShot(t *testing.T) {
+	m := NewIOManager()
+	m.SetToolBlocksFor("c", []interface{}{"b"})
+	if got := m.ConsumeToolBlocksFor("c"); len(got) != 1 {
+		t.Fatalf("首次消费应得 1 条，实际 %d", len(got))
+	}
+	if got := m.ConsumeToolBlocksFor("c"); len(got) != 0 {
+		t.Fatalf("★ 二次消费应得空（block 是一次性的），实际 %s", toStr(got))
 	}
 }
 
