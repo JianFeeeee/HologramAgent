@@ -60,6 +60,12 @@ func (p *Plugin) registerInfo() {
 			"type": "object",
 			"properties": map[string]interface{}{
 				"name": map[string]interface{}{"type": "string", "description": "技能名称"},
+				"section": map[string]interface{}{
+					"type": "string",
+					"description": "可选。只返回某个章节。不传则返回「目录 + 全文概要」，" +
+						"长文档应先用目录定位再按需读章节，避免一次吞掉上万 token。" +
+						"可用章节标题的任一段（不区分大小写，支持子串匹配）。",
+				},
 			},
 			"required": []string{"name"},
 		},
@@ -76,13 +82,45 @@ func (p *Plugin) registerInfo() {
 		var b strings.Builder
 		fmt.Fprintf(&b, "名称: %s\n版本: %s\n状态: %s\n路径: %s\n描述: %s\n",
 			e.sk.Name(), e.sk.Version(), state, e.path, e.sk.Description())
+
+		raw := e.sk.RawContent()
+		sections := parseSections(raw)
+
+		// 带 section：只返回匹配的章节（这是长文档按需读的入口）。
+		if want, _ := args["section"].(string); strings.TrimSpace(want) != "" {
+			start, end, idx, ok := resolveSection(raw, sections, want)
+			if !ok {
+				var b2 strings.Builder
+				b2.WriteString("没有匹配的章节。可用的章节：\n")
+				b2.WriteString(renderTOC(sections, 3))
+				return nil, fmt.Errorf("skill %q 没有匹配 %q 的章节\n%s",
+					name, want, b2.String())
+			}
+			lines := strings.Split(raw, "\n")
+			body := strings.Join(lines[start:end], "\n")
+			fmt.Fprintf(&b, "\n--- %s（第 %d-%d 行）---\n%s\n", sections[idx].Title, start+1, end, body)
+			return b.String(), nil
+		}
+
 		if tools := e.sk.Tools(); len(tools) > 0 {
 			b.WriteString("文档中声明的操作步骤:\n")
 			for _, td := range tools {
 				fmt.Fprintf(&b, "  - %s: %s\n", td.Name, td.Description)
 			}
 		}
-		fmt.Fprintf(&b, "\n--- SKILL.md ---\n%s", e.sk.RawContent())
+
+		// 短文档（<= shortSkillLines）直接给全文：加一层目录只是噪音。
+		lines := strings.Split(raw, "\n")
+		if len(lines) <= shortSkillLines {
+			fmt.Fprintf(&b, "\n--- SKILL.md ---\n%s", raw)
+			return b.String(), nil
+		}
+
+		// 长文档：先给目录 + 前若干行，模型据此决定读哪一节。
+		fmt.Fprintf(&b, "\n--- 目录（本文 %d 行，请用 section 参数按需读取）---\n", len(lines))
+		b.WriteString(renderTOC(sections, 3))
+		fmt.Fprintf(&b, "\n--- 开头 %d 行 ---\n%s\n", tocHeadLines,
+			strings.Join(lines[:minInt(tocHeadLines, len(lines))], "\n"))
 		return b.String(), nil
 	})
 }
