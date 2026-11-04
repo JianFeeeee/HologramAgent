@@ -71,6 +71,9 @@ type TerminalSession struct {
 	done      chan struct{}
 
 	// 通知节流字段
+	// writeMu 串行化本终端的写入：保证一次 terminal_write 的
+	// input 与 key 不会被其它写入插进中间。
+	writeMu      sync.Mutex
 	unreadBytes  int           // 最近一次通知后积累的未读字节数
 	lastNotify   time.Time     // 最近一次通知时间
 	lastData     time.Time     // 最近一次读到的数据时间（用于判定输出停止）
@@ -265,11 +268,17 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	}
 
 	// agentcli 通道：终端生命周期/输出事件经它注入 agent（见本文件 InjectText* 调用）。
-	_ = s.RegisterInputChannel("agentcli", sdk.ChannelDef{})
+	//
+	// ★ 不吞错误（2026-11-03）：注册失败时这条通道根本不存在，之后所有
+	// InjectText("agentcli", ...) 都会投进虚空 —— 通知静默消失，日志里
+	// 一点痕迹都没有。宁可让插件启动失败，也不要静默降级。
+	if err := s.RegisterInputChannel("agentcli", sdk.ChannelDef{}); err != nil {
+		return fmt.Errorf("agentcli: register input channel failed: %w", err)
+	}
 	s.RegisterTool("terminal_create", sdk.ToolDef{
 		Name: "terminal_create",
 		Description: "创建一个新的交互式终端会话。返回终端 ID，后续通过此 ID 进行读写操作。适用于运行交互式程序如 vim、ssh、top、nano 等。" +
-			"通知模式通过 notify 参数选择（默认 exit）：exit=仅命令执行结束后提醒一次；interval=定时反馈（如 interval=30s 每 30 秒反馈一次状态摘要）；" +
+			"默认**不主动推送**（终端像人开的窗口：输出由你 terminal_read 主动读）。需要推送时用 notify 显式声明：exit=命令执行结束后提醒一次；interval=定时反馈（如 interval=30s 每 30 秒反馈一次状态摘要）；" +
 			"buffer=未读输出积累到指定字节数后提醒（如 buffer=8192）；多个模式用逗号组合（如 interval=30s,buffer=8192）。终端默认 5 分钟后自动关闭，可通过 timeout 参数调整。",
 		NoMemory: true,
 		Parameters: map[string]interface{}{
@@ -281,7 +290,7 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 				},
 				"notify": map[string]interface{}{
 					"type":        "string",
-					"description": "通知模式（可选）：exit（默认，命令结束后提醒）；interval=时长（定时反馈，如 30s/1m）；buffer=字节数（缓冲阈值提醒）；可逗号组合",
+					"description": "通知模式（可选，默认不推送）。不传 = 完全静默，输出靠 terminal_read 主动读。显式声明才有推送：exit（命令结束后提醒一次）；interval=时长（定时反馈，如 30s/1m）；buffer=字节数（未读输出达阈值提醒）；quiet（显式静默）；可逗号组合",
 				},
 				"timeout": map[string]interface{}{
 					"type":        "string",
@@ -542,9 +551,20 @@ func (p *Plugin) handleCreate(s *sdk.PluginSDK, args map[string]interface{}) (in
 		cols = uint16(c)
 	}
 
-	// 通知模式：默认 exit（命令执行结束后提醒一次）。
-	// 支持 interval=30s / buffer=8192 / quiet，可逗号组合。
-	watch := terminalWatch{onExit: true, quiet: true}
+	// 通知模式：**默认不推送**（用户裁定 2026-11-03）。
+	//
+	//	「agentcli 没必要进行直接推送，因为本质它就类似人类开启的终端窗口」
+	//
+	// 终端窗口的语义是：人敲命令 → 自己去看输出。输出不该主动跳到眼前。
+	// 主动注入虽然走 inputCh（排队、不抢占），但每次都会唤醒 agent 跑一轮
+	// 推理；`tail -f` / `npm install` 这类长输出命令会让它被反复唤醒。
+	//
+	// 所以默认 onExit=false：结束、退出、超时一律静默，输出只由
+	// terminal_read 主动读取。需要推送时必须**显式**声明：
+	//   notify=exit            → 命令结束后提醒一次
+	//   notify=interval=30s    → 定时反馈状态摘要
+	//   notify=buffer=8192     → 未读输出达阈值提醒
+	watch := terminalWatch{onExit: false, quiet: true}
 	if notifyStr, ok := args["notify"].(string); ok && notifyStr != "" {
 		watch = parseNotifyMode(notifyStr, watch)
 	}
@@ -610,6 +630,19 @@ func notifyModeString(w terminalWatch) string {
 	return strings.Join(parts, ",")
 }
 
+// terminalGoneResult 是「终端已不存在」的**结构化**答复。
+//
+// 为什么不能只回一句文本（2026-11-03）：模型拿到普通失败会继续用同一个 id
+// 重试（实测 browser 插件同形态：连续 3 次失败仍用旧 id）。给出可执行的
+// 下一步，它才会停下来重建。
+func (p *Plugin) terminalGoneResult(id string) map[string]interface{} {
+	return map[string]interface{}{
+		"error":       "terminal_gone",
+		"terminal":    id,
+		"next_action": "该终端已关闭或超时清理。需要继续执行请调用 terminal_create 新建终端，并使用返回的新 id；terminal_list 可查看现存终端。",
+	}
+}
+
 func (p *Plugin) handleWrite(s *sdk.PluginSDK, args map[string]interface{}) (interface{}, error) {
 	id, _ := args["id"].(string)
 	if id == "" {
@@ -620,34 +653,62 @@ func (p *Plugin) handleWrite(s *sdk.PluginSDK, args map[string]interface{}) (int
 	session, ok := p.sessions[id]
 	p.mu.Unlock()
 	if !ok {
-		return map[string]interface{}{"error": fmt.Sprintf("终端 %s 不存在或已关闭", id)}, nil
+		return p.terminalGoneResult(id), nil
 	}
 
 	input, _ := args["input"].(string)
 	key, _ := args["key"].(string)
 
-	var data []byte
+	// ★ input 与 key **可以同时提供**（2026-11-03 修复）。
+	//
+	// 旧实现是 `if key != "" { ... } else if input != "" { ... }` 的互斥结构：
+	// 同时传两者时 input 被**静默丢弃**，只发出 key。于是
+	//
+	//	{"input":"ls","key":"enter"}   ⇒ 只发了 \r
+	//
+	// 命令从未输入，模型却收到 status=ok / bytes=1，以为成功、去读输出又
+	// 什么都读不到，然后反复重试 —— 这正是"终端没反应"的直接成因。
+	//
+	// 现在按**声明顺序**发送：先 input，再 key。"输入命令并回车"是最高频
+	// 的表达，不该要求模型拆成两次调用。
+	if input == "" && key == "" {
+		return map[string]interface{}{"error": "需要提供 input 或 key 参数"}, nil
+	}
 
+	var keyBytes []byte
 	if key != "" {
 		b, err := mapKey(key)
 		if err != nil {
 			return map[string]interface{}{"error": err.Error()}, nil
 		}
-		data = b
-	} else if input != "" {
-		data = []byte(input)
-	} else {
-		return map[string]interface{}{"error": "需要提供 input 或 key 参数"}, nil
+		keyBytes = b
 	}
 
-	n, err := session.Write(string(data))
-	if err != nil {
-		return map[string]interface{}{"error": fmt.Sprintf("写入失败: %v", err)}, nil
+	// ★ 整对写入必须在同一把会话锁里完成：否则同终端的并发写可能插进
+	// input 与 key 之间，把命令和回车拆坏（terminal_write 声明了 Serial，
+	// 但那只约束内核同批调度，不约束插件内部多路写入）。
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+
+	written := 0
+	if input != "" {
+		n, err := session.Write(input)
+		if err != nil {
+			return map[string]interface{}{"error": fmt.Sprintf("写入失败: %v", err)}, nil
+		}
+		written += n
+	}
+	if len(keyBytes) > 0 {
+		n, err := session.Write(string(keyBytes))
+		if err != nil {
+			return map[string]interface{}{"error": fmt.Sprintf("写入按键失败: %v", err)}, nil
+		}
+		written += n
 	}
 
 	return map[string]interface{}{
 		"status":   "ok",
-		"bytes":    n,
+		"bytes":    written,
 		"terminal": id,
 	}, nil
 }
@@ -703,7 +764,7 @@ func (p *Plugin) handleRead(args map[string]interface{}) (interface{}, error) {
 	session, ok := p.sessions[id]
 	p.mu.Unlock()
 	if !ok {
-		return map[string]interface{}{"error": fmt.Sprintf("终端 %s 不存在或已关闭", id)}, nil
+		return p.terminalGoneResult(id), nil
 	}
 
 	var output string
@@ -752,7 +813,7 @@ func (p *Plugin) handleResize(args map[string]interface{}) (interface{}, error) 
 	session, ok := p.sessions[id]
 	p.mu.Unlock()
 	if !ok {
-		return map[string]interface{}{"error": fmt.Sprintf("终端 %s 不存在或已关闭", id)}, nil
+		return p.terminalGoneResult(id), nil
 	}
 
 	if err := session.Resize(uint16(rows), uint16(cols)); err != nil {
@@ -781,7 +842,7 @@ func (p *Plugin) handleClose(s *sdk.PluginSDK, args map[string]interface{}) (int
 	p.mu.Unlock()
 
 	if !ok {
-		return map[string]interface{}{"error": fmt.Sprintf("终端 %s 不存在或已关闭", id)}, nil
+		return p.terminalGoneResult(id), nil
 	}
 
 	session.Close()
@@ -806,12 +867,13 @@ func (p *Plugin) handleWatch(args map[string]interface{}) (interface{}, error) {
 	session, ok := p.sessions[id]
 	p.mu.Unlock()
 	if !ok {
-		return map[string]interface{}{"error": fmt.Sprintf("终端 %s 不存在或已关闭", id)}, nil
+		return p.terminalGoneResult(id), nil
 	}
 
 	session.mu.Lock()
 	if v, ok := args["clear"].(bool); ok && v {
-		session.watch = terminalWatch{onExit: true}
+		// clear = 回到默认（不推送），不是"回到 exit 提醒"。
+		session.watch = terminalWatch{onExit: false, quiet: true}
 	} else {
 		if v, ok := args["interval"].(string); ok && v != "" {
 			if d, err := time.ParseDuration(v); err == nil && d >= 0 {
@@ -826,9 +888,6 @@ func (p *Plugin) handleWatch(args map[string]interface{}) (interface{}, error) {
 		}
 		if v, ok := args["quiet"].(bool); ok {
 			session.watch.quiet = v
-		}
-		if session.watch.interval == 0 && session.watch.bufferBytes == 0 && !session.watch.quiet {
-			session.watch.onExit = true
 		}
 	}
 	w := session.watch

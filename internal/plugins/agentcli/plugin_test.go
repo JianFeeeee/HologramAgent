@@ -5,6 +5,7 @@ package agentcli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -480,6 +481,8 @@ type mockTerm struct {
 	data    chan []byte
 	running bool
 	err     error
+	// writes 记录每次 WriteString 的原文，供判据断言"到底发出了什么"。
+	writes []string
 	// reads 记录 Read 被调用次数，供 waitReadLoopReady 判断 readLoop 已起来。
 	// 不用固定 sleep：机器慢时 sleep 不够、快时白等。
 	reads int
@@ -523,8 +526,22 @@ func (m *mockTerm) Read(buf []byte) (int, error) {
 	}
 }
 
-func (m *mockTerm) WriteString(s string) (int, error) { return len(s), nil }
-func (m *mockTerm) Resize(rows, cols uint16) error    { return nil }
+func (m *mockTerm) WriteString(s string) (int, error) {
+	m.mu.Lock()
+	m.writes = append(m.writes, s)
+	m.mu.Unlock()
+	return len(s), nil
+}
+
+// writeLog 返回已写入内容（并发安全）。
+func (m *mockTerm) writeLog() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.writes))
+	copy(out, m.writes)
+	return out
+}
+func (m *mockTerm) Resize(rows, cols uint16) error { return nil }
 func (m *mockTerm) Running() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1070,6 +1087,190 @@ func TestNoExpiredNotificationInjected(t *testing.T) {
 	for _, text := range capture.snapshot() {
 		if strings.Contains(text, "已超时关闭") {
 			t.Fatalf("不得注入「已超时关闭」（创建时 timeout 已告知）: %q", text)
+		}
+	}
+}
+
+// ── 2026-11-03 修复的判据 ──
+
+// TestWriteSendsInputThenKey 钉住 input 与 key 可以同时提交。
+//
+// 旧实现的 if key / else if input 是**互斥**结构：
+//
+//	{"input":"ls","key":"enter"}  ⇒ 只发 \r，input 被静默丢弃
+//
+// 模型收到 status=ok / bytes=1 以为成功，读输出却是空的，于是反复重试。
+// 判据必须断言**两段都真的写进了终端**，只看返回值是测不出来的。
+func TestWriteSendsInputThenKey(t *testing.T) {
+	p, tc, err := setupPlugin()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	term := newMockTerm()
+	ts := newTestSession(term)
+	ts.id = "t-write"
+	p.mu.Lock()
+	p.sessions["t-write"] = ts
+	p.mu.Unlock()
+
+	handler, ok := tc.handlers["terminal_write"]
+	if !ok {
+		t.Fatal("terminal_write 未注册")
+	}
+	if _, err := handler(map[string]interface{}{
+		"id":    "t-write",
+		"input": "ls",
+		"key":   "enter",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	writes := term.writeLog()
+	if len(writes) != 2 {
+		t.Fatalf("应分两次写（input 一次、key 一次），实际 %d 次: %q", len(writes), writes)
+	}
+	if writes[0] != "ls" {
+		t.Fatalf("第一段必须是 input，实际 %q", writes[0])
+	}
+	if writes[1] != "\r" {
+		t.Fatalf("第二段必须是 enter 键（\\r），实际 %q", writes[1])
+	}
+}
+
+// TestWriteInputOnlyUnchanged 保证只传 input 时不额外发键。
+func TestWriteInputOnlyUnchanged(t *testing.T) {
+	p, tc, err := setupPlugin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	term := newMockTerm()
+	ts := newTestSession(term)
+	ts.id = "t-in"
+	p.mu.Lock()
+	p.sessions["t-in"] = ts
+	p.mu.Unlock()
+
+	if _, err := tc.handlers["terminal_write"](map[string]interface{}{
+		"id":    "t-in",
+		"input": "echo hi",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writes := term.writeLog()
+	if len(writes) != 1 || writes[0] != "echo hi" {
+		t.Fatalf("只传 input 时应只写一次，实际 %q", writes)
+	}
+}
+
+// TestTerminalCreateDefaultsToNoPush 钉住默认不推送。
+//
+// 用户裁定（2026-11-03）：
+//
+//	「agentcli 没必要进行直接推送，因为本质它就类似人类开启的终端窗口」
+//
+// 终端窗口不会把输出推到眼前；唤醒 agent 跑一轮推理的代价必须由调用方
+// 显式声明（notify=exit / interval / buffer）才付出。
+//
+// ★ 为什么不 spawn 真终端来断言：这条默认值在 handleCreate 的局部变量里，
+//
+//	没有可观测的返回字段。用源码约束 + parseNotifyMode 的默认入参一起钉：
+//	删掉那行默认值、或把它改回 onExit:true，这条会红。
+func TestTerminalCreateDefaultsToNoPush(t *testing.T) {
+	// ① 生产代码里 handleCreate 的初始 watch 必须是「不推送」
+	src, err := os.ReadFile("plugin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if !strings.Contains(text, "watch := terminalWatch{onExit: false, quiet: true}") {
+		t.Fatal("handleCreate 的默认 watch 必须是 {onExit:false, quiet:true}（默认不推送）")
+	}
+
+	// ② 不传 notify 时，该初始值不会被任何解析改写
+	w := terminalWatch{onExit: false, quiet: true}
+	if w.onExit || w.interval != 0 || w.bufferBytes != 0 {
+		t.Fatalf("默认 watch 不应开启任何推送: %+v", w)
+	}
+}
+
+// TestExplicitExitNotifyStillWorks 显式声明时推送仍然生效（A 方案：默认关，可显式开）。
+func TestExplicitExitNotifyStillWorks(t *testing.T) {
+	w := parseNotifyMode("exit", terminalWatch{onExit: false, quiet: true})
+	if !w.onExit {
+		t.Fatal("显式 notify=exit 必须开启结束提醒")
+	}
+	if w.quiet {
+		t.Fatal("显式 notify=exit 应关闭 quiet（否则退出通知被静默）")
+	}
+}
+
+// TestWatchClearRestoresNoPush 钉住 clear 的语义：回到默认（不推送），
+// 而不是回到 exit 提醒。
+func TestWatchClearRestoresNoPush(t *testing.T) {
+	p, tc, err := setupPlugin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	term := newMockTerm()
+	ts := newTestSession(term)
+	ts.id = "t-clear"
+	ts.watch = terminalWatch{onExit: true, interval: time.Minute}
+	p.mu.Lock()
+	p.sessions["t-clear"] = ts
+	p.mu.Unlock()
+
+	if _, err := tc.handlers["terminal_watch"](map[string]interface{}{
+		"id":    "t-clear",
+		"clear": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts.mu.Lock()
+	got := ts.watch
+	ts.mu.Unlock()
+	if got.onExit {
+		t.Fatal("clear 后不应恢复 exit 提醒（应回到默认不推送）")
+	}
+	if got.interval != 0 {
+		t.Fatalf("clear 后 interval 应清零，实际 %v", got.interval)
+	}
+}
+
+// TestTerminalGoneIsStructured 钉住已关闭终端的答复是**可执行**的，
+// 不是一句没有出路的文本 —— 否则模型会拿同一个 id 反复重试。
+func TestTerminalGoneIsStructured(t *testing.T) {
+	_, tc, err := setupPlugin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"terminal_write", "terminal_read", "terminal_resize", "terminal_close", "terminal_watch"} {
+		h, ok := tc.handlers[tool]
+		if !ok {
+			t.Fatalf("%s 未注册", tool)
+		}
+		args := map[string]interface{}{"id": "does-not-exist"}
+		if tool == "terminal_resize" {
+			args["rows"] = float64(24)
+			args["cols"] = float64(80)
+		}
+		if tool == "terminal_write" {
+			args["input"] = "x"
+		}
+		res, err := h(args)
+		if err != nil {
+			t.Fatalf("%s: %v", tool, err)
+		}
+		m, ok := res.(map[string]interface{})
+		if !ok {
+			t.Fatalf("%s: 返回类型不是 map: %T", tool, res)
+		}
+		if m["error"] != "terminal_gone" {
+			t.Fatalf("%s: error 应为 terminal_gone，实际 %v", tool, m["error"])
+		}
+		if _, ok := m["next_action"]; !ok {
+			t.Fatalf("%s: 缺少 next_action（模型没有可执行的下一步）", tool)
 		}
 	}
 }
