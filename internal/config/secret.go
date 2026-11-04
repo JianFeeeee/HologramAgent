@@ -113,9 +113,9 @@ func (p *PluginSettings) isSecretKeyLocal(key string) bool {
 //
 // 返回值语义：加密发生则 mem=false（调用方据此决定是否需回读校验）；
 // 非敏感键或未装配 codec 时原样返回。
-func sealForStorage(key, value string) (string, bool) {
+func (r *ConfigRegistry) sealForStorage(key, value string) (string, bool) {
 	if !security.IsEncrypted(value) {
-		c := security.ConfigCodec()
+		c := r.codecOf()
 		if c == nil || !c.Enabled() {
 			return value, false
 		}
@@ -133,11 +133,11 @@ func sealForStorage(key, value string) (string, bool) {
 // 非密文原样返回（**存量明文兼容**）：老数据不需要一次性迁移。
 // 密文但解不开 ⇒ **响亮失败**（返回错误而非密文），因为把密文
 // 当明文交出去会让下游拿到垃圾（比如把 `enc:v1:...` 当 API key 发出去）。
-func openFromStorage(key, stored string) (string, error) {
+func (r *ConfigRegistry) openFromStorage(key, stored string) (string, error) {
 	if !security.IsEncrypted(stored) {
 		return stored, nil
 	}
-	c := security.ConfigCodec()
+	c := r.codecOf()
 	if c == nil || !c.Enabled() {
 		return "", security.ErrNoMasterKey
 	}
@@ -164,7 +164,7 @@ func openFromStorage(key, stored string) (string, error) {
 //
 // 返回 (加密条数, 错误)。幂等：已加密的项不会被二次加密。
 func (r *ConfigRegistry) EncryptExistingSecrets() (int, error) {
-	c := security.ConfigCodec()
+	c := r.codecOf()
 	if c == nil || !c.Enabled() {
 		return 0, security.ErrNoMasterKey
 	}
@@ -243,7 +243,7 @@ func (r *ConfigRegistry) EncryptExistingSecrets() (int, error) {
 //
 // 幂等：已是当前钥的项不动。解不开的项**响亮计数**并跳过（不静默删）。
 func (r *ConfigRegistry) RekeySecrets() (int, int, error) {
-	c := security.ConfigCodec()
+	c := r.codecOf()
 	if c == nil || !c.Enabled() {
 		return 0, 0, security.ErrNoMasterKey
 	}
@@ -304,7 +304,7 @@ func (r *ConfigRegistry) RekeySecrets() (int, int, error) {
 //
 // 返回 (可解, 不可解)。不可解 > 0 就是密钥不匹配/缺代的硬信号。
 func (r *ConfigRegistry) AuditSecrets() (int, int, error) {
-	c := security.ConfigCodec()
+	c := r.codecOf()
 	if c == nil || !c.Enabled() {
 		return 0, 0, security.ErrNoMasterKey
 	}
@@ -393,16 +393,23 @@ func (r *ConfigRegistry) SecretKeys() []string {
 // 「磁盘上确实是密文」。生产代码不得使用。
 func (r *ConfigRegistry) DB() *sql.DB { return r.db }
 
-// ResetTestCodec 为判据装配一把固定主密钥。
+// NewTestCodec 造一把固定主密钥的配置 codec（供判据注入 Registry）。
+//
+// ★ 2026-11-04：从 ResetTestCodec 改名并改语义。
+//
+// 原实现调 security.InitConfigCodec 装**包级单例**（已删除）。现在返回
+// 实例，由调用方 `reg.SetCodec(c)` 注入 —— 与生产注入路径一致。
 //
 // 单独放在非 _test 文件里，是因为 proc 包（另一个包）的端到端判据
 // 也需要它 —— 跨包无法直接调 *_test.go 里的辅助函数。
-func ResetTestCodec(t interface {
+func NewTestCodec(t interface {
 	Helper()
 	Fatalf(string, ...interface{})
-}) {
-	if _, err := security.InitConfigCodec(
-		[]byte("0123456789abcdef0123456789abcdef")); err != nil {
+}) *security.Codec {
+	t.Helper()
+	c, err := security.NewConfigCodec([]byte("0123456789abcdef0123456789abcdef"), nil)
+	if err != nil {
 		t.Fatalf("装配测试 codec 失败: %v", err)
 	}
+	return c
 }

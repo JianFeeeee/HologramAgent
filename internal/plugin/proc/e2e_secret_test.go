@@ -17,6 +17,7 @@ package proc
 // 内核侧修好了接口」这类错位（本次实际踩到过一次）。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,8 +75,8 @@ func TestE2E_RealTemplateSecretRoundTrip(t *testing.T) {
 
 	// 用**真实** ConfigRegistry（真加密）+ 真主密钥
 	dir := t.TempDir()
-	setTestCodec(t)
 	reg := internalConfig.NewConfigRegistry(filepath.Join(dir, "config.db"))
+	reg.SetCodec(setTestCodec(t))
 	defer reg.Close()
 
 	host, err := NewHost()
@@ -131,8 +132,10 @@ func TestE2E_RealTemplateSecretRoundTrip(t *testing.T) {
 	_ = pubsdk.ConfigDef{}
 }
 
-// setTestCodec 装配一把测试主密钥。
-func setTestCodec(t *testing.T) {
+// setTestCodec 造一把测试主密钥的 codec（由调用方注入 Registry）。
+//
+// ★ 2026-11-04：包级单例已删，不能"装一次全局就到处生效"。
+func setTestCodec(t *testing.T) *security.Codec {
 	t.Helper()
-	internalConfig.ResetTestCodec(t)
+	return internalConfig.NewTestCodec(t)
 }

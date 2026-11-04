@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"os"
 	"path/filepath"
@@ -64,6 +65,41 @@ type ConfigRegistry struct {
 	// 为何缓存成集合而不是每次查 def：写入是热路径，而 def 查询要拿锁；
 	// 且 secret 判定必须对**无 def 的键**也能生效（见 secretByKeyPattern）。
 	secrets map[string]bool
+
+	// codec 是配置落盘加密执行者（由 security 模块注入）。
+	//
+	// ★ 2026-11-04（T3.2）：此前读 `security.ConfigCodec()` 包级单例。
+	// 那个单例绕开了内核统一挂载点 —— 本 Registry 属于哪个内核实例就用
+	// 哪个 codec，不该由"最后谁调了 InitConfigCodec"决定。
+	//
+	// ★ 为什么是字段注入而不是让 config import kstate：
+	// kstate 依赖 config（State.CfgReg 的类型），config 再 import kstate
+	// 就是 import cycle。所以方向是 config 只持有它需要的**能力**
+	// （一个 *security.Codec），由上层装配时塞进来。
+	codecMu sync.RWMutex
+	codec   *security.Codec
+}
+
+// SetCodec 注入配置落盘加密执行者（security 模块装配时调用）。
+//
+// nil 合法：未启用加密时所有敏感项以明文落盘（并可由 IsEncrypted 看出）。
+func (r *ConfigRegistry) SetCodec(c *security.Codec) {
+	if r == nil {
+		return
+	}
+	r.codecMu.Lock()
+	r.codec = c
+	r.codecMu.Unlock()
+}
+
+// codecOf 返回注入的 codec（未注入为 nil）。
+func (r *ConfigRegistry) codecOf() *security.Codec {
+	if r == nil {
+		return nil
+	}
+	r.codecMu.RLock()
+	defer r.codecMu.RUnlock()
+	return r.codec
 }
 
 func NewConfigRegistry(dbPath string) *ConfigRegistry {
@@ -211,7 +247,7 @@ func (r *ConfigRegistry) Register(key string, value interface{}) {
 	defer r.mu.Unlock()
 	stored := fmt.Sprint(value)
 	if r.isSecretKey(key) {
-		stored, _ = sealForStorage(key, stored)
+		stored, _ = r.sealForStorage(key, stored)
 	}
 	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, key, stored)
 }
@@ -235,7 +271,7 @@ func (r *ConfigRegistry) registerDefLocked(def ConfigDef) {
 	// 默认值也要加密落盘（否则声明了 secret 的项一启动就是明文）。
 	stored := def.Default
 	if r.isSecretKey(def.Key) {
-		stored, _ = sealForStorage(def.Key, stored)
+		stored, _ = r.sealForStorage(def.Key, stored)
 	}
 	r.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, def.Key, stored)
 	// 记录「本次运行确实为这个键铺了初始行」—— GetXxx 只对这类键回退到
@@ -383,7 +419,7 @@ func (r *ConfigRegistry) Get(key string) (interface{}, error) {
 		return nil, err
 	}
 	// 敏感项在库里是密文 ⇒ 对调用方透明解密（读接口语义不变）。
-	if plain, oerr := openFromStorage(key, val); oerr == nil {
+	if plain, oerr := r.openFromStorage(key, val); oerr == nil {
 		return plain, nil
 	} else {
 		return nil, oerr
@@ -399,7 +435,7 @@ func (r *ConfigRegistry) Set(key string, value interface{}) error {
 	stored := fmt.Sprint(value)
 	// ★ 敏感项在**写库前**加密：库文件里只有密文。
 	if r.isSecretKey(key) {
-		stored, _ = sealForStorage(key, stored)
+		stored, _ = r.sealForStorage(key, stored)
 	}
 	_, err := r.db.Exec(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`, key, stored)
 	if err == nil && strings.HasPrefix(key, "core.llm.sources.") {
@@ -554,7 +590,7 @@ func (r *ConfigRegistry) listPrefixLocked(prefix string) map[string]string {
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err == nil {
-			if plain, oerr := openFromStorage(k, v); oerr == nil {
+			if plain, oerr := r.openFromStorage(k, v); oerr == nil {
 				out[k] = plain
 			} else {
 				// 解不开就不给值：宁可缺失（可诊断）也不把密文当明文交出去。
@@ -580,7 +616,7 @@ func (r *ConfigRegistry) Dump() map[string]interface{} {
 			// ★ 返回**明文**：Dump 的调用方都是内核内部可信路径
 			//（ToConfig 重建 LLMSource、WebUI 设置页、插件读自身/他人配置）。
 			// 本需求防的是「静态文件泄漏」，不是「内部读取」。
-			if plain, oerr := openFromStorage(k, v); oerr == nil {
+			if plain, oerr := r.openFromStorage(k, v); oerr == nil {
 				result[k] = plain
 			} else {
 				log.Printf("[config] Dump decrypt %s failed: %v", k, oerr)
@@ -1076,7 +1112,7 @@ func (r *ConfigRegistry) GetString(key, defaultVal string) string {
 	if err != nil {
 		return defaultVal
 	}
-	if plain, oerr := openFromStorage(key, v); oerr == nil {
+	if plain, oerr := r.openFromStorage(key, v); oerr == nil {
 		return plain
 	}
 	return defaultVal
@@ -1365,7 +1401,7 @@ func (r *ConfigRegistry) SetPluginConfig(name, key string, value interface{}) er
 	table := r.pluginTableName(name)
 	stored := fmt.Sprint(value)
 	if r.isSecretKey("plugin." + name + "." + key) {
-		stored, _ = sealForStorage("plugin."+name+"."+key, stored)
+		stored, _ = r.sealForStorage("plugin."+name+"."+key, stored)
 	}
 	_, err := r.db.Exec(fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, table), key, stored)
 	return err
@@ -1397,7 +1433,7 @@ func (p *PluginSettings) Get(key string) (interface{}, error) {
 		return nil, err
 	}
 	// 敏感项透明解密
-	if plain, oerr := openFromStorage("plugin."+p.name+"."+key, val); oerr == nil {
+	if plain, oerr := p.registry.openFromStorage("plugin."+p.name+"."+key, val); oerr == nil {
 		return plain, nil
 	} else {
 		return nil, oerr
@@ -1410,7 +1446,7 @@ func (p *PluginSettings) Set(key string, value interface{}) error {
 	stored := fmt.Sprint(value)
 	// ★ 插件敏感项同样加密落盘（插件无感知：它 Set 明文，Get 也得到明文）。
 	if p.isSecretKeyLocal(key) {
-		stored, _ = sealForStorage("plugin."+p.name+"."+key, stored)
+		stored, _ = p.registry.sealForStorage("plugin."+p.name+"."+key, stored)
 	}
 	_, err := p.registry.db.Exec(fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value) VALUES (?, ?)`, p.table), key, stored)
 	return err
@@ -1428,7 +1464,7 @@ func (p *PluginSettings) SetSecret(key string, value interface{}) error {
 	sealed := stored
 	if stored != "" {
 		var ok bool
-		sealed, ok = sealForStorage("plugin."+p.name+"."+key, stored)
+		sealed, ok = p.registry.sealForStorage("plugin."+p.name+"."+key, stored)
 		if !ok {
 			return fmt.Errorf("config: 密钥未装配，拒绝以明文存储敏感项 %q", key)
 		}
@@ -1453,7 +1489,7 @@ func (p *PluginSettings) GetSecret(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return openFromStorage("plugin."+p.name+"."+key, val)
+	return p.registry.openFromStorage("plugin."+p.name+"."+key, val)
 }
 func (p *PluginSettings) Remove(key string) error {
 	p.registry.mu.Lock()
@@ -1496,7 +1532,7 @@ func (p *PluginSettings) RegisterDef(def ConfigDef) {
 
 	stored := def.Default
 	if p.registry.isSecretKey(qualified) {
-		stored, _ = sealForStorage(qualified, stored)
+		stored, _ = p.registry.sealForStorage(qualified, stored)
 	}
 	p.registry.db.Exec(fmt.Sprintf(`INSERT OR IGNORE INTO %s (key, value) VALUES (?, ?)`, p.table), localKey, stored)
 }

@@ -12,18 +12,23 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
-func testCodec(t *testing.T) {
+// testCodec 造一把固定主密钥的 codec（不再装包级单例）。
+func testCodec(t *testing.T) *security.Codec {
 	t.Helper()
-	if _, err := security.InitConfigCodec([]byte("0123456789abcdef0123456789abcdef")); err != nil {
+	c, err := security.NewConfigCodec([]byte("0123456789abcdef0123456789abcdef"), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return c
 }
 
 func newSecReg(t *testing.T) *ConfigRegistry {
 	t.Helper()
 	dir := t.TempDir()
-	testCodec(t)
-	return NewConfigRegistry(filepath.Join(dir, "config.db"))
+	r := NewConfigRegistry(filepath.Join(dir, "config.db"))
+	// 按生产路径注入（config 模块从 ks.Security.Codec() 取）。
+	r.SetCodec(testCodec(t))
+	return r
 }
 
 // 直接在 sqlite 层面读原始值（绕过 ConfigRegistry 的解密）。
@@ -198,10 +203,12 @@ func TestWrongKeyFailsLoudly(t *testing.T) {
 	if err := r.Set("core.llm.api_key", "secret-value-1234567890"); err != nil {
 		t.Fatal(err)
 	}
-	// 换一把主密钥
-	if _, err := security.InitConfigCodec([]byte("ffffffffffffffffffffffffffffffff")); err != nil {
+	// 换一把主密钥（同一 Registry 上重新注入，模拟轮换后配置错配）
+	other, err := security.NewConfigCodec([]byte("ffffffffffffffffffffffffffffffff"), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	r.SetCodec(other)
 	if _, err := r.Get("core.llm.api_key"); err == nil {
 		t.Fatal("换密钥后必须报错，不能把密文当明文返回")
 	}
@@ -216,8 +223,7 @@ func TestWrongKeyFailsLoudly(t *testing.T) {
 // ★ 判据：未装配 codec 时退化为明文读写（本地开发/测试不阻塞）。
 func TestNoCodecDegradesToPlain(t *testing.T) {
 	dir := t.TempDir()
-	// 清空全局 codec
-	security.ClearConfigCodec()
+	// 不注入 codec = 未装配（原先是 ClearConfigCodec 清单例）
 	r := NewConfigRegistry(filepath.Join(dir, "c.db"))
 	if err := r.Set("core.llm.api_key", "plain-dev"); err != nil {
 		t.Fatal(err)
@@ -375,9 +381,8 @@ func TestExplicitSetSecretIgnoresKeyName(t *testing.T) {
 // 这是最危险的静默降级：插件以为存了密文，实际磁盘上是明文。
 func TestSetSecretRefusesWithoutKey(t *testing.T) {
 	dir := t.TempDir()
-	security.ClearConfigCodec()
-	defer testCodec(t) // 复原，避免影响其它判据
-
+	// 不注入 codec = 未装配（原先是 ClearConfigCodec 清单例）。
+	// 每个 Registry 自带 codec，不再需要"复原全局状态"。
 	r := NewConfigRegistry(filepath.Join(dir, "c.db"))
 	ps := r.PluginConfig("demo4")
 	ps.RegisterDef(ConfigDef{Key: "enabled", Default: "1"})

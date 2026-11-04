@@ -191,9 +191,14 @@ func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error
 	}
 
 	// 配置落盘用的子密钥（域隔离：与别名密钥不共用）。
-	if _, err := sec.InitConfigCodecWithOldKeys(key, oldKeys); err != nil {
+	//
+	// ★ 2026-11-04（T3.2）：不再装全局单例，构造后**注入 cfgReg**。
+	// 注入必须早于下面的 EncryptExistingSecrets —— 它要靠 codec 加密存量明文。
+	cfgCodec, err := sec.NewConfigCodec(key, oldKeys)
+	if err != nil {
 		return nil, fmt.Errorf("config-encryption subkey derivation failed: %w", err)
 	}
+	cfgReg.SetCodec(cfgCodec)
 	// 把库里仍是明文的敏感项就地加密（幂等；升级路径必须跑）。
 	if n, merr := cfgReg.EncryptExistingSecrets(); merr != nil {
 		log.Printf("[security] existing sensitive config encryption incomplete (some entries still plaintext): %v", merr)
@@ -208,6 +213,7 @@ func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error
 	}
 
 	rt := sec.NewRuntime(store)
+	rt.SetCodec(cfgCodec)
 	setPreparedRuntime(rt)
 
 	// ★ 全局策略基线（部署方兵底，用户 2026-10-29 裁定选项 B）。

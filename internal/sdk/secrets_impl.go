@@ -32,11 +32,19 @@ import (
 )
 
 // secretsImpl 实现 pubsdk.SecretsAPI。
-type secretsImpl struct{ store *internalSecurity.Store }
+type secretsImpl struct {
+	store *internalSecurity.Store
+	// codec 是配置落盘加密器（插件经 s.Secrets().Encrypt/Decrypt 使用）。
+	//
+	// ★ 2026-11-04（T3.2）：此前读 security.ConfigCodec() 包级单例。
+	// 与 store 同理 —— 本插件的加密能力应当来自**它的内核实例**，
+	// 而不是"最后谁调了 InitConfigCodec"。
+	codec *internalSecurity.Codec
+}
 
 // NewSecretsAPI 构造变量库接口（内核装配时注入给每个插件）。
-func NewSecretsAPI(store *internalSecurity.Store) pubsdk.SecretsAPI {
-	return &secretsImpl{store: store}
+func NewSecretsAPI(store *internalSecurity.Store, codec *internalSecurity.Codec) pubsdk.SecretsAPI {
+	return &secretsImpl{store: store, codec: codec}
 }
 
 func (s *secretsImpl) Available() bool { return s.store != nil }
@@ -92,7 +100,7 @@ func (s *secretsImpl) Fill(text string) (string, int, []string) {
 }
 
 func (s *secretsImpl) Encrypt(plain []byte) (string, error) {
-	c := internalSecurity.ConfigCodec()
+	c := s.codec
 	if c == nil || !c.Enabled() {
 		// ★ 拒绝明文落盘：插件以为存的是密文而实际是明文，是最危险的静默降级。
 		return "", fmt.Errorf("内核未装配加密能力，拒绝以明文存储（core.security.enabled=false？）")
@@ -105,7 +113,7 @@ func (s *secretsImpl) Decrypt(stored string) ([]byte, error) {
 	if !internalSecurity.IsEncrypted(stored) {
 		return []byte(stored), nil
 	}
-	c := internalSecurity.ConfigCodec()
+	c := s.codec
 	if c == nil || !c.Enabled() {
 		return nil, fmt.Errorf("有密文但内核未装配加密能力（密钥换了？）")
 	}

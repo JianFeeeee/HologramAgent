@@ -80,7 +80,6 @@ func TestE2E_RealTemplateSecretsRoundTrip(t *testing.T) {
 	bin := buildPluginWithRealTemplate(t, secretsE2EPlugin)
 
 	dir := t.TempDir()
-	setTestCodec(t)
 	// 变量库（2026-11-04：不再有进程级单例，改为显式持有并注入）
 	store, err := internalSecurity.MustStore(internalSecurity.Options{
 		Path:    filepath.Join(dir, "variables.json"),
@@ -99,7 +98,7 @@ func TestE2E_RealTemplateSecretsRoundTrip(t *testing.T) {
 	defer host.Close()
 
 	core := newFakeCore()
-	core.secretsAPI = internalSDK.NewSecretsAPI(store)
+	core.secretsAPI = internalSDK.NewSecretsAPI(store, nil)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -140,7 +139,6 @@ func TestE2E_PluginAndKernelShareOneVault(t *testing.T) {
 	bin := buildPluginWithRealTemplate(t, secretsE2EPlugin)
 
 	dir := t.TempDir()
-	setTestCodec(t)
 	st, err := internalSecurity.MustStore(internalSecurity.Options{
 		Path:    filepath.Join(dir, "variables.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
@@ -153,7 +151,7 @@ func TestE2E_PluginAndKernelShareOneVault(t *testing.T) {
 	host, _ := NewHost()
 	defer host.Close()
 	core := newFakeCore()
-	core.secretsAPI = internalSDK.NewSecretsAPI(st)
+	core.secretsAPI = internalSDK.NewSecretsAPI(st, nil)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatal(err)
@@ -193,7 +191,7 @@ func TestE2E_SecretsUnavailableWhenDisabled(t *testing.T) {
 	defer host.Close()
 	core := newFakeCore()
 	// 未启用安全模块 ⇒ 传 nil（Available() 必须为 false，且不得 panic）
-	core.secretsAPI = internalSDK.NewSecretsAPI(nil)
+	core.secretsAPI = internalSDK.NewSecretsAPI(nil, nil)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatal(err)

@@ -112,10 +112,13 @@ func main() {
 	} else {
 		fmt.Printf("③ 当前钥来自 %s：请先更新该注入源为新钥，再重启 homed\n", src)
 	}
-	if _, err := security.InitConfigCodecWithOldKeys(newKey, append([][]byte{oldKey}, history...)); err != nil {
+	// ★ 2026-11-04：不再装全局 codec（单例已删），改为构造后注入 Registry。
+	codec, err := security.NewConfigCodec(newKey, append([][]byte{oldKey}, history...))
+	if err != nil {
 		fail("装配新配置 codec 失败: %v", err)
 	}
 	reg := config.NewConfigRegistry(filepath.Join(*dataDir, "config.db"))
+	reg.SetCodec(codec)
 	defer reg.Close()
 	rekeyed, failed, err := reg.RekeySecrets()
 	if err != nil {

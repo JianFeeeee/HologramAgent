@@ -76,6 +76,16 @@ type Runtime struct {
 	// 是**插件声明出来的注册表**，每个 agent 各持一份就会变成
 	// “插件往 A 声明了档位，B 看不见”—— 那是最难查的一类缺陷。
 	// 所以切分是「共享注册表 + per-agent 执行视图」。
+	// codec 是配置落盘加密执行者（独立域，与变量库不共用密钥派生）。
+	//
+	// ★ 2026-11-04（T3.2）：此前是包级单例 `globalCodec`（ConfigCodec()）。
+	// 那个单例绕开了内核统一挂载点，且让"哪个 codec 生效"取决于
+	// "最后谁调了 InitConfigCodec"。
+	//
+	// 现在它归 Runtime：config 模块从 ks.Security.Codec() 取，
+	// 与变量库（ks.Security.Store()）同源同生命周期。
+	codec *Codec
+
 	scopesByAgent map[string]*AgentScope
 	scopeMu       sync.Mutex
 }
@@ -165,6 +175,26 @@ func (r *Runtime) FillForExecution(ins Inspection, text string) (string, int) {
 		return text, 0
 	}
 	return r.gate.FillForExecution(ins, text)
+}
+
+// Codec 返回配置落盘加密器（未装配时为 nil）。
+//
+// ★ 与 Store() 的区别：Store 管**凭据别名**（@{sec_xxx}），
+// Codec 管**配置项密文**（enc:v1:...）。两者是独立的密钥域，
+// 同一把主密钥派生出的不同子密钥 —— 域隔离是安全要求。
+func (r *Runtime) Codec() *Codec {
+	if r == nil {
+		return nil
+	}
+	return r.codec
+}
+
+// SetCodec 注入配置加密器（安全模块装配时调用）。
+func (r *Runtime) SetCodec(c *Codec) {
+	if r == nil {
+		return
+	}
+	r.codec = c
 }
 
 // Store 返回底层变量库（安全工具族 secret_* 需要元信息）。

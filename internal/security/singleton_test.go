@@ -51,15 +51,16 @@ import (
 //
 // 每一条都对应一次真实事故或一次可复现的错配：
 //
-//	global  → 变量库：测试装单例、代码用 agent 字段，测的与跑的不是同一份
-//	runtime → 防火墙：多实例时被覆盖
+//	global      → 变量库：测试装单例、代码用 agent 字段，测的与跑的不是同一份
+//	runtime     → 防火墙：多实例时被覆盖
+//	globalCodec → 配置加密：域隔离失效的隐患（T3.2 已删）
 //
-// ★ globalCodec 不在本表 —— 它属于 T3.2（Store 复用 Codec + Codec 归 Runtime）。
-// 那条改动还牵涉 config 的 6 个调用点与惰性密文迁移，单独一步做。
-// 本判据只钉已经完成的部分，避免"半成品状态让整套判据长期红"
-// （长期红的判据会被人习惯性忽略，那时它就等于不存在）。
+// ★ 三条全部落地后才纳入本表。
+//
+//   - 半成品状态就纳入 ⇒ 判据长期红 ⇒ 被人习惯性忽略 ⇒ 等于不存在
+//   - 全部落定后仍不纳入 ⇒ 后来者能原样加回来
 func forbiddenPackageLevelVars() []string {
-	return []string{"global", "runtime"}
+	return []string{"global", "runtime", "globalCodec"}
 }
 
 // TestNoPackageLevelSingletons 钉住本包不得声明这三个包级变量。

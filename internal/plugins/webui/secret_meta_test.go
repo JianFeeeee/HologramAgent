@@ -22,8 +22,8 @@ import (
 
 func TestSecretFlagReachesSettingsMeta(t *testing.T) {
 	dir := t.TempDir()
-	internalConfig.ResetTestCodec(t)
 	reg := internalConfig.NewConfigRegistry(dir + "/config.db")
+	reg.SetCodec(internalConfig.NewTestCodec(t))
 	defer reg.Close()
 
 	// 插件用**两种写法**各声明一个敏感项
@@ -79,8 +79,8 @@ func keysOfMeta(m map[string]map[string]interface{}) []string {
 // 单键 reveal 才能看到明文；磁盘上仍是密文。
 func TestSecretPlainInUIButCipherOnDisk(t *testing.T) {
 	dir := t.TempDir()
-	internalConfig.ResetTestCodec(t)
 	reg := internalConfig.NewConfigRegistry(dir + "/config.db")
+	reg.SetCodec(internalConfig.NewTestCodec(t))
 	defer reg.Close()
 
 	sett := internalSDK.NewSettings("webui", reg)

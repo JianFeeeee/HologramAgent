@@ -346,6 +346,14 @@ func (r restartOnly) RequestKernelShutdown(reason string) error {
 //
 //	（那是反向依赖，且 cmd 包不可被 import）。用接口 + setter 打破方向。
 //
+// codecOf 从 Runtime 取配置加密器（Runtime 可 nil）。
+func codecOf(rt *security.Runtime) *security.Codec {
+	if rt == nil {
+		return nil
+	}
+	return rt.Codec()
+}
+
 // SetSecurityRuntime 注入安全运行时（plugin-host 模块装配时调用）。
 func (r *Registry) SetSecurityRuntime(rt *security.Runtime) {
 	r.mu.Lock()
@@ -793,7 +801,7 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		Settings:   sett,
 		// ★ 变量库：桥接到**注入的** Store（不另建存储）。
 		// 内核未启用安全模块时为 nil ⇒ Available()==false（不是 nil API）。
-		Secrets:         sdk.NewSecretsAPI(deps.secretStore),
+		Secrets:         sdk.NewSecretsAPI(deps.secretStore, codecOf(deps.securityRT)),
 		SecurityRuntime: deps.securityRT,
 		// ★ 策略声明面：插件**声明**档位（qq.owner / qq.guest…），
 		// 判定仍在内核 security.Runtime。Owner 由内核用真实插件名填，

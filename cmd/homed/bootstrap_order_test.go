@@ -100,15 +100,20 @@ func TestSecurityModuleInitializesBeforeConfigSnapshot(t *testing.T) {
 			"若方法改名/搬走，请把锚点更新到新的真实调用点，" +
 			"**不要**删掉这条判据：它守的是「主密钥必须先于配置快照」")
 	}
-	// 安全模块的**生效点**是 InitConfigCodecWithOldKeys（配置加密子密钥派生）
-	// ★ 2026-10-26：模块内的调用是 sec.InitConfigCodecWithOldKeys(...)，
-	// 裸源码读取（非 AST）匹配不到包名，故按函数名匹配。
-	secLine := lineOf("InitConfigCodecWithOldKeys(")
+	// 安全模块的**生效点**是配置加密子密钥的构造与注入。
+	//
+	// ★ 2026-11-04（T3.2）：锚点从 `InitConfigCodecWithOldKeys`（装包级单例）
+	// 改为 `NewConfigCodec`（构造后注入 cfgReg）。函数改名不是"判据放宽"：
+	// 守的不变量仍是「主密钥必须先于配置快照」，只是生效点的写法变了。
+	secLine := lineOf("NewConfigCodec(")
+	if secLine < 0 {
+		secLine = lineOf("InitConfigCodecWithOldKeys(")
+	}
 	if secLine < 0 {
 		secLine = lineOf("InitConfigCodec(")
 	}
 	if secLine < 0 {
-		t.Fatal("找不到 InitConfigCodec 调用（安全模块装配点）")
+		t.Fatal("找不到配置 codec 装配点（安全模块生效点）")
 	}
 	// 密钥装载点也要在快照之前（两者都在安全块里）
 	keyLine := lineOf("LoadOrCreateKey(")
@@ -125,7 +130,7 @@ func TestSecurityModuleInitializesBeforeConfigSnapshot(t *testing.T) {
 	}
 	// 且模块内部**确实**装了密钥与子密钥（防止有人把 Prepare 改成空壳而判据仍绿）。
 	if secLine <= 0 || keyLine <= 0 {
-		t.Errorf("★ 安全模块实现里找不到密钥装配（InitConfigCodec=%d LoadOrCreateKey=%d）—— "+
+		t.Errorf("★ 安全模块实现里找不到密钥装配（codec=%d LoadOrCreateKey=%d）—— "+
 			"Prepare() 退化成空壳，安全审查将不生效", secLine, keyLine)
 	}
 	// ★ 行号只在**同一文件内**可比。密钥装载与子密钥派生现在都在

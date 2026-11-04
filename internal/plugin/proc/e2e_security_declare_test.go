@@ -73,7 +73,6 @@ func TestE2E_RealTemplateSecurityDeclare(t *testing.T) {
 	bin := buildPluginWithRealTemplate(t, securityE2EPlugin)
 
 	dir := t.TempDir()
-	setTestCodec(t)
 
 	// ★ 2026-11-04：包级单例已删。Runtime 显式构造并**注入**给插件 SDK
 	// （生产路径同款：kstate.State.Security → plugin.Registry.SetSecurityRuntime）。

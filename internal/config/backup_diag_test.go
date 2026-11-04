@@ -15,17 +15,17 @@ import (
 func TestAuditSecretsDetectsForeignKeyBackup(t *testing.T) {
 	// 本包的 codec 是**进程级全局**，测试必须还原现场，
 	// 否则会把密钥泄漏给同包其它判据（实测：导致 GetInt 读到密文）。
-	t.Cleanup(security.ClearConfigCodec)
 	dir := t.TempDir()
 	keyA := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	keyB := []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
 	// 机器 A：写入一条加密配置
-	security.ClearConfigCodec()
-	if _, err := security.InitConfigCodec(keyA); err != nil {
-		t.Fatal(err)
+	cA, cerr := security.NewConfigCodec(keyA, nil)
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
 	regA := NewConfigRegistry(filepath.Join(dir, "config.db"))
+	regA.SetCodec(cA)
 	regA.RegisterDef(cfgDef("core.llm.api_key"))
 	if err := regA.Set("core.llm.api_key", "sk-machine-a"); err != nil {
 		t.Fatal(err)
@@ -37,11 +37,12 @@ func TestAuditSecretsDetectsForeignKeyBackup(t *testing.T) {
 	regA.Close()
 
 	// 机器 B：同一份 db，但密钥不同
-	security.ClearConfigCodec()
-	if _, err := security.InitConfigCodec(keyB); err != nil {
-		t.Fatal(err)
+	cB, cerr := security.NewConfigCodec(keyB, nil)
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
 	regB := NewConfigRegistry(filepath.Join(dir, "config.db"))
+	regB.SetCodec(cB)
 	defer regB.Close()
 	ok2, bad2, err := regB.AuditSecrets()
 	if err != nil {
@@ -61,25 +62,27 @@ func TestAuditSecretsDetectsForeignKeyBackup(t *testing.T) {
 
 // ★ 同一密钥下重启（正常恢复）必须全部可解 —— 不能把正常备份误报成坏。
 func TestAuditSecretsCleanOnSameKey(t *testing.T) {
-	t.Cleanup(security.ClearConfigCodec)
 	dir := t.TempDir()
 	key := []byte("cccccccccccccccccccccccccccccccc")
-	security.ClearConfigCodec()
-	if _, err := security.InitConfigCodec(key); err != nil {
-		t.Fatal(err)
+	c, cerr := security.NewConfigCodec(key, nil)
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
 	db := filepath.Join(dir, "config.db")
 	reg := NewConfigRegistry(db)
+	reg.SetCodec(c)
 	reg.RegisterDef(cfgDef("core.llm.api_key"))
 	if err := reg.Set("core.llm.api_key", "sk-1"); err != nil {
 		t.Fatal(err)
 	}
 	reg.Close()
 
-	if _, err := security.InitConfigCodec(key); err != nil {
-		t.Fatal(err)
+	cy, cerr := security.NewConfigCodec(key, nil)
+	if cerr != nil {
+		t.Fatal(cerr)
 	}
 	reg2 := NewConfigRegistry(db)
+	reg2.SetCodec(cy)
 	defer reg2.Close()
 	ok, bad, err := reg2.AuditSecrets()
 	if err != nil || bad != 0 || ok != 1 {

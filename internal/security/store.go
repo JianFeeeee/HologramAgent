@@ -104,6 +104,23 @@ type Store struct {
 	// —— 因为新密文是按新钥加密的，两者必须同时可读才能平滑迁移。
 	keys []keyGen
 
+	// codec 是加解密执行者（**唯一**的 AES-GCM 实现）。
+	//
+	// ★ 2026-11-04（T3.2）：此前 Store 自带一份 seal/open 实现，
+	// 与 Codec 是**两套重复的 AES-256-GCM**（算法、nonce 布局、密钥环
+	// 逻辑全都一样，只是 Codec 多了 enc:v1: 前缀与域隔离）。
+	//
+	// 用户裁定：
+	//
+	//	> store也应该调用security的加密能力！
+	//
+	// 现在 Store 只做"我用哪个域、我的密钥环是什么"，加解密一律委托。
+	// 这让"加密算法只有一处实现"，也修掉一个真实隐患：
+	// 两套实现曾在 nonce 布局上各自演化（一处前置、一处也前置但无前缀），
+	// 任何一侧改动都不会被另一侧的判据发现。
+	codec   *Codec
+	codecMu sync.Mutex // 保护 codec 的惰性重建（keys 环在轮换时会变）
+
 	// enabled 支持显式关闭（本仓「显式才是特权」）。
 	enabled bool
 
@@ -250,13 +267,9 @@ func (s *Store) Alias(plain string) (string, error) {
 	// 别名若随新主密钥改变，记忆/上下文里的旧 @{sec_...} 会失效，
 	// 且同一个凭据会出现两份变量。先在现有条目中按密钥环解密比对；
 	// 找到就复用旧别名，找不到才用当前钥派生新别名。
-	cands := s.keysForDecrypt()
-	if len(cands) == 0 {
-		cands = [][]byte{key}
-	}
 	s.mu.RLock()
 	for alias, e := range s.data {
-		if got, openErr := openWithRing(cands, e.Sealed); openErr == nil && got == plain {
+		if got, _, openErr := s.openWithStoreRing(e.Sealed); openErr == nil && got == plain {
 			s.mu.RUnlock()
 			return alias, nil
 		}
@@ -302,21 +315,16 @@ func (s *Store) keysForDecrypt() [][]byte {
 //
 // ★ 为何不是“记录每条密文属于哪一代”：那需要**改 Entry 结构**（加世代字段），
 // 而密文本身已经能被正确的那把钥唯一解开（AES-GCM 带认证）。
-// 逐个尝试的成本是常数级（代数量 <= 2 是常态），换来的是**零 schema 迁移**。
-func openWithRing(cands [][]byte, sealed string) (string, error) {
-	if len(cands) == 0 {
-		return "", ErrNoMasterKey
-	}
-	var lastErr error
-	for _, k := range cands {
-		plain, err := open(k, sealed)
-		if err == nil {
-			return plain, nil
-		}
-		lastErr = err
-	}
-	return "", lastErr
-}
+// ★ 2026-11-04（T3.2）：`openWithRing` / `seal` / `open` 已删除。
+//
+// 它们是 Store 自带的 AES-GCM 实现，与 Codec 完全重复（算法、nonce 布局、
+// 密钥环逻辑一致，只是 Codec 多了 enc:v1: 前缀与域隔离）。
+//
+// 现在唯一的实现是 Codec：
+//
+//	写入        → s.sealWithRing（新格式，带前缀）
+//	读取        → s.openWithStoreRing（兼容新旧两种格式）
+//	轮换        → NewLegacyRingCodec(old) 解 + NewLegacyRingCodec(new) 加密
 
 // RotateKey 平滑轮换变量库主密钥，并保持**已有别名不变**。
 //
@@ -341,13 +349,26 @@ func (s *Store) RotateKey(newKey []byte) error {
 	if len(oldCandidates) == 0 {
 		return ErrNoMasterKey
 	}
+	// 旧环解、新钥加密。
+	//
+	// ★ 这里刻意**不用** s.openWithStoreRing：它读 s.keys，而此刻
+	// s.keys 还没换（下面才换）—— 但语义上要明确"用旧环解"，
+	// 所以显式构造。
+	oldCodec := NewLegacyRingCodec(storeCodecDomain, oldCandidates)
+	newCodec := NewLegacyRingCodec(storeCodecDomain, [][]byte{newKey})
 	copyData := make(map[string]*Entry, len(s.data))
 	for alias, e := range s.data {
-		plain, err := openWithRing(oldCandidates, e.Sealed)
-		if err != nil {
-			return fmt.Errorf("security: 轮换时解密变量 %s 失败，未切换密钥: %w", alias, err)
+		var plain string
+		var oerr error
+		if IsEncrypted(e.Sealed) {
+			plain, oerr = oldCodec.Open(e.Sealed)
+		} else {
+			plain, oerr = oldCodec.OpenLegacy(e.Sealed)
 		}
-		sealed, err := seal(newKey, plain)
+		if oerr != nil {
+			return fmt.Errorf("security: 轮换时解密变量 %s 失败，未切换密钥: %w", alias, oerr)
+		}
+		sealed, err := newCodec.Seal(plain)
 		if err != nil {
 			return fmt.Errorf("security: 轮换时加密变量 %s 失败，未切换密钥: %w", alias, err)
 		}
@@ -368,6 +389,69 @@ func (s *Store) RotateKey(newKey []byte) error {
 }
 
 // ---------------- 加密 ----------------
+
+// codecOf 返回当前密钥环对应的编解码器（惰性构建）。
+//
+// ★ 为什么惰性而不是构造期建一次：`keys` 环会在 `RotateKey` 里变化
+// （新钥插到头部），那时旧 codec 的 key 就过期了 —— 表现为"轮换后
+// 新写入的条目用旧钥加密"，而轮换的**全部意义**就是尽快停用旧钥。
+// 每次取用都按当前环重建，代价是一次切片拷贝。
+func (s *Store) codecOf() *Codec {
+	s.codecMu.Lock()
+	defer s.codecMu.Unlock()
+	keys := make([][]byte, 0, len(s.keys))
+	for _, g := range s.keys {
+		keys = append(keys, g.Key)
+	}
+	s.codec = NewLegacyRingCodec(storeCodecDomain, keys)
+	return s.codec
+}
+
+// storeCodecDomain 是变量库的加密域。
+//
+// ★ 必须与 config 的域**不同**：域隔离是安全要求，不是风格。
+// 同域意味着"用同一把密钥加密两处不同用途的数据"，一旦某处的明文
+// 泄漏就能成为另一处的字典攻击素材。
+const storeCodecDomain = "security/variables"
+
+// sealWithRing 用密钥环加密（新格式，带 enc:v1: 前缀）。
+func (s *Store) sealWithRing(plain string) (string, error) {
+	c := s.codecOf()
+	if !c.Enabled() {
+		return "", ErrNoMasterKey
+	}
+	return c.Seal(plain)
+}
+
+// openWithStoreRing 解开一条条目密文，**兼容旧格式**。
+//
+// 返回 (明文, 是否需要迁移回写)。
+//
+// 两种格式：
+//
+//	enc:v1:...  → 新格式，Codec.Open
+//	裸 base64   → 旧格式（T3.2 之前写的），Codec.OpenLegacy
+//
+// ★ 为什么必须区分：`Codec.Open` 对无前缀输入**原样返回明文**
+// （那是给 config 的"存量明文兼容"用的）。而 Store 的旧密文恰好也
+// 无前缀 —— 直接交给 Open 会把密文当明文返回，症状是"凭据回填出一个
+// base64 串"，看起来像数据损坏，实际是格式误判。
+func (s *Store) openWithStoreRing(sealed string) (plain string, needsMigrate bool, err error) {
+	c := s.codecOf()
+	if !c.Enabled() {
+		return "", false, ErrNoMasterKey
+	}
+	if IsEncrypted(sealed) {
+		p, oerr := c.Open(sealed)
+		return p, false, oerr
+	}
+	// 无前缀：只可能是旧格式密文（Store 从不存明文）。
+	p, oerr := c.OpenLegacy(sealed)
+	if oerr != nil {
+		return "", false, oerr
+	}
+	return p, true, nil
+}
 
 func seal(key []byte, plain string) (string, error) {
 	block, err := aes.NewCipher(key)
@@ -463,11 +547,9 @@ func (s *Store) Replace(text, where string, detect []Pattern) (string, []Evt) {
 //
 // 返回 merged=true 表示这是**合并到已有别名**（同变量合并能力）。
 func (s *Store) Put(alias, plain, source, note string) (merged bool, err error) {
-	key, err := s.key()
-	if err != nil {
-		return false, err
-	}
-	sealed, err := seal(key, plain)
+	// ★ 2026-11-04（T3.2）：写入走 Codec（带 enc:v1: 前缀），
+	// 不再自建 seal。旧条目仍按旧格式可读（见 openWithStoreRing）。
+	sealed, err := s.sealWithRing(plain)
 	if err != nil {
 		return false, err
 	}
@@ -515,6 +597,46 @@ func (s *Store) Forget(alias string) error {
 	return s.saveLocked()
 }
 
+// migrateEntry 把一条旧格式条目就地升级为新格式（惰性迁移）。
+//
+// ## 为什么需要惰性迁移
+//
+// T3.2 之前 Store 写入的是**裸 base64**（无前缀）。切到 Codec 之后新写入
+// 带 `enc:v1:` 前缀，但磁盘上已有的条目仍是旧格式。
+//
+// 三条路可选：
+//
+//	① 不做迁移 —— 旧格式永远可读（openWithStoreRing 兼容），
+//	   代价是"两种格式永久共存"，判据永不能要求"落盘都是新格式"
+//	② 启动时全量迁移 —— 有停机风险（21G 数据目录的教训：迁移窗口越长越危险）
+//	③ 惰性迁移 —— 读到旧的就地升级，零停机、零额外扫描
+//
+// 选 ③。这是本仓已在用的手法（Codec.Rekey 同样是"用到了才升级"）。
+//
+// ## 为什么失败不报错
+//
+// 迁移失败只影响"下次读时还要再解一次旧格式"，不影响本次读取（明文已经
+// 在前一步拿到了）。为一处升级失败让整个回填失败，是把可恢复的降级变成
+// 不可恢复的中断。
+func (s *Store) migrateEntry(alias, sealed string, plain string) {
+	newSealed, err := s.sealWithRing(plain)
+	if err != nil {
+		return
+	}
+	if newSealed == sealed {
+		return
+	}
+	s.mu.Lock()
+	if e, ok := s.data[alias]; ok && e.Sealed == sealed {
+		e.Sealed = newSealed
+		s.mu.Unlock()
+		// 落盘失败也不报错：内存已升级，下次 Save 会带上。
+		_ = s.saveLocked()
+		return
+	}
+	s.mu.Unlock()
+}
+
 // ---------------- 核心：回填（别名 → 明文，插件入向用） ----------------
 
 // Fill 把文本里的 `@{alias}` 换回明文（路由到插件前用）。
@@ -528,14 +650,7 @@ func (s *Store) Fill(text string) (string, int, []string) {
 	if strings.TrimSpace(text) == "" {
 		return text, 0, nil
 	}
-	cands := s.keysForDecrypt()
-	if len(cands) == 0 {
-		// 环为空时退回 keyFn（未用 New 构造的路径，如测试里 SetGlobal）
-		if k, err := s.key(); err == nil {
-			cands = [][]byte{k}
-		}
-	}
-	if len(cands) == 0 {
+	if len(s.keys) == 0 {
 		return text, 0, nil
 	}
 	var used []string
@@ -552,9 +667,13 @@ func (s *Store) Fill(text string) (string, int, []string) {
 		if !ok {
 			return m // 未知别名：原样保留
 		}
-		plain, err := openWithRing(cands, e.Sealed)
+		plain, needsMigrate, err := s.openWithStoreRing(e.Sealed)
 		if err != nil {
 			return m
+		}
+		if needsMigrate {
+			// 惰性迁移：读到旧格式就地升级（失败静默，下次再试）。
+			s.migrateEntry(alias, e.Sealed, plain)
 		}
 		n++
 		used = append(used, alias)

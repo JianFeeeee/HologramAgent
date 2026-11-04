@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 )
 
 // EncPrefixV1 是密文的自描述前缀。
@@ -180,6 +179,75 @@ func (c *Codec) Open(stored string) (string, error) {
 	return "", fmt.Errorf("%w (域 %s)", ErrBadCiphertext, c.Domain())
 }
 
+// NewLegacyRingCodec 构造一个用**现成密钥环**（不做域派生）的编解码器。
+//
+// ★ 专供 Store 使用（2026-11-04 T3.2）。与 NewCodec 的区别只有一点：
+//
+//	NewCodec        ：用一个主密钥 HMAC 派生出**该域**的子密钥
+//	NewLegacyRingCodec：直接吃一组密钥（Store 的 keys 环，含历史代）
+//
+// 为什么 Store 不能走 NewCodec 的域派生：它的密文是**用主密钥本身**加密的
+// （历史数据），换成派生密钥会让所有存量条目解不开 —— 那是数据丢失，
+// 不是迁移。
+//
+// keys[0] 是当前加密钥，其余只用于 Open（轮换过渡期）。
+func NewLegacyRingCodec(domain string, keys [][]byte) *Codec {
+	c := &Codec{domain: domain}
+	if len(keys) > 0 && len(keys[0]) == 32 {
+		c.key = keys[0]
+		for _, k := range keys[1:] {
+			if len(k) == 32 {
+				c.oldKeys = append(c.oldKeys, k)
+			}
+		}
+	}
+	return c
+}
+
+// OpenLegacy 解开**无前缀**的旧格式密文（裸 base64 + nonce 前置）。
+//
+// ★ 为什么必须单独一个方法而不是让 Open 兼容：
+//
+// `Open` 对无前缀输入**原样返回**（那是"存量明文兼容"的正确行为——
+// 老配置里存的就是明文）。但 Store 的旧密文恰好也是无前缀的裸 base64，
+// 两者在字面上无法区分。
+//
+// 所以：
+//
+//	配置（config）→ 用 Open：无前缀 = 明文，原样返回
+//	变量库（Store）→ 读到无前缀时先试 OpenLegacy：能解开 = 旧密文
+//	                  ⇒ 立刻用 Seal 回写为新格式（惰性迁移）
+//
+// 把歧义留在**调用方**（它知道自己存的是什么），而不是让 Open 猜。
+func (c *Codec) OpenLegacy(stored string) (string, error) {
+	if !c.Enabled() {
+		return "", fmt.Errorf("%w: 有密文但编解码器未启用（域 %s）", ErrNoMasterKey, c.Domain())
+	}
+	raw, err := decodeB64(stored)
+	if err != nil {
+		return "", fmt.Errorf("%w: 旧格式 base64 解码失败", ErrBadCiphertext)
+	}
+	keys := append([][]byte{c.key}, c.oldKeys...)
+	for _, k := range keys {
+		block, err := aes.NewCipher(k)
+		if err != nil {
+			continue
+		}
+		gcm, err := cipher.NewGCM(block)
+		if err != nil {
+			continue
+		}
+		if len(raw) < gcm.NonceSize() {
+			continue
+		}
+		plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+		if err == nil {
+			return string(plain), nil
+		}
+	}
+	return "", fmt.Errorf("%w: 旧格式密文解不开（域 %s）", ErrBadCiphertext, c.Domain())
+}
+
 // IsEncrypted 报告一个已存储的值是否是本模块的密文。
 //
 // ★ 单调为真：密文解密后可能恰好以 `enc:v1:` 开头（极小概率），
@@ -188,38 +256,32 @@ func IsEncrypted(stored string) bool {
 	return strings.HasPrefix(stored, EncPrefixV1)
 }
 
-// ---------------- 全局配置编解码器 ----------------
+// ---------------- 配置落盘编解码器 ----------------
 
-var (
-	globalCodecMu sync.RWMutex
-	globalCodec   *Codec
-)
+// ★ 2026-11-04（T3.2）：包级单例 `globalCodec` 与访问器 `ConfigCodec()`
+// 已删除（用户裁定「所有共享数据统一挂载一个 kernel 提供的挂载点上暴露」）。
+//
+// 配置加密器现在归 `security.Runtime`：
+//
+//	security 模块装配 → rt.SetCodec(c) → ks.Security
+//	config 模块装配    → cfgReg.SetCodec(ks.Security.Codec())
+//
+// 与变量库（ks.Security.Store()）同源同生命周期，没有任何第二条通道。
 
-// InitConfigCodec 装配配置落盘用的编解码器（内核启动时调用一次）。
-func InitConfigCodec(masterKey []byte) (*Codec, error) {
-	return InitConfigCodecWithOldKeys(masterKey, nil)
+// NewConfigCodec 构造配置落盘用的编解码器（**不**注册任何全局状态）。
+//
+// 当前钥负责 Seal；旧钥仅参与 Open（E-1 平滑轮换）。
+// 调用方拿到实例后负责注入（见 Runtime.SetCodec）。
+func NewConfigCodec(masterKey []byte, oldKeys [][]byte) (*Codec, error) {
+	return NewCodecWithOldKeys(masterKey, configCodecDomain, oldKeys)
 }
 
-// InitConfigCodecWithOldKeys 装配支持 E-1 平滑轮换的配置 codec。
-// 当前钥负责 Seal；旧钥仅参与 Open。
-
-func InitConfigCodecWithOldKeys(masterKey []byte, oldKeys [][]byte) (*Codec, error) {
-	c, err := NewCodecWithOldKeys(masterKey, "config-at-rest", oldKeys)
-	if err != nil {
-		return nil, err
-	}
-	globalCodecMu.Lock()
-	globalCodec = c
-	globalCodecMu.Unlock()
-	return c, nil
-}
-
-// ConfigCodec 取配置编解码器；未装配时返回 nil（调用方原样读写）。
-func ConfigCodec() *Codec {
-	globalCodecMu.RLock()
-	defer globalCodecMu.RUnlock()
-	return globalCodec
-}
+// configCodecDomain 是配置落盘加密的域。
+//
+// ★ 必须与变量库的域（storeCodecDomain）不同 —— 见那边的说明。
+// 域在这里集中定义，避免"两处各写一个字符串"（拼错了不会报错，
+// 只会让两个域意外重合，而那是安全倒退）。
+const configCodecDomain = "config-at-rest"
 
 // NeedsRekey 报告该密文是否**不是**当前主密钥加的（即轮换后尚未重加密）。
 //
@@ -273,13 +335,11 @@ func (c *Codec) openWithSingleKey(key []byte, stored string) (string, error) {
 	return string(plain), nil
 }
 
-// ClearConfigCodec 卸下配置编解码器（测试与"显式关闭加密"用）。
+// ★ 2026-11-04：`ClearConfigCodec` 已删除。
 //
-// 单独一个函数而不是让 InitConfigCodec(nil) 承担：
-// 后者语义模糊（nil 是"没密钥"还是"要清空"？），且会掩盖调用方的错误
-// —— 曾因此让一个判据假绿（以为清空了，其实上一把密钥还在）。
-func ClearConfigCodec() {
-	globalCodecMu.Lock()
-	globalCodec = nil
-	globalCodecMu.Unlock()
-}
+// 它清的是包级单例。现在"关闭加密"通过不注入（或注入 nil）表达：
+//
+//	rt.SetCodec(nil)              → config.codecOf() == nil
+//	cfgReg.SetCodec(nil)
+//
+// 比"清空一个全局变量"更明确：状态属于对象，不属于进程。
