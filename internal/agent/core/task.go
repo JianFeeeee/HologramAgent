@@ -1115,6 +1115,10 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 		result := denialResultText(tctx, tc.Name)
 		f.ensureBatchAssistant()
 		f.Msgs = append(f.Msgs, agentAPI.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
+		// ★ 必须与 f.Msgs 同步落 context（见 appendToolResultRecord 的说明）。
+		// 漏掉这行的实测后果：qq_call_state 被权限策略拒绝后，ContextEvent 里
+		// 有 call 没有 result，每一轮都触发上游 400，直到发送前自检把它剔掉。
+		f.appendToolResultRecord(tc.ID, tc.Name, result)
 		a.publishEvent(events.EventToolCall, map[string]interface{}{
 			"tool":    tc.Name,
 			"plugin":  pluginName,
@@ -1133,6 +1137,8 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 		log.Printf("[agent] skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
 		f.ensureBatchAssistant()
 		f.Msgs = append(f.Msgs, agentAPI.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
+		// 同上：跳过执行也要落 result，否则 call/result 失配。
+		f.appendToolResultRecord(tc.ID, tc.Name, result)
 		f.ToolIdx++
 		return outcomeContinue
 	}
@@ -1189,6 +1195,41 @@ func (f *TaskFrame) appendToolCallRecord(tc agentAPI.ToolCall) {
 		Name:         tc.Name,
 		Arguments:    tc.Arguments,
 		RawArguments: tc.RawArguments,
+	})
+}
+
+// appendToolResultRecord 追加一条工具结果记录（与 appendToolCallRecord 成对）。
+//
+// ★ 为什么不变量必须由**每一次**调用 path 维护（2026-11-04 生产故障）
+//
+// task.go 顶部的注释写着「ToolCalls 与 ToolResults 通过 CallID 配对；
+// 两者都由 appendToolCallRecord 同步追加」。但"跳过执行"的三条提前返回
+// 分支只补了 f.Msgs（模型能看到），**没写 f.ToolResults**（落 context 的那份）。
+//
+// 后果不是"少一条记录"这么轻：
+//
+//	stepToolBegin   appendToolCallRecord(tc)      ← 记了 call
+//	before_toolcall 钩子拒绝 → return             ← 没记 result
+//	⇒ ContextEvent{ ToolCalls: 2, ToolResults: 1 }
+//	⇒ 渲染出 assistant(tool_calls=[c1,c2]) 但只有 c1 的结果
+//	⇒ 上游硬拒绝（HTTP 400）：insufficient tool messages following tool_calls
+//	⇒ 脏数据持久化进 context.json，之后**每一轮**都带着它
+//
+// 实测（qq 插件的来源权限策略拒绝了 qq_call_state）：
+//
+//	[42] tool_calls=[qq_call_state, output_send__qq]
+//	     tool_results=[output_send__qq]        ← call_state 的结果从未落盘
+//
+// 判定"被拒绝/被跳过"≠"没有结果"：拒绝原因本身就是结果，而且模型
+// 确实看到了它（f.Msgs 里那条 tool 消息）。落 context 的必须与发给模型的一致。
+func (f *TaskFrame) appendToolResultRecord(callID, name, output string) {
+	if f == nil {
+		return
+	}
+	f.ToolResults = append(f.ToolResults, ToolResultItem{
+		CallID: callID,
+		Name:   name,
+		Output: output,
 	})
 }
 
