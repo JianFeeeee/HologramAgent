@@ -29,6 +29,7 @@ package skillmgr
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -174,5 +175,101 @@ func TestMaterializeBuiltinSkills_Idempotent(t *testing.T) {
 	}
 	if !after.ModTime().Equal(before.ModTime()) {
 		t.Fatal("内容未变却重写了文件（mtime 变了）")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// 没有 stamp 的**内核旧版**必须能升级（2026-11-04 修的实测缺陷）
+//
+// 背景：stamp 机制由 387ae94 引入，而生产机上 kernel-plugins 是更早的
+// 内核写的（mtime 2026-10-26），没有 .builtin-sha256 ⇒ unmodified 恒为
+// false ⇒ 这份 skill **永不更新**。后果：内核改进了 skill 文档，已部署
+// 的机器永远拿不到 —— 而它正是教模型怎么用工具的文档。
+//
+// 与 TestMaterializeBuiltinSkills_NoStampIsConservative 的关系：
+// 那条判据守"来历不明的旧内容别覆盖"，这条守"内核旧版要升级"。
+// 两者的分界线是 frontmatter 里的 version：版本更高 = 内核发布了新版。
+// ─────────────────────────────────────────────────────────────
+
+// TestMaterializeBuiltinSkills_UpgradesStaleKernelVersion 钉住升级路径。
+//
+// 变异：把 builtinSkillOutdated 的返回值改成恒 false ⇒ 本例红。
+func TestMaterializeBuiltinSkills_UpgradesStaleKernelVersion(t *testing.T) {
+	dir := writeBuiltinFixture(t)
+
+	// 模拟"没有 stamp 的内核旧版"：version 刻意写低。
+	stale := "---\nname: kernel-memory\ndescription: old\nversion: 0.0.1\n---\n\n# 旧内容\n"
+	putSkill(t, dir, stale, false)
+
+	materializeBuiltinSkills(dir)
+
+	got, err := os.ReadFile(filepath.Join(dir, "kernel-memory", skillFileName))
+	if err != nil {
+		t.Fatalf("读回: %v", err)
+	}
+	if strings.Contains(string(got), "旧内容") {
+		t.Fatalf("★ 没有 stamp 的内核旧版（version 0.0.1）没被升级 ——\n"+
+			"这正是生产上 kernel-plugins 永不更新的原因。\n实际内容: %q", string(got))
+	}
+	if !strings.Contains(string(got), "version: 1.") && !strings.Contains(string(got), "version: 2.") {
+		t.Logf("升级后版本: %s", skillVersionOf(string(got)))
+	}
+	// 升级后必须补上 stamp，否则下次又会走"无 stamp"分支
+	if _, err := os.Stat(filepath.Join(dir, "kernel-memory", builtinStampName)); err != nil {
+		t.Fatalf("★ 升级后没写 stamp：%v（下次仍会被当成来历不明）", err)
+	}
+}
+
+// TestMaterializeBuiltinSkills_KeepsHigherUserVersion 钉住反向：
+// 用户把 version 改得比内嵌更高时，**必须保留**（那是人明确要的版本）。
+//
+// 变异：把 compareVersion < 0 改成 <= 0 ⇒ 相等也升级 ⇒ 本例如改高则红。
+func TestMaterializeBuiltinSkills_KeepsHigherUserVersion(t *testing.T) {
+	dir := writeBuiltinFixture(t)
+	custom := "---\nname: kernel-memory\ndescription: mine\nversion: 99.0.0\n---\n\n# 我的定制版\n"
+	putSkill(t, dir, custom, false)
+
+	materializeBuiltinSkills(dir)
+
+	got, err := os.ReadFile(filepath.Join(dir, "kernel-memory", skillFileName))
+	if err != nil {
+		t.Fatalf("读回: %v", err)
+	}
+	if !strings.Contains(string(got), "我的定制版") {
+		t.Fatalf("★ 用户把 version 改成 99.0.0 后仍被覆盖（现在 %q）——\n"+
+			"version 更高意味着人明确要这个版本，必须保留", string(got))
+	}
+}
+
+// TestCompareVersion 钉住版本比较本身（判据的基础）。
+func TestCompareVersion(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0", "1.0.0", 0},
+		{"1.0.0", "1.0.1", -1},
+		{"1.1.0", "1.0.0", 1},
+		{"1.0", "1.0.0", 0}, // 缺段视为 0
+		{"2", "10", -1},     // 数值比较，不是字符串（"2" > "10" 是字符串陷阱）
+		{"1.0.0", "1.0.0-beta", -1},
+	}
+	for _, c := range cases {
+		if got := compareVersion(c.a, c.b); got != c.want {
+			t.Errorf("compareVersion(%q,%q)=%d，期望 %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestSkillVersionOfOnlyReadsFrontmatter 钉住版本解析只看 frontmatter。
+//
+// 正文里的 `version:` 可能是示例代码，误读会让升级判据做出错误决定。
+func TestSkillVersionOfOnlyReadsFrontmatter(t *testing.T) {
+	content := "---\nname: x\nversion: 1.2.3\n---\n\n正文\n\n```yaml\nversion: 9.9.9\n```\n"
+	if got := skillVersionOf(content); got != "1.2.3" {
+		t.Fatalf("★ 解析到 %q，期望 1.2.3（正文里的 version 不应被读）", got)
+	}
+	if got := skillVersionOf("没有 frontmatter 的文档\nversion: 5.0.0\n"); got != "" {
+		t.Fatalf("★ 无 frontmatter 却解析出 %q，期望空", got)
 	}
 }

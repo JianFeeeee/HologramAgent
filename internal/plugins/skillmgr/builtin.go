@@ -35,6 +35,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -97,7 +98,25 @@ func materializeBuiltinSkills(skillsDir string) int {
 		// 已存在：判断是不是"内核写的且没人改过"，是才覆盖。
 		if _, statErr := os.Stat(dstDir); statErr == nil {
 			if !builtinSkillUnmodified(dstDir) {
-				continue // 用户改过（或无法确认）：保留人的版本
+				// 没有 stamp / 内容被改过 ⇒ 默认保留（人可能改过措辞）。
+				//
+				// ★ 但有一种情况必须升级：这个是**内核在 stamp 机制之前写的**
+				// 旧版本。判据 = 磁盘上的 frontmatter version 明确低于内嵌版本。
+				//
+				// 为什么需要这一条（实测缺陷）：stamp 机制由 387ae94 引入，
+				// 而生产机上 kernel-plugins 是更早的内核写的（mtime 2026-10-26），
+				// 没有 .builtin-sha256 ⇒ builtinSkillUnmodified 恒为 false
+				// ⇒ **这份 skill 永不更新**。后果是内核改进了 skill 文档，
+				// 已部署的机器永远拿不到 —— 而这个 skill 正是教模型怎么用工具的。
+				//
+				// 为什么用 version 而不是内容差异：用户手工改措辞时通常不动
+				// version，所以"version 更高"是"内核发布了新版"的可靠信号；
+				// 反过来，人把 version 改高的情况几乎不存在。
+				if !builtinSkillOutdated(dstDir, data) {
+					continue // 用户改过（或无法确认）：保留人的版本
+				}
+				log.Printf("[skillmgr] upgrading stale builtin skill %s "+
+					"(no stamp, on-disk version older than embedded)", name)
 			}
 			if cur, err := os.ReadFile(filepath.Join(dstDir, skillFileName)); err == nil && string(cur) == string(data) {
 				continue // 内容已是最新，不用重写（保留 mtime）
@@ -158,4 +177,109 @@ func writeBuiltinStamp(dir string, data []byte) {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// builtinSkillOutdated 判断磁盘上的 skill 是否是**内核写的旧版本**。
+//
+// 只在没有 stamp 时才被调用（有 stamp 的走 unmodified 判定）。
+//
+// 判据：磁盘文件的 frontmatter `version` 严格低于内嵌版本。
+//
+// ## 为什么这条判据是安全的
+//
+// 它只在"两份都能解析出版本号"且"磁盘更低"时返回 true：
+//
+//	人手工改措辞      → 通常不动 version ⇒ 不低于 ⇒ 保留（正确）
+//	人手工把版本改高   → 不触发升级 ⇒ 保留（正确，虽然几乎不会发生）
+//	内核旧版（无 stamp）→ 磁盘版本更低 ⇒ 升级（这正是要修的缺陷）
+//	解析不出版本号     → 返回 false ⇒ 保留（保守）
+//
+// 也就是说：**误升级的唯一条件是"人把 version 改低了"**，而那种改动
+// 本身就是要放弃内核版本的意思，却反而被升级——接受这个极小的风险，
+// 换取"内核能更新 skill"这个基本能力。
+func builtinSkillOutdated(dir string, embedded []byte) bool {
+	cur, err := os.ReadFile(filepath.Join(dir, skillFileName))
+	if err != nil {
+		return false
+	}
+	diskVer := skillVersionOf(string(cur))
+	embVer := skillVersionOf(string(embedded))
+	if diskVer == "" || embVer == "" {
+		return false
+	}
+	return compareVersion(diskVer, embVer) < 0
+}
+
+// skillVersionOf 从 SKILL.md 的 frontmatter 里取 version。
+//
+// 只认 frontmatter 块（首个 --- 到闭合 ---），不扫正文 —— 正文里的
+// `version:` 可能是示例代码，误读会让判据做出错误决定。
+func skillVersionOf(content string) string {
+	lines := strings.Split(content, "\n")
+	in := false
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if i == 0 && t == "---" {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		if t == "---" {
+			break // frontmatter 结束
+		}
+		if strings.HasPrefix(strings.ToLower(t), "version:") {
+			v := strings.TrimSpace(t[len("version:"):])
+			v = strings.Trim(v, "\"'")
+			return v
+		}
+	}
+	return ""
+}
+
+// compareVersion 按点分段数值比较，返回 -1 / 0 / 1。
+//
+// 非数值段按字符串比较（例如 "1.0.0-beta"），空段视为 0。
+// 不做语义化版本的完整解析 —— 这里只需要"新是否旧"，越简单越不会错。
+func compareVersion(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	n := len(as)
+	if len(bs) > n {
+		n = len(bs)
+	}
+	for i := 0; i < n; i++ {
+		// ★ 缺失段必须视为 "0"，不能留空串。
+		//
+		// 判据实测抓到过：留空串时 Atoi("") 失败 ⇒ 落到字符串比较
+		// ⇒ `"" < "0"` ⇒ "1.0" 被判成低于 "1.0.0"（错误，二者等价）。
+		// 后果是版本号少写一段的 skill 会被无谓地重复升级。
+		av, bv := "0", "0"
+		if i < len(as) && as[i] != "" {
+			av = as[i]
+		}
+		if i < len(bs) && bs[i] != "" {
+			bv = bs[i]
+		}
+		ai, aerr := strconv.Atoi(av)
+		bi, berr := strconv.Atoi(bv)
+		if aerr == nil && berr == nil {
+			if ai != bi {
+				if ai < bi {
+					return -1
+				}
+				return 1
+			}
+			continue
+		}
+		// 非数值段：字符串比较
+		if av != bv {
+			if av < bv {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
