@@ -1,6 +1,7 @@
-package core
+package test
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestStageHostRegisterTool(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	err := host.RegisterTool("test_tool", sdk.ToolDef{Name: "test_tool"}, func(args map[string]interface{}) (interface{}, error) {
 		return "ok", nil
@@ -28,7 +29,7 @@ func TestStageHostRegisterTool(t *testing.T) {
 }
 
 func TestStageHostRegisterToolDuplicate(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 	host.RegisterTool("dup", sdk.ToolDef{Name: "dup"}, nil)
 	err := host.RegisterTool("dup", sdk.ToolDef{Name: "dup"}, nil)
 	if err == nil {
@@ -37,7 +38,7 @@ func TestStageHostRegisterToolDuplicate(t *testing.T) {
 }
 
 func TestStageHostExecuteTool(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	host.RegisterTool("hello", sdk.ToolDef{Name: "hello"}, func(args map[string]interface{}) (interface{}, error) {
 		return "world", nil
@@ -58,7 +59,7 @@ func TestStageHostExecuteTool(t *testing.T) {
 }
 
 func TestStageHostRunStage(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	var called bool
 	host.RegisterStage(sdk.StageOnInput, func(ctx *sdk.StageContext) error {
@@ -75,7 +76,7 @@ func TestStageHostRunStage(t *testing.T) {
 }
 
 func TestStageHostRunStageParallel(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	// Two handlers that both try to set Response under Lock.
 	// Only the first to acquire Lock actually wins; the second sees IsResponded() and skips.
@@ -110,7 +111,7 @@ func TestStageHostRunStageParallel(t *testing.T) {
 }
 
 func TestStageHostRunStageConcurrency(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	var counter int32
 	n := 10
@@ -129,7 +130,7 @@ func TestStageHostRunStageConcurrency(t *testing.T) {
 }
 
 func TestStageHostRunStageAll(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	var mu sync.Mutex
 	count := 0
@@ -154,7 +155,7 @@ func TestStageHostRunStageAll(t *testing.T) {
 }
 
 func TestStageHostEmpty(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	if host.ToolCount() != 0 {
 		t.Errorf("expected 0 tools, got %d", host.ToolCount())
@@ -174,7 +175,7 @@ func TestStageHostEmpty(t *testing.T) {
 }
 
 func TestStageHostMultipleTools(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 
 	host.RegisterTool("tool1", sdk.ToolDef{Name: "tool1"}, func(args map[string]interface{}) (interface{}, error) {
 		return "from_p1", nil
@@ -199,7 +200,7 @@ func TestStageHostMultipleTools(t *testing.T) {
 }
 
 func TestStageHostToolDefLookup(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 	host.RegisterTool("tool_a", sdk.ToolDef{Name: "tool_a", NoMemory: true}, nil)
 	host.RegisterTool("tool_b", sdk.ToolDef{Name: "tool_b"}, nil)
 
@@ -226,7 +227,7 @@ func TestStageHostToolDefLookup(t *testing.T) {
 }
 
 func TestStageHostToolDefNoMemoryStored(t *testing.T) {
-	host := NewStageHost()
+	host := core.NewStageHost()
 	host.RegisterTool("mem_tool", sdk.ToolDef{Name: "mem_tool", NoMemory: true}, nil)
 	host.RegisterTool("normal_tool", sdk.ToolDef{Name: "normal_tool", NoMemory: false}, nil)
 

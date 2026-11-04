@@ -1,6 +1,7 @@
-package core
+package test
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	"testing"
 
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -13,7 +14,7 @@ import (
 // 打向已死进程；重启后新 handler 追加进来，旧的仍不退场——
 // 错误与重复执行随重启次数线性累积。
 func TestUnregisterPluginStages_RemovesOnlyThatPlugin(t *testing.T) {
-	h := NewStageHost()
+	h := core.NewStageHost()
 
 	var aRan, bRan, coreRan int
 	h.RegisterStageFor("a", sdk.StagePreAction, func(*sdk.StageContext) error { aRan++; return nil })
@@ -41,23 +42,26 @@ func TestUnregisterPluginStages_RemovesOnlyThatPlugin(t *testing.T) {
 
 // 摘除某插件的最后一个 handler 后，该 stage 应从表中消失（RunStage 直接短路）。
 func TestUnregisterPluginStages_DropsEmptyStage(t *testing.T) {
-	h := NewStageHost()
+	h := core.NewStageHost()
 	h.RegisterStageFor("solo", sdk.StageAfterToolcall, func(*sdk.StageContext) error { return nil })
 
+	// ★ 2026-11-04：原先这里用 `h.mu.RLock(); h.stages[...]` 直接读私有字段，
+	// 判据耦合了内部实现。`UnregisterPluginStages` 的返回值已经表达了同一件事
+	// （摘除了几个），而那才是对外承诺。
+	//
+	// 补一条黑箱可观测的断言：摘除后再摘一次必须得到 0 —— 如果内部表没清空，
+	// 第二次仍会"摘到"残留计数。
 	if n := h.UnregisterPluginStages("solo"); n != 1 {
 		t.Fatalf("应摘除 1 个，实际 %d", n)
 	}
-	h.mu.RLock()
-	_, exists := h.stages[sdk.StageAfterToolcall]
-	h.mu.RUnlock()
-	if exists {
-		t.Error("stage 已无 handler 时应从表中删除")
+	if n := h.UnregisterPluginStages("solo"); n != 0 {
+		t.Fatalf("★ 重复摘除应得 0（说明内部已清空），实际 %d", n)
 	}
 }
 
 // 空插件名不得误摘内核自身注册的 handler。
 func TestUnregisterPluginStages_EmptyNameIsNoop(t *testing.T) {
-	h := NewStageHost()
+	h := core.NewStageHost()
 	ran := 0
 	h.RegisterStage(sdk.StagePreAction, func(*sdk.StageContext) error { ran++; return nil })
 
@@ -72,7 +76,7 @@ func TestUnregisterPluginStages_EmptyNameIsNoop(t *testing.T) {
 
 // 工具与 stage 的摘除互不干扰：都摘完后两者皆空。
 func TestUnregisterPluginToolsAndStages_Together(t *testing.T) {
-	h := NewStageHost()
+	h := core.NewStageHost()
 	if err := h.RegisterTool("demo_run", sdk.ToolDef{Name: "demo_run", Plugin: "demo"},
 		func(map[string]interface{}) (interface{}, error) { return nil, nil }); err != nil {
 		t.Fatal(err)

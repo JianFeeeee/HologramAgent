@@ -1,6 +1,7 @@
-package core
+package test
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	"sync"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 // 读 ParallelSafe，优化后读成了别的字段，于是工具能并发的批次悄悄
 // 退化成串行 —— 没有任何报错。
 func TestNoCopyQueriesMatchToolDef(t *testing.T) {
-	sh := NewStageHost()
+	sh := core.NewStageHost()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	cases := []sdk.ToolDef{
 		{Name: "plain"},
@@ -66,7 +67,7 @@ func TestNoCopyQueriesMatchToolDef(t *testing.T) {
 
 // 并发查询必须无竞态，且与串行结果一致。
 func TestNoCopyQueriesConcurrent(t *testing.T) {
-	sh := NewStageHost()
+	sh := core.NewStageHost()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	for i := 0; i < 50; i++ {
 		name := "t" + string(rune('a'+i%26)) + string(rune('0'+i/26))
