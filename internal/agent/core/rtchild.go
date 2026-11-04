@@ -372,9 +372,22 @@ func (rc *rtChild) Dispose() string {
 	}
 	// ★ 先排空输出队列再退出：Close 内部 wg.Wait() 会等消费 goroutine
 	// 把剩余片发完。不排空会把"最后半句"吞掉 —— 用户听到话说到一半就断了。
-	if rc.pump != nil {
-		rc.pump.Close()
-		rc.pump = nil
+	//
+	// ★ 取走 pump 必须在锁内、关闭必须在锁外（2026-11-04 修的 data race）：
+	//
+	//	Dispose（StopRTChild 的 goroutine）  写 rc.pump = nil
+	//	rtEmit （rtLoop 的 goroutine）        读 rc.pump
+	//
+	// 两者无同步 ⇒ -race 报 DATA RACE（实测：全量负载下
+	// TestRTChild_E2E_Sustained 偶发命中）。加上锁之后，「取走并置 nil」
+	// 与「读它」互斥；Close 放在锁外是因为它内部 wg.Wait() 等消费
+	// goroutine 收尾，持锁等待可能与另一个持锁路径交叉。
+	rc.mu.Lock()
+	pump := rc.pump
+	rc.pump = nil
+	rc.mu.Unlock()
+	if pump != nil {
+		pump.Close()
 	}
 	// 图记忆句柄必须关（SQLite 句柄，不关会随 create/stop 累积泄漏）。
 	//
@@ -703,6 +716,9 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	// resolve 是闭包而不是缓存的设备指针：插件崩溃时 releasePluginChannels
 	// 会注销设备，恢复后重新注册 —— 缓存指针会一直指向死设备，
 	// 现象是"插件重启后 rt 再也说不出话"。
+	// ★ 此处置 pump **不需要加锁**：rc 还没被任何 goroutine 看到
+	//（rtLoop 在 SpawnRTChild 之后才启动）。之后的读/清一律走 rc.mu ——
+	// 见 Dispose 与 rtEmit 里的说明。
 	rc.pump = newOutputPump(opts.Output, func() agentIO.Device {
 		if a.io == nil {
 			return nil
@@ -1272,8 +1288,13 @@ func (a *Agent) rtEmit(rc *rtChild, text string) {
 	// 原实现直接 `dev.Execute(...)`，插件侧延迟（TTS/网络编码/字幕渲染）
 	// **直接节流模型的 token 消费** —— 「不攒整段」的收益全被吃掉。
 	// pump.Push 立即返回，交付由 pump 的消费 goroutine 负责。
-	if rc.pump != nil {
-		rc.pump.Push(text)
+	// ★ 锁内取、锁外推（见 Dispose 的说明）：
+	// Push 可能阻塞（队列满时），持锁会卡住 Dispose 的 pump 置 nil。
+	rc.mu.Lock()
+	pump := rc.pump
+	rc.mu.Unlock()
+	if pump != nil {
+		pump.Push(text)
 		return
 	}
 	// 兜底（pump 未建时，如某些判据直接构造 rtChild）：保持原同步行为，
