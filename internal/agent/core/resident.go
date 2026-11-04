@@ -145,7 +145,7 @@ func (rc *residentChild) Kind() childpkg.Kind { return childpkg.KindResident }
 //
 // 这三种通道处置是驻留子独有的语义（ChannelDisposition），
 // 由父在销毁时决定，写在 `residentDisposition` 上供本方法读取。
-func (rc *residentChild) Dispose(policy childpkg.ResidualPolicy) string {
+func (rc *residentChild) Dispose() string {
 	// 关记忆句柄：temp 与子同生共死（连同目录一起丢弃）。
 	//
 	// ★ 通道处置**不在这里**：它需要父的 sched / io（接回时要把暂存任务

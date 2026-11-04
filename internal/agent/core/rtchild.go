@@ -365,7 +365,7 @@ func (rc *rtChild) Kind() child.Kind { return child.KindRT }
 // agent 成为潜在持有方（routeInputByOwner 的 Owner=="" 分支会把输入
 // 兜底给主 agent，静默改变语义）。悬空是**显式**状态，运维能一眼看出
 // "这条 rt 通道的宿主没了"。
-func (rc *rtChild) Dispose(_ child.ResidualPolicy) string {
+func (rc *rtChild) Dispose() string {
 	// 契约 3：丢弃槽里未处理的输入，不转交。
 	if rc.slot != nil {
 		_, _, _ = rc.slot.Take()
@@ -799,16 +799,12 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	return opts.ID, nil
 }
 
-// rtResidualPolicy：rt **没有**残余回灌（契约 3）。
-const rtResidualPolicy = child.ResidualDrop
-
 // rtStopDeps 组装骨架清理所需的注入动作。
 //
 // ★ 这里是 rt 侧唯一需要知道"撤销策略 / 注销入站"的地方，
 // 而**执行**它们的是骨架的 Cleanup —— 单数与复数路径共用那一段。
 func (a *Agent) rtStopDeps() child.StopDeps {
 	return child.StopDeps{
-		Residual:     rtResidualPolicy,
 		RevokePolicy: a.revokeChildPolicy,
 		UnregisterInbound: func(ch string) {
 			if a.io == nil {

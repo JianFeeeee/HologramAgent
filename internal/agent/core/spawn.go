@@ -47,6 +47,90 @@ func (a *Agent) evictChildTasksLocked() {
 	}
 }
 
+// ── 工作式子的工具禁令（**单一事实来源**） ──
+//
+// 此前这条禁令写了两遍：一遍在定义侧（把工具从表里滤掉），
+// 一遍在执行侧（模型硬调时拒绝）。两处的工具名单必须逐字一致 ——
+// 任何一边落后就是一个真实缺口：
+//
+//	定义侧漏滤 ⇒ 模型看得见但不该能用（白耗 token，还会反复试）
+//	执行侧漏拒 ⇒ 模型绕过定义直接调用**就能生效**（模型确实会这么干）
+//
+// 现在只有下面这张表。定义侧走 workerToolAllowed，
+// 执行侧走 workerToolReject，两者都从同一份 runnerForbidden 派生。
+// 判据 TestWorkerToolDenyListIsSingleSource 钉住"不许再长出第二份"。
+
+// workerDenyRule 是一条工具禁令：匹配方式 + 给模型看的解释。
+//
+// ★ 用结构体把"匹配"和"解释"绑在一起，避免上一版那种三处间接
+// （先查 reason 字符串、再按下标猜分类、再查 hint）。读代码时
+// 一条禁令的全部信息在一行里可见。
+type workerDenyRule struct {
+	class  string // 给模型看的类别（"输出工具" / "系统工具"）
+	tool   string // 精确匹配（prefix=false 时）
+	prefix string // 前缀匹配（prefix=true 时）
+	isPref bool
+	hint   string // 为什么不行、该怎么做
+}
+
+// workerForbidden 是工作式子**唯一**的工具禁令表。
+//
+// 为什么禁这些：
+//
+//	输出工具    结果回父（child_result），子直接对用户说话会与父的回复串台
+//	spawn_child 子不能再 spawn 子（无限递归）
+//	plgreload   插件重载是内核级动作，子无权触发
+var workerForbidden = []workerDenyRule{
+	{
+		class: "输出工具", prefix: "output_send__", isPref: true,
+		hint: "结果请直接作为最终答复返回，父会转达用户",
+	},
+	{
+		class: "输出工具", tool: "output_list_channels",
+		hint: "结果请直接作为最终答复返回，父会转达用户",
+	},
+	{
+		class: "系统工具", tool: "spawn_child",
+		hint: "子不能再 spawn 子（会无限递归）；需要多步请在本次任务内完成",
+	},
+	{
+		class: "系统工具", tool: "plgreload",
+		hint: "插件重载是内核级动作，只有父能触发",
+	},
+}
+
+// workerDenyRuleFor 返回命中的禁令（nil = 允许）。
+func workerDenyRuleFor(name string) *workerDenyRule {
+	for i := range workerForbidden {
+		r := &workerForbidden[i]
+		if r.isPref {
+			if strings.HasPrefix(name, r.prefix) {
+				return r
+			}
+			continue
+		}
+		if name == r.tool {
+			return r
+		}
+	}
+	return nil
+}
+
+// workerToolAllowed 报告某个工具是否**允许**给工作式子用（定义侧过滤）。
+func workerToolAllowed(name string) bool { return workerDenyRuleFor(name) == nil }
+
+// workerToolReject 在执行侧拒绝被禁工具，返回给模型的**可执行**说明。
+//
+// 返回空串表示放行。文案必须说明"为什么不行、该怎么做"，否则模型会原样
+// 重试同一条被拒的调用（本仓有过"4 次 files_write 失败"的先例）。
+func workerToolReject(ct agentAPI.ToolCall) string {
+	r := workerDenyRuleFor(ct.Name)
+	if r == nil {
+		return ""
+	}
+	return fmt.Sprintf("子 Agent 不允许调用 %s: %s（%s）", r.class, ct.Name, r.hint)
+}
+
 func (a *Agent) executeSpawnChild(tc agentAPI.ToolCall, parentChannel string) string {
 	task, _ := tc.Arguments["task"].(string)
 	if task == "" {
@@ -157,7 +241,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			continue
 		}
 		name, _ := fn["name"].(string)
-		if strings.HasPrefix(name, "output_send__") || name == "output_list_channels" || name == "spawn_child" || name == "plgreload" {
+		if !workerToolAllowed(name) {
 			continue
 		}
 		childTools = append(childTools, t)
@@ -217,17 +301,9 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		//   ② 强制串行（NoBatch）—— 子历史上是串行的，改并发会改变它已上线
 		//      行为的时序假设，不在本次重构范围内（判据 TestWorkerToolsStaySerial 钉住）
 		results := a.runToolBatch(a.ctx, resp.ToolCalls, batchOpts{
-			Channel: parentChannel,
-			NoBatch: true,
-			ToolFilter: func(ct agentAPI.ToolCall) string {
-				switch {
-				case strings.HasPrefix(ct.Name, "output_send__") || ct.Name == "output_list_channels":
-					return fmt.Sprintf("子 Agent 不允许调用输出工具: %s", ct.Name)
-				case ct.Name == "spawn_child" || ct.Name == "plgreload":
-					return fmt.Sprintf("子 Agent 不允许调用系统工具: %s", ct.Name)
-				}
-				return ""
-			},
+			Channel:    parentChannel,
+			NoBatch:    true,
+			ToolFilter: workerToolReject,
 		})
 		// 子 Agent 的工具调用必须自记一行。此前子侧全程静默：父内核日志里
 		// 只有「started / done」两行，子任务失败时无法判断倒在哪一步（是搜不到、

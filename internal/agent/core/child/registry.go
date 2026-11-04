@@ -55,9 +55,15 @@ type Entry interface {
 	// Kind 返回类型标签。
 	Kind() Kind
 
-	// Dispose 按本类型语义收尾（残余处置、通道释放或悬空）。
-	// policy 只对支持残余处置的类型有意义，其余忽略。返回给父看的摘要。
-	Dispose(policy ResidualPolicy) string
+	// Dispose 按本类型语义收尾（关闭记忆句柄、丢弃过期输入等）。
+	// 返回给父看的摘要（可为空）。
+	//
+	// ★ 签名里**没有**残余策略：残余处置（keep/drop）走的是另一条路径
+	// （ApplyResidual / FinishResidentWith），它们在 Dispose 之前就已经把
+	// 任务取走或丢弃了。曾在这里放过 `policy ResidualPolicy` 参数，
+	// 但两个实现都没读它 —— 那是误导性签名（看签名以为这里会处理残余），
+	// 按"不留技术债"删掉。
+	Dispose() string
 }
 
 // Add 登记一个已构造好的实例。
@@ -158,8 +164,6 @@ func (r *Registry) Len() int {
 
 // StopDeps 是清理时需要的外部动作（由 core 注入，避免本包依赖 core 的类型）。
 type StopDeps struct {
-	// Residual 是残余处置策略（只对支持的类型有意义）。
-	Residual ResidualPolicy
 	// RevokePolicy 撤销父为该子声明的主体策略。
 	//
 	// ★ 必须注入：主体表以调用方给的名字为键，同名重建会继承旧策略，
@@ -187,7 +191,7 @@ func (r *Registry) Cleanup(e Entry, deps StopDeps) {
 	b.Stop()
 	// ② 类型自己的收尾（残余/通道）。类型可能读 ctx，故排在 cancel 之后但
 	//    只读状态、不依赖 ctx 存活。
-	if msg := e.Dispose(deps.Residual); msg != "" {
+	if msg := e.Dispose(); msg != "" {
 		log.Printf("[child] %s (%s) disposed: %s", b.ID, e.Kind(), msg)
 	}
 	if deps.OnDispose != nil {
