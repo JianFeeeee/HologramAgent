@@ -294,6 +294,64 @@ internal/plugins/webui/ 29 个测试文件，全部 package webui（白盒）
 **这不是风格问题**：一个包里如果 90% 判据是白盒，这个包的模块边界
 事实上不存在 —— 谁都不敢改内部实现。
 
+### 5.3.1 三种测试位置的实际边界（2026-11-04 实测）
+
+写完 §5.3 之后按它动手，撞到三类不可迁移的情况。这里把边界记清，
+避免以后有人（包括我）以为"所有测试都能挪到 test/"。
+
+#### 可行：`<pkg>/test/` 子目录
+
+Go 允许同目录下 `pkg` 与 `pkg_test` 两个包名，也允许 `<pkg>/test/` 放
+独立包。**关键事实**：`pkg/test/` 里写 `package pkg` 也访问不到未导出符号 ——
+
+```go
+// pkg/test/a_test.go
+package pkg
+func TestX(t *testing.T) { _ = internalVar }   // undefined: internalVar
+```
+
+Go 按**目录**划分包实例，不同目录就是不同包。所以"子目录"和"外部包"
+在可见性上等价，都强制黑箱。
+
+#### 不可行一：`package main`（CLI）
+
+```
+import "x/cmd" is a program, not an importable package
+```
+
+`tools/hmapdev`（19 个测试文件）、`cmd/homed` 等属于这类，**必须留在包内**。
+
+#### 不可行二：测试直接构造私有字段
+
+SDK 原测试写 `&PluginSDK{regStage: regStage, name: "test"}` —— 迁到外部包后
+连**构造被测对象**都做不到（`cannot refer to unexported field regStage`）。
+
+**但这不等于必须白盒**：`New(name, sett, regTool, regStage, regAPI, regOutput)`
+本来就把这些作为参数，等价且是生产路径。实测 19 处全部可改，改完判据仍然
+咬得住变异。
+
+⇒ 遇到"要设私有字段"时，先问：**有没有一个导出的构造入口已经接受这些参数？**
+大多数情况有，只是测试偷懒没用。
+
+#### 不可行三：判据扫描"当前目录源码"
+
+```go
+files, _ := filepath.Glob("*.go")     // childkind_test.go
+```
+
+迁到子目录后 glob 到**空目录**，判据静默失去对象 —— 不报编译错，直接绿。
+这类要先改成"扫描固定相对路径"，或者干脆按 §5.2 重写成行为判据。
+
+#### 迁移顺序：一次一个，让编译器说话
+
+第一版我批量迁 11 个文件、再用脚本自动加 `core.` 前缀，结果把
+`import "…/internal/agent/core"` 本身也改了（变成 `core.core.core`），
+还误伤 `strconv.Itoa` 等标准库符号。
+
+文本替换在"加包名前缀"这种场景不可靠 —— 它会改到导入路径、注释、
+标准库符号。**正确做法是一次只迁一个，逐步看编译器报什么，手工修。**
+慢，但不会留下半成品（agent/core 已因此完全回滚过一次）。
+
 ### 5.4 CI 必须覆盖每个独立 module
 
 **实测缺口（2026-11-04）**：主仓有 `third_party/hologramagentsdk/`，
