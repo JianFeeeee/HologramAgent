@@ -685,19 +685,70 @@ func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
 				msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID, Content: tr.Output})
 			}
 		}
+		// ★ 预算截断以**事件（消息组）**为最小单位，绝不切开一组的内部
+		//（2026-11-04 生产故障修复）。
+		//
+		// 此前是逐条消息累加，超预算就 return —— 可能正好切在
+		// assistant(tool_calls) **之后**、它的 tool 结果**之前**。
+		// 这样的序列上游直接 400：
+		//
+		//	An assistant message with 'tool_calls' must be followed by
+		//	tool messages responding to each 'tool_call_id'
+		//
+		// ⇒ 所有 provider 全部失败 ⇒ 会话彻底不可用。
+		//
+		// 实测（用生产 context.json 真实数据跑渲染）：
+		//
+		//	budget=480000 → 469 calls / 386 answered / **83 dangling**
+		//	budget=100000 → 469 calls /  40 answered / 429 dangling
+		//
+		// 即**默认预算下就已经在切断**。这也解释了为什么新会话也报错：
+		// 不是历史脏数据，是渲染期把当前上下文切坏了。
+		//
+		// 这与 InactivePages 的约束是同一件事（那里注释写着"剔掉 call
+		// 却留下 result 就是造一个必崩的帧"）——整组要么全留，要么全丢。
+		groupCost := 0
 		for _, m := range msgs {
-			cost := EstimateTokens(m.Content)
+			groupCost += EstimateTokens(m.Content)
 			if len(m.ToolCalls) > 0 {
 				for _, tc := range m.ToolCalls {
-					cost += EstimateTokens(tc.Name) + EstimateTokens(tc.RawArguments)
+					groupCost += EstimateTokens(tc.Name) + EstimateTokens(tc.RawArguments)
 				}
 			}
-			if maxTokens > 0 && used+cost > maxTokens && len(out) > 0 {
+		}
+		if maxTokens > 0 && used+groupCost > maxTokens {
+			// 整组放不下。
+			//
+			// ★ 两种处置，取决于"这个组是不是异常大"：
+			//
+			//  ① 正常组（> 剩余预算，但本身不失控）：**停止**。
+			//     再往前就是更旧的对话，继续追加只会更超。
+			//     这也是原来 `return out` 的语义。
+			//
+			//  ② **单组就超过总预算的 1/4**：这一组异常（实测见过
+			//     468 个 tool_call 的单帧，占 51 万 token），它放不下
+			//     不是因为"前面装了太多"，而是它自己失控。
+			//     此时 `return` 会把**它之后的全部历史**一起丢掉 ——
+			//     实测 49 个事件只剩 8 个，上下文几乎清空。
+			//     所以跳过这一组、继续往后渲染（更新的对话更重要）。
+			//
+			// 两种处置都保证**组内完整性**（要么全有要么全无），
+			// 因此都不会产生"有 tool_calls 无配对结果"的非法序列。
+			// ★ 判据只看"这一组自己是否失控"，不看 out 是否为空。
+			//
+			// 第一版写成 `len(out)==0 || groupCost*4 <= maxTokens`，
+			// 于是超大帧恰好排在**第一位**时（out 为空）仍然 return ——
+			// 判据实测抓到：渲染出 0 条消息，之后的新对话全部消失。
+			if groupCost*4 <= maxTokens {
 				return out
 			}
-			used += cost
-			out = append(out, m)
+			log.Printf("[agent] skip oversized frame (cost=%d > budget/4=%d) — "+
+				"keeping %d earlier messages, continuing with newer frames",
+				groupCost, maxTokens/4, len(out))
+			continue
 		}
+		used += groupCost
+		out = append(out, msgs...)
 	}
 	return out
 }
