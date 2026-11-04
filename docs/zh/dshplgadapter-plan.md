@@ -3,8 +3,13 @@
 > **状态**：规划（未开始实现）
 >
 > **定位**：把 DeepSeek Harness（下称 dsh）的 Cordis 插件生态接入 HologramAgent。
-> 参考原型就是本仓的 `internal/plugins/clawhubadapter/` —— 它把 OpenClaw 生态
-> 接入 HA，dshplgadapter 把 dsh 生态接入 HA，两者是**同一个模式的两次实例化**。
+> 参考原型是 **clawhubadapter**（<https://github.com/JianFeeeee/clawhubadapter>）——
+> 它把 OpenClaw 生态接入 HA，dshplgadapter 把 dsh 生态接入 HA，
+> 两者是**同一个模式的两次实例化**。
+>
+> ⚠️ **该插件已从内核仓迁出**（内核仓 commit `a0077a2`）。
+> 本文中凡引用 clawhubadapter 源码的地方，**一律以上述仓库为准**，
+> 不要到内核仓的 `internal/plugins/` 里找（那里已经没有了）。
 >
 > **建立于**：2026-11-04。
 >
@@ -77,7 +82,7 @@
 
 #### 2.3 迁移实测：三处差异，全部可绕
 
-把 `internal/plugins/clawhubadapter/` 搬到 `hmapdev` 骨架上，只改 import，
+把 clawhubadapter（迁出前的内部版）搬到 `hmapdev` 骨架上，只改 import，
 `hmapdev build` 报四个错：
 
 ```text
@@ -257,16 +262,17 @@ export function apply(ctx) {
 }
 ```
 
-**装载链路**（实测 profile 配置）：
+**装载链路**（实测 profile 配置。`<profile>` = `~/.dsh/profiles/<名字>`，
+本机为 `web` profile，即 `/root/.dsh/profiles/web`；其他机器上只是 `$HOME` 不同）：
 
 ```bash
-/root/.dsh/profiles/web/package.json
-  ├─ dependencies:      @dsh-external/xxx, dsh-mail-bridge, ...
+<profile>/package.json
+  ├─ dependencies:        @dsh-external/xxx, dsh-mail-bridge, ...
   └─ dsh.profile.bundles: [ "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", ... ]
 
-/root/.dsh/profiles/web/cordis.yml      → 空数组（root，由 patch 组合）
-/root/.dsh/profiles/web/cordis.patch.yml → 覆盖层
-/root/.dsh/profiles/web/node_modules/@dsh-external/*  → 软链到真实目录
+<profile>/cordis.yml       → 空数组（root，由 patch 组合）
+<profile>/cordis.patch.yml → 覆盖层
+<profile>/node_modules/@dsh-external/*  → 软链到真实目录
 ```
 
 ⇒ **dshplgadapter 的"扫描目标"就是 `<profile>/node_modules/`**
@@ -342,10 +348,10 @@ dsh 的链是异步 promise 链，可以有多个插件串联；HA 的阶段钩�
 
 ### 2.5 已存在的同类先例（务必读）
 
-`/opt/agentmail/plugins/dsh-mail-bridge/` —— 2586 行 TypeScript，
-生产运行中，做的是 **dsh 插件 ↔ AgentMail 平台桥接**。
+**`dsh-mail-bridge`** —— 2586 行 TypeScript，生产运行中，做的是
+**dsh 插件 ↔ AgentMail 平台桥接**。
 
-它不解决"dsh 插件进 HA"，但它解决了**"如何在 dsh 插件里正确使用 ctx 面"**：
+它不解决“dsh 插件进 HA”，但它解决了**“如何在 dsh 插件里正确使用 ctx 面”**：
 
 - `inject = ['agents','tools']` 的声明方式
 - `defineTool` 的正确用法（含一个历史坑：参数 spec 必须转成合法 JSON Schema）
@@ -353,7 +359,18 @@ dsh 的链是异步 promise 链，可以有多个插件串联；HA 的阶段钩�
 - **`ctx.logger` 不进 journalctl**，日志要用 `console.error`（它踩过，
   注释里写得很清楚）
 
-⇒ 它的 `src/index.ts` 是 dsh 插件侧 API 的**最可靠文档**，比 dsh 官方文档更实在。
+#### 在哪里拿这个参考
+
+⚠️ **它没有在 HologramAgent 组织下，也不在本仓。** 三个可选源，按可靠性排序：
+
+| 源 | 地址 | 说明 |
+| --- | --- | --- |
+| **本机生产拷贝**（最完整） | `/opt/agentmail/plugins/dsh-mail-bridge/current/src/index.ts` | 2586 行，这台机器上有。若接手的人在**同一台机器**上开发，直接用这个 |
+| 公开镜像 | <https://github.com/QIKO0721/dsh-mail-bridge> | 同名同用途（909 KB，2026-10-15）。**不是同一份**（行数与目录不同），但 ctx 用法可直接参考 |
+| 自己装一份 | `dsh plugin --profile web add <包名>` 后读 `node_modules/` | 依赖已发布到 npm 时可行 |
+
+> 如果接手的人不在这台机器上，**公开镜像 + dsh 官方 tutorial 已经够用**，
+> 不依赖本机路径。不要把它写成“必读”阻断项。
 
 ---
 
@@ -445,7 +462,9 @@ dsh 的链是异步 promise 链，可以有多个插件串联；HA 的阶段钩�
 
 ### 阶段 1：最小闭环（只支持工具）
 
-- `internal/plugins/dshplgadapter/` 骨架（抄 clawhubadapter 的 4 文件结构）
+- 工程骨架：用 `hmapdev init dshplgadapter` 生成（**不是** `internal/plugins/dshplgadapter/`
+  —— 它是外部插件，不进内核仓）。把它会拿到的目录结构与
+  <https://github.com/JianFeeeee/clawhubadapter> 对照（后者是已验证跑通的同形态工程）。
 - 扫描 `node_modules/`，找到插件，起 sidecar
 - **只转译 `ctx.tools.register`** → `s.RegisterTool`
 - 一个测试插件（自己写的最小 dsh 插件）验证"装了 → 模型能调"
@@ -488,35 +507,74 @@ dsh 的链是异步 promise 链，可以有多个插件串联；HA 的阶段钩�
 
 ## 五、参考清单（写代码前该读什么）
 
-### 5.1 必读（按顺序）
+### 5.1 参考实现：clawhubadapter（已验证跑通）
 
-> `internal/plugins/clawhubadapter/` 已于 2026-11-04 **迁出内核仓**，
-> 现位于 `/home/program/clawhubadapter-plugin/clawhubadapter/`。
-> 下面的路径都是迁移后的新位置。
+> **源码仓库：<https://github.com/JianFeeeee/clawhubadapter>**
+>
+> ⚠️ 它已于 2026-11-04 从内核仓迁出（commit `a0077a2`）。
+> **不要到内核仓的 `internal/plugins/` 里找**（已经删了）。
+> 下文以 `<ext>` 代指该仓库根目录。
 
 | 文件 | 为什么 |
 | --- | --- |
 | `<ext>/sidecar.go` | **协议层原型**，原样照搬（JSON-RPC + pending-id 配对 + NotifyChan + 优雅 Close） |
 | `<ext>/registry.go` | **转译表原型**，换内容照抄结构（含 `default` 宽容分支） |
-| `<ext>/plugin.go` | 生命周期、包发现、工具注册的骨架 |
+| `<ext>/plugin.go` | 生命周期、包发现、工具注册的骨架；文件头就是 `NewPluginFactory` |
+| `<ext>/safeclose.go` | 内核 `internal/safeclose` 的外部替代（泛型覆盖 3 种 channel） |
 | `<ext>/simulator/main.js` | 假宿主原型，换成 Cordis Context |
 | `<ext>/skill/clawhub-tools/SKILL.md` | 随包 skill 的真实写法（外部插件带 skill 的范本） |
+| `<ext>/external_form_test.go` | 四条外部形态判据，**直接照搬改包名** |
+
+下面两个文件**仍在内核仓**（它们是内核侧机制，不能迁出）：
+
+| 文件 | 为什么 |
+| --- | --- |
 | `internal/plugins/pluginmgr/skill_handout.go` | 外部插件随包 skill 的**移交机制**（安装时 + 启动重扫） |
 | `internal/plugins/skillmgr/plugin.go` | 交接口终点（`loadOne`、`isNativeSkillPath`、`scanExisting`） |
 
-`<ext>` = `/home/program/clawhubadapter-plugin/clawhubadapter`。
-
 ### 5.2 外部参考（dsh 侧）
 
-| 路径 | 为什么 |
-| --- | --- |
-| `/opt/agentmail/plugins/dsh-mail-bridge/src/index.ts` | **dsh 插件侧 API 的最可靠文档**（2586 行生产代码）。`inject` 声明、`ctx.tools.register`、`ctx.on` 五种事件、`ctx.effect` 清理、logger 不进 journalctl 的坑 |
-| `/root/.dsh/profiles/web/package.json` | 装载配置的真实形状（`dsh.profile.bundles`） |
-| `/root/.dsh/profiles/web/node_modules/@dsh-external/dsh-mobile-nav/` | 一个最小真实插件（含 `cordis.patch.yml`） |
-| `@deepseek-ai/dsh-tools/lib/types/schema.d.ts:248` | `defineTool` 的签名与 `DefineToolOptions` 全字段 |
-| `@deepseek-ai/cordis/lib/types/context.d.ts:40` | `Context` 类（`constructor()` 无参，是阶段 0.2 的依据） |
+#### ★ 5.2.1 dsh 官方文档站（一手资料，**必读**）
 
-### 5.3 SDK 侧（`third_party/hologramagentsdk/`，即完整 SDK 仓）
+仓库：**<https://github.com/deepseek-ai/deepseek-harness>**（公开，master 分支，
+2026-11-03 仍在更新）。三个包（`dsh` / `dsh-tools` / `cordis`）全部来自这个 monorepo
+（看它们的 `package.json` 的 `repository` 字段即可证实）。
+
+| 路径 | 为什么读 |
+| --- | --- |
+| `docs/cordis-tutorial/01-first-plugin.zh.md` ~ `07-into-the-harness.zh.md` | **七步中文教程**，从插件生命期到 effects 到服务到事件到配置到 HMR。这是阶段 1-3 的直接依据 |
+| `docs/cordis-primer.zh.md` | Cordis 框架入门（Context / service / inject 的心智模型） |
+| `docs/tool-execution-pipeline.md` | **工具执行管道**。§2.4 提到的 `tools/execute` 异步中间件链到底怎么跑，以这个为准 |
+| `docs/api/`（含 `cordis-api/`） | `ctx` 面各服务的接口定义 |
+| `docs/cookbook/adding-a-tool.zh.md` | 新增工具的官方做法 |
+| `docs/capability-seams.md` | 能力接缝（“什么东西可以插进来”） |
+| `docs/architecture.zh.md` / `docs/module-graph.md` | 整体架构与模块图 |
+
+> 这份仓库里的文档大多有 `.zh.md` 中文版，直接看中文即可。
+
+#### 5.2.2 插件侧 API 的真实用法参考
+
+| 源 | 为什么 |
+| --- | --- |
+| `dsh-mail-bridge` 的 `src/index.ts` | 2586 行生产代码，**dsh 插件侧 API 的最可靠参考**。`inject` 声明、`ctx.tools.register`、`ctx.on` 五种事件、`ctx.effect` 清理、`logger` 不进 journalctl 的坑。见 §2.5 的**三个可选源**（本机拷贝 / 公开镜像 `QIKO0721/dsh-mail-bridge` / 自己装一份） |
+| `@deepseek-ai/dsh-tools/lib/types/schema.d.ts:248` | `defineTool` 签名与 `DefineToolOptions` 全字段（本地 node_modules，随 dsh 安装） |
+| `@deepseek-ai/cordis/lib/types/context.d.ts:40` | `Context` 类（`constructor()` 无参，是阶段 0.2 的依据） |
+| `<profile>/node_modules/@dsh-external/dsh-mobile-nav/` | 一个最小真实插件（含 `cordis.patch.yml`）。`<profile>` = `~/.dsh/profiles/web` |
+
+> 后三条是**安装 dsh 后本地就有**的路径，不是某个人的家目录约定：
+> `~/.dsh/profiles/<profile>/` 是 dsh 的固定布局。
+
+### 5.3 SDK 侧
+
+**仓库：<https://github.com/JianFeeeee/hologramagentsdk>**
+
+两种拿法，任选：
+
+- 克隆到内核仓的 `third_party/hologramagentsdk`（`go.mod` 里的 `replace` 默认指向这里）
+- 或直接读 GitHub（文档与 `sdk/*.go` 都在仓里，不必克隆）
+
+另外：本机装了 `hmapdev` 后，它会在 `~/.homeagent/hmapdev/sdk/<版本>/`
+放一份对应版本的 SDK（本机为 `v1.4.0`）—— 那是**构建用**副本，内容与上述仓一致。
 
 | 文档 | 为什么要看 |
 | --- | --- |
@@ -551,11 +609,11 @@ hmapdev build            # 产出 dist/<name>_bundle.hmap（ZIP，含多平台 p
 > 与随包 `skill/`）。与本仓 `internal/plugins/` 的内置插件（走主仓 `go build`）
 > **是两套不同的构建路径**，不要混。
 
-### 5.5 可直接照抄的迁移范本（先读这个再开工）
+### 5.5 可直接照拄的迁移范本（先读这个再开工）
 
-2026-11-04 已把 clawhubadapter 完整迁为外部插件并跑通，工程在
-`/home/program/clawhubadapter-plugin/clawhubadapter/`。dshplgadapter 开工前
-建议先读这三个文件，它们是迁移后**已验证可编译、可运行**的真实形态：
+2026-11-04 已把 clawhubadapter 完整迁为外部插件并跑通，
+源码在 **<https://github.com/JianFeeeee/clawhubadapter>**。
+dshplgadapter 开工前建议先读这三个文件，它们是迁移后**已验证可编译、可运行**的真实形态：
 
 | 文件 | 看什么 |
 | --- | --- |
@@ -612,3 +670,96 @@ hmapdev build            # 产出 dist/<name>_bundle.hmap（ZIP，含多平台 p
 **每条判据都要做变异验证**：把对应实现改回错误形态，判据必须变红。
 只写判据不做变异，等于没验证（本仓 `agentcli-terminal` 那次教训：
 第一版变异"只改一句话"没红，因为关键词在文中另有 13 处，那次变异无效）。
+
+---
+
+## 九、交接须知（给接手实现的人）
+
+这一节是给**别人**看的，假定对方没有本机环境、没有上下文。
+
+### 9.1 你需要的东西，按重要性
+
+| # | 东西 | 在哪 | 是否阻塞 |
+| --- | --- | --- | --- |
+| 1 | 内核仓 | <https://github.com/JianFeeeee/HologramAgent> | **阻塞**（必须能编译 homed） |
+| 2 | SDK 仓 | <https://github.com/JianFeeeee/hologramagentsdk> | **阻塞**（`hmapdev` 要用） |
+| 3 | 参考插件 clawhubadapter | <https://github.com/JianFeeeee/clawhubadapter> | **阻塞**（原型，照抄结构） |
+| 4 | dsh 官方仓库 | <https://github.com/deepseek-ai/deepseek-harness> | **阻塞**（`docs/cordis-tutorial/` 是唯一权威教程） |
+| 5 | 本机 dsh 安装 | `npm i -g @deepseek-ai/dsh` | 探针需要 |
+| 6 | `dsh-mail-bridge` 参考 | 见 §2.5 三个源 | 不阻塞（有公开镜像） |
+
+**只有第 6 项依赖特定机器**，其余都能从公开网络拿到。
+
+### 9.2 环境自检（开工前跑一遍）
+
+```bash
+# 工具链
+hmapdev version                  # 期望 1.4.0+；SDK 模块必须是 hologramagentsdk
+hmapdev sdk current              # 期望 v1.4.0+
+
+# dsh
+node -e "console.log(require('@deepseek-ai/dsh/package.json').version)"   # 期望 0.2.1-rc.2
+node -e "const c=require('@deepseek-ai/cordis'); const ctx=new c.Context(); console.log('Context ok', !!ctx)"  # 阶段 0.2 的前提
+
+# 内核仓能编译
+cd <HologramAgent> && go build ./...
+
+# 参考插件能编
+cd <clawhubadapter> && hmapdev build     # 产出 dist/*.hmap 即通过
+```
+
+任何一条不过，先解决再进入阶段 0。
+
+### 9.3 三条别再踩的坑（都是本仓真实付过代价的）
+
+1. **`go build` 在插件工程里不成立** —— 缺 `main`，入口由 `hmapdev build`
+   注入生成。判断"能不能编译"必须用 `hmapdev build`，不要用 `go build`。
+2. **入口函数名是 `NewPluginFactory`，不是 `NewPlugin`** —— proc 运行时按名调用，
+   写错报 `undefined: NewPluginFactory`（错误指向生成代码，很难一眼看出）。
+3. **子进程 stdout 是协议通道，只能有 JSON** —— 任何 `console.log` 都会造成
+   "非法 JSON 帧"。这是本方案**最大的技术风险**（见 §2.3），也是阶段 0.1
+   必须先验掉的原因。
+
+### 9.4 建议的推进顺序（与 §四 一致）
+
+```text
+阶段 0  ← 先做这个，别跳
+  ├─ 0.1 fd3 协议通道         ← 不过就不要往下走
+  ├─ 0.2 裸 Context 承载插件
+  ├─ 0.3 defineTool schema 往返
+  └─ 0.4 inject 缺服务时的行为
+阶段 1  最小闭环（只 tools）
+阶段 2  事件与钩子（注意 §2.4 的异步链死锁风险）
+阶段 3  纯 SKILL 交接 + 生命周期
+阶段 4  远程安装（需单独决策）
+```
+
+### 9.5 一个前置决策（不要默认放行）
+
+dsh 插件是 **Node 代码**，`apply()` 里可以 `import('node:child_process')`
+执行任意命令。这与 HologramAgent 的沙箱模型冲突（当前内核里真正生效的沙箱
+只有 files 插件自己的 `pathWithinSandbox`）。
+
+**在阶段 1 开工前必须先决定**：允不允许 dsh 插件跑任意代码？
+
+- 允许 ⇒ 必须明确写进文档，并告知部署方（等价于"装 dsh 插件 = 给本机执行权限"）
+- 不允许 ⇒ 需要一个进程级限制方案，工作量显著增加，要单独评估
+
+不要"先跑通再说"——那等于默认给了执行权限，事后收不回来。
+
+### 9.6 这个方案里哪些是"已验证"，哪些是"推测"
+
+诚实标注，避免接手人把推测当事实：
+
+| 结论 | 状态 | 依据 |
+| --- | --- | --- |
+| clawhubadapter 能做成外部插件 | ✅ **已验证** | 已迁出并生产运行（本仓 commit `a0077a2`） |
+| 外部插件自带 skill 由 pluginmgr 移交 | ✅ **已验证** | 生产日志三段链路（§0.3） |
+| `Events().Publish` 外部不可用 | ✅ **已验证** | 编译期拦截 + `capability_test.go` 禁令 |
+| `Context` 可无参构造 | ✅ **已验证** | 读 `.d.ts` 确认签名（但**未实际加载过插件**） |
+| dsh 插件能在裸 Context 里跑起来 | ⚠️ **推测** | 阶段 0.2 要验 |
+| fd3 通道可行 | ⚠️ **推测** | 阶段 0.1 要验 |
+| `defineTool` schema 可无损转换 | ⚠️ **推测** | 阶段 0.3 要验 |
+| 异步中间件链不与应用层死锁 | ⚠️ **推测** | 阶段 2 要验 |
+
+⇒ **阶段 0 的全部意义就是把下面四个"推测"变成"已验证"**。
