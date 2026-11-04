@@ -629,9 +629,13 @@ func (s *Store) migrateEntry(alias, sealed string, plain string) {
 	s.mu.Lock()
 	if e, ok := s.data[alias]; ok && e.Sealed == sealed {
 		e.Sealed = newSealed
-		s.mu.Unlock()
+		// ★ 落盘必须在**持锁期**内调 saveLocked：它遍历 s.data 序列化，
+		// 解锁后再调就是在读一个可能被并发改写的 map（数据竞争 + 可能写出
+		// 半更新的快照）。函数名里的 Locked 就是要求这个前提。
+		//
 		// 落盘失败也不报错：内存已升级，下次 Save 会带上。
 		_ = s.saveLocked()
+		s.mu.Unlock()
 		return
 	}
 	s.mu.Unlock()
