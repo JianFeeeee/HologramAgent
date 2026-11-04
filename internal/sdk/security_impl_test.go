@@ -20,20 +20,19 @@ import (
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
-// withRuntime 装一个干净的 Runtime 供测试，结束后恢复。
+// withRuntime 造一个干净的 Runtime 供测试。
+//
+// ★ 2026-11-04：不再装包级单例（已删）。调用方必须把返回值**显式注入**
+// 给被测面（NewSecurityAPI(name, rt)），这正是生产注入路径。
 func withRuntime(t *testing.T) *internalSecurity.Runtime {
 	t.Helper()
-	prev := internalSecurity.RuntimeGlobal()
-	rt := internalSecurity.NewRuntime(nil)
-	internalSecurity.SetRuntimeGlobal(rt)
-	t.Cleanup(func() { internalSecurity.SetRuntimeGlobal(prev) })
-	return rt
+	return internalSecurity.NewRuntime(nil)
 }
 
 // ① 正常声明：登记到 Runtime，且 Owner 是内核给的名字。
 func TestSecurityDeclareProfileRegistersUnderRealOwner(t *testing.T) {
 	rt := withRuntime(t)
-	api := NewSecurityAPI("qq")
+	api := NewSecurityAPI("qq", rt)
 
 	if err := api.DeclareProfile(pubsdk.SecurityProfile{
 		Name:       "qq.guest",
@@ -53,8 +52,8 @@ func TestSecurityDeclareProfileRegistersUnderRealOwner(t *testing.T) {
 // 若能声明 `qq.owner` 且给 AllowTools=["*"]，等于把 QQ 的 owner 档位
 // 改成全放行 —— 非所有者立刻能调用所有工具。
 func TestSecurityDeclareProfileRejectsForeignOwner(t *testing.T) {
-	withRuntime(t)
-	api := NewSecurityAPI("evil")
+	rt := withRuntime(t)
+	api := NewSecurityAPI("evil", rt)
 
 	err := api.DeclareProfile(pubsdk.SecurityProfile{
 		Name:       "qq.owner",
@@ -71,8 +70,8 @@ func TestSecurityDeclareProfileRejectsForeignOwner(t *testing.T) {
 
 // ③ 名字必须带本插件前缀（否则登记了也命中不到）。
 func TestSecurityDeclareProfileRequiresOwnerPrefix(t *testing.T) {
-	withRuntime(t)
-	api := NewSecurityAPI("qq")
+	rt := withRuntime(t)
+	api := NewSecurityAPI("qq", rt)
 
 	for _, bad := range []string{"guest", "qqguest", "qqq.guest", ""} {
 		if err := api.DeclareProfile(pubsdk.SecurityProfile{Name: bad}); err == nil {
@@ -86,11 +85,8 @@ func TestSecurityDeclareProfileRequiresOwnerPrefix(t *testing.T) {
 // 静默成功的后果：插件以为档位生效，直到注入时带 SecurityProfile
 // 才报"未声明档位"，此时排查方向已跑到"名字拼错"上。
 func TestSecurityDeclareProfileFailsLoudlyWhenUnassembled(t *testing.T) {
-	prev := internalSecurity.RuntimeGlobal()
-	internalSecurity.SetRuntimeGlobal(nil)
-	t.Cleanup(func() { internalSecurity.SetRuntimeGlobal(prev) })
-
-	api := NewSecurityAPI("qq")
+	// 未装配 = Runtime 为 nil（不注入），而不是"装了 nil 单例"。
+	api := NewSecurityAPI("qq", nil)
 	err := api.DeclareProfile(pubsdk.SecurityProfile{Name: "qq.guest"})
 	if err == nil {
 		t.Fatal("★ 安全模块未装配时必须报错 —— 静默成功会让插件误以为策略已生效")
@@ -102,8 +98,8 @@ func TestSecurityDeclareProfileFailsLoudlyWhenUnassembled(t *testing.T) {
 
 // ⑤ 批量声明：任一失败即整体报错，且错误带下标便于定位。
 func TestSecurityDeclareProfilesReportsIndex(t *testing.T) {
-	withRuntime(t)
-	api := NewSecurityAPI("qq")
+	rt := withRuntime(t)
+	api := NewSecurityAPI("qq", rt)
 
 	err := api.DeclareProfiles([]pubsdk.SecurityProfile{
 		{Name: "qq.owner"},

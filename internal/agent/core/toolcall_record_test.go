@@ -86,8 +86,11 @@ func TestToolCallArgumentsAreScrubbed(t *testing.T) {
 			RawArguments: `{"cmd":"ghp_abcdefghijklmnopqrstuvwxyz0123456789"}`,
 		}},
 	}
-	initScrubStore(t)
-	scrubEventSecrets(evt)
+	// ★ 2026-11-04：改走真实注入路径（Context.secretStore），
+	// 不再依赖包级单例。
+	rc := NewRelevanceContext("", nil)
+	rc.SetSecretStore(initScrubRuntime(t).Store())
+	rc.scrubEventSecrets(evt)
 
 	arg, _ := evt.ToolCalls[0].Arguments["cmd"].(string)
 	if strings.Contains(arg, "ghp_abcdefghijklmnopqrstuvwxyz0123456789") {
@@ -98,19 +101,25 @@ func TestToolCallArgumentsAreScrubbed(t *testing.T) {
 	}
 }
 
-// initScrubStore 装一个启用状态的变量库，供脱敏判据使用。
+// initScrubRuntime 建一个启用状态的**变量库 Runtime**（供脱敏判据使用）。
 //
-// 单独封装而不是内联：脱敏依赖进程级单例（security.Global），
-// 装配与清理成对出现才不会污染同包其他用例。
-func initScrubStore(t *testing.T) {
+// ★ 2026-11-04：取代 initScrubStore。
+//
+// 原实现装的是**包级单例**（security.InitGlobal / SetGlobal）。那个单例已被
+// 删除 —— 现在唯一的变量库来源是 Runtime（挂在 kstate.State.Security 上，
+// 再由 AgentConfig.Security → a.security 传进 agent）。
+//
+// 判据也必须按这条真实路径装，否则测的是"全局恰好有值"，而不是接线。
+func initScrubRuntime(t *testing.T) *security.Runtime {
 	t.Helper()
 	dir := t.TempDir()
-	if _, err := security.InitGlobal(security.Options{
+	s := security.New(security.Options{
 		Path:    dir + "/v.json",
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
-	}); err != nil {
+	})
+	if err := s.Load(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
+	return security.NewRuntime(s)
 }

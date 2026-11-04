@@ -30,8 +30,9 @@ import (
 //
 // 后者完全走内核机制，插件无需自带加密库与别名表。
 func TestKernelFillCoversBuiltinToolsToo(t *testing.T) {
-	store := newScrubStore(t)
-	a, _, _ := newRootForResidents(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	alias, err := store.Submit(tok, "测试")
@@ -81,8 +82,9 @@ func TestKernelFillCoversBuiltinToolsToo(t *testing.T) {
 //
 //	但它的 argv 保护（脚本走 stdin）与输出脱敏**仍然独有**，不可删。
 func TestKernelFillHappensBeforePluginHandler(t *testing.T) {
-	store := newScrubStore(t)
-	a, _, _ := newRootForResidents(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	alias, err := store.Submit(tok, "测试")

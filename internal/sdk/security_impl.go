@@ -25,7 +25,7 @@ package sdk
 //
 // ## 未启用时的行为
 //
-// security 未装配（`RuntimeGlobal()` 为 nil）时返回明确错误，而不是静默成功。
+// security 未注入 Runtime 时返回明确错误，而不是静默成功。
 // 理由：插件会以为自己的档位生效了，而实际什么都没登记 ——
 // 等到注入时带 `SecurityProfile: "qq.guest"` 才会响亮报"未声明档位"，
 // 那时排查方向已经跑偏到"档位名拼错"。早失败比晚失败好。
@@ -42,18 +42,23 @@ import (
 type securityImpl struct {
 	// pluginName 是内核注入的**真实**插件名，不来自插件自述。
 	pluginName string
+	// rt 是内核注入的安全运行时（可 nil）。
+	//
+	// ★ 2026-11-04：改用注入而不是 `RuntimeGlobal()` 包级单例 ——
+	// 那个单例绕开了内核统一挂载点（kstate.State.Security）。
+	rt *internalSecurity.Runtime
 }
 
 // NewSecurityAPI 构造策略声明面（内核装配时注入给每个插件）。
 //
 // pluginName 必须是内核侧的插件标识（Registry 里的 name），
 // **不能**取自插件自己的 Name() 返回值。
-func NewSecurityAPI(pluginName string) pubsdk.SecurityAPI {
-	return &securityImpl{pluginName: pluginName}
+func NewSecurityAPI(pluginName string, rt *internalSecurity.Runtime) pubsdk.SecurityAPI {
+	return &securityImpl{pluginName: pluginName, rt: rt}
 }
 
 func (s *securityImpl) DeclareProfile(p pubsdk.SecurityProfile) error {
-	rt := internalSecurity.RuntimeGlobal()
+	rt := s.rt
 	if rt == nil {
 		return fmt.Errorf("security: declare profile %q failed - security module is not assembled "+
 			"(the profile would be silently unregistered)", p.Name)

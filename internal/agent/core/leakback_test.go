@@ -37,6 +37,7 @@ func TestPremise_PluginReturnedPlaintextIsScrubbed(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		Security:        newScrubRuntime(t),
 	})
 	if err := a.stageHost.RegisterTool("leaky", sdk.ToolDef{
 		Name: "leaky", Description: "故意回吐明文",
@@ -84,6 +85,7 @@ func TestPremise_PluginReturnedPlaintextNeverReachesLLM(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		Security:        newScrubRuntime(t),
 	})
 	if err := a.stageHost.RegisterTool("leaky2", sdk.ToolDef{
 		Name: "leaky2", Description: "故意回吐明文",

@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"io"
 	"log"
 	"math"
@@ -157,7 +158,18 @@ type RelevanceContext struct {
 	saveTimer          *time.Timer
 	dirty              bool
 	toolDefLookup      func(name string) *sdk.ToolDef
-	channelDefLookup   func(name string) (sdk.ChannelDef, bool)
+
+	// secretStore 是**变量库**（凭据别名），用于事件落进 L1 前的脱敏。
+	//
+	// ★ 为什么是注入字段而不是读 security.Global()（2026-11-04）：
+	// 包级单例绕开了统一挂载点 —— 本 Context 属于哪个 agent 就该用哪个
+	// agent 的变量库。单例在正常装配下"恰好"是同一份，但测试替身、
+	// 多 Runtime、热重载任一路径都可能分离，症状是"策略生效但脱敏不生效"
+	// （或反之），极难定位。
+	//
+	// nil 合法：未启用安全模块时脱敏零成本跳过。
+	secretStore      *security.Store
+	channelDefLookup func(name string) (sdk.ChannelDef, bool)
 
 	// protectedCount 是裁剪时**无条件保留**的最近事件条数。
 	//
@@ -718,6 +730,16 @@ func (c *RelevanceContext) ProtectedCount() int {
 	return c.protectedCount
 }
 
+// SetSecretStore 注入变量库（装配期由 Agent 调用）。
+func (c *RelevanceContext) SetSecretStore(s *security.Store) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.secretStore = s
+	c.mu.Unlock()
+}
+
 func NewRelevanceContext(savePath string, embedder *memory.StaticEmbedder) *RelevanceContext {
 	rc := &RelevanceContext{
 		embedder:       embedder,
@@ -968,7 +990,7 @@ func (c *RelevanceContext) Append(evt ContextEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	scrubEventSecrets(&evt)
+	c.scrubEventSecrets(&evt)
 	c.computeVector(&evt)
 	c.events = append(c.events, &evt)
 
@@ -999,7 +1021,7 @@ func (c *RelevanceContext) InsertByTimestamp(evt ContextEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	scrubEventSecrets(&evt) // 同 Append：咽喉处拦截
+	c.scrubEventSecrets(&evt) // 同 Append：咽喉处拦截
 	c.computeVector(&evt)
 	c.claimPendingToolResultsLocked(&evt) // 同 Append：认领待登记的落盘记录
 

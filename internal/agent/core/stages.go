@@ -16,12 +16,23 @@ import (
 type StageHost struct {
 	// frozenFn 报告内核是否处于伪关机（迁移中）。nil = 永不冻结。
 	// 用函数而不是直接引用 plugin.Registry，避免 agent/core 反向依赖 plugin 包。
-	frozenFn    func() bool
-	mu          sync.RWMutex
-	toolDefs    []sdk.ToolDef
-	tools       map[string]sdk.ToolHandler
-	toolPlugins map[string]string
-	stages      map[sdk.Stage][]stageEntry
+	frozenFn func() bool
+
+	// secretStore 是**变量库**（凭据别名），用于插件工具参数的回填。
+	//
+	// ★ 为什么是注入字段而不是 security.Global()（2026-11-04）：
+	// 包级单例绕开统一挂载点。StageHost 属于某个 agent，就该用那个 agent
+	// 的变量库；单例在正常装配下"恰好"同一份，但测试替身/多 Runtime/
+	// 热重载任一路径都可能分离，症状是"策略生效但回填不生效"，极难定位。
+	//
+	// nil 合法：未启用安全模块时回填零成本跳过。
+	secretStoreMu sync.RWMutex
+	secretStoreV  *security.Store
+	mu            sync.RWMutex
+	toolDefs      []sdk.ToolDef
+	tools         map[string]sdk.ToolHandler
+	toolPlugins   map[string]string
+	stages        map[sdk.Stage][]stageEntry
 
 	// cancelable 记录本工具的执行体是否**接收取消信号**。
 	//
@@ -57,6 +68,26 @@ func NewStageHost() *StageHost {
 		cancelable:  make(map[string]bool),
 		stages:      make(map[sdk.Stage][]stageEntry),
 	}
+}
+
+// SetSecretStore 注入变量库（装配期由 Agent 调用）。
+func (h *StageHost) SetSecretStore(s *security.Store) {
+	if h == nil {
+		return
+	}
+	h.secretStoreMu.Lock()
+	h.secretStoreV = s
+	h.secretStoreMu.Unlock()
+}
+
+// secretStore 返回注入的变量库（未注入为 nil）。
+func (h *StageHost) secretStore() *security.Store {
+	if h == nil {
+		return nil
+	}
+	h.secretStoreMu.RLock()
+	defer h.secretStoreMu.RUnlock()
+	return h.secretStoreV
 }
 
 func (h *StageHost) RegisterTool(name string, def sdk.ToolDef, handler sdk.ToolHandler) error {
@@ -251,7 +282,7 @@ func (h *StageHost) ExecuteToolCtx(ctx context.Context, name string, args map[st
 	//
 	// 为何必须填而不是拒绝：模型手上只有别名（它从未见过明文），
 	// 而插件需要真凭据。回填是二者之间唯一的通道。
-	if s := security.Global(); s != nil && args != nil {
+	if s := h.secretStore(); s != nil && args != nil {
 		if n, used := s.FillMap(args); n > 0 {
 			log.Printf("[security] tool %s backfilled %d argument(s) (aliases %v)", name, n, used)
 		}

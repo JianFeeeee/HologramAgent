@@ -26,20 +26,12 @@ import (
 	"testing"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // ★★ 判据：装饰器原地改写 ⇒ 原始消息切片也变成别名。
 func TestOutboundScrubIsInPlaceByDesign(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := security.InitGlobal(security.Options{
-		Path:    dir + "/v.json",
-		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
-		Enabled: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
+	// ★ 2026-11-04：变量库改为注入 ProviderManager（不再用包级单例）。
+	store := newScrubRuntime(t).Store()
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -48,6 +40,7 @@ func TestOutboundScrubIsInPlaceByDesign(t *testing.T) {
 
 	var captured string
 	mgr := agentAPI.NewProviderManager()
+	mgr.SetSecretStore(store) // 注入必须先于 Register（装饰在 Register 时发生）
 	mgr.Register("p", &fwCaptureProvider{name: "p", capture: &captured})
 
 	if _, err := mgr.Default().Chat(context.Background(),

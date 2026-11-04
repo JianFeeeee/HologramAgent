@@ -31,12 +31,14 @@ import (
 
 // ★★★ 判据：scrubForLog 把明文换成别名。
 func TestScrubForLogReplacesPlaintext(t *testing.T) {
-	newScrubStore(t)
+	// ★ 2026-11-04：判据改为走**真实注入路径**（Agent.security → secretStore）。
+	// 此前是"装了全局单例，然后调包级函数"——那测的是单例，不是接线。
+	a := withScrubRuntime(New(AgentConfig{ID: "log-scrub"}), newScrubRuntime(t))
 
 	const tok = "sk-" + "abcdefghijklmnopqrstuvwxyz0123"
 	in := `{"output":"HTTP 200 {` + `"key":"` + tok + `"}"}`
 
-	out := scrubForLog(in, "tool_result:enc_shell")
+	out := a.scrubForLog(in, "tool_result:enc_shell")
 	if strings.Contains(out, tok) {
 		t.Fatalf("★ 日志文本里仍有明文 key：%s", out)
 	}
@@ -47,17 +49,17 @@ func TestScrubForLogReplacesPlaintext(t *testing.T) {
 
 // ★★★ 判据：普通文本不被改动（不误伤）。
 func TestScrubForLogLeavesNormalTextAlone(t *testing.T) {
-	newScrubStore(t)
+	a := withScrubRuntime(New(AgentConfig{ID: "log-scrub2"}), newScrubRuntime(t))
 	const normal = "工具 cmd_run 执行成功，输出 42 行，无异常"
-	if got := scrubForLog(normal, "tool_result:cmd_run"); got != normal {
+	if got := a.scrubForLog(normal, "tool_result:cmd_run"); got != normal {
 		t.Fatalf("★ 普通文本被改动了：%q → %q", normal, got)
 	}
 }
 
-// ★★★ 判据：security.Global() 为 nil 时不 panic（安全模块未启用是常态）。
+// ★★★ 判据：Agent 没有 security 时不 panic（安全模块未启用是常态）。
 func TestScrubForLogNilStoreIsSafe(t *testing.T) {
-	// 不初始化 store
-	got := scrubForLog("文本 sk-abcdefghijklmnopqrstuvwxyz0123", "x")
+	a := New(AgentConfig{ID: "log-scrub-nil"}) // 不注入 security
+	got := a.scrubForLog("文本 sk-abcdefghijklmnopqrstuvwxyz0123", "x")
 	if got == "" {
 		t.Fatal("nil store 时不该返回空")
 	}

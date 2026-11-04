@@ -75,11 +75,9 @@ func TestE2E_RealTemplateSecurityDeclare(t *testing.T) {
 	dir := t.TempDir()
 	setTestCodec(t)
 
-	// 装配进程级 Runtime（生产同款单例；工具判定读的就是它）
-	prev := internalSecurity.RuntimeGlobal()
+	// ★ 2026-11-04：包级单例已删。Runtime 显式构造并**注入**给插件 SDK
+	// （生产路径同款：kstate.State.Security → plugin.Registry.SetSecurityRuntime）。
 	rt := internalSecurity.NewRuntime(nil)
-	internalSecurity.SetRuntimeGlobal(rt)
-	t.Cleanup(func() { internalSecurity.SetRuntimeGlobal(prev) })
 	_ = internalConfig.NewConfigRegistry
 
 	host, err := NewHost()
@@ -90,7 +88,7 @@ func TestE2E_RealTemplateSecurityDeclare(t *testing.T) {
 
 	core := newFakeCore()
 	// ★ 用内核侧真实插件名注入 —— 这就是 Owner 不可伪造的来源。
-	core.securityAPI = internalSDK.NewSecurityAPI("e2eproc")
+	core.securityAPI = internalSDK.NewSecurityAPI("e2eproc", rt)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatalf("Start: %v", err)

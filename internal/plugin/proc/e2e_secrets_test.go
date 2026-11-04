@@ -81,15 +81,15 @@ func TestE2E_RealTemplateSecretsRoundTrip(t *testing.T) {
 
 	dir := t.TempDir()
 	setTestCodec(t)
-	// 装配**进程级单例**（内核对所有插件共享的那一份）
-	if _, err := internalSecurity.InitGlobal(internalSecurity.Options{
+	// 变量库（2026-11-04：不再有进程级单例，改为显式持有并注入）
+	store, err := internalSecurity.MustStore(internalSecurity.Options{
 		Path:    filepath.Join(dir, "variables.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { internalSecurity.SetGlobal(nil) })
 	_ = internalConfig.NewConfigRegistry
 
 	host, err := NewHost()
@@ -99,7 +99,7 @@ func TestE2E_RealTemplateSecretsRoundTrip(t *testing.T) {
 	defer host.Close()
 
 	core := newFakeCore()
-	core.secretsAPI = internalSDK.NewSecretsAPI()
+	core.secretsAPI = internalSDK.NewSecretsAPI(store)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -126,9 +126,9 @@ func TestE2E_RealTemplateSecretsRoundTrip(t *testing.T) {
 	if !strings.Contains(got, "e2e-secret-value-9876543210") {
 		t.Fatalf("Fill 未换回明文: %q", got)
 	}
-	// 单例里应真的登记了
-	if internalSecurity.Global().Count() != 1 {
-		t.Fatalf("单例应有 1 条，实际 %d", internalSecurity.Global().Count())
+	// 变量库里应真的登记了
+	if store.Count() != 1 {
+		t.Fatalf("变量库应有 1 条，实际 %d", store.Count())
 	}
 	t.Logf("✅ 插件经内核变量库完成往返: %s", got)
 }
@@ -141,7 +141,7 @@ func TestE2E_PluginAndKernelShareOneVault(t *testing.T) {
 
 	dir := t.TempDir()
 	setTestCodec(t)
-	st, err := internalSecurity.InitGlobal(internalSecurity.Options{
+	st, err := internalSecurity.MustStore(internalSecurity.Options{
 		Path:    filepath.Join(dir, "variables.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
@@ -149,12 +149,11 @@ func TestE2E_PluginAndKernelShareOneVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { internalSecurity.SetGlobal(nil) })
 
 	host, _ := NewHost()
 	defer host.Close()
 	core := newFakeCore()
-	core.secretsAPI = internalSDK.NewSecretsAPI()
+	core.secretsAPI = internalSDK.NewSecretsAPI(st)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatal(err)
@@ -189,13 +188,12 @@ func TestE2E_SecretsUnavailableWhenDisabled(t *testing.T) {
 	bin := buildPluginWithRealTemplate(t, secretsE2EPlugin)
 
 	dir := t.TempDir()
-	internalSecurity.SetGlobal(nil)
-	t.Cleanup(func() { internalSecurity.SetGlobal(nil) })
 
 	host, _ := NewHost()
 	defer host.Close()
 	core := newFakeCore()
-	core.secretsAPI = internalSDK.NewSecretsAPI()
+	// 未启用安全模块 ⇒ 传 nil（Available() 必须为 false，且不得 panic）
+	core.secretsAPI = internalSDK.NewSecretsAPI(nil)
 	p := New("e2e", bin, dir, nil, host, nil)
 	if err := p.Start(core); err != nil {
 		t.Fatal(err)

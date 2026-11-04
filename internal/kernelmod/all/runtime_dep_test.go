@@ -156,7 +156,12 @@ func TestRunRejectsLayerOrderViolation(t *testing.T) {
 
 	// ② 指名道姓：llm 缺 lua、text-memory 缺 memory/onnx、knowledge-store 缺迁移标记。
 	want := map[string][]string{
-		"llm":             {kernelmod.FacLua},
+		// ★ 2026-11-04：llm 新增了 FacSecurity 依赖。
+		// 理由：ProviderManager.Register 在注册每个 provider 时套出向装饰器
+		// （明文→别名），而装饰器需要变量库。单例删除后变量库必须**在注册前**
+		// 由 SetSecretStore 注入 ⇒ 依赖图必须保证 security 先完成，
+		// 不能靠"碰巧先装了单例"。
+		"llm":             {kernelmod.FacLua, kernelmod.FacSecurity},
 		"text-memory":     {kernelmod.FacMemory, kernelmod.FacONNX},
 		"knowledge-store": {kernelmod.FacMigrated},
 	}

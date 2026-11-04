@@ -30,6 +30,19 @@ import (
 
 func newScrubStore(t *testing.T) *security.Store {
 	t.Helper()
+	return newScrubRuntime(t).Store()
+}
+
+// newScrubRuntime 建一个**带变量库的 Runtime**，供测试注入 Agent。
+//
+// ★ 为什么返回 Runtime 而不是 Store：现在唯一的变量库来源是
+// Agent.security.Store()（包级单例已删）。测试必须按真实路径装：
+//
+//	Runtime → AgentConfig.Security → a.security.Store()
+//
+// 直接返回 Store 会诱使调用方又去走全局单例，等于把刚删掉的东西加回来。
+func newScrubRuntime(t *testing.T) *security.Runtime {
+	t.Helper()
 	// 不用 t.TempDir()：它的清理是**严格**的 RemoveAll，只要清理瞬间还有
 	// 落盘写入（变量库 saveLocked 的 tmp→rename）就会报 "directory not empty"，
 	// 把断言已通过的用例判成失败。CI 2026-10-20 连续两次在 -race 下踩到
@@ -41,16 +54,23 @@ func newScrubStore(t *testing.T) *security.Store {
 	if err != nil {
 		t.Fatalf("建临时目录失败: %v", err)
 	}
-	s, err := security.InitGlobal(security.Options{
+	// ★ 2026-11-04：不再用 security.InitGlobal（包级单例）。
+	//
+	// 单例已被删除 —— 现在唯一的变量库来源是 **Agent 的 security 字段**
+	// （见 core.secretStore）。测试也必须按这个路径装：
+	//
+	//	Store → Runtime → AgentConfig.Security → a.security.Store()
+	//
+	// 这同时让判据更硬：它验证的是"真实注入路径"，而不是"全局恰好有值"。
+	s := security.New(security.Options{
 		Path:    dir + "/v.json",
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
 	})
-	if err != nil {
+	if err := s.Load(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		security.SetGlobal(nil)
 		// 50 × 20ms：足够让在途 saveLocked 收尾；仍不行就尽力删，不让清理失败
 		// 把一个已经通过的安全判据变成假红。
 		for i := 0; i < 50; i++ {
@@ -61,7 +81,17 @@ func newScrubStore(t *testing.T) *security.Store {
 		}
 		_ = os.RemoveAll(dir)
 	})
-	return s
+	return security.NewRuntime(s)
+}
+
+// withScrubRuntime 把一个 Runtime 装进 agent 的 security 字段。
+//
+// 装配期在真实内核里由 kernelmod/agent 的 AgentConfig.Security 完成；
+// 测试里没有内核，所以直接写字段 —— 但要保证**走的是同一条数据路径**
+// （a.security.Store()），而不是另建一个全局变量。
+func withScrubRuntime(a *Agent, rt *security.Runtime) *Agent {
+	a.security = rt
+	return a
 }
 
 // ★★ 判据：进 a.context 的工具结果不含明文（走 agent 的真实代码路径）。
@@ -135,7 +165,8 @@ func TestToolResultsScrubDoesNotMutateSource(t *testing.T) {
 // Append 之后、或忘了给 emitMemoryCandidate 用过滤后的副本），
 // 只有这条会报红。
 func TestE2E_ToolResultSecretNeverReachesContext(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	a := New(AgentConfig{
@@ -144,6 +175,8 @@ func TestE2E_ToolResultSecretNeverReachesContext(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		// ★ 必须与 store 同源：判据最后要读 store.Count() 确认真的拦截了。
+		Security: rt,
 	})
 
 	// 注册一个会吐出凭据的工具（模拟 cmd_run 读了 .env）

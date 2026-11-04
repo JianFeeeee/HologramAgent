@@ -584,6 +584,22 @@ func New(cfg AgentConfig) *Agent {
 		lastInput:      make(map[string]time.Time),
 	}
 
+	// 变量库注入：context 的落盘前脱敏要用**本 agent** 的变量库，
+	// 而不是进程级单例（见 RelevanceContext.secretStore 的注释）。
+	if a.security != nil {
+		if a.context != nil {
+			a.context.SetSecretStore(a.security.Store())
+		}
+		if a.stageHost != nil {
+			a.stageHost.SetSecretStore(a.security.Store())
+		}
+		// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
+		// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。
+		if a.providerManager != nil {
+			a.providerManager.SetSecretStore(a.security.Store())
+		}
+	}
+
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
 	// （设计 §4.1「路由发生在进内核之前」）。io 层不认识 agent，所以在这里把路由器
 	// 注入进去：插件注入输入时先问它，被别的 agent 接管就不再进本内核队列。

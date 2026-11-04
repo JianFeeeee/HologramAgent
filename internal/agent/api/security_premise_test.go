@@ -220,7 +220,7 @@ func (p *rewriteProvider) MaxContextTokens() int { return p.inner.MaxContextToke
 //	③ 替换真的发生了
 func TestWired_RegisterDecoratesAndScrubs(t *testing.T) {
 	dir := t.TempDir()
-	store, err := security.InitGlobal(security.Options{
+	store, err := security.MustStore(security.Options{
 		Path:    filepath.Join(dir, "vars.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
@@ -228,13 +228,14 @@ func TestWired_RegisterDecoratesAndScrubs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	var got string
 	inner := &recordingProvider{name: "wired", capture: &got}
 	m := NewProviderManager()
+	// ★ 注入必须先于 Register（装饰器在 Register 时套上）。
+	m.SetSecretStore(store)
 	m.Register("p", inner)
 
 	// 取出（任何一条取用路径都应拿到装饰后的实例）
@@ -265,8 +266,6 @@ func TestWired_RegisterDecoratesAndScrubs(t *testing.T) {
 
 // ★ 判据：安全模块未初始化时，Register **不介入**（零成本）。
 func TestWired_NoStoreMeansNoInterference(t *testing.T) {
-	security.SetGlobal(nil)
-	t.Cleanup(func() { security.SetGlobal(nil) })
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	var got string
@@ -285,7 +284,7 @@ func TestWired_NoStoreMeansNoInterference(t *testing.T) {
 // ★ 判据：回填把别名换回明文（入向通道）。
 func TestWired_FillToolArgs(t *testing.T) {
 	dir := t.TempDir()
-	store, err := security.InitGlobal(security.Options{
+	store, err := security.MustStore(security.Options{
 		Path:    filepath.Join(dir, "vars.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
@@ -293,7 +292,6 @@ func TestWired_FillToolArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	alias, err := store.Submit(tok, "")
@@ -301,8 +299,13 @@ func TestWired_FillToolArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// ★ 2026-11-04：改为验证**真实回填路径**。
+	//
+	// 原判据调 security.FillToolArgs —— 那函数读包级单例、生产调用者为 0，
+	// 已随单例一起删除。真实路径是 core.StageHost.ExecuteToolCtx（用注入的
+	// Store 的 FillMap）。这里验证同一个能力面：Store.FillMap 把别名换回明文。
 	args := map[string]interface{}{"token": "@{" + alias + "}", "other": "unchanged"}
-	n, used := security.FillToolArgs("some_plugin_tool", args)
+	n, used := store.FillMap(args)
 	if n != 1 {
 		t.Fatalf("应回填 1 处，实际 %d", n)
 	}

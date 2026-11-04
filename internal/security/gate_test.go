@@ -19,7 +19,7 @@ import (
 func testStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := InitGlobal(Options{
+	s, err := MustStore(Options{
 		Path:    dir + "/vars.json",
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
@@ -28,7 +28,6 @@ func testStore(t *testing.T) *Store {
 		t.Fatalf("InitGlobal: %v", err)
 	}
 	// 全局单例是进程级的：测试之间要复位，否则互相污染。
-	t.Cleanup(func() { SetGlobal(nil) })
 	return s
 }
 

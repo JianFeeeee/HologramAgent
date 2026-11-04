@@ -4,6 +4,7 @@
 package llm
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"os"
 
@@ -17,8 +18,18 @@ import (
 // Module 提供多源 provider 管理。
 type Module struct{}
 
-func (Module) Name() string       { return "llm" }
-func (Module) Requires() []string { return []string{kernelmod.FacConfig, kernelmod.FacLua} }
+func (Module) Name() string { return "llm" }
+func (Module) Requires() []string {
+	// ★ FacSecurity（2026-11-04 补）：这是**真实存在**的依赖。
+	//
+	// ProviderManager.Register 在注册每个 provider 时套出向装饰器（明文→别名），
+	// 而装饰器需要变量库。此前那份变量库来自进程级单例 security.Global() ——
+	// 装配晚了也"恰好"能读到（因为单例先装了），于是顺序错误被掩盖。
+	//
+	// 单例删除后，变量库必须**在注册前**由 SetSecretStore 注入。声明依赖
+	// FacSecurity 让依赖图保证 security 先于本模块完成，而不是靠"碰巧"。
+	return []string{kernelmod.FacConfig, kernelmod.FacLua, kernelmod.FacSecurity}
+}
 func (Module) Provides() []string { return []string{kernelmod.FacLLM} }
 
 func (Module) Init(ks *kstate.State) error {
@@ -30,15 +41,24 @@ func (Module) Init(ks *kstate.State) error {
 	//
 	// 实测：该装配**就在 initLLMProviders 内部**（不是 main 的独立语句）
 	// ⇒ 声明式下它天然"紧邻"，不再依赖 main 里那两行的相对位置。
+	// ★ 注入必须**早于任何 provider 注册**：Register 时才会套装饰器，
+	// 注入晚了先注册的那批就没被装饰（静默漏掉一条出网路径）。
+	//
+	// 依赖图（Requires 里的 FacSecurity）保证 ks.Security 此时非 nil。
 	ks.BaseAPIKey = resolveBaseAPIKey(ks.Cfg)
-	ks.LLMManager = buildProviderManager(ks.Cfg, ks.LuaVM, ks.BaseAPIKey)
+	ks.LLMManager = buildProviderManager(ks.Cfg, ks.LuaVM, ks.BaseAPIKey, ks.Security)
 	ks.LLMProvider = ks.LLMManager.Default()
 	return nil
 }
 
 // buildProviderManager 按配置注册全部 LLM 源（原 cmd/homed 的整块平移）。
-func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string) *api.ProviderManager {
+func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string,
+	secRT *security.Runtime) *api.ProviderManager {
 	providerMgr := api.NewProviderManager()
+	// 先注入变量库，再注册 —— 顺序反了会静默漏装饰（见 Init 的注释）。
+	if secRT != nil {
+		providerMgr.SetSecretStore(secRT.Store())
+	}
 	adapterConcurrency := map[string]int{}
 	for _, src := range cfg.LLM.Sources {
 		if !api.IsValidSourceConfig(src.Name, src.BaseURL, src.Model, src.Adapter) {

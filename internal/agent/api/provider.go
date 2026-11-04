@@ -1082,11 +1082,19 @@ type providerStatus struct {
 }
 
 type ProviderManager struct {
-	mu        sync.RWMutex
-	providers map[string]Provider
-	order     []string
-	default_  string
-	status    map[string]*providerStatus
+	mu sync.RWMutex
+	// secretStore 是**变量库**（凭据别名），用于出向装饰。
+	//
+	// ★ 为什么是注入字段而不是 security.Global()（2026-11-04）：
+	// 包级单例绕开了内核的统一挂载点（kstate.State.Security）。
+	// 现在由内核装配时调 SetSecretStore 注入；未注入时装饰器零成本跳过。
+	//
+	// nil 合法：未启用安全模块、或测试未注入。
+	secretStore *security.Store
+	providers   map[string]Provider
+	order       []string
+	default_    string
+	status      map[string]*providerStatus
 
 	// caps 是**配置层声明**的模态能力（源名 → vision/audio）。
 	//
@@ -1183,13 +1191,33 @@ func (m *ProviderManager) Reset() {
 // 逐个改必漏；而且插件新增 provider 时无人在意去挂装饰器。
 //
 // 安全模块未启用时 security.Global() 返回 nil ⇒ 装饰器完全不介入，零成本。
+// SetSecretStore 注入变量库（内核装配时调用一次）。
+//
+// 注入后**已注册的 provider 不会补装饰**：装饰发生在 Register 时。
+// 因此内核必须在注册任何 provider 之前调用本方法（llm 模块的 Init 顺序保证）。
+func (m *ProviderManager) SetSecretStore(s *security.Store) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.secretStore = s
+	m.mu.Unlock()
+}
+
+// secretStoreOf 读注入的变量库（无锁快照，Register 内部用）。
+func (m *ProviderManager) secretStoreOf() *security.Store {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.secretStore
+}
+
 func (m *ProviderManager) Register(name string, p Provider) {
 	// 出向明文 → 别名（防泄漏）。未启用时原样透传。
 	//
 	// 守卫：已是本层装饰过的实例就不再包一层。
 	// 双重包裹本身无害（第二遍看到的已无明文，是空转），但会白跑一遗
 	// 正则扫描 —— 而热路径上每条消息都扫一遍，不值得。
-	if store := security.Global(); store != nil {
+	if store := m.secretStoreOf(); store != nil {
 		if _, alreadyWrapped := p.(*secureProviderDecorator); !alreadyWrapped {
 			p = WrapProviderForSecurity(p, store)
 		}

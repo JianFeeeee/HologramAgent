@@ -18,13 +18,14 @@ const c8Token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func newSecretToolAgent(t *testing.T) (*Agent, *security.Store) {
 	t.Helper()
-	store := newScrubStore(t) // 复用已有的测试夹具
-	a := New(AgentConfig{
+	rt := newScrubRuntime(t) // 复用已有的测试夹具
+	// 按真实装配路径注入：AgentConfig.Security → a.security → a.secretStore()
+	a := withScrubRuntime(New(AgentConfig{
 		ID:              "c8",
 		ProviderManager: agentAPI.NewProviderManager(),
 		StageHost:       NewStageHost(),
-	})
-	return a, store
+	}), rt)
+	return a, rt.Store()
 }
 
 func callSecret(a *Agent, name string, args map[string]interface{}) string {
@@ -131,7 +132,6 @@ func TestSecretSubmitRejectsEmpty(t *testing.T) {
 func TestSecretToolsReportUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	_ = dir
-	security.SetGlobal(nil)
 	defer newScrubStore(t) // 复原给后续判据
 
 	a := New(AgentConfig{ID: "c8-off", StageHost: NewStageHost()})
@@ -143,7 +143,6 @@ func TestSecretToolsReportUnavailable(t *testing.T) {
 
 // ★ 判据：未启用时**不向模型暴露**这些工具（避免无谓往返）。
 func TestSecretToolsHiddenWhenDisabled(t *testing.T) {
-	security.SetGlobal(nil)
 	a := New(AgentConfig{ID: "c8-hidden", StageHost: NewStageHost()})
 
 	var names []string
@@ -167,8 +166,10 @@ func TestSecretToolsHiddenWhenDisabled(t *testing.T) {
 
 // ★ 判据：启用时**要暴露**（否则模型不知道能用）。
 func TestSecretToolsExposedWhenEnabled(t *testing.T) {
-	newScrubStore(t)
-	a := New(AgentConfig{ID: "c8-shown", StageHost: NewStageHost()})
+	a := withScrubRuntime(
+		New(AgentConfig{ID: "c8-shown", StageHost: NewStageHost()}),
+		newScrubRuntime(t),
+	)
 
 	got := map[string]bool{}
 	for _, d := range a.buildToolDefs() {

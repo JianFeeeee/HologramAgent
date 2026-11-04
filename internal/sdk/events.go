@@ -65,8 +65,9 @@ type eventsAPI struct {
 // 返回 nil 会让 `s.Events().Publish(...)` 在未接总线的宿主里直接 panic
 // （实测：internal/plugins 的集成测试在 loadOne 阶段崩在 clawhubadapter 上）。
 // 插件不该为"宿主没接总线"写 nil 判断——那是一个该报错、而不是该崩溃的状态。
-func newEventsAPI(pluginName string, bus *events.Bus) pubsdk.EventsAPI {
-	api := &eventsAPI{pluginName: pluginName, bus: bus, sec: security.RuntimeGlobal()}
+func newEventsAPI(pluginName string, bus *events.Bus, rt *security.Runtime) pubsdk.EventsAPI {
+	// sec 由内核注入（不再读 RuntimeGlobal 包级单例）。
+	api := &eventsAPI{pluginName: pluginName, bus: bus, sec: rt}
 	if bus == nil {
 		api.unavailable = "event bus is not wired in this host"
 	}

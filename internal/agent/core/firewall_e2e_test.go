@@ -42,19 +42,21 @@ func fwToolDef(name string) sdk.ToolDef {
 	}
 }
 
-func setupFirewall(t *testing.T) (*security.Store, string) {
+func setupFirewall(t *testing.T) (*security.Runtime, string) {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := security.InitGlobal(security.Options{
+	// ★ 2026-11-04：不再用包级单例。Runtime 是唯一来源，
+	// 由装配路径注入 Agent（AgentConfig.Security → a.security）。
+	s := security.New(security.Options{
 		Path:    filepath.Join(dir, "vars.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
 	})
-	if err != nil {
+	if err := s.Load(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
-	return store, dir
+	// 返回 Runtime 而不是 Store：现在唯一注入面是 AgentConfig.Security。
+	return security.NewRuntime(s), dir
 }
 
 // ★★ 判据：插件工具收到的参数是**明文**（回填生效）。
@@ -62,8 +64,9 @@ func setupFirewall(t *testing.T) (*security.Store, string) {
 // 这是整个设计的核心目的：模型手上只有别名，插件拿到真凭据，
 // 而**插件对替换完全无感知**。
 func TestFirewall_ToolArgsFilledBeforePlugin(t *testing.T) {
-	store, _ := setupFirewall(t)
-	a, _, _ := newRootForResidents(t)
+	rt, _ := setupFirewall(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	// 插件工具：记录它实际收到的参数
 	var seenToken string
@@ -101,8 +104,9 @@ func TestFirewall_ToolArgsFilledBeforePlugin(t *testing.T) {
 // 若插错（比如 stage 之前），插件会看到明文；
 // 若压根没插，设备会收到字面的 "@{sec_xxx}"。
 func TestFirewall_DevicePayloadFilledBeforeExecute(t *testing.T) {
-	store, _ := setupFirewall(t)
-	a, _, _ := newRootForResidents(t)
+	rt, _ := setupFirewall(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	var delivered string
 	const outCh = "plugintest_secch"
@@ -143,9 +147,11 @@ func TestFirewall_DevicePayloadFilledBeforeExecute(t *testing.T) {
 
 // ★ 判据：出向拦截真的发生在真实 provider 调用上（用真实 ProviderManager）。
 func TestFirewall_OutboundScrubbedOnRealProviderPath(t *testing.T) {
-	setupFirewall(t)
+	rt, _ := setupFirewall(t)
 	var captured string
 	mgr := agentAPI.NewProviderManager()
+	// ★ 注入必须先于 Register：装饰器在 Register 时套上。
+	mgr.SetSecretStore(rt.Store())
 	mgr.Register("probe", &fwCaptureProvider{name: "probe", capture: &captured})
 
 	_, err := mgr.Default().Chat(context.Background(), &agentAPI.CompletionRequest{
@@ -167,7 +173,8 @@ func TestFirewall_OutboundScrubbedOnRealProviderPath(t *testing.T) {
 
 // ★ 判据：磁盘上**没有明文**（加密落盘），且权限 0600。
 func TestFirewall_NoPlaintextOnDisk(t *testing.T) {
-	store, dir := setupFirewall(t)
+	rt, dir := setupFirewall(t)
+	store := rt.Store()
 	if _, err := store.Submit(firewallToken, "落盘"); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +202,8 @@ func TestFirewall_NoPlaintextOnDisk(t *testing.T) {
 
 // ★ 判据：**同明文合并**（同一次对话里多个通道用同一个 secret ⇒ 同一别名）。
 func TestFirewall_SameSecretMergesAcrossChannels(t *testing.T) {
-	store, _ := setupFirewall(t)
+	rt, _ := setupFirewall(t)
+	store := rt.Store()
 
 	// 两处独立出现同一明文（模拟两个插件都用同一个 token）
 	alias1, _ := store.Submit(firewallToken, "通道A")
@@ -214,8 +222,9 @@ func TestFirewall_SameSecretMergesAcrossChannels(t *testing.T) {
 //
 // 这是完整闭环：拦截 → 别名进上下文 → 模型用别名 → 回填 → 插件拿到明文。
 func TestFirewall_FullRoundTrip(t *testing.T) {
-	store, _ := setupFirewall(t)
-	a, _, _ := newRootForResidents(t)
+	rt, _ := setupFirewall(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	var pluginSaw string
 	const toolName = "plugintest_roundtrip"

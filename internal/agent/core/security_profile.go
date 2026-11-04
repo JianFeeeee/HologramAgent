@@ -346,3 +346,22 @@ func (a *Agent) reviewToolResultContent(tool, text string) []security.Finding {
 	}
 	return findings
 }
+
+// secretStore 返回本 agent 的**变量库**（凭据别名），未启用时为 nil。
+//
+// ★ 2026-11-04：取代 `security.Global()` 包级单例。
+//
+// 单例的问题不是"多一处全局变量"，而是**它绕开了统一挂载点**：
+// 本 agent 的 a.security 是装配期从内核传来的那个 Runtime，而
+// security.Global() 是另一个独立变量。两者在正常装配下恰好指向同一份
+// 数据，但"恰好"不是保证 —— 测试替身、多 Runtime、热重载任一路径下
+// 都可能分离，而分离的症状是"策略生效但凭据替换不生效"（或反之），
+// 极难定位。
+//
+// 现在只有一个事实来源：本 agent 的 security 字段。
+func (a *Agent) secretStore() *security.Store {
+	if a == nil || a.security == nil {
+		return nil
+	}
+	return a.security.Store()
+}

@@ -43,7 +43,7 @@ import (
 )
 
 func (a *Agent) executeSecretTool(tc agentAPI.ToolCall) string {
-	s := security.Global()
+	s := a.secretStore()
 	if s == nil {
 		return "安全模块未启用（core.security.enabled=false），变量库不可用"
 	}

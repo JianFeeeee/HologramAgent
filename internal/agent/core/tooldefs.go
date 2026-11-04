@@ -9,7 +9,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 	sdkmeta "github.com/JianFeeeee/hologramagentsdk/meta"
 )
 
@@ -496,7 +495,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	//
 	// 仅当安全模块真的启用时才暴露：未启用时变量库不可用，
 	// 把工具给模型只会让它反复撞到"安全模块未启用"（无谓往返）。
-	if security.Global() != nil {
+	if a.secretStore() != nil {
 		tools = append(tools, secretToolDefs()...)
 	}
 

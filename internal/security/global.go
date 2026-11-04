@@ -18,84 +18,52 @@ package security
 //（`resident.go:185`；manager 全进程只建一份 `bootstrap.go:249`）。
 // 所以变量库挂在 provider 层天然就是进程级 —— **不需要跨 agent 同步**。
 
-import (
-	"log"
-	"sync"
-)
+import ()
 
-var (
-	globalMu sync.RWMutex
-	global   *Store
-)
+// ★ 2026-11-04：进程级单例 `global *Store` 已删除。
+//
+// ## 为什么删
+//
+// 它绕开了内核的**统一挂载点**（`kstate.State.Security`）。变量库只有一个
+// 事实来源：security 模块产出的 Runtime，经 Assembly 传进
+// `AgentConfig.Security` / `ProviderManager.SetSecretStore` /
+// `plugin.Registry.SetSecretStore`，各消费方从自己的注入面取。
+//
+// ## 单例的危害（不是"多一个全局变量"这么轻）
+//
+// 本 agent 的 `a.security` 与 `security.Global()` 是**两个独立变量**。
+// 正常装配下它们恰好指向同一份数据，但"恰好"不是保证：
+//
+//   · 测试替身：测试装单例、被测代码用 agent 字段 ⇒ 测试测的是单例
+//   · 多 Runtime：两个内核实例（或热重载）时单例只有一份，另一方被覆盖
+//   · 装配顺序：单例装晚了，先注册的 provider 就没被装饰（静默漏一条出网路径）
+//
+// 最后一条曾真实存在：`ProviderManager.Register` 在注册时读单例套装饰器，
+// 而 llm 模块原本**不声明** FacSecurity 依赖 —— 顺序正确纯属巧合。
+// 现在 llm 模块声明了 FacSecurity，且注入必须早于 Register。
 
-// InitGlobal 装配进程级单例。**必须在任何 agent 启动前调用**。
-func InitGlobal(opt Options) (*Store, error) {
+// ---------------- 入向填充（插件无感知的关键） ----------------
+
+// ★ 2026-11-04：`FillToolArgs` / `FillPayload` 已删除（死代码）。
+//
+// 它们读 `Global()` 单例做入向回填，但**生产调用者为 0**：
+// `core.StageHost.ExecuteToolCtx` 已直接用注入的 Store 做同一件事
+// （见 stages.go 的 `h.secretStore().FillMap(args)`）。
+//
+// 只留一个测试调用它们 ⇒ 测的是没人用的代码路径，绿了也不代表任何
+// 生产行为正确（engineering-lessons §1.1「判据要钉真实路径」）。
+
+// MustStore 构造并加载一个变量库（装配/测试用），失败直接返回 error。
+//
+// ★ 存在的理由（2026-11-04）：包级单例删除后，"New + Load" 这对操作在
+// 装配代码与十几个测试里重复出现。抽成函数让调用点保持一行，
+// 也避免各人各写一遍（漏 Load 的症状是"库看起来在、但读不到已有条目"）。
+//
+// 注意：本函数**不**注册任何全局单例 —— 返回值由调用方持有并注入。
+func MustStore(opt Options) (*Store, error) {
 	s := New(opt)
 	if err := s.Load(); err != nil {
 		return nil, err
 	}
-	globalMu.Lock()
-	global = s
-	globalMu.Unlock()
 	return s, nil
-}
-
-// SetGlobal 直接装入一个已构造的 Store（测试与特殊装配用）。
-func SetGlobal(s *Store) {
-	globalMu.Lock()
-	global = s
-	globalMu.Unlock()
-}
-
-// Global 取进程级单例；未初始化时返回 nil。
-//
-// ★ 为何返回 nil 而不报错：调用点散布在内核热路径上，
-// 未启用时必须**零成本跳过**。所有调用方都写成
-// `if s := Global(); s != nil { ... }`。
-func Global() *Store {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
-	return global
-}
-
-// Enabled 报告安全模块是否已启用。
-func Enabled() bool {
-	s := Global()
-	return s != nil && s.enabled
-}
-
-// ---------------- 入向填充（插件无感知的关键） ----------------
-
-// FillToolArgs 把一个工具调用的参数里的 `@{别名}` 换回明文。
-//
-// 这是**内核工具链的入口**（`core.StageHost.ExecuteTool`）：
-// 插件收到的参数已经填好，它完全不知道有替换这回事。
-//
-// 返回 (填充处数, 用到的别名)。未初始化时返回 (0, nil)。
-func FillToolArgs(tool string, args map[string]interface{}) (int, []string) {
-	s := Global()
-	if s == nil || args == nil {
-		return 0, nil
-	}
-	n, used := s.FillMap(args)
-	if n > 0 {
-		log.Printf("[security] tool %s backfilled %d argument(s) (aliases %v)", tool, n, used)
-	}
-	return n, used
-}
-
-// FillPayload 把一段文本载荷里的 `@{别名}` 换回明文。
-//
-// 用于**设备输出通道**（`core` 的 `dev.Execute`）：发给设备的指令同理
-// 需要真实凭据，而设备侧对替换无感知。
-func FillPayload(where, text string) string {
-	s := Global()
-	if s == nil || text == "" {
-		return text
-	}
-	out, n, used := s.Fill(text)
-	if n > 0 {
-		log.Printf("[security] %s payload backfilled %d place(s) (aliases %v)", where, n, used)
-	}
-	return out
 }

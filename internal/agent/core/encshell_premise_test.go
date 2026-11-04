@@ -17,8 +17,9 @@ import (
 )
 
 func TestPremise_EncShellCommandPrefilledByKernel(t *testing.T) {
-	store := newScrubStore(t)
-	a, _, _ := newRootForResidents(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	alias, err := store.Submit(tok, "测")

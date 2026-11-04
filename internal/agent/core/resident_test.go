@@ -7,6 +7,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,16 @@ import (
 // newRootWith 造一个带完整图记忆的父 agent，并指定它（以及它的驻留子）用的 provider。
 func newRootWith(t *testing.T, provider agentAPI.Provider) (*Agent, *memory.GraphDB, string) {
 	t.Helper()
+	return newRootWithSecurity(t, provider, nil)
+}
+
+// newRootWithSecurity 造根 agent，并把 security Runtime 装进**装配期字段**。
+//
+// ★ 2026-11-04：包级单例（security.Global）已删除，变量库的唯一来源是
+// AgentConfig.Security → a.security → a.secretStore()。所有脱敏判据都必须
+// 经这条路径，否则测的是"全局恰好有值"而不是接线。
+func newRootWithSecurity(t *testing.T, provider agentAPI.Provider, rt *security.Runtime) (*Agent, *memory.GraphDB, string) {
+	t.Helper()
 	dir := t.TempDir()
 	main, err := memory.NewGraphDB(filepath.Join(dir, "main.db"))
 	if err != nil {
@@ -36,6 +47,7 @@ func newRootWith(t *testing.T, provider agentAPI.Provider) (*Agent, *memory.Grap
 		StageHost:       NewStageHost(),
 		Memory:          main,
 		DataDir:         dir,
+		Security:        rt,
 	})
 	a.Start() // 父也有自己的调度器：子的消息要真的进它的中断队列并被处理
 	t.Cleanup(func() { a.Stop(); main.Close() })

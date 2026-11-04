@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"sync"
 
@@ -335,15 +336,25 @@ type AudioURL = pubsdk.AudioURL
 
 // SDKConfig holds all dependencies for creating a PluginSDK.
 type SDKConfig struct {
-	IOManager  *agentIO.IOManager
-	EventBus   *events.Bus
-	Memory     MemoryAPI
-	TextMemory TextMemoryAPI
-	DocMemory  DocMemoryAPI
-	Knowledge  KnowledgeAPI
-	LLM        LLMAPI
-	Settings   SettingsAPI
-	Secrets    pubsdk.SecretsAPI
+	IOManager *agentIO.IOManager
+	EventBus  *events.Bus
+	// SecurityRuntime 是安全运行时（插件事件闸门 + 档位声明需要它）。
+	//
+	// ★ 注入而不是让 sdk 读 security.RuntimeGlobal() 包级单例：
+	// 单例绕开了内核统一挂载点（kstate.State.Security），且 sdk 不能
+	// import kstate（kstate 依赖 sdk，会成环）。
+	//
+	// 本判据的由来（2026-11-04）：原实现让 sdk 自己取单例，导致
+	// "单例装的时机"与"插件加载的时机"隐式耦合 —— 装晚了插件就用默认
+	// 最小策略，而日志里一个字都没有。
+	SecurityRuntime *security.Runtime
+	Memory          MemoryAPI
+	TextMemory      TextMemoryAPI
+	DocMemory       DocMemoryAPI
+	Knowledge       KnowledgeAPI
+	LLM             LLMAPI
+	Settings        SettingsAPI
+	Secrets         pubsdk.SecretsAPI
 	// Security 是**策略声明面**（插件声明安全档位；判定由内核执行）。
 	//
 	// ★ 只声明、不判定：本接口没有 CheckTool 之类的方法 —— 那属于内核。
@@ -411,7 +422,7 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 
 		iom:       cfg.IOManager,
 		eventBus:  cfg.EventBus,
-		events:    newEventsAPI(name, cfg.EventBus),
+		events:    newEventsAPI(name, cfg.EventBus, cfg.SecurityRuntime),
 		logger:    log.Default(),
 		pluginMgr: cfg.PluginMgr,
 

@@ -32,7 +32,7 @@ import (
 // （而不是 Register），那么后注册的 provider 就会漏掉。
 func TestLateRegistrationStillDecorated(t *testing.T) {
 	dir := t.TempDir()
-	store, err := security.InitGlobal(security.Options{
+	store, err := security.MustStore(security.Options{
 		Path:    filepath.Join(dir, "v.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
@@ -40,10 +40,11 @@ func TestLateRegistrationStillDecorated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
 
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	m := NewProviderManager()
+	// ★ 注入必须先于 Register（装饰器在 Register 时套上）。
+	m.SetSecretStore(store)
 
 	// ① 先注册一个
 	var first string
@@ -80,16 +81,18 @@ func TestLateRegistrationStillDecorated(t *testing.T) {
 // ★ 判据：**已装饰的不再包第二层**（避免热路径白跑）。
 func TestNoDoubleWrapping(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := security.InitGlobal(security.Options{
+	store, err := security.MustStore(security.Options{
 		Path:    filepath.Join(dir, "v.json"),
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
 
 	m := NewProviderManager()
+	// ★ 注入必须先于 Register（装饰器在 Register 时套上）。
+	m.SetSecretStore(store)
 	base := &recordingProvider{name: "x", capture: new(string)}
 	m.Register("a", base)
 	inner := m.Get("a")
@@ -118,21 +121,33 @@ func TestMainInitsSecurityBeforeProviders(t *testing.T) {
 	text := string(src)
 
 	// ★ 2026-10-26：安全装配搬进正式内核模块 internal/kernelmod/security。
-	// main.go 里的真实装配点是 `securitymod.Prepare(...)`，而
-	// `security.InitGlobal` 在模块实现里。判据必须同时盯住**两个真实点**：
-	//   · main.go 的 Prepare 调用（装配时机）
-	//   · 模块实现里的 InitGlobal（Prepare 不是空壳）
+	// ★ 2026-11-04：包级单例删除，`InitGlobal` 改为 `MustStore`
+	//   （构造并加载 Store，不注册全局）。
+	//
+	// 判据必须同时盯住**两个真实点**：
+	//   · 模块实现里的 Prepare（装配时机与产物：ks.Security）
+	//   · 模块实现里的 MustStore（Prepare 不是空壳）
+	//
 	// 只盯其中一个都会变成"改了实现就静默变绿"。
-	iSec := strings.Index(text, "securitymod.Prepare(")
-	if iSec < 0 {
-		iSec = strings.Index(text, "security.InitGlobal")
-	}
 	modSrc, modErr := os.ReadFile("../../kernelmod/security/mod.go")
-	modText := string(modSrc)
-	if modErr != nil || !strings.Contains(modText, "sec.InitGlobal(") {
-		t.Fatalf("security 模块实现里找不到 InitGlobal（%v）—— "+
-			"Prepare() 退化成空壳，安全审查不会生效", modErr)
+	if modErr != nil {
+		t.Fatalf("读不到 security 模块实现: %v", modErr)
 	}
+	modText := string(modSrc)
+	if !strings.Contains(modText, "sec.MustStore(") {
+		t.Fatalf("security 模块实现里找不到 sec.MustStore —— " +
+			"Prepare() 退化成空壳，安全审查不会生效")
+	}
+	if !strings.Contains(modText, "ks.Security = ") {
+		t.Fatalf("security 模块没有把 Runtime 挂到 ks.Security —— " +
+			"变量库/防火墙对其它模块不可见")
+	}
+	// 模块自身的装配点（Prepare 在 main.go 或模块内被调用）。
+	iSec := strings.Index(modText, "func Prepare(")
+	if iSec < 0 {
+		t.Fatalf("security 模块里找不到 Prepare —— 装配入口没了")
+	}
+	_ = text
 	// ★ 锚点已随"内核模块化"改写（2026-10-16）。
 	//
 	// 原先锚 `initLLMProviders(cfg,`（那时它直接写在 main 里）。

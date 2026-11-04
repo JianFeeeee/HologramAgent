@@ -624,7 +624,7 @@ func (a *Agent) emitMemoryCandidate(source, input, response string, toolResults 
 	}
 	// ★ 记忆候选是**不经 context** 的另一条持久化侧路（走 EmitOutput）。
 	// 不在这里拦，明文会直接进长期记忆 —— 而记忆跨会话保留、每轮被召回。
-	scrubMemoryCandidate(payload)
+	a.scrubMemoryCandidate(payload)
 	a.io.EmitOutput("memory", "memory_candidate", payload)
 }
 

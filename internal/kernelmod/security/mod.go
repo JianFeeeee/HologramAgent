@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sync"
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
@@ -43,6 +44,30 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	sec "github.com/JianFeeeee/HologramAgent/internal/security"
 )
+
+// 出参槽：Prepare 的幂等缓存（**装配器私有**，不对外暴露）。
+//
+// ★ 与已删除的 security.RuntimeGlobal() 的区别：
+//
+//	· 那个是**公开访问器**，任何包都能取 ⇒ 成了绕过 kstate 的第二条通道
+//	· 这个是**本模块私有**，只用于"Prepare 只跑一次"，产物同时挂到
+//	  ks.Security —— 外部一律从 ks 取，没有第二条通道
+var (
+	preparedMu sync.RWMutex
+	prepared   *sec.Runtime
+)
+
+func preparedRuntime() *sec.Runtime {
+	preparedMu.RLock()
+	defer preparedMu.RUnlock()
+	return prepared
+}
+
+func setPreparedRuntime(rt *sec.Runtime) {
+	preparedMu.Lock()
+	prepared = rt
+	preparedMu.Unlock()
+}
 
 // Module 提供安全防火墙设施。
 type Module struct{}
@@ -97,7 +122,16 @@ func init() { kernelmod.Register(Module{}) }
 //
 // 返回的 Runtime 里带着 Store 与 Gate（边界闸门）。
 func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error) {
-	if rt := sec.RuntimeGlobal(); rt != nil {
+	// 幂等：Group 0 与模块 Init 都会调它，但只能装一次。
+	//
+	// ★ 为什么幂等状态放在**本模块**而不是 security 包（2026-11-04）：
+	// 原先靠 `security.RuntimeGlobal()` 判断"装过没有"，那让 security 包
+	// 持有一份进程级单例 —— 而单例绕开了内核统一挂载点
+	// （kstate.State.Security），导致"哪一份才是权威"取决于装配顺序。
+	//
+	// 现在幂等状态是**装配器的私有状态**：它只保证 Prepare 只跑一次，
+	// 产物交给内核挂到 ks.Security，其它模块一律从 ks 取。
+	if rt := preparedRuntime(); rt != nil {
 		return rt, nil
 	}
 	if cfgReg == nil {
@@ -107,7 +141,7 @@ func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error
 		// 显式关闭：装一个空 Runtime（所有闸门零成本透传），
 		// 而不是留 nil 让调用点各自判断。
 		rt := sec.NewDisabledRuntime()
-		sec.SetRuntimeGlobal(rt)
+		setPreparedRuntime(rt)
 		log.Printf("[security] module disabled by config (core.security.enabled=false)")
 		return rt, nil
 	}
@@ -141,7 +175,12 @@ func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error
 		log.Printf("[security] loaded %d historical/extra key(s) (smooth rotation + embedded migration)", len(oldKeys))
 	}
 
-	store, err := sec.InitGlobal(sec.Options{
+	// ★ 2026-11-04：改用 sec.New + Load，不再走 InitGlobal（包级单例已删）。
+	//
+	// 变量库的唯一事实来源是**模块产出的 Runtime**（挂在 ks.Security 上），
+	// 各消费方从自己的注入面取（AgentConfig.Security / ProviderManager /
+	// plugin.Registry）。这条路径取代了原先"单例 + 各处 Global()"的双轨。
+	store, err := sec.MustStore(sec.Options{
 		Path:    filepath.Join(dataDir, "security", "variables.json"),
 		KeyFn:   func() ([]byte, error) { return key, nil },
 		OldKeys: oldKeys,
@@ -169,7 +208,7 @@ func Prepare(dataDir string, cfgReg *config.ConfigRegistry) (*sec.Runtime, error
 	}
 
 	rt := sec.NewRuntime(store)
-	sec.SetRuntimeGlobal(rt)
+	setPreparedRuntime(rt)
 
 	// ★ 全局策略基线（部署方兵底，用户 2026-10-29 裁定选项 B）。
 	//

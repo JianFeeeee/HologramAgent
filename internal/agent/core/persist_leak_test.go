@@ -34,7 +34,8 @@ import (
 
 // ★★ 判据：**用户输入**里的明文不得进 context（此前完全未被覆盖）。
 func TestE2E_InputSecretNeverReachesContext(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	a := New(AgentConfig{
@@ -43,6 +44,7 @@ func TestE2E_InputSecretNeverReachesContext(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		Security:        rt, // 必须与 store 同源
 	})
 	a.Start()
 	defer a.Stop()
@@ -68,7 +70,8 @@ func TestE2E_InputSecretNeverReachesContext(t *testing.T) {
 // 模型看不到明文（出向已拦），所以它只能在**被喂了明文**时才回吐明文 ——
 // 这里用脚本 provider 直接造出那个回复，验证回复侧拦截生效。
 func TestE2E_ResponseSecretNeverReachesContext(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	a := New(AgentConfig{
@@ -77,6 +80,7 @@ func TestE2E_ResponseSecretNeverReachesContext(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		Security:        rt, // 必须与 store 同源
 	})
 	a.Start()
 	defer a.Stop()
@@ -96,7 +100,8 @@ func TestE2E_ResponseSecretNeverReachesContext(t *testing.T) {
 
 // ★ 判据：**记忆块**（一等记忆的文本负载）也要过一遍。
 func TestScrubEventCoversMemoryBlocks(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	evt := &ContextEvent{
@@ -108,7 +113,10 @@ func TestScrubEventCoversMemoryBlocks(t *testing.T) {
 	}
 	evt.Blocks = append(evt.Blocks, memoryBlockWithText("转写稿里有 "+tok))
 
-	scrubEventSecrets(evt)
+	// ★ 2026-11-04：改走真实注入路径（Context.secretStore）。
+	rc := NewRelevanceContext("", nil)
+	rc.SetSecretStore(store) // 必须用**同一个** Store（否则变量登记在读的那一份里）
+	rc.scrubEventSecrets(evt)
 
 	for name, got := range map[string]string{
 		"input":    evt.Input,
@@ -172,7 +180,8 @@ func (p *echoTokenProvider) ChatStream(_ context.Context, _ *agentAPI.Completion
 //	`scrubMemoryCandidate` —— 初版直接调底层函数，于是"去掉入口处的调用"
 //	这个变异**不会报红**（判据测错了层次）。走真实入口才能钉住"入口必须调它"。
 func TestEmitMemoryCandidateScrubsPayload(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	a := New(AgentConfig{
@@ -181,6 +190,7 @@ func TestEmitMemoryCandidateScrubsPayload(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		Security:        rt, // 必须与 store 同源
 	})
 
 	// 故意传**未经过任何上游清洗**的原始值

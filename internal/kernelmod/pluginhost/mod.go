@@ -307,6 +307,14 @@ func injectBaseDeps(ks *kstate.State) {
 	}
 	reg.SetTracker(ks.Tracker)
 	reg.SetConfig(ks.Cfg)
+	// 变量库注入：sdk.SecretsAPI 桥接到它（不再读包级单例）。
+	// ks.Security 可能为 nil（未启用安全模块），那正是"不可用"语义。
+	if ks.Security != nil {
+		reg.SetSecretStore(ks.Security.Store())
+		// 同一个 Runtime 也供插件的事件闸门与档位声明面使用
+		// （原先是 sdk 自己读 RuntimeGlobal 包级单例）。
+		reg.SetSecurityRuntime(ks.Security)
+	}
 	// StageHost 在挂载点里存 any（kstate 不依赖 agent/core，否则成环）。
 	// 断言成 sdk.ToolSource（plugin 真正需要的只读工具视图）。
 	//

@@ -1,19 +1,25 @@
 package sdk
 
-// SecretsAPI 的内核实现：桥接到 `internal/security` 的进程级变量库。
+// SecretsAPI 的内核实现：桥接到注入的变量库（`*security.Store`）。
 //
 // ## 为何是"桥接"而不是"另建一套"
 //
-// 变量库是**进程级单例**（`security.Global()`）：主/子/驻留子 agent 共享
-// 同一套别名表（设计 S10）。插件若自建一套，两库互不可见 ——
-// 内核拦截时登记的变量插件看不到，插件登记的拦截又不认识，
-// 同一个凭据可能两处各存一份而使用者不知哪个权威。
+// 变量库是**全进程唯一的一份**：主/子/驻留子 agent 共享同一套别名表
+// （设计 S10）。插件若自建一套，两库互不可见 —— 内核拦截时登记的变量
+// 插件看不到，插件登记的拦截又不认识，同一个凭据可能两处各存一份而
+// 使用者不知哪个权威。
 //
-// 所以这个实现只是把调用转发到那个单例。**没有第二份存储**。
+// 所以这个实现只是把调用转发给注入的 Store。**没有第二份存储**。
+//
+// ## 注入而不是读单例（2026-11-04）
+//
+// 此前读 `security.Global()` 包级单例。那个单例绕开了内核的统一挂载点
+// （kstate.State.Security），已删除。现在由 plugin.Registry 从
+// ks.Security 取出 Store 传进来 —— 单一事实来源、单一注入路径。
 //
 // ## 未启用时的行为
 //
-// `security.Global()` 为 nil 时**不返回 nil**，而是返回一个 Available()
+// 注入的 Store 为 nil 时**不返回 nil API**，而是返回一个 Available()
 // 为 false 的实现。理由：nil 会让插件到处判空，而判空漏一处就 panic
 // （本仓在 `*SensitiveInterceptor` 上吃过这个亏）。给一个明确的
 // "不可用" 实现，插件只需问 `Available()`。
@@ -26,12 +32,14 @@ import (
 )
 
 // secretsImpl 实现 pubsdk.SecretsAPI。
-type secretsImpl struct{}
+type secretsImpl struct{ store *internalSecurity.Store }
 
 // NewSecretsAPI 构造变量库接口（内核装配时注入给每个插件）。
-func NewSecretsAPI() pubsdk.SecretsAPI { return &secretsImpl{} }
+func NewSecretsAPI(store *internalSecurity.Store) pubsdk.SecretsAPI {
+	return &secretsImpl{store: store}
+}
 
-func (s *secretsImpl) Available() bool { return internalSecurity.Global() != nil }
+func (s *secretsImpl) Available() bool { return s.store != nil }
 
 // AvailableForRPC 是 proc 桥用来**明确报告**可用性的入口。
 //
@@ -42,7 +50,7 @@ func (s *secretsImpl) Available() bool { return internalSecurity.Global() != nil
 func (s *secretsImpl) AvailableForRPC() bool { return s.Available() }
 
 func (s *secretsImpl) Store(value, note string) (string, error) {
-	st := internalSecurity.Global()
+	st := s.store
 	if st == nil {
 		// ★ 响亮失败：不静默降级成"存到别处"或"不存"。
 		// 插件以为存好了而实际没存，比直接报错危险得多。
@@ -52,7 +60,7 @@ func (s *secretsImpl) Store(value, note string) (string, error) {
 }
 
 func (s *secretsImpl) List() []pubsdk.SecretInfo {
-	st := internalSecurity.Global()
+	st := s.store
 	if st == nil {
 		return nil
 	}
@@ -68,7 +76,7 @@ func (s *secretsImpl) List() []pubsdk.SecretInfo {
 }
 
 func (s *secretsImpl) Forget(alias string) error {
-	st := internalSecurity.Global()
+	st := s.store
 	if st == nil {
 		return fmt.Errorf("安全模块未启用，变量库不可用")
 	}
@@ -76,7 +84,7 @@ func (s *secretsImpl) Forget(alias string) error {
 }
 
 func (s *secretsImpl) Fill(text string) (string, int, []string) {
-	st := internalSecurity.Global()
+	st := s.store
 	if st == nil {
 		return text, 0, nil
 	}

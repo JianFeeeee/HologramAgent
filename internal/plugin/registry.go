@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"os"
 	"path/filepath"
@@ -79,10 +80,24 @@ type Registry struct {
 	// kernelCtl 是内核重启/关机通道（装配时注入，可 nil）。
 	// 只对声明了该能力的内置插件可见（目前是 WebUI）。
 	kernelCtl sdk.KernelControlAPI
-	mu        sync.RWMutex
-	plugins   map[string]sdk.Plugin
-	instances []sdk.Plugin
-	factories map[string]NativeFactory
+
+	// secretStore 是**变量库**（凭据别名），供 sdk.SecretsAPI 桥接。
+	//
+	// ★ 为什么是注入而不是 security.Global()（2026-11-04）：
+	// 包级单例已被删除（它绕开了内核统一挂载点）。现在由 plugin-host
+	// 模块从 ks.Security 取出来注入。
+	//
+	// nil 合法：未启用安全模块时 SecretsAPI.Available() == false。
+	secretStore *security.Store
+
+	// securityRT 是安全运行时（sdk 的事件闸门 + 档位声明面需要）。
+	// 与 secretStore 同源（都来自 kstate.State.Security），分两个字段是因为
+	// 消费方要的东西不同：SecretsAPI 只要 Store，EventsAPI/DeclareProfile 要 Runtime。
+	securityRT *security.Runtime
+	mu         sync.RWMutex
+	plugins    map[string]sdk.Plugin
+	instances  []sdk.Plugin
+	factories  map[string]NativeFactory
 
 	pluginAutoRestart map[string]bool
 	sdkRefs           map[string]*sdk.PluginSDK
@@ -330,6 +345,21 @@ func (r restartOnly) RequestKernelShutdown(reason string) error {
 // ★ 为何用 setter 而不是构造参数：internal/plugin 不能 import cmd/homed
 //
 //	（那是反向依赖，且 cmd 包不可被 import）。用接口 + setter 打破方向。
+//
+// SetSecurityRuntime 注入安全运行时（plugin-host 模块装配时调用）。
+func (r *Registry) SetSecurityRuntime(rt *security.Runtime) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.securityRT = rt
+}
+
+// SetSecretStore 注入变量库（plugin-host 模块装配时调用）。
+func (r *Registry) SetSecretStore(s *security.Store) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.secretStore = s
+}
+
 func (r *Registry) SetKernelControl(k sdk.KernelControlAPI) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -556,6 +586,8 @@ type sdkDeps struct {
 	stageHost        sdk.ToolSource
 	idx              *memory.Indexer
 	kernelCtl        sdk.KernelControlAPI
+	secretStore      *security.Store
+	securityRT       *security.Runtime
 }
 
 // snapshotDeps 在一次 RLock 内取走 buildSDK 需要的全部依赖。
@@ -585,6 +617,8 @@ func (r *Registry) snapshotDeps() sdkDeps {
 		stageHost:        r.stageHost,
 		idx:              r.idx,
 		kernelCtl:        r.kernelCtl,
+		secretStore:      r.secretStore,
+		securityRT:       r.securityRT,
 	}
 }
 
@@ -757,13 +791,14 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		Knowledge:  sdk.NewKnowledge(deps.ks),
 		LLM:        sdk.NewLLM(deps.mgr, deps.cfgReg, deps.lua, deps.baseKey),
 		Settings:   sett,
-		// ★ 变量库：桥接到进程级 security.Global()（**不另建存储**）。
-		// 内核未启用安全模块时它 Available()==false（不是 nil）。
-		Secrets: sdk.NewSecretsAPI(),
+		// ★ 变量库：桥接到**注入的** Store（不另建存储）。
+		// 内核未启用安全模块时为 nil ⇒ Available()==false（不是 nil API）。
+		Secrets:         sdk.NewSecretsAPI(deps.secretStore),
+		SecurityRuntime: deps.securityRT,
 		// ★ 策略声明面：插件**声明**档位（qq.owner / qq.guest…），
 		// 判定仍在内核 security.Runtime。Owner 由内核用真实插件名填，
 		// 插件无法伪造身份（见 internal/sdk/security_impl.go）。
-		Security: sdk.NewSecurityAPI(name),
+		Security: sdk.NewSecurityAPI(name, deps.securityRT),
 		// ★ 随包资源：读 <插件目录>/rawfile/，可写目录 <插件目录>/work/。
 		// 内置插件（无独立目录）拿到的路径不存在，Read 会明确报错 ——
 		// 那是对的：它们本来就没有随包资源。

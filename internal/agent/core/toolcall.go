@@ -184,7 +184,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		// 设备授权拒绝、不存在、panic），逐个加必然漏。defer 是唯一
 		// 能覆盖全部分支的位置，且 panic 路径也一起覆盖。
 		if out.Text != "" {
-			if st := security.Global(); st != nil {
+			if st := a.secretStore(); st != nil {
 				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, security.Patterns); len(evts) > 0 {
 					out.Text = clean
 					for _, e := range evts {

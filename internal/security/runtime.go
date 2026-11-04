@@ -27,11 +27,6 @@ import (
 	"sync"
 )
 
-var (
-	runtimeMu sync.RWMutex
-	runtime   *Runtime
-)
-
 // Runtime 是安全运行时。
 //
 // 它把安全模块的三块能力合成**一个边界**：
@@ -86,6 +81,8 @@ type Runtime struct {
 }
 
 // NewRuntime 用已装好的变量库构造运行时。
+
+// NewRuntime 用已装好的变量库构造运行时。
 func NewRuntime(store *Store) *Runtime {
 	if store == nil {
 		return NewDisabledRuntime()
@@ -117,23 +114,19 @@ func NewDisabledRuntime() *Runtime {
 	}
 }
 
-// RuntimeGlobal 取进程级运行时；未装配时返回 nil。
+// ★ 2026-11-04：进程级单例 `runtime *Runtime` 已删除（用户裁定
+// 「所有共享数据统一挂载一个 kernel 提供的挂载点上暴露」）。
 //
-// ★ 返回 nil 而不是 Disabled：这只表示"安全模块还没装配"，
+// 防火墙的产物现在是 `kstate.State.Security`：security 模块产出它，
+// 消费方（agent / plugin-host / llm）各自从注入面取：
 //
-//	装配完成后（无论启用与否）一定非 nil。调用方拿 nil 应视为装配错误。
-func RuntimeGlobal() *Runtime {
-	runtimeMu.RLock()
-	defer runtimeMu.RUnlock()
-	return runtime
-}
-
-// SetRuntimeGlobal 装入运行时（幂等：重复装同一个实例无副作用）。
-func SetRuntimeGlobal(r *Runtime) {
-	runtimeMu.Lock()
-	runtime = r
-	runtimeMu.Unlock()
-}
+//	AgentConfig.Security          → a.security
+//	plugin.Registry.SetSecurityRuntime
+//	ProviderManager.SetSecretStore（变量库）
+//
+// 原先的 `RuntimeGlobal()` / `SetRuntimeGlobal()` 是**公开**访问器，
+// 任何包都能绕开 ks 直接取 —— 那正是"两处各存一份、哪份权威取决于
+// 装配顺序"的来源。装配器内部的幂等缓存改为 kernelmod/security 私有变量。
 
 // Enabled 报告安全审查是否真的生效。
 func (r *Runtime) Enabled() bool { return r != nil && r.enabled && r.gate != nil }

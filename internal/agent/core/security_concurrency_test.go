@@ -21,7 +21,6 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // ★★ 判据：**多 agent 并发出向** —— 明文一律不得泄漏到 provider。
@@ -29,7 +28,8 @@ import (
 // 每个 agent 有自己的 provider 实例，但它们共享**同一个**
 // ProviderManager 装饰器与变量库单例（这正是设计要验的点）。
 func TestConcurrency_MultiAgentOutboundScrub(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	const agents = 16
@@ -44,6 +44,9 @@ func TestConcurrency_MultiAgentOutboundScrub(t *testing.T) {
 			defer wg.Done()
 			var captured string
 			mgr := agentAPI.NewProviderManager()
+			// ★ 注入必须**早于 Register**：装饰器在 Register 时套上。
+			// 此前这行漏了，判据如实报红（640 次泄漏）。
+			mgr.SetSecretStore(store)
 			mgr.Register("p", &fwCaptureProvider{name: "p", capture: &captured})
 			p := mgr.Default()
 
@@ -83,8 +86,9 @@ func TestConcurrency_MultiAgentOutboundScrub(t *testing.T) {
 // 真实风险：A 的工具参数里的别名被填成 B 的凭据（串号），
 // 这会造成"用了错的凭据"且**不报错**。
 func TestConcurrency_ToolArgsDoNotCrossTalk(t *testing.T) {
-	store := newScrubStore(t)
-	a, _, _ := newRootForResidents(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	// 每个 goroutine 用**自己**的凭据与别名
 	const workers = 12
@@ -144,13 +148,14 @@ func TestConcurrency_ToolArgsDoNotCrossTalk(t *testing.T) {
 
 // ★★ 判据：**并发上下文写入**（Append 咽喉的 scrub）不丢不串。
 func TestConcurrency_ConcurrentContextScrub(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	if _, err := store.Submit(tok, "ctx"); err != nil {
 		t.Fatal(err)
 	}
 
-	a, _, _ := newRootForResidents(t)
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, rt)
 
 	const writers = 10
 	const perWriter = 50
@@ -197,7 +202,8 @@ func TestConcurrency_ConcurrentContextScrub(t *testing.T) {
 
 // ★★ 判据：**并发记忆候选**（emitMemoryCandidate 的 scrub）。
 func TestConcurrency_ConcurrentMemoryCandidate(t *testing.T) {
-	store := newScrubStore(t)
+	rt := newScrubRuntime(t)
+	store := rt.Store()
 	const tok = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	if _, err := store.Submit(tok, "mem"); err != nil {
 		t.Fatal(err)
@@ -209,6 +215,7 @@ func TestConcurrency_ConcurrentMemoryCandidate(t *testing.T) {
 		ProviderManager: agentAPI.NewProviderManager(),
 		IO:              agentIO.NewIOManager(),
 		StageHost:       NewStageHost(),
+		Security:        rt, // 必须与 store 同源
 	})
 
 	const n = 200
@@ -265,10 +272,8 @@ done:
 
 // ★ 判据：并发守卫（未启用安全模块）时零成本且不 panic。
 func TestConcurrency_DisabledIsSafe(t *testing.T) {
-	security.SetGlobal(nil)
-	t.Cleanup(func() { newScrubStore(t) })
-
-	a, _, _ := newRootForResidents(t)
+	// 未启用安全模块：显式传 nil Runtime（不是"忘了注入"）。
+	a, _, _ := newRootWithSecurity(t, &countingProvider{}, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {

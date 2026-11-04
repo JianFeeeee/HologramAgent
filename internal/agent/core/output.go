@@ -8,7 +8,6 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // executeOutputSendTool 执行一次 output_send__{通道}。
@@ -313,7 +312,7 @@ func (a *Agent) sendOneOutput(channel string, item outputItem) (string, bool) {
 		//   · 放在 stage 之前 ⇒ 插件会看到明文（不可，插件在信任边界外）
 		//   · 放在 Execute 之后 ⇒ 设备已收到带别名的载荷（功能坏了）
 		// 所以只能夹在中间：插件看不到，设备拿到真的。
-		if sc := security.Global(); sc != nil {
+		if sc := a.secretStore(); sc != nil {
 			if filled, n, used := sc.Fill(args["payload"].(string)); n > 0 {
 				args["payload"] = filled
 				log.Printf("[security] channel %s payload backfilled %d place(s) (aliases %v)", channel, n, used)

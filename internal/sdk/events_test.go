@@ -28,16 +28,14 @@ import (
 func newTestEvents(t *testing.T, name string) (pubsdk.EventsAPI, *events.Bus) {
 	t.Helper()
 	bus := events.NewBus()
-	// 用当前全局 Runtime 造闸门（未装配时 NewRuntime(nil) 给 Disabled Runtime，
-	// 策略仍生效 —— 与生产同一条纪律：关闭凭据替换 ≠ 放开授权）。
-	rt := security.RuntimeGlobal()
-	if rt == nil {
-		rt = security.NewRuntime(nil)
-	}
+	// ★ 2026-11-04：包级单例已删，Runtime 改为**显式构造并注入**。
+	// NewRuntime(nil) 给 Disabled Runtime，策略仍生效 ——
+	// 与生产同一条纪律：关闭凭据替换 ≠ 放开授权。
+	rt := security.NewRuntime(nil)
 	if g := security.AsEventGuard(rt); g != nil {
 		bus.SetGuard(g)
 	}
-	return newEventsAPI(name, bus), bus
+	return newEventsAPI(name, bus, rt), bus
 }
 
 // ① 白名单事件可发布，且 Source 被强制设成插件名（不能冒名）。
@@ -130,7 +128,7 @@ func TestEventsSubscribeAllowlistedOnly(t *testing.T) {
 // ⑤ 载荷出向过安全闸：明文凭据被换成 @{别名}，不会原样进事件。
 func TestEventsPayloadIsScrubbed(t *testing.T) {
 	dir := t.TempDir()
-	store, err := security.InitGlobal(security.Options{
+	store, err := security.MustStore(security.Options{
 		Path:    dir + "/vars.json",
 		KeyFn:   func() ([]byte, error) { return []byte("0123456789abcdef0123456789abcdef"), nil },
 		Enabled: true,
@@ -138,11 +136,15 @@ func TestEventsPayloadIsScrubbed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { security.SetGlobal(nil) })
-	security.SetRuntimeGlobal(security.NewRuntime(store))
-	t.Cleanup(func() { security.SetRuntimeGlobal(nil) })
-
-	e, bus := newTestEvents(t, "leaky")
+	// ★ 2026-11-04：单例已删。这个用例要验证"出向载荷被闸门脱敏"，
+	// 所以 Runtime 必须带 store；显式构造后注入给事件面。
+	rt := security.NewRuntime(store)
+	bus0 := events.NewBus()
+	if g := security.AsEventGuard(rt); g != nil {
+		bus0.SetGuard(g)
+	}
+	e := newEventsAPI("leaky", bus0, rt)
+	bus := bus0
 	var payload map[string]interface{}
 	bus.Subscribe(events.EventSkillDetected, func(evt *events.Event) { payload = evt.Payload })
 
