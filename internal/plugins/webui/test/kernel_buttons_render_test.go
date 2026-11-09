@@ -1,4 +1,4 @@
-package webui
+package test
 
 // 内核按钮必须**真的出现在渲染后的页面里**（2026-10-17）。
 //
@@ -17,13 +17,14 @@ package webui
 // 所以判据查的是**组装后的 dashboardHTML**（就是实际发给浏览器的字节）。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"strings"
 	"testing"
 )
 
 // ★★★ 判据：渲染后的页面含两个按钮的 id 与 onclick。
 func TestKernelButtonsRenderedInPage(t *testing.T) {
-	h := dashboardHTML
+	h := webui.DashboardPage()
 	if h == "" {
 		t.Fatal("dashboardHTML 为空 —— init 没跑或 embed 失败")
 	}
@@ -48,7 +49,7 @@ func TestKernelButtonsRenderedInPage(t *testing.T) {
 // 判定它处于顶层。jsdom 里的行为测试做不到这点（node 不强求），
 // 而浏览器里 onclick 走的是全局查找。
 func TestKernelFunctionsAreGlobal(t *testing.T) {
-	js, err := FrontendAsset("dashboard.js")
+	js, err := webui.FrontendAsset("dashboard.js")
 	if err != nil {
 		t.Fatalf("读 dashboard.js: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestKernelFunctionsAreGlobal(t *testing.T) {
 //
 // 它们作用于整个服务，任何标签页都该能点到。
 func TestKernelButtonsInNavFooter(t *testing.T) {
-	h := dashboardHTML
+	h := webui.DashboardPage()
 	navIdx := strings.Index(h, `class="nav-footer"`)
 	if navIdx < 0 {
 		t.Fatal("找不到 nav-footer")
