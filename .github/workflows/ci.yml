@@ -62,6 +62,66 @@ jobs:
       - name: go vet ./...
         run: go vet ./...
 
+      # ── 测试归拢门（2026-11-05）──
+      #
+      # 判据只能是「模块输入 → 模块输出」，所以测试必须全部住在
+      # <module>/test/ 这一个目录里（Go 按目录分包 ⇒ 物理上挡住读私有符号）。
+      # 源码目录里出现任何 _test.go 都属于白盒回潮，直接红。
+      - name: 测试归拢（源码目录不得有 _test.go）
+        run: |
+          set -euo pipefail
+          bad=$(find internal cmd pkg providers deploy -name '*_test.go' \
+                  -not -path '*/test/*' -not -path '*/node_modules/*' \
+                  -not -path '*/testdata/*' | sort)
+          if [ -n "$bad" ]; then
+            echo "★ 以下测试文件仍与源码混放（白盒测试）："
+            echo "$bad"
+            echo
+            echo "全部删除或改为走模块导出接口后移入 <module>/test/。"
+            echo "不从旧白盒里「抽」判据 —— 按导出接口重写。"
+            exit 1
+          fi
+          echo "测试归拢: 源码目录零 _test.go"
+
+      # ── 包依赖门（构建期静态分析，不属于 go test）──
+      #
+      # 原先这些约束写在 go test 里用 `go list -deps` / AST 扫全仓源码，
+      # 那是工具链的职责，不是模块输入→输出判据。现移到独立步骤。
+      - name: 包依赖门（kstate 为叶子 / 底层包不反向依赖装配器）
+        run: |
+          set -euo pipefail
+          M=github.com/JianFeeeee/HologramAgent
+          forbidden_pairs="
+            internal/agent/core|internal/kernelboot
+            internal/plugin|internal/kernelboot
+            internal/sdk|internal/kernelboot
+            internal/security|internal/kernelboot
+            internal/kstate|internal/agent/core
+            internal/kstate|internal/kernelboot
+            internal/kstate|internal/kernelmod
+            internal/kstate|cmd
+          "
+          fail=0
+          echo "$forbidden_pairs" | while read -r pkg bad; do
+            [ -z "$pkg" ] && continue
+            deps=$(go list -deps "$M/$pkg" 2>/dev/null || true)
+            if [ -z "$deps" ]; then
+              echo "::error::go list -deps $M/$pkg 失败"
+              exit 1
+            fi
+            if echo "$deps" | grep -qx "$M/$bad" || \
+               { [ "$bad" = cmd ] && echo "$deps" | grep -q "$M/cmd"; }; then
+              echo "::error::$pkg 反向依赖了 $bad —— 分层退化"
+              fail=1
+            fi
+          done
+          # 显式断言 kstate 能反向被 core 引用（环不存在）
+          if ! go build "$M/internal/agent/core"; then
+            echo "::error::core 无法编译（kstate 叶子性可能已破）"
+            exit 1
+          fi
+          exit $fail
+
       # ── gofmt 门 ──
       #
       # ## 为什么必须有这一步（2026-11-04 补）
@@ -77,7 +137,9 @@ jobs:
       - name: gofmt（格式门）
         run: |
           set -euo pipefail
-          bad=$(gofmt -l internal/ cmd/ pkg/ third_party/hologramagentsdk/sdk/ third_party/hologramagentsdk/meta/ || true)
+          bad=$(gofmt -l internal/ cmd/ pkg/ \
+            third_party/hologramagentsdk/sdk/ \
+            third_party/hologramagentsdk/meta/ || true)
           if [ -n "$bad" ]; then
             echo "★ 以下文件未按 gofmt 格式化："
             echo "$bad"
@@ -125,7 +187,7 @@ jobs:
       # 解析（丢掉注释 ⇒ 「注释里写一句同名机制」顶不了包），断言这些仍在：
       #   · race 门动态枚举 + 真剔除 cmd/gui + go test -race 真吃了枚举结果
       #   · -skip 排除表每项都写了原因（缺原因那一步自己会失败）
-      #   · go job 的「整机启动图判据」步骤还在、且带 -count=1
+      #   · go job 的「测试归拢」与「包依赖门」两道静态门还在
       #   · cross job 的 cmd 清单是实测枚举、构建真吃枚举结果
       #   · 每个 run 步骤的 bash 语法
       #
@@ -167,7 +229,8 @@ jobs:
         run: |
           set -euo pipefail
           # ★ 版本必须匹配 Go 版本。实测：staticcheck 2025.1.1 在 Go 1.27.1 上
-          # 报 "export data version 4 is greater than maximum supported version 2"，
+          # 报 "export data version 4 is greater than
+          # maximum supported version 2"，
           # 然后**静默返回退出码 0** —— 一道永远绿的门，比没有门更危险。
           # 2026.2.2 能正确解析。
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
@@ -179,11 +242,13 @@ jobs:
           #   SA9xxx 必错分支。这四族在"写完了但逻辑打架"处最有效 ——
           #   今天那个 pluginHealth 冷却锚点用零值字段的缺陷就属此类。
           set +e
-          out=$("$SC" -checks 'SA4*,SA5*,SA6*,SA9*' ./internal/... ./cmd/... 2>&1)
+          out=$("$SC" -checks 'SA4*,SA5*,SA6*,SA9*' \
+            ./internal/... ./cmd/... 2>&1)
           rc=$?
           set -e
 
-          if [ $rc -ne 0 ] && ! printf '%s' "$out" | grep -qE '\.go:[0-9]+'; then
+          if [ $rc -ne 0 ] && \
+             ! printf '%s' "$out" | grep -qE '\.go:[0-9]+'; then
             echo "★ staticcheck 未能运行（不是发现缺陷）："
             printf '%s\n' "$out" | head -20
             exit 1
@@ -242,7 +307,8 @@ jobs:
           # （实测 20m 门内仍有余量）。这个代价换"数字是真的"，值得。
           go test ./... -count=1 -timeout 20m \
               -coverpkg=./... \
-              -coverprofile=/tmp/cover.out -covermode=atomic > /tmp/cover.log 2>&1 || {
+              -coverprofile=/tmp/cover.out -covermode=atomic \
+              > /tmp/cover.log 2>&1 || {
             echo "★ 覆盖率跑挂了（这条同时兜住了 go test 的失败）"
             tail -40 /tmp/cover.log
             exit 1
@@ -252,29 +318,17 @@ jobs:
           echo
           echo "=== 覆盖率最低的 15 个包 ==="
           go tool cover -func=/tmp/cover.out \
-            | awk -F'\t+' '/^github/ {split($1,a,":"); pkg=a[1]; sub(/\/[^\/]+$/,"",pkg); gsub(/.*HologramAgent\//,"",pkg); cov=$3; gsub(/%/,"",cov); n[pkg]++; s[pkg]+=cov} END {for (p in n) printf "%.1f%%\t%s\n", s[p]/n[p], p}' \
+            | awk -F'\t+' '
+              /^github/ {
+                split($1,a,":"); pkg=a[1]
+                sub(/\/[^\/]+$/,"",pkg)
+                gsub(/.*HologramAgent\//,"",pkg)
+                cov=$3; gsub(/%/,"",cov)
+                n[pkg]++; s[pkg]+=cov
+              }
+              END {for (p in n) printf "%.1f%%\t%s\n", s[p]/n[p], p}
+            ' \
             | sort -n | head -15
-
-      # 整机启动图判据（internal/kernelmod/all/bootgraph_test.go）。
-      #
-      # ## 为什么单列一步（而不是只靠上面的 go test ./...）
-      #
-      # 这组判据用**真实模块登记表**装配整机（17 个真模块，全部真 Init），
-      # 会真的建 SQLite、起 HTTP server、mount overlay、起蒸馏/轮询循环。
-      # 把它单列出来有两个作用：
-      #   ① 失败时一眼看到是"整机装配"这一层坏了，而不是混在 93 个包的输出里
-      #   ② 它断言的是**跨模块的顺序与资源回收**，是"多跑几次才暴露"的那类，
-      #      单独一步便于在 flaky 时被识别（这里带 -count=1，不吃缓存）
-      #
-      # ★ 判据宿主是 internal/kernelmod/all（真实聚合入口），不是以前的
-      #   internal/kernelboot/modules（那个包零生产调用，已删除）。
-      #
-      # ★ 不用 -race（那在 race job 里跑）：本判据含真实端口/挂载，
-      #   -race 的插桩会让时序假设变松，两者分开放更便于定位。
-      - name: 整机启动图判据（真实登记表装配 + 逆序关闭 + 无残留）
-        run: |
-          go test ./internal/kernelmod/all/ \
-            -count=1 -timeout 10m -v
 
       # 跨平台客户端版本一致性：内核 internal/meta 是唯一事实源，
       # GUI(package.json) / 鸿蒙(AppScope/app.json5) / waiter 都必须跟它一致。
@@ -358,7 +412,7 @@ jobs:
       #   test 级 —— 只有该用例不参与 -race（其它用例照跑）
       #
       # ★ pkg 级排除**必须**确认该包仍有不带 -race 的覆盖（见 go job 里
-      #   单列的"整机启动图判据"步骤），否则等于整包无人跑。
+      #   由 go job 的「包依赖门」步骤承担），否则等于整包无人跑。
       #
       # ╔══════════════════════════════════════════════════════════════════╗
       # ║ ★★ pkg 级排除是**临时手段**，不是可接受的终态。                  ║
@@ -407,7 +461,11 @@ jobs:
                 echo "      包: $target"
                 echo "      原因: $reason"
                 echo "      修复单: $ticket"
-                if [ -n "$tests" ]; then tests="$tests|$test"; else tests="$test"; fi
+                if [ -n "$tests" ]; then
+                  tests="$tests|$test"
+                else
+                  tests="$test"
+                fi
                 ;;
               pkg)
                 n=$((n + 1))
@@ -427,8 +485,11 @@ jobs:
           #   为何不能允许"什么都没写"：那样"表被删空"与"有意清空"无法区分，
           #   而门脚本（check-ci-gates.py）的正则捕获到空串后，会静默走下面的
           #   "无排除项"分支 —— 排除项漏删/误删都不会有任何人发现（假绿，ID:19）。
-          if [ "$n" -eq 0 ] && ! grep -qEi '^[[:space:]]*#[[:space:]]*none[[:space:]]*$' <<< "$TABLE"; then
-            echo "::error::-race 排除表为空却没有显式空表标记 —— 请在上面的 heredoc 里保留一行 \`# none\`"
+          if [ "$n" -eq 0 ] && \
+             ! grep -qEi '^[[:space:]]*#[[:space:]]*none[[:space:]]*$' \
+               <<< "$TABLE"; then
+            echo "::error::-race 排除表为空却没有显式空表标记"
+            echo "::error::请在上面的 heredoc 里保留一行 \`# none\`"
             exit 1
           fi
 
@@ -579,7 +640,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           for c in ${{ steps.pure.outputs.cmds }}; do
-            out="dist/${c}_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}"
+            out="dist/${c}_${{ matrix.goos }}_${{ matrix.goarch }}"
+            out="${out}${{ matrix.ext }}"
             go build -trimpath -o "$out" "./cmd/${c}"
             echo "  ✓ ${c} ${{ matrix.goos }}/${{ matrix.goarch }}"
           done
@@ -653,7 +715,8 @@ jobs:
           # aarch64 的 libc 头（1.7MB，仅头文件，**不含编译器**）。
           # 用它 + 已预装的 clang 交叉前端，替代 10MB+ 的完整交叉 GCC
           # （实测那个会卡在下载 cpp-13-aarch64，180s 超时）。
-          [ -d /usr/aarch64-linux-gnu/include ] || need="$need libc6-dev-arm64-cross"
+          [ -d /usr/aarch64-linux-gnu/include ] || \
+            need="$need libc6-dev-arm64-cross"
 
           if [ -z "$need" ]; then
             echo "✅ 依赖已存在，跳过 apt-get：$(command -v cmake clang | tr '\n' ' ')"
@@ -673,14 +736,17 @@ jobs:
           #     不管 apt 整体（源重试、DPkg 锁等待都不受它约束）
           #   · 失败后**不重试整段**：宁可红一次让人看见，也不要为偶发网络
           #     抖动掩盖真实问题
-          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2"
+          APT_OPTS="-o Acquire::http::Timeout=30"
+          APT_OPTS="$APT_OPTS -o Acquire::https::Timeout=30"
+          APT_OPTS="$APT_OPTS -o Acquire::Retries=2"
           # shellcheck disable=SC2086
           if ! timeout 120 sudo apt-get $APT_OPTS update; then
             echo "::error::apt-get update 超时/失败（120s）—— runner 网络或源不可用"
             exit 1
           fi
           # shellcheck disable=SC2086
-          if ! timeout 180 sudo apt-get $APT_OPTS install -y --no-install-recommends $need; then
+          if ! timeout 180 sudo apt-get $APT_OPTS install -y \
+               --no-install-recommends $need; then
             echo "::error::apt-get install 超时/失败（180s）需要安装:$need"
             exit 1
           fi

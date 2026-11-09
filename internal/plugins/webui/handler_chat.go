@@ -738,7 +738,7 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 			} else {
 				log.Printf("[SSE] replay: sending %d events after id %s", len(replayed), lastEventID)
 				for _, rec := range replayed {
-					fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n", rec.ID, rec.EventType, string(rec.Data))
+					fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n", rec.id, rec.eventType, string(rec.data))
 					flusher.Flush()
 				}
 				log.Printf("[SSE] replay complete, wrote %d events", len(replayed))

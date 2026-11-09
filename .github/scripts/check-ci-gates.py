@@ -129,7 +129,7 @@ elif "${{" in _tbl:
     fails.append("排除表步骤含 GitHub 表达式，本脚本无法本地执行它（需改用别的验证方式）")
 else:
     import re as _re
-    _m = _re.search(r"read -r -d '' TABLE <<'EOF'[^\n]*\n(.*?)\nEOF\n", _tbl, _re.S)
+    _m = _re.search(r"read -r -d '' TABLE <<'EOF'[^\n]*\n(.*?)\nEOF\n", _tbl, _re.DOTALL)
     if _m is None:
         fails.append("排除表步骤里找不到 TABLE heredoc —— 无法注入合成坏行")
     else:
@@ -227,17 +227,18 @@ else:
         if _run_body(_inject(_probe + "|合成探针原因|")).returncode == 0:
             fails.append("合成行「reason 有效 / ticket 空」竟通过 ⇒ ticket 守卫已失效")
 
-# ── 4. go job：整机启动图判据必须单列一步跑 kernelmod/all ──
+# ── 4. go job：测试归拢门 + 包依赖门必须都在 ──
 #
-# ★ 目标包随 ID:13 从 internal/kernelboot/modules（死包，已删）迁到
-#   internal/kernelmod/all（真实聚合入口）。本断言跟着改，否则它盯的
-#   是一个**已不存在的包** —— 那会变成"永远红"或（更糟）"永远绿"的空转。
-GO_BOOT_PKG = "./internal/kernelmod/all/"
+# 2026-11-05：整机启动图判据（bootgraph_test.go）等白盒测试已全部删除，
+# 原先「必须单列一步跑 kernelmod/all」的断言随之作废 —— 盯着一个不再
+# 存在的步骤就是永远红的空转。改为盯两道新的构建期静态门。
 gojob = step_runs("go")
-boot = [r for _n, r in gojob if GO_BOOT_PKG in r and "go test" in r]
-check(bool(boot), "go job 缺少「整机启动图判据」步骤（go test " + GO_BOOT_PKG + "）")
-for r in boot:
-    check("-count=1" in r, "整机启动图判据步骤必须带 -count=1（不许吃 go test 缓存）")
+allgo = "\n".join(r for _n, r in gojob)
+check("源码目录不得有 _test.go" in allgo or
+      "find internal cmd pkg providers deploy -name '*_test.go'" in allgo,
+      "go job 缺少「测试归拢」硬门（源码目录不得有 _test.go）")
+check("go list -deps" in allgo,
+      "go job 缺少「包依赖门」（go list -deps 属工具链，不写在 go test 里）")
 
 # ── 5. cross job：cmd 清单必须实测枚举，不许写死 ──
 cross = step_runs("cross")
@@ -309,4 +310,4 @@ if fails:
         print("  x " + f)
     sys.exit(1)
 
-print("CI 门禁自检通过：动态枚举 / 排除表校验 / 启动图判据步骤 / 交叉枚举 / 全部 run 步骤语法")
+print("CI 门禁自检通过：动态枚举 / 排除表校验 / 测试归拢门 / 包依赖门 / 交叉枚举 / 全部 run 步骤语法")

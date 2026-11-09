@@ -11,58 +11,48 @@ import (
 
 // SSE 环形缓冲：/api/v1/chat/events 断线重连时按 Last-Event-ID 补发。
 
-// SSEEventRecord 保存一条 SSE 事件元数据，供断线重连时按 Last-Event-ID 重放遗漏事件。
-//
-// ★ 字段导出（2026-11-04）：重放内容是**外部可见的输出**（客户端按 Last-Event-ID
-// 拿到的就是这三样），所以字段可读不是暴露内部。类型名一并导出，好让
-// webui/test 能直接断言"重放了哪些帧、每帧的 id/type/payload"。
-type SSEEventRecord struct {
-	ID        string          // SSE 事件 id 值（如 "1234567890-5"）
-	EventType string          // 事件类型（agent_output, reasoning 等）
-	Data      json.RawMessage // 序列化后的 payload JSON
+// sseEventRecord 保存一条 SSE 事件元数据，供断线重连时按 Last-Event-ID 重放遗漏事件。
+type sseEventRecord struct {
+	id        string          // SSE 事件 id 值（如 "1234567890-5"）
+	eventType string          // 事件类型（agent_output, reasoning 等）
+	data      json.RawMessage // 序列化后的 payload JSON
 }
 
-// SSEEventRing 是一个固定大小的环状缓冲区，保持最近 cap 条 SSE 事件。
-//
-// ★ 导出（2026-11-04）：它的对外语义 —— 容量上限、按 Last-Event-ID 重放、
-// 未知 ID 回退全量 —— 是断线重连正确性的全部依据，值得直接断言。
-// 之前包内测试读 r.buf 私有字段来验证这些，属于白盒。
-type SSEEventRing struct {
+// sseEventRing 是一个固定大小的环状缓冲区，保持最近 cap 条 SSE 事件。
+
+type sseEventRing struct {
 	mu  sync.Mutex
-	buf []SSEEventRecord
+	buf []sseEventRecord
 	cap int
 }
 
-func newSSEEventRing(cap int) *SSEEventRing {
-	return &SSEEventRing{cap: cap}
+func newSSEEventRing(cap int) *sseEventRing {
+	return &sseEventRing{cap: cap}
 }
 
-// NewSSEEventRing 构造一个容量为 cap 的事件环（导出供包外契约判据使用）。
-func NewSSEEventRing(cap int) *SSEEventRing { return newSSEEventRing(cap) }
-
 // Append 追加一条事件，超过容量时丢弃最旧条目。
-func (r *SSEEventRing) Append(id, eventType string, data json.RawMessage) {
+func (r *sseEventRing) Append(id, eventType string, data json.RawMessage) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.buf = append(r.buf, SSEEventRecord{ID: id, EventType: eventType, Data: data})
+	r.buf = append(r.buf, sseEventRecord{id: id, eventType: eventType, data: data})
 	if len(r.buf) > r.cap {
 		r.buf = r.buf[len(r.buf)-r.cap:]
 	}
 }
 
 // After 返回所有在指定 id 之后的事件（按写入顺序），若 id 不在缓冲区中则返回全部。
-func (r *SSEEventRing) After(id string) []SSEEventRecord {
+func (r *sseEventRing) After(id string) []sseEventRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := len(r.buf) - 1; i >= 0; i-- {
-		if r.buf[i].ID == id {
-			result := make([]SSEEventRecord, len(r.buf)-i-1)
+		if r.buf[i].id == id {
+			result := make([]sseEventRecord, len(r.buf)-i-1)
 			copy(result, r.buf[i+1:])
 			return result
 		}
 	}
 	// ID 不在缓冲区（可能是太旧或从未收到），返回全部
-	result := make([]SSEEventRecord, len(r.buf))
+	result := make([]sseEventRecord, len(r.buf))
 	copy(result, r.buf)
 	return result
 }

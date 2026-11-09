@@ -75,27 +75,3 @@ func Get() *State {
 	defer mountMu.RUnlock()
 	return mount
 }
-
-// MountForTest 装入一个测试用挂载点，返回**恢复函数**。
-//
-// 测试里必须这样写：
-//
-//	restore := kstate.MountForTest(fake)
-//	t.Cleanup(restore)
-//
-// 为什么不直接用 Mount：并行测试（`t.Parallel()`）会互相覆盖全局挂载点，
-// 表现为随机红——而随机红是判据可信度的头号杀手（本仓已有教训：
-// 判据在 -race 下才暴露竞态）。恢复函数让每个测试回到"进入前的状态"
-// 而不是"nil"，嵌套/串行测试也正确。
-func MountForTest(s *State) (restore func()) {
-	mountMu.Lock()
-	prev := mount
-	mount = s
-	mountMu.Unlock()
-
-	return func() {
-		mountMu.Lock()
-		mount = prev
-		mountMu.Unlock()
-	}
-}

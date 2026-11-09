@@ -302,15 +302,6 @@ func (r *Runtime) RevokeChildPolicy(childID string) {
 	_ = r.RevokePrincipalPolicy("id", strings.TrimSpace(childID))
 }
 
-// ClassifyPrincipalForTest 暴露主体分类规则给跨包判据（**仅测试用**）。
-//
-// 为什么不写在 _test.go：判据住在 `kernelmod/all`（那里才有整机装配），
-// 而 Go 的 _test.go 符号不跨包导出。带 ForTest 后缀是为了让
-// "生产里调了它"在 code review 时一眼可见。
-func (r *Runtime) ClassifyPrincipalForTest(in RoundInput) Principal {
-	return r.classifyPrincipal(in)
-}
-
 // classifyScopePrincipal 按 per-agent 视图的事实判定主体类别。
 //
 // 与 classifyPrincipal 同一套规则（**唯一事实来源**），
