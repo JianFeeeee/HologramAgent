@@ -102,19 +102,29 @@ jobs:
             internal/kstate|cmd
           "
           fail=0
-          echo "$forbidden_pairs" | while read -r pkg bad; do
+          # ★ while 用**重定向**而非管道：管道会起子 shell，
+          #   里面置的 fail=1 传不出来（门会静默变绿）。
+          # ★ IFS='|' 必须设：不设的话整行都读进 pkg，
+          #   go list 会拿到 "core|internal/kernelboot" 这种不存在的包。
+          while IFS='|' read -r pkg bad; do
+            pkg=$(echo "$pkg" | xargs)
+            bad=$(echo "$bad" | xargs)
             [ -z "$pkg" ] && continue
             deps=$(go list -deps "$M/$pkg" 2>/dev/null || true)
             if [ -z "$deps" ]; then
               echo "::error::go list -deps $M/$pkg 失败"
               exit 1
             fi
-            if echo "$deps" | grep -qx "$M/$bad" || \
-               { [ "$bad" = cmd ] && echo "$deps" | grep -q "$M/cmd"; }; then
+            if [ "$bad" = cmd ]; then
+              hit=$(echo "$deps" | grep -c "^$M/cmd" || true)
+            else
+              hit=$(echo "$deps" | grep -cx "$M/$bad" || true)
+            fi
+            if [ "$hit" -ne 0 ]; then
               echo "::error::$pkg 反向依赖了 $bad —— 分层退化"
               fail=1
             fi
-          done
+          done <<< "$forbidden_pairs"
           # 显式断言 kstate 能反向被 core 引用（环不存在）
           if ! go build "$M/internal/agent/core"; then
             echo "::error::core 无法编译（kstate 叶子性可能已破）"
@@ -384,7 +394,7 @@ jobs:
           # cmd/gui 是纯 Electron 目录（只有 doc.go，无测试），
           # 显式点名它会让 go test 报 "no Go files" 的假红。
           ALL=$(go list ./... | grep -v '^.*/cmd/gui$' | tr '\n' ' ')
-          N=$(echo $ALL | wc -w)
+          N=$(echo "$ALL" | wc -w)
           echo "  将用 -race 覆盖 $N 个包"
           # 兜底：枚举失败（0 个包）必须响亮失败，不能静默跳过整道门。
           if [ "$N" -lt 50 ]; then
@@ -500,9 +510,11 @@ jobs:
             echo "════════ 共排除 $n 项（不是静默跳过：每次 CI 都打印本表）════════"
             echo "::warning title=-race 排除了 $n 项::见本步骤输出（含原因与修复单号）"
           fi
-          echo "tests=$tests" >> "$GITHUB_OUTPUT"
-          echo "pkgs=$pkgs" >> "$GITHUB_OUTPUT"
-          echo "count=$n" >> "$GITHUB_OUTPUT"
+          {
+            echo "tests=$tests"
+            echo "pkgs=$pkgs"
+            echo "count=$n"
+          } >> "$GITHUB_OUTPUT"
 
       - name: go test -race（全仓，应用上面的排除表）
         run: |
@@ -523,7 +535,7 @@ jobs:
             [ "$drop" -eq 0 ] && PKGS="$PKGS $p"
           done
 
-          NPKG=$(echo $PKGS | wc -w)
+          NPKG=$(echo "$PKGS" | wc -w)
           echo "  实际参与 -race 的包数: $NPKG（已剔除 pkg 级排除项）"
           if [ "$NPKG" -lt 50 ]; then
             echo "::error::剔除后只剩 $NPKG 个包，疑似误剔 —— 拒绝变成假绿"
