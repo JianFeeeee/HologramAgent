@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 制作 HomeAgent 复合安装包（含内核 OTA 工具）。
+# 制作 HologramAgent 复合安装包（含内核 OTA 工具）。
 #
-# 包结构（与既有 1.4.0-20261017 包保持一致，新增 homed-upgrade）：
+# 包结构（新增 homed-upgrade）：
 #   bin/homed            内核（内置插件已编进去）
 #   bin/depgraph.bin     启动依赖图（与 homed 必须同批，digest 绑定）
 #   bin/waiter           CLI
@@ -20,7 +20,7 @@ ROOT=$(pwd)
 VERSION=$(grep -oE 'Version = "[0-9.]+"' internal/meta/meta.go | head -1 | grep -oE '[0-9.]+')
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 STAMP=$(date +%Y%m%d)
-NAME="HomeAgent-linux-x86_64-${VERSION}-${STAMP}"
+NAME="HologramAgent-linux-x86_64-${VERSION}-${STAMP}"
 OUT="$ROOT/build/package/$NAME"
 
 echo "== 构建 =="
@@ -94,7 +94,7 @@ INSTALL
 chmod +x "$OUT/install.sh"
 
 cat >"$OUT/README.txt" <<README
-HomeAgent ${VERSION} (commit ${COMMIT}, ${STAMP})
+HologramAgent ${VERSION} (commit ${COMMIT}, ${STAMP})
 ================================================
 
 安装：  sudo ./install.sh
