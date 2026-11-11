@@ -180,6 +180,18 @@ type TaskFrame struct {
 	CurRaw interface{}
 	Resp   *agentAPI.CompletionResponse
 
+	// TurnReasoning 是**本次任务里最后一次** LLM 响应的思考内容。
+	//
+	// ★ 为何不能靠 f.Resp.ReasoningContent：
+	//
+	//	f.Resp 只在“本批有工具调用”时才赋值（stepLLM 里 len(resp.ToolCalls)==0
+	//	就 return 了）。纯文本收尾的那一轮 f.Resp 要么是 nil，要么还指着
+	//	**上一次工具轮**的旧响应 —— 拿它写进 L1 会把上一批的思维链
+	//	冒名顶替成本轮的（比缺失更坏：模型会看到张冠李戴的推理）。
+	//
+	// 因此单独一个字段，由 stepLLM **无条件**写入（在分支之前）。
+	TurnReasoning string
+
 	// Scene 是本轮**涌现**出来的场景键（由场面指纹聚类得到，无人声明），
 	// sceneDone 标记是否已解析过——一轮只解析一次：多解析一次就多给场景
 	// 加一次强度，「工具调得多」会被误当成「这个场面更常出现」。
@@ -596,14 +608,18 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 	//
 	// 声明来源：payload["no_memory"]（插件注入）或 ChannelDef.NoMemory（通道）。
 	turnEvt := ContextEvent{
-		Timestamp:   time.Now(),
-		Source:      "agent",
-		NoMemory:    f.StageCtx.NoMemory,
-		Input:       f.CleanInput,
-		Response:    f.Response,
-		ToolsUsed:   f.ToolsUsed,
-		ToolResults: f.ToolResults,
-		ToolCalls:   f.ToolCalls,
+		Timestamp: time.Now(),
+		Source:    "agent",
+		NoMemory:  f.StageCtx.NoMemory,
+		Input:     f.CleanInput,
+		Response:  f.Response,
+		// ★ 思维链必须进 L1：下一轮 renderL1Messages 要把它原样回传给上游。
+		// DeepSeek thinking 模式在**带 tools 的请求**里强制要求历史 reasoning_content，
+		// 而内核每轮都带工具定义 ⇒ 不存就永久 400。详见字段注释。
+		ReasoningContent: f.TurnReasoning,
+		ToolsUsed:        f.ToolsUsed,
+		ToolResults:      f.ToolResults,
+		ToolCalls:        f.ToolCalls,
 	}
 	a.bindEventMedia(&turnEvt, a.drainMediaBlocks())
 	// ★ 明文拦截发生在 a.context.Append **内部**（见 context.go 的 Append），
@@ -613,7 +629,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 	a.emitResponse(evt, f.Response, f.turnUsage)
 
 	if !f.StageCtx.NoMemory {
-		a.emitMemoryCandidate(evt.Source, f.CleanInput, f.Response, f.ToolResults, f.ToolsUsed)
+		a.emitMemoryCandidate(evt.Source, f.CleanInput, f.Response, f.TurnReasoning, f.ToolResults, f.ToolsUsed)
 	}
 	f.Terminal = terminalOK
 }
@@ -909,6 +925,11 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 			"channel": f.OutputChannel,
 		})
 	}
+
+	// ★ 必须放在分支**之前**：下一行的 len(ToolCalls)==0 会直接 return，
+	// 那条路径也要记下 reasoning（否则纯文本收尾轮的思维链丢失，而它同样
+	// 属于“带 tools 的请求历史”，DeepSeek 照样要它）。
+	f.TurnReasoning = resp.ReasoningContent
 
 	if len(resp.ToolCalls) == 0 {
 		f.Response = resp.Content

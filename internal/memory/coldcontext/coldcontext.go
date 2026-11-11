@@ -808,6 +808,12 @@ type ContextEntry struct {
 	Source    string
 	Content   string
 	Response  string
+	// ReasoningContent 是本轮模型的思考内容（thinking 模式的思维链）。
+	//
+	// L2 必须存它（2026-11-11 用户裁定）：决策依据、排除掉的选项、
+	// "先查 A 再查 B"的因果链常常只在思考里。只存 Response 会导致
+	// 召回后只能答出"做了什么"，答不出"为何这么做"。
+	ReasoningContent string
 	// ToolCalls 是工具调用的完整记录（含参数），归档时原样带到 L2。
 	ToolCalls   []ToolCallItem
 	ToolsUsed   []string
@@ -962,6 +968,12 @@ func entryTextBlockID(evtTS time.Time, source, role, text string) string {
 const (
 	TextBlockRoleInput    = "input"
 	TextBlockRoleResponse = "response"
+	// TextBlockRoleReasoning 标记 llm_round 页里的**思考内容**块。
+	//
+	// 单独一类（而不是并进 response）的理由：回灌时要把它们放回不同字段
+	// （ContextEvent.ReasoningContent vs .Response）。合并后回灌会把思维链
+	// 当成正式回复发给模型。
+	TextBlockRoleReasoning = "reasoning"
 )
 
 // docBlocksForEntry 把一条上下文事件落成「文本块 + 媒体块」的块列表。
@@ -1023,6 +1035,29 @@ func docBlocksForEntry(e ContextEntry) []memory.MemoryBlock {
 			PageSeq:   1,
 			PageKind:  memory.PageLLMRound,
 			BlockRole: memory.RoleResponse,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	// 思考块：与 Response 同属 llm_round 第 1 页，但**单独一块、独立向量**。
+	//
+	// 为何必须落进 coldcontext（2026-11-11 用户裁定）：
+	// 决策依据、排除掉的选项、"先查 A 再查 B"的因果链常常只在思考里。
+	// 只存 Response ⇒ 召回后只能答出"做了什么"，答不出"为何这么做"。
+	//
+	// 为何不并进上面的 Response 块：回灌时两者要放回**不同字段**
+	// （ContextEvent.ReasoningContent vs .Response）；合并后回灌会把
+	// 思维链当成正式回复发给模型。
+	if t := strings.TrimSpace(e.ReasoningContent); t != "" {
+		out = append(out, memory.MemoryBlock{
+			ID:        entryTextBlockID(now, e.Source, TextBlockRoleReasoning, t),
+			Modality:  memory.BlockText,
+			Text:      t,
+			Source:    e.Source,
+			FrameTS:   frameTS,
+			PageSeq:   1,
+			PageKind:  memory.PageLLMRound,
+			BlockRole: memory.RoleReasoning,
 			CreatedAt: now,
 			UpdatedAt: now,
 		})
@@ -1149,8 +1184,18 @@ func entryToolBlockID(evtTS time.Time, source string, page int, role memory.Bloc
 // 识别规则：文本块按 ID 前缀里的角色区分（Input 在前、Response 在后），
 // 其余块（媒体/未知来源的文本块）原样作为「事件持有的块」返回。
 func blocksToEntry(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
+	in, resp, _, h := blocksToEntryWithReasoning(ev)
+	return in, resp, h
+}
+
+// blocksToEntryWithReasoning 是 blocksToEntry 的完整形态，额外还原思考内容。
+//
+// 为何不直接改 blocksToEntry 的签名：它被 8 个调用点使用，其中只有
+// 回灌（restoreDocEvents）与 L3 蒸馏需要 reasoning。改签名会让 6 个
+// 不需要它的调用点跟着改——那种改动会淹没真正的语义变化。
+func blocksToEntryWithReasoning(ev *ColdEvent) (input, response, reasoning string, held []memory.MemoryBlock) {
 	if ev == nil {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	for i := range ev.Blocks {
 		b := ev.Blocks[i]
@@ -1163,6 +1208,8 @@ func blocksToEntry(ev *ColdEvent) (input, response string, held []memory.MemoryB
 			input = b.Text
 		case response == "" && isEntryTextBlock(b, ev, TextBlockRoleResponse):
 			response = b.Text
+		case reasoning == "" && isEntryTextBlock(b, ev, TextBlockRoleReasoning):
+			reasoning = b.Text
 		case b.PageKind == memory.PageToolRound:
 			// ★ 工具页的块**不是**事件的"持有块"，而是 ToolCalls/ToolResults
 			//   的页级表示（P2 派生出来的）。若把它当持有块塞回去，
@@ -1176,7 +1223,7 @@ func blocksToEntry(ev *ColdEvent) (input, response string, held []memory.MemoryB
 			held = append(held, b)
 		}
 	}
-	return input, response, held
+	return input, response, reasoning, held
 }
 
 // isEntryTextBlock 判断文本块是否为本事件按该角色派生出来的那一块。
@@ -1191,6 +1238,18 @@ func docEventsFromEntries(entries []ContextEntry) []ColdEvent {
 	}
 	out := make([]ColdEvent, 0, len(entries))
 	for _, e := range entries {
+		// ★ 时间戳先归一化，否则块 ID 与事件时间会失配（既有缺陷，2026-11-11 修）。
+		//
+		// 成因：docBlocksForEntry 内部的 now 在 e.Timestamp 为零时退化成 time.Now()，
+		// 而 ColdEvent.Timestamp 保持零值 ⇒ 块 ID 是基于“现在”算的，
+		// 回读却拿零值时间重算 ⇒ 哈希不等 ⇒ isEntryTextBlock 永远不认，
+		// 表现为“块就在那里但一个字段也读不回来”。
+		//
+		// 线上因为 L1 事件总是带 Timestamp 而没暴露，但它是真缺陷：
+		// 任何入口漏填时间戳，事件内容就静默丢失（不报错、不掍日志）。
+		if e.Timestamp.IsZero() {
+			e.Timestamp = time.Now()
+		}
 		ev := ColdEvent{
 			Timestamp: e.Timestamp,
 			Source:    e.Source,
@@ -1258,4 +1317,17 @@ func contentFromEvents(events []ColdEvent) string {
 // 而正文住在块里，所以必须由本包解读块的角色与归属。
 func (ev *ColdEvent) InOut() (input, response string, held []memory.MemoryBlock) {
 	return blocksToEntry(ev)
+}
+
+// InOutWithReasoning 与 InOut 相同，但额外读回思考内容。
+//
+// 用在哪里：需要把事件**完整还原**成 ContextEvent 的地方（L2 回灌、L3 蒸馏）。
+// 这些地方如果只拿 InOut，回填出的事件就没有 ReasoningContent，
+// 于是再次裁下时思维链就永久丢了。
+//
+// 为何不把 InOut 直接改成多返回值：它被 8 个调用点用，而其中只有 2 处
+// 需要思考内容。让另外 6 处跟着改，只会把"哪些地方真的关心思考"
+// 这个信号淹没在一堆样板修改里。
+func (ev *ColdEvent) InOutWithReasoning() (input, response, reasoning string, held []memory.MemoryBlock) {
+	return blocksToEntryWithReasoning(ev)
 }

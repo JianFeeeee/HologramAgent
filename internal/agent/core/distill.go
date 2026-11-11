@@ -612,7 +612,12 @@ func isTemplateSummary(s string) bool {
 	return strings.HasPrefix(s, "来自 ") && strings.Contains(s, "条对话")
 }
 
-func (a *Agent) emitMemoryCandidate(source, input, response string, toolResults []ToolResultItem, toolsUsed []string) {
+// reasoning 是本轮模型的思考内容（thinking 模式）。空串表示无思考。
+//
+// ★ 为何是参数而不是从 a 上读字段：本轮思考属于**这个 TaskFrame**
+// （f.TurnReasoning），不是 agent 的全局状态。agent 级字段在并发任务下
+// 会互相覆盖 —— 而记忆候选一旦写错就是持久化的错。
+func (a *Agent) emitMemoryCandidate(source, input, response, reasoning string, toolResults []ToolResultItem, toolsUsed []string) {
 	payload := map[string]interface{}{
 		"source":       source,
 		"input":        input,
@@ -621,6 +626,15 @@ func (a *Agent) emitMemoryCandidate(source, input, response string, toolResults 
 		"tools_used":   toolsUsed,
 		"agent_id":     string(a.id),
 		"timestamp":    time.Now().Unix(),
+	}
+	// ★ 思考内容也要进记忆候选（2026-11-11 用户裁定：L2/L3 都包含 reasoning）。
+	//
+	// memory_candidate 是**不经 context** 的另一条持久化侧路，所以它不会
+	// 从 ContextEvent 那里自动带上 reasoning —— 必须显式放进去。
+	// 漏了它，走这条路的消费方拿到的记忆就只有"做了什么"，没有"为何"。
+	// 空串不放：不向消费方伪造一个空字段。
+	if reasoning != "" {
+		payload["reasoning_content"] = reasoning
 	}
 	// ★ 记忆候选是**不经 context** 的另一条持久化侧路（走 EmitOutput）。
 	// 不在这里拦，明文会直接进长期记忆 —— 而记忆跨会话保留、每轮被召回。
@@ -657,9 +671,20 @@ func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc) string {
 	}
 	var b strings.Builder
 	for _, ev := range coldDoc.Events {
-		in, resp, _ := ev.InOut()
+		// ★ 思考内容必须进蒸馏原文（2026-11-11 用户裁定）。
+		//
+		// 只取 Input/Response 会丢掉决策依据："排除掉了 B，因为 B 的接口
+		// 不返回时间戳"这类判断就只在思考里。丢掉它，蒸馏出的三元组就只剩
+		// "选了 A"，没有"为何不是 B"——而后者往往才是可复用的知识。
+		//
+		// 顺序按**时序**：输入 → 思考 → 回复。思考发生在回复之前。
+		in, resp, reasoning, _ := ev.InOutWithReasoning()
 		if in != "" {
 			b.WriteString(in)
+			b.WriteString("\n")
+		}
+		if reasoning != "" {
+			b.WriteString(reasoning)
 			b.WriteString("\n")
 		}
 		if resp != "" {

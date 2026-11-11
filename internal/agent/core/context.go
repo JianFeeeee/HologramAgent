@@ -67,13 +67,41 @@ type ContextEvent struct {
 	//
 	// 全量生成会让每条事件都多一个字段进 context.json，而绝大多数对话没有媒体。
 	// omitempty 保证存量 context.json 读回来时该字段为空，不影响任何既有行为。
-	ID          string           `json:"id,omitempty"`
-	Timestamp   time.Time        `json:"timestamp"`
-	Source      string           `json:"source"`
-	Input       string           `json:"input"`
-	Response    string           `json:"response,omitempty"`
-	ToolsUsed   []string         `json:"tools_used,omitempty"`
-	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
+	ID        string    `json:"id,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Source    string    `json:"source"`
+	Input     string    `json:"input"`
+	Response  string    `json:"response,omitempty"`
+
+	// ReasoningContent 是本轮 assistant 的思考内容（thinking 模式的思维链）。
+	//
+	// ## 为什么必须存并必须回传（2026-11-11 生产故障）
+	//
+	// 生产报：
+	//
+	//	all 2 providers failed, last error: api error 400:
+	//	"The reasoning_content in the thinking mode must be passed back to the API."
+	//
+	// DeepSeek 官方规则（api-docs.deepseek.com/guides/thinking_mode）：
+	//
+	//	后续请求是否要回传 reasoning_content，取决于请求是否带 tools：
+	//	带 tools ⇒ **所有历史轮的 reasoning_content 都要传回**，并会拼进上下文
+	//
+	// 而内核**每一轮都带 tools**（工具定义常驻），所以这条必触发。
+	//
+	// 此前这里没有这个字段：resp.ReasoningContent 收到了（只用于发事件、
+	// 显示思考过程），但**没进 L1**，下一轮 renderL1Messages 自然带不上
+	// ⇒ 只要对话里出现过一次工具调用 + 思考，整个会话就永久 400
+	// （上游多家 agent 项目都踩了同一个坑：langchain #37179、n8n #34924、
+	//   opencode #24722、codex #24500）。
+	//
+	// 语义边界：这是**协议字段**，不是记忆内容 ——
+	//   · 不向量化、不进 L2/L3 蒸馏（思维链不是事实）
+	//   · 只在渲染 provider 消息时回填
+	//   · omitempty：存量 context.json 读回来为空串，不伪造
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolsUsed        []string         `json:"tools_used,omitempty"`
+	ToolResults      []ToolResultItem `json:"tool_results,omitempty"`
 
 	// ToolCalls 是本次事件里**每一次**工具调用的完整记录（含参数与配对键）。
 	//
@@ -833,6 +861,34 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 		text = evt.Input
 	}
 
+	// ★ 思维链参与 L1 相关性打分（2026-11-11 用户裁定）。
+	//
+	// 为何应当包含：L1 裁剪是拿**当前输入**给每条历史事件打分，决定哪些
+	// 留在窗口里。而关键线索常只在思考里：
+	//
+	//	用户其实要的是 A 不是 B ⇒ 所以先查 C ⇒ （回复里只说"已查到")。
+	//
+	// 只看 Response 会把这轮判成"与当前输入无关"而剔掉，下一轮就得重查。
+	// 思考内容正是“为什么这条历史相关”的真实依据。
+	//
+	// ★ 边界（为何这与“思维链不进长期记忆”不矛盾）：
+	//
+	//	L1 向量 = 本轮窗口内的取舍打分（临时坐标，Prune 后重算）
+	//	L2/L3  = 长期记忆（coldcontext 只取 Input/Response，见 coldcontext 注释）
+	//
+	// 所以思维链可以参与前者，但**不**进后者。冷化时它随事件一起
+	// 离开 L1，不会被制成文本块、不被蒸馏成三元组。
+	//
+	// 放长在 Cleaner **之前**：与 Response 同路也过清理（同是模型产出，
+	// 没有理由一个洗一个不洗）。
+	if evt.ReasoningContent != "" {
+		if text == "" {
+			text = evt.ReasoningContent
+		} else {
+			text = text + "\n" + evt.ReasoningContent
+		}
+	}
+
 	// 计算层：应用输入通道的 Cleaner（不改原文，仅在计算层清洗）
 	if channelDefLookup != nil {
 		if chDef, ok := channelDefLookup(evt.Source); ok && chDef.Cleaner != nil {
@@ -1192,13 +1248,16 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 		entries := make([]coldcontext.ContextEntry, len(archive))
 		for i, s := range archive {
 			entries[i] = coldcontext.ContextEntry{
-				Timestamp:   s.event.Timestamp,
-				Source:      s.event.Source,
-				Content:     s.event.Input,
-				Response:    s.event.Response,
-				ToolResults: convertToolResults(s.event.ToolResults),
-				ToolCalls:   toolCallItemsToDoc(s.event.ToolCalls),
-				Blocks:      append([]memory.MemoryBlock(nil), s.event.Blocks...),
+				Timestamp: s.event.Timestamp,
+				Source:    s.event.Source,
+				Content:   s.event.Input,
+				Response:  s.event.Response,
+				// ★ 思考内容必须随事件进 L2（2026-11-11 用户裁定）。
+				// 漏了它，事件一旦被裁下，思维链就永久丢失。
+				ReasoningContent: s.event.ReasoningContent,
+				ToolResults:      convertToolResults(s.event.ToolResults),
+				ToolCalls:        toolCallItemsToDoc(s.event.ToolCalls),
+				Blocks:           append([]memory.MemoryBlock(nil), s.event.Blocks...),
 			}
 		}
 		doc, err := coldcontextStore.ContextToColdContext("context_archived", entries, c.embedder, nil, c.toolOutputClean, c.channelCleanerForDoc())

@@ -1464,12 +1464,16 @@ func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) in
 
 	n, blocks := 0, 0
 	for _, ev := range d.Events {
-		input, response, held := ev.InOut()
+		// ★ 用 InOutWithReasoning：回灌要完整还原事件，包括思考内容。
+		// 只用 InOut 会让回填出的 ContextEvent 缺 ReasoningContent，
+		// 于是再次被裁下时思维链就永久丢了（而且 L1 里那份已经是唯一副本）。
+		input, response, reasoning, held := ev.InOutWithReasoning()
 		a.context.InsertByTimestamp(ContextEvent{
-			Timestamp: ev.Timestamp, // ★ 原始时间戳：回到事件发生的位置
-			Source:    ev.Source,
-			Input:     input,
-			Response:  response,
+			Timestamp:        ev.Timestamp, // ★ 原始时间戳：回到事件发生的位置
+			Source:           ev.Source,
+			Input:            input,
+			Response:         response,
+			ReasoningContent: reasoning,
 			// ★ 回填事件**不参与记忆计算**，但**照常参与归档**。
 			//
 			// 为什么要标记：它们的内容刚在 L2 里被向量化过一次，

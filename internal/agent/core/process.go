@@ -672,7 +672,21 @@ func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
 			msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
 		}
 		if e.Response != "" || len(calls) > 0 {
-			msgs = append(msgs, agentAPI.Message{Role: "assistant", Content: e.Response, ToolCalls: calls})
+			// ★ ReasoningContent 必须跟着 assistant 消息一起回传（2026-11-11 生产故障）。
+			//
+			// DeepSeek thinking 模式：请求**带 tools** 时，所有历史轮的
+			// reasoning_content 都必须传回，否则 400（官方指南 thinking_mode）。
+			// 内核每轮都带工具定义，所以这里漏一个字段就会让会话永久不可用。
+			//
+			// omitempty 在 agentAPI.Message 上：空串不发该字段 ——
+			// 存量事件（本次修复前写入的 context.json）自然无该字段，
+			// 那种情况交给适配器兜底（见 deepseek.lua 的 transform_request）。
+			msgs = append(msgs, agentAPI.Message{
+				Role:             "assistant",
+				Content:          e.Response,
+				ReasoningContent: e.ReasoningContent,
+				ToolCalls:        calls,
+			})
 		}
 		for _, tr := range e.ToolResults {
 			if tr.CallID != "" && !activeCallIDs[tr.CallID] {

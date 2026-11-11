@@ -56,11 +56,63 @@ function adapter.transform_request(raw_body)
 
     req.model = req.model or "deepseek-chat"
     req.stream = req.stream or false
+
+    -- ── thinking 开关：必须是**顶层**字段，不能包在 extra_body 里 ──
+    --
+    -- 官方文档示例全用 OpenAI SDK：extra_body={"thinking": {...}}
+    -- 那是 **SDK 层参数** —— SDK 会把它摊平进 HTTP 请求体顶层，
+    -- 真实发出去的是 {"thinking": {...}}。而本适配器是把 JSON **裸发**给
+    -- api.deepseek.com 的，再包一层 extra_body 服务端不认识，直接忽略
+    -- ⇒ thinking 保持默认（**开启**）⇒ 带 tools 的请求就要求回传
+    -- reasoning_content，否则 400。
+    --
+    -- 修正前写的是 req.extra_body.thinking，所以即使内核
+    -- thinking_enabled=false（发出 disable_thinking=true）也从未真正关掉思考。
+    --
+    -- 为何值得关：deepseek-flash 的 thinking 默认开启，显式关闭省掉整段 CoT
+    -- 的 token；若用户确实要思考，就不会配 thinking_enabled=false。
     if req.disable_thinking then
-        req.extra_body = req.extra_body or {}
-        req.extra_body.thinking = { type = "disabled" }
+        req.thinking = { type = "disabled" }
     end
     req.disable_thinking = nil
+    -- 内核从不发 extra_body；万一将来发了，也不该把 SDK 层的壳透传给上游。
+    req.extra_body = nil
+
+    -- ── reasoning_content 回传兜底（2026-11-11 生产故障）──
+    --
+    -- 上游报：
+    --   all 2 providers failed, last error: api error 400:
+    --   "The reasoning_content in the thinking mode must be passed back to the API."
+    --
+    -- DeepSeek 官方规则（api-docs.deepseek.com/guides/thinking_mode）：
+    --   请求**带 tools** 时，所有历史轮的 reasoning_content 都必须传回，
+    --   并会拼进上下文；不带 tools 时不要求。
+    --
+    -- 内核侧已修（ContextEvent.ReasoningContent + renderL1Messages 回传），
+    -- 但**存量会话**的 context.json 是在修复前写的，那些事件根本没这个字段。
+    -- 不补就是个死结：历史缺字段 ⇒ 400 ⇒ 会话永久不可用（重启也救不回来，
+    -- 因为缺的字段在磁盘上的旧记录里）。
+    --
+    -- 修法：给**每一条 assistant 消息**补齐该字段（缺失时补空串）。
+    -- 为什么空串是合法的：字段的语义是"上一轮的思考内容"，空串如实表达
+    -- "这一轮没有可回传的思考"（其他主流实现的同款修复也是补空串：
+    -- langchain #37179、n8n #34924、opencode #24722）。
+    --
+    -- 只给 assistant 补：system/user/tool 消息不接受该字段，乱发可能被拒。
+    if type(req.messages) == "table" then
+        local has_tools = type(req.tools) == "table" and #req.tools > 0
+        for _, m in ipairs(req.messages) do
+            if type(m) == "table" and m.role == "assistant" and m.reasoning_content == nil then
+                -- 只在带 tools 的请求里补（无 tools 时上游不要求，也不想平白
+                -- 往上下文里塞一个空字段）。但如果模型名显式是 reasoner，
+                -- 它可能无条件校验，所以两条都补。
+                if has_tools or string.find(tostring(req.model), "reasoner", 1, true) ~= nil then
+                    m.reasoning_content = ""
+                end
+            end
+        end
+    end
+
     return json.encode(req)
 end
 

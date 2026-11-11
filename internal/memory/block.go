@@ -48,6 +48,28 @@ const (
 	RoleRequest BlockRole = "request"
 	// RoleResponse 是页的响应端：llm 的 output，或 tool 的 result。
 	RoleResponse BlockRole = "response"
+	// RoleReasoning 是 llm_round 页里的**思考内容**（thinking 模式的思维链）。
+	//
+	// ## 为何它必须是独立一块，而不是拼进 RoleResponse
+	//
+	// 两者在协议层是**不同的字段**：
+	//
+	//	assistant.content            ← 模型交付的回复
+	//	assistant.reasoning_content  ← 模型的思考过程
+	//
+	// 拼在一起会有两个硬伤：
+	//	· 回灌时无法区分 —— 思维链会被当成正式回复发给模型（模型会把自己的
+	//	  内心独白读成"我说过这话"）
+	//	· 各自语义不同，合成一块只能有一个向量，检索时无法单独命中"为什么"
+	//
+	// ## 为何 L2/L3 也要它（2026-11-11 用户裁定）
+	//
+	// 此前 L2 只落 Input/Response、L3 蒸馏也不带思考 —— 那是错的：
+	// 决策依据、排除掉的选项、"先查 A 再查 B"的因果链，常常**只**在思考里。
+	// 丢掉它，召回时就只剩"我做了 X"，答不出"为何是 X 而不是 Y"。
+	//
+	// 与 L1 的取舍同理：思考是上下文的一部分，不是噪声。
+	RoleReasoning BlockRole = "reasoning"
 )
 
 // MemoryBlock 是 Context、Document、Graph 三层共同使用的记忆块值。
