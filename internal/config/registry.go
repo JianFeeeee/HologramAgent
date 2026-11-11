@@ -930,6 +930,23 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	reg(ConfigDef{Key: "core.llm.max_tokens", Default: "4096", Type: "int", DisplayName: "最大 Token", Description: "每次生成的最大 Token 数", Category: "llm"})
 	reg(ConfigDef{Key: "core.llm.thinking_enabled", Default: "false", Type: "bool", DisplayName: "深度思考", Description: "启用深度思考模式（如 DeepSeek R1 的思维链输出）", Category: "llm"})
 
+	// ★ 适配器同步策略（2026-11-11）。
+	//
+	// `adapters/` 下的 .lua 是**内核自带**的协议适配层，会随内核版本修复而变。
+	// 但那是用户盘上的文件，内核该不该动它？默认**不动**（off）——
+	// 擅自改用户文件比“落后一个版本”更糟，且无法区分“旧发行版残留”
+	// 与“用户手工改过”（两者在文件内容上长得一模一样）。
+	//
+	// off 时：不覆盖，但**必须响亮告警**（告警做得不准等于没告警：
+	// 本机实测 8 个适配器落后 3000~6500 字节，日志只说“保留用户版本”，
+	// 完全看不出是落后）。
+	// auto 时：差异即备份为 `<name>.lua.bak-<hash8>` 然后覆盖，永不会卡在旧版。
+	reg(ConfigDef{Key: "core.lua.adapter_sync", Default: "off", Type: "string",
+		DisplayName: "适配器自动同步",
+		Description: "盘上适配器与内置版不一致时的处理：off（默认）只告警不改文件；auto 备份后自动覆盖。" +
+			"需要长期定制某个源，请改对应的 core.llm.sources.<name>.adapter_path，不要改内置同名文件。",
+		Category: "llm"})
+
 	for name := range defaultSources {
 		p := "core.llm.sources." + name
 		reg(ConfigDef{Key: p + ".base_url", Default: defaultSources[name]["base_url"], Type: "string", DisplayName: name + " API 地址", Description: name + " LLM API 基础地址", Category: "sources"})

@@ -162,10 +162,33 @@ type VM struct {
 	mu    sync.RWMutex
 	dir   string
 	pools map[string]*adapterPool
+
+	// adapterSync 决定盘上适配器与内置版不一致时怎么处理。
+	//
+	// "" / "off"（默认）：不覆盖，只告警。
+	// "auto"：备份为 <name>.lua.bak-<hash8> 后覆盖。
+	//
+	// ★ 为何默认 off：adapters/ 在**用户的数据目录**里，内核擅自改它比
+	// “落后一个版本”更糟；且“旧发行版残留”与“用户手工改过”在文件
+	// 内容上长得一模一样，无法自动区分。要长期定制就配 adapter_path。
+	adapterSync string
 }
 
 func NewVM(dir string) *VM {
 	return &VM{dir: dir, pools: map[string]*adapterPool{}}
+}
+
+// SetAdapterSync 设置适配器同步策略（"off" / "auto"）。由模块层从配置注入。
+//
+// 未经注入时保持零值 = off（保守）。这条选择很重要：忘记注入时
+// 行为必须是“不动用户文件”，而不是“默默全量覆盖”。
+func (v *VM) SetAdapterSync(mode string) { v.adapterSync = strings.ToLower(strings.TrimSpace(mode)) }
+
+func (v *VM) AdapterSyncMode() string {
+	if v.adapterSync == "" {
+		return "off"
+	}
+	return v.adapterSync
 }
 
 func (v *VM) AdapterDir() string { return v.dir }
@@ -645,9 +668,19 @@ func adapterVersion(src string) string {
 }
 
 func (v *VM) writeBundledAdapters() error {
-	prev := v.readBundledManifest()
 	cur := map[string]string{}
 	updated := 0
+	mode := v.AdapterSyncMode()
+
+	// drifted 收集「盘上与内置不一致」的适配器，用于末尾一条汇总告警。
+	// 逐条打日志在 off 模式下会刷屏（本机一次 8 条），而人真正需要的是
+	// 「有 N 个落后了 + 怎么处理」这一句。
+	type driftInfo struct {
+		name    string
+		disk    string
+		bundled string
+	}
+	var drifted []driftInfo
 
 	for _, name := range bundledAdapterNames {
 		data, err := bundledAdapters.ReadFile("adapters/" + name + ".lua")
@@ -657,51 +690,83 @@ func (v *VM) writeBundledAdapters() error {
 		sum := sha256Hex(data)
 		dstPath := filepath.Join(v.dir, name+".lua")
 
+		// ── 盘上已有：比对 hash ──
+		//
+		// ## 这里为什么不再用「清单里的 prevHash」判断
+		//
+		// 旧实现拿上次清单做基线，认为「onDisk == prevHash ⇒ 没人动过 ⇒ 可覆盖」。
+		// 但清单只存 hash，而「内置旧版本的 hash」与「用户改过的 hash」
+		// 在清单里长得一模一样 —— 于是：
+		//
+		//	记了盘上那份当新基线 ⇒ 下次 onDisk == prevHash
+		//	  ⇒ 被误判成「没跟上新版本」⇒ 覆盖掉用户改动
+		//	保留分支又因为末尾无条件 cur[name]=sum 把基线改回内置 hash
+		//	  ⇒ **永久**停在旧版，日志只说「保留用户版本」，看不出是卡住
+		//
+		// 本机实测 8 个适配器中招（落后 3000~6500 字节，缺用量归一化、
+		// 流式 tool_calls 等修复）。既然没法从文件本身区分这两种来路，
+		// 就**不猜**：默认一律不动（off），要动就由用户显式开 auto。
 		if old, rerr := os.ReadFile(dstPath); rerr == nil {
 			onDisk := sha256Hex(old)
-			prevHash, known := prev[name]
 			switch {
-			case !known:
-				// 无历史清单：无法判断是否被用户改过 ⇒ 不动（与旧行为一致）。
-				//
-				// ★ 但这种"不动"必须**说出来**（2026-10-26 生产故障）：
-				// 盘上是一份**早于本次功能修复**的适配器时，内核一声不响地继续用它。
-				// 现场：deepseek.lua 的 transform_stream_chunk 缺 tool_calls 处理
-				// ⇒ 流式模式下模型调不动任何工具、且零报错，症状看起来像"模型不听话"。
-				// 仓库里的内置版本已修好，且 deepseek_stream_test.go 一直是绿的 ——
-				// 因为判据测的是**内置**文件，而运行时用的是**盘上**这份。
-				if onDisk != sum {
-					fmt.Printf("[lua] WARNING: adapter %s on disk (v%s) differs from bundled (v%s) and has no recorded baseline; "+
-						"NOT overwriting (user edits are preserved). If tool calls or streaming misbehave, this drift is the first suspect — "+
-						"back up and delete %s to adopt the bundled version.\n",
-						name+".lua", adapterVersion(string(old)), adapterVersion(string(data)), name+".lua")
-				}
 			case onDisk == sum:
-				// 已是当前版本，无需写
-			case onDisk != prevHash:
-				// 与"上次内嵌"不同 ⇒ 用户改过 ⇒ 保留，并记下盘上真实版本
-				fmt.Printf("[lua] adapter %s 已被修改，保留用户版本（内核不覆盖）\n", name+".lua")
-				cur[name] = onDisk
-			default:
-				// onDisk == prevHash != sum ⇒ 只是没跟上新版本，覆盖是安全的
+				// 与内置一致，无需动作
+			case mode == "auto":
+				// 显式允许：备份后覆盖。
+				// 备份失败就不覆盖 —— 宁可保留旧版，也不能无声丢用户的改动。
+				bak := dstPath + ".bak-" + onDisk[:8]
+				if werr := os.WriteFile(bak, old, 0644); werr != nil {
+					fmt.Printf("[lua] WARNING: adapter %s 与内置版不一致，但备份到 %s 失败（%v）；"+
+						"本次不覆盖，继续用盘上旧版。\n", name+".lua", filepath.Base(bak), werr)
+					cur[name] = onDisk
+					continue
+				}
 				if werr := os.WriteFile(dstPath, data, 0644); werr != nil {
 					return fmt.Errorf("write %s: %w", name, werr)
 				}
 				updated++
+				fmt.Printf("[lua] adapter %s 与内置版不一致（v%s → v%s），已备份为 %s 并更新\n",
+					name+".lua", adapterVersion(string(old)), adapterVersion(string(data)), filepath.Base(bak))
+			default:
+				// off（默认）：不碰用户文件，但记下来后面汇总告警。
+				drifted = append(drifted, driftInfo{name: name + ".lua", disk: onDisk, bundled: sum})
+				cur[name] = onDisk
 			}
 		} else {
+			// 盘上没有：直接落盘（首次安装，不属于「改动用户文件」）
 			if werr := os.WriteFile(dstPath, data, 0644); werr != nil {
 				return fmt.Errorf("write %s: %w", name, werr)
 			}
 			updated++
 			fmt.Printf("[lua] installed bundled adapter: %s\n", name+".lua")
 		}
-		cur[name] = sum
+		if _, set := cur[name]; !set {
+			cur[name] = sum
+		}
+	}
+
+	// ★ off 模式的告警必须**可操作**。
+	//
+	// 教训（2026-10-26 + 2026-11-11）：这里曾经只打一句「保留用户版本」，
+	// 结果 8 个适配器落后内置版几个月都没人发现，而症状是「模型不听话」
+	// 「工具调不动」这种完全指不到适配器的地方。
+	// 所以告警要给出：数量、落后在哪个版本、以及一条能直接跑的命令。
+	if len(drifted) > 0 {
+		names := make([]string, 0, len(drifted))
+		for _, d := range drifted {
+			names = append(names, d.name)
+		}
+		fmt.Printf("[lua] WARNING: %d 个适配器与内置版不一致，当前保留盘上版本（core.lua.adapter_sync=off）：\n", len(drifted))
+		fmt.Printf("[lua]   %s\n", strings.Join(names, ", "))
+		fmt.Printf("[lua]   影响：盘上版本可能缺少内核已修的问题（用量统计、流式 tool_calls 等），\n" +
+			"[lua]         症状常表现为「模型不听话」或「工具调不动」，容易误判成模型问题。\n")
+		fmt.Printf("[lua]   处理：① 想跟随内核 ⇒ 设 core.lua.adapter_sync=auto 后重启（会自动备份旧版）；\n"+
+			"[lua]         ② 想长期定制 ⇒ 把改过的文件改名，并配 core.llm.sources.<name>.adapter_path 指过去；\n"+
+			"[lua]         ③ 只是旧发行版残留 ⇒ 删掉 %s 下对应文件后重启即可。\n", v.dir)
 	}
 
 	if err := v.writeBundledManifest(cur); err != nil {
-		// 清单写失败只影响下次的判别，不该让启动失败
-		fmt.Printf("[lua] 写内嵌清单失败（下次按不覆盖处理）: %v\n", err)
+		fmt.Printf("[lua] 写内嵌清单失败（仅影响状态快照）: %v\n", err)
 	}
 	if updated > 0 {
 		fmt.Printf("[lua] updated %d bundled adapter(s)\n", updated)
@@ -711,21 +776,10 @@ func (v *VM) writeBundledAdapters() error {
 
 func (v *VM) manifestPath() string { return filepath.Join(v.dir, ".bundled") }
 
-// readBundledManifest 读上次运行时的内嵌清单（name → sha256）。
-func (v *VM) readBundledManifest() map[string]string {
-	out := map[string]string{}
-	b, err := os.ReadFile(v.manifestPath())
-	if err != nil {
-		return out
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
-		if len(parts) == 2 && parts[0] != "" {
-			out[parts[0]] = parts[1]
-		}
-	}
-	return out
-}
+// 注：原先还有一个 readBundledManifest（读上次清单做 prevHash 比对）。
+// 2026-11-11 重设计后不再需要它：现在的判断只看「盘上 hash 与内置 hash 是否相等」，
+// 不依赖历史基线（那套基线无法区分「内置旧版」与「用户改过」，
+// 正是导致 8 个适配器永久卡住的根源）。清单现在只作为**可读的状态快照**保留。
 
 func (v *VM) writeBundledManifest(m map[string]string) error {
 	var sb strings.Builder
