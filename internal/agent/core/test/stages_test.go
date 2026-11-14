@@ -1,11 +1,13 @@
 package test
 
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -247,5 +249,64 @@ func TestStageHostToolDefNoMemoryStored(t *testing.T) {
 		t.Error("normal_tool not found in defs")
 	} else if v {
 		t.Error("normal_tool.NoMemory should be false")
+	}
+}
+
+// TestRunStageCollectsHandlerErrors：handler 返回的错误必须汇总到
+// ctx.Errors，且不阻断其他 handler（模块级失败语义）。
+func TestRunStageCollectsHandlerErrors(t *testing.T) {
+	h := core.NewStageHost()
+	h.RegisterStage(sdk.StagePreAction, func(*sdk.StageContext) error {
+		return fmt.Errorf("boom-from-handler")
+	})
+	h.RegisterStage(sdk.StagePreAction, func(ctx *sdk.StageContext) error {
+		kept := "kept"
+		ctx.Lock()
+		ctx.Response = &kept
+		ctx.Unlock()
+		return nil
+	})
+	ctx := &sdk.StageContext{}
+	h.RunStage(sdk.StagePreAction, ctx)
+	if len(ctx.Errors) != 1 || ctx.Errors[0] != "boom-from-handler" {
+		t.Fatalf("errors = %v", ctx.Errors)
+	}
+	ctx.RLock()
+	defer ctx.RUnlock()
+	if ctx.Response == nil || *ctx.Response != "kept" {
+		t.Fatalf("healthy handler output lost: %v", ctx.Response)
+	}
+}
+
+// TestRunStagePanicDoesNotKillRun：handler panic 必须被隔离，
+// 其余 handler 照常执行且 RunStage 正常返回。
+func TestRunStagePanicDoesNotKillRun(t *testing.T) {
+	h := core.NewStageHost()
+	h.RegisterStage(sdk.StageAfterOutput, func(*sdk.StageContext) error { panic("handler exploded") })
+	var ran int
+	h.RegisterStage(sdk.StageAfterOutput, func(*sdk.StageContext) error { ran++; return nil })
+	h.RunStage(sdk.StageAfterOutput, &sdk.StageContext{})
+	if ran != 1 {
+		t.Fatalf("healthy handler skipped after a panic: ran=%d", ran)
+	}
+}
+
+// TestUnregisterPluginToolsOnlyThatPlugin：工具摘除必须只影响目标插件。
+func TestUnregisterPluginToolsOnlyThatPlugin(t *testing.T) {
+	h := core.NewStageHost()
+	for _, name := range []string{"a_tool", "b_tool"} {
+		pluginName := strings.SplitN(name, "_", 2)[0]
+		h.RegisterTool(name, sdk.ToolDef{Name: name, Plugin: pluginName},
+			func(map[string]interface{}) (interface{}, error) { return "ok", nil })
+	}
+	h.UnregisterPluginTools("a")
+	if h.HasTool("a_tool") {
+		t.Fatal("unregistered plugin tool still executing")
+	}
+	if !h.HasTool("b_tool") {
+		t.Fatal("unrelated plugin tool was removed")
+	}
+	if _, err := h.ExecuteTool("b_tool", nil); err != nil {
+		t.Fatalf("surviving tool broke: %v", err)
 	}
 }
