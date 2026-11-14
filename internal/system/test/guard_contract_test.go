@@ -1,7 +1,7 @@
 package test
 
-// internal/system 的黑盒判据：导出路径判定函数，输入 → 输出。
-// 不改全局状态、不碰系统文件。
+// internal/system 的模块级黑盒判据：受保护路径的写前留档与恢复，
+// 用真实文件系统输入 → 可观察文件内容输出。
 
 import (
 	"os"
@@ -11,64 +11,99 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/system"
 )
 
-// TestIsProtectedPathExplicit：显式前缀集内的路径判受保护，集外的不判。
-func TestIsProtectedPathExplicit(t *testing.T) {
-	dir := t.TempDir()
-	inside := filepath.Join(dir, "protected", "file.txt")
-	outside := filepath.Join(dir, "other", "file.txt")
-	prefixes := []string{filepath.Join(dir, "protected")}
-	if !system.IsProtectedPathExplicit(prefixes, inside) {
-		t.Fatal("★ 前缀集内的路径没判受保护")
-	}
-	if system.IsProtectedPathExplicit(prefixes, outside) {
-		t.Fatal("★ 前缀集外的路径被判受保护")
-	}
-	if system.IsProtectedPathExplicit(nil, inside) {
-		t.Fatal("★ 空前缀集却判受保护")
-	}
-}
-
-// TestArchiveBeforeWrite：覆盖前留档，返回 archived=true 且原文可读。
-func TestArchiveBeforeWrite(t *testing.T) {
+// TestArchiveAndRestoreRoundTrip 覆盖 guard 的完整职责：
+// 受保护文件被覆盖前留档 → 覆盖后可恢复成原内容。
+func TestArchiveAndRestoreRoundTrip(t *testing.T) {
 	base := t.TempDir()
-	// 用导出的配置入口把该目录设为受保护范围（不改全局默认值的语义之外）
 	protected := filepath.Join(base, "etc")
 	system.SetProtectedPaths([]string{protected + string(os.PathSeparator)})
 	t.Cleanup(func() { system.SetProtectedPaths(nil) })
-	if err := os.MkdirAll(protected, 0755); err != nil {
+
+	if err := os.MkdirAll(protected, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(protected, "config.txt")
-	if err := os.WriteFile(target, []byte("original"), 0644); err != nil {
+	const original = "original-content"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	archived, err := system.ArchiveBeforeWrite(base, target)
 	if err != nil {
 		t.Fatalf("ArchiveBeforeWrite: %v", err)
 	}
 	if !archived {
-		t.Fatal("★ 已存在的文件却没留档")
+		t.Fatal("existing protected file was not archived")
 	}
-	// 留档目录是导出的 FileBaselineDir
-	baseline := system.FileBaselineDir(base)
-	if baseline == "" {
-		t.Fatal("★ FileBaselineDir 为空")
+
+	// 调用方随后覆盖文件（模拟 L0 写入）。
+	if err := os.WriteFile(target, []byte("broken-update"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := system.RestoreFileFromBaseline(base, target)
+	if err != nil {
+		t.Fatalf("RestoreFileFromBaseline: %v", err)
+	}
+	if !restored {
+		t.Fatal("restore reported no baseline")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("restored content = %q, want %q", got, original)
 	}
 }
 
-// TestNetworkBaselinePathIsStable：路径输出稳定且落在 dataDir 下。
-func TestNetworkBaselinePathIsStable(t *testing.T) {
-	dir := t.TempDir()
-	a := system.NetworkBaselinePath(dir)
-	b := system.NetworkBaselinePath(dir)
-	if a == "" || a != b {
-		t.Fatalf("★ NetworkBaselinePath 不稳定：%q vs %q", a, b)
+// TestArchiveSkipsUnprotectedAndNewFiles：非受保护路径与新建文件都不留档。
+func TestArchiveSkipsUnprotectedAndNewFiles(t *testing.T) {
+	base := t.TempDir()
+	protected := filepath.Join(base, "etc")
+	other := filepath.Join(base, "home")
+	system.SetProtectedPaths([]string{protected + string(os.PathSeparator)})
+	t.Cleanup(func() { system.SetProtectedPaths(nil) })
+	for _, d := range []string{protected, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	unprotected := filepath.Join(other, "file.txt")
+	if err := os.WriteFile(unprotected, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if archived, err := system.ArchiveBeforeWrite(base, unprotected); err != nil || archived {
+		t.Fatalf("unprotected file archived=%v err=%v", archived, err)
+	}
+
+	newFile := filepath.Join(protected, "does-not-exist.txt")
+	if archived, err := system.ArchiveBeforeWrite(base, newFile); err != nil || archived {
+		t.Fatalf("new file archived=%v err=%v", archived, err)
+	}
+	if _, err := os.Stat(filepath.Join(system.FileBaselineDir(base), "etc", "does-not-exist.txt")); err == nil {
+		t.Fatal("baseline written for a file that did not exist")
 	}
 }
 
-// TestLoadBaselineMissingReportsError：读不存在的基线必须报错。
-func TestLoadBaselineMissingReportsError(t *testing.T) {
-	if _, err := system.LoadNetworkBaseline(t.TempDir()); err == nil {
-		t.Fatal("★ 读不存在的基线却返回成功")
+// TestArchiveIsIdempotentForUnchangedContent：内容未变时重复留档不再产生新档案。
+func TestArchiveIsIdempotentForUnchangedContent(t *testing.T) {
+	base := t.TempDir()
+	protected := filepath.Join(base, "etc")
+	system.SetProtectedPaths([]string{protected + string(os.PathSeparator)})
+	t.Cleanup(func() { system.SetProtectedPaths(nil) })
+	if err := os.MkdirAll(protected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(protected, "same.txt")
+	if err := os.WriteFile(target, []byte("same"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if archived, err := system.ArchiveBeforeWrite(base, target); err != nil || !archived {
+		t.Fatalf("first archive: archived=%v err=%v", archived, err)
+	}
+	if archived, err := system.ArchiveBeforeWrite(base, target); err != nil || archived {
+		t.Fatalf("second archive on unchanged content: archived=%v err=%v", archived, err)
 	}
 }

@@ -1,78 +1,101 @@
 package test
 
-// internal/tracker 的黑盒判据：NewTracker/PreAction/PostAction → 可观察输出。
-// 不碰 t.changeSets、不读内部目录结构（只用公开方法返回的结果）。
+// internal/tracker 的模块级黑盒判据：真实文件变更 → changeset → 回滚恢复文件。
+// 使用 upper 目录作为可写工作区的真实输入，不碰 t.changeSets 之外无公开替代的状态。
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 )
 
-func newTracker(t *testing.T) *tracker.Tracker {
+func newTracker(t *testing.T) (*tracker.Tracker, string) {
 	t.Helper()
 	dir := t.TempDir()
 	tr := tracker.NewTracker(filepath.Join(dir, "data"), filepath.Join(dir, "work"))
 	if err := tr.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	return tr
+	t.Cleanup(func() { _ = tr.Stop() })
+	return tr, filepath.Join(dir, "work", "upper")
 }
 
-// TestFreshTrackerHasNoChanges：新 tracker 无 changeset。
-func TestFreshTrackerHasNoChanges(t *testing.T) {
-	tr := newTracker(t)
-	if tr.HasChanges() {
-		t.Fatal("★ 新 tracker 报告有变更")
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got := tr.ChangeSets(); len(got) != 0 {
-		t.Fatalf("★ ChangeSets() = %v，期望空", got)
-	}
-}
-
-// TestNewChangeSetCarriesAction：构造出的 changeset 带 action/ID/时间。
-func TestNewChangeSetCarriesAction(t *testing.T) {
-	cs := tracker.NewChangeSet("write_file")
-	if cs.Action != "write_file" {
-		t.Fatalf("★ Action = %q", cs.Action)
-	}
-	if cs.ID == "" || cs.Timestamp.IsZero() {
-		t.Fatalf("★ ID/时间未填：%+v", cs)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestPostActionWithoutFileChangeIsNoop：没有文件变更时 PostAction
-// 不得凭空造出 changeset。
-func TestPostActionWithoutFileChangeIsNoop(t *testing.T) {
-	tr := newTracker(t)
-	_ = tr.PreAction("write_file")
-	got := tr.PostAction("write_file")
-	if len(got.Files) != 0 {
-		t.Fatalf("★ 无文件变更却记录了 %d 条", len(got.Files))
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
 	}
-	if tr.HasChanges() {
-		t.Fatal("★ 无文件变更却 HasChanges=true")
+	return string(b)
+}
+
+// TestPostActionRecordsRealFileChange：真实新建文件后 PostAction 必须记录该文件。
+func TestPostActionRecordsRealFileChange(t *testing.T) {
+	tr, upper := newTracker(t)
+	tr.PreAction("write_file")
+	writeFile(t, filepath.Join(upper, "new.txt"), "hello")
+	cs := tr.PostAction("write_file")
+	if len(cs.Files) != 1 || cs.Files[0].Path != "new.txt" || cs.Files[0].Type != tracker.ChangeFileCreated {
+		t.Fatalf("changeset = %+v", cs.Files)
+	}
+	if !tr.HasChanges() {
+		t.Fatal("HasChanges false after a tracked change")
 	}
 }
 
-// TestRollbackLatestWithoutChangesReportsError：无 changeset 时定向回滚报错。
+// TestRollbackLatestRestoresModifiedContent：修改已存在文件的原文被回滚恢复。
+func TestRollbackLatestRestoresModifiedContent(t *testing.T) {
+	tr, upper := newTracker(t)
+	const original = "original"
+	const changed = "changed"
+	writeFile(t, filepath.Join(upper, "cfg.txt"), original)
+
+	tr.PreAction("edit")
+	writeFile(t, filepath.Join(upper, "cfg.txt"), changed)
+	tr.PostAction("edit")
+	if got := readFile(t, filepath.Join(upper, "cfg.txt")); got != changed {
+		t.Fatalf("precondition: %q", got)
+	}
+
+	if err := tr.RollbackLatest(); err != nil {
+		t.Fatalf("RollbackLatest: %v", err)
+	}
+	if got := readFile(t, filepath.Join(upper, "cfg.txt")); got != original {
+		t.Fatalf("after rollback = %q, want %q", got, original)
+	}
+}
+
+// TestRollbackLatestRemovesCreatedFile：新建文件被回滚时应当消失。
+func TestRollbackLatestRemovesCreatedFile(t *testing.T) {
+	tr, upper := newTracker(t)
+	tr.PreAction("write_file")
+	path := filepath.Join(upper, "temp.txt")
+	writeFile(t, path, "scratch")
+	tr.PostAction("write_file")
+	if err := tr.RollbackLatest(); err != nil {
+		t.Fatalf("RollbackLatest: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("created file survived rollback (err=%v)", err)
+	}
+}
+
+// TestRollbackLatestWithoutChangesReportsError：没有变更时定向回滚必须明确报错。
 func TestRollbackLatestWithoutChangesReportsError(t *testing.T) {
-	tr := newTracker(t)
+	tr, _ := newTracker(t)
 	if err := tr.RollbackLatest(); err == nil {
-		t.Fatal("★ 无 changeset 时 RollbackLatest 应报错")
-	}
-}
-
-// TestRollbackClearsChangeSets：Rollback 后视图清空（无需挂载 overlay）。
-func TestRollbackClearsChangeSets(t *testing.T) {
-	tr := newTracker(t)
-	_ = tr.PreAction("a")
-	_ = tr.PostAction("a")
-	if err := tr.Rollback(); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	if tr.HasChanges() {
-		t.Fatal("★ Rollback 后仍有变更")
+		t.Fatal("RollbackLatest accepted empty history")
 	}
 }

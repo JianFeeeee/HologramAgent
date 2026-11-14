@@ -75,3 +75,53 @@ func TestGetAdapterEndpointUnknownIsEmpty(t *testing.T) {
 		t.Fatalf("★ 未知适配器端点 = %q，期望空", got)
 	}
 }
+
+// TestTransformActuallyRunsAdapter：加载后调用 transform_request，
+// 必须真的执行 Lua 脚本（而非只返回输入或报未加载）。
+func TestTransformActuallyRunsAdapter(t *testing.T) {
+	v := newVM(t)
+	code := `-- name: contract-adapter
+-- version: 1.0
+return {
+  transform_request = function(raw) return '{"rewritten":true}' end,
+  transform_response = function(raw) return raw end,
+  transform_stream_chunk = function(raw) return raw end,
+}`
+	if err := v.LoadAdapterSource("contract-adapter", code); err != nil {
+		t.Fatalf("LoadAdapterSource: %v", err)
+	}
+	out, err := v.CallTransformRequest("contract-adapter", `{"model":"m"}`)
+	if err != nil {
+		t.Fatalf("CallTransformRequest: %v", err)
+	}
+	if !strings.Contains(out, "rewritten") {
+		t.Fatalf("adapter body not executed: %q", out)
+	}
+}
+
+// TestAdapterHeadersAndEndpointExposed：静态声明的 endpoint/headers 可读回。
+func TestAdapterHeadersAndEndpointExposed(t *testing.T) {
+	v := newVM(t)
+	code := `-- name: hdr
+-- version: 1.0
+return {
+  endpoint = 'http://127.0.0.1:9000/v1',
+  headers = { ['X-Contract'] = 'yes' },
+  transform_request = function(raw) return raw end,
+  transform_response = function(raw) return raw end,
+  transform_stream_chunk = function(raw) return raw end,
+}`
+	if err := v.LoadAdapterSource("hdr", code); err != nil {
+		t.Fatalf("LoadAdapterSource: %v", err)
+	}
+	if got := v.GetAdapterEndpoint("hdr"); got != "http://127.0.0.1:9000/v1" {
+		t.Fatalf("endpoint = %q", got)
+	}
+	h, err := v.BuildHeaders("hdr", nil)
+	if err != nil {
+		t.Fatalf("BuildHeaders: %v", err)
+	}
+	if h["X-Contract"] != "yes" {
+		t.Fatalf("headers = %v", h)
+	}
+}
