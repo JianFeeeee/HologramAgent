@@ -110,27 +110,40 @@ func newDB(t *testing.T) *memory.GraphDB {
 	return g
 }
 
-// TestCommitThenGraphData：Commit 一条三元组后，GraphData 必须能反映它。
-func TestCommitThenGraphData(t *testing.T) {
-	g := newDB(t)
+// TestCommitThenRecallAfterReopen verifies that a committed fact is durable and
+// queryable through the memory module, rather than merely producing graph keys.
+func TestCommitThenRecallAfterReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "graph.db")
+	g, err := memory.NewGraphDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tri := memory.Triple{
 		Subject: "billing服务", Relation: "端口", Object: "8499",
 		SentenceText: "billing服务端口是8499",
 	}
 	if _, _, err := g.Commit([]memory.Triple{tri}, "contract-session", 1); err != nil {
+		_ = g.Close()
 		t.Fatalf("Commit: %v", err)
 	}
-	data, err := g.GraphData()
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := memory.NewGraphDB(path)
 	if err != nil {
-		t.Fatalf("GraphData: %v", err)
+		t.Fatal(err)
 	}
-	if data == nil {
-		t.Fatal("★ GraphData 返回 nil")
+	defer reopened.Close()
+	result, err := reopened.Recall([]string{"billing服务"}, nil, 2, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// 可观察输出：GraphData 必须给出 nodes/edges 结构（而非 panic / 空 map）
-	if _, ok := data["nodes"]; !ok {
-		t.Fatalf("★ GraphData 缺 nodes 字段：%v", data)
+	for _, relation := range result.Relations {
+		if relation.SourceName == tri.Subject && relation.RelationType == tri.Relation && relation.TargetName == tri.Object {
+			return
+		}
 	}
+	t.Fatalf("committed fact missing after reopen: %+v", result)
 }
 
 // TestReadOnlyHandleRejectsWrite：OpenGraphDBReadOnly 必须在 SQLite 层拒写。

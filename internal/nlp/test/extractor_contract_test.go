@@ -1,6 +1,6 @@
 package test
 
-// internal/nlp 的黑盒判据：NewExtractor / 配置 / Extract 的输入 → 输出。
+// internal/nlp 的模块级黑盒判据：文本输入 → 公开 Parser/Extractor → 三元组输出。
 
 import (
 	"testing"
@@ -8,58 +8,64 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 )
 
-// TestDefaultExtractorConfig：默认融合权重是可用常量。
-func TestDefaultExtractorConfig(t *testing.T) {
-	c := nlp.DefaultExtractorConfig()
-	if c.FusionAlpha <= 0 || c.FusionBeta <= 0 || c.FusionThreshold <= 0 {
-		t.Fatalf("★ 默认配置不可用：%+v", c)
+type contractParser struct{}
+
+func (contractParser) Parse(string) (*nlp.ParseResult, error) {
+	// billing --SBV--> 监听 <--VOB-- 8499
+	return &nlp.ParseResult{
+		Tokens:  []string{"billing", "监听", "8499"},
+		POS:     []string{"n", "v", "n"},
+		Heads:   []int{2, 0, 2},
+		DepRels: []string{"SBV", "ROOT", "VOB"},
+	}, nil
+}
+
+func TestExtractRunsParserAndReturnsFact(t *testing.T) {
+	e := nlp.NewExtractor(contractParser{})
+	got := e.Extract("billing监听8499")
+	if got == nil || got.Err != nil {
+		t.Fatalf("Extract failed: %+v", got)
+	}
+	if got.Src != "dep_parser" || len(got.Triples) != 1 {
+		t.Fatalf("module output = %+v", got)
+	}
+	tr := got.Triples[0]
+	if tr.Subject != "billing" || tr.Relation != "监听" || tr.Object != "8499" {
+		t.Fatalf("unexpected extracted fact: %+v", tr)
+	}
+	if tr.SentenceRef != "billing监听8499" || tr.Score <= 0 {
+		t.Fatalf("missing observable provenance/score: %+v", tr)
 	}
 }
 
-// TestSetFusionWeightsRoundTrip：设入的权重能从 FusionConfig 读回。
-func TestSetFusionWeightsRoundTrip(t *testing.T) {
+func TestFusionConfigurationChangesExtractionDecision(t *testing.T) {
+	e := nlp.NewExtractor(contractParser{})
+	e.SetFusionWeights(1, 0, 0.95)
+	if got := e.Extract("billing监听8499"); got == nil || len(got.Triples) != 0 {
+		t.Fatalf("high threshold should reject the parser candidate: %+v", got)
+	}
+	e.SetFusionWeights(1, 0, 0.1)
+	got := e.Extract("billing监听8499")
+	if got == nil || len(got.Triples) != 1 {
+		t.Fatalf("lower threshold should restore the fact: %+v", got)
+	}
+}
+
+func TestExtractorEmptyAndFallbackInput(t *testing.T) {
 	e := nlp.NewExtractor(nil)
-	e.SetFusionWeights(0.25, 0.75, 0.42)
-	got := e.FusionConfig()
-	if got.FusionAlpha != 0.25 || got.FusionBeta != 0.75 || got.FusionThreshold != 0.42 {
-		t.Fatalf("★ FusionConfig = %+v", got)
+	if got := e.Extract(""); got == nil || len(got.Triples) != 0 {
+		t.Fatalf("empty input should produce no facts: %+v", got)
+	}
+	if got := e.Extract("billing服务的端口是8499"); got == nil {
+		t.Fatal("fallback extraction returned nil")
 	}
 }
 
-// stubParser 满足 Parser 接口，作为 SetDefaultParser 的输入。
-type stubParser struct{}
-
-func (p *stubParser) Parse(text string) (*nlp.ParseResult, error) {
-	return &nlp.ParseResult{}, nil
-}
-
-// TestSetDefaultParserRoundTrip：设入的 parser 能从 GetDefaultParser 读回。
-func TestSetDefaultParserRoundTrip(t *testing.T) {
-	want := &stubParser{}
-	nlp.SetDefaultParser(want)
+func TestDefaultParserInjectionChangesNewExtractorBehavior(t *testing.T) {
+	nlp.SetDefaultParser(contractParser{})
 	t.Cleanup(func() { nlp.SetDefaultParser(nil) })
-	if got := nlp.GetDefaultParser(); got != want {
-		t.Fatalf("★ GetDefaultParser = %v，期望刚设入的 parser", got)
-	}
-}
-
-// TestExtractEmptyTextReturnsEmptySet：空文本返回空结果，不 panic。
-func TestExtractEmptyTextReturnsEmptySet(t *testing.T) {
-	e := nlp.NewExtractor(nil)
-	got := e.Extract("")
-	if got == nil {
-		t.Fatal("★ Extract 返回 nil")
-	}
-	if len(got.Triples) != 0 {
-		t.Fatalf("★ 空文本提取出 %d 条三元组", len(got.Triples))
-	}
-}
-
-// TestExtractNonEmptyTextDoesNotPanic：非空文本输出可用（不钉死内容）。
-func TestExtractNonEmptyTextDoesNotPanic(t *testing.T) {
-	e := nlp.NewExtractor(nil)
-	got := e.Extract("billing服务 的 端口 是 8499")
-	if got == nil {
-		t.Fatal("★ Extract 返回 nil")
+	got := nlp.NewExtractor(nil).Extract("billing监听8499")
+	if got == nil || got.Src != "dep_parser" || len(got.Triples) != 1 {
+		t.Fatalf("default parser was not used by NewExtractor(nil): %+v", got)
 	}
 }

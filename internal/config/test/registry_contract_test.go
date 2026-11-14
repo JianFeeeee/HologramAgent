@@ -4,6 +4,8 @@ package test
 // 输入 → 输出。不读源码、不碰 registry 内部结构。
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
@@ -106,28 +108,60 @@ func TestDefRoundTripPreservesSecret(t *testing.T) {
 	}
 }
 
-// TestSecretValueIsNotPlaintextOnDisk：SetSecret → GetSecret 往返，且 DB 里无明文。
-func TestSecretValueIsNotPlaintextOnDisk(t *testing.T) {
-	reg := newRegistry(t)
-	reg.SetCodec(config.NewTestCodec(t))
-	p := reg.PluginConfig("alpha")
+// TestSecretSurvivesRestartAndStaysEncrypted 覆盖配置模块的完整职责：
+// 敏感项写入 → 磁盘上无明文 → 关闭并重新打开同一数据库后仍可正确解密读回。
+// 只用公开 API 观察，不查询内部表结构。
+func TestSecretSurvivesRestartAndStaysEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.db")
+
+	first := config.NewConfigRegistry(path)
+	first.SetCodec(config.NewTestCodec(t))
+	p := first.PluginConfig("alpha")
 	p.RegisterDef(config.ConfigDef{Key: "api_key", Secret: true})
-	if err := p.Set("api_key", "PLAINTEXT-SECRET-123"); err != nil {
-		t.Fatal(err)
+	const secret = "PLAINTEXT-SECRET-123"
+	if err := p.Set("api_key", secret); err != nil {
+		first.Close()
+		t.Fatalf("Set: %v", err)
 	}
-	got, err := p.GetSecret("api_key")
+	if got, err := p.GetSecret("api_key"); err != nil || got != secret {
+		first.Close()
+		t.Fatalf("GetSecret before restart = %q / %v", got, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// 落盘文件里不得出现明文。
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("GetSecret: %v", err)
-	}
-	if got != "PLAINTEXT-SECRET-123" {
-		t.Fatalf("★ 解密后 = %q，期望原文", got)
-	}
-	var raw string
-	if err := reg.DB().QueryRow(
-		"SELECT value FROM config_alpha WHERE key='api_key'").Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	if raw == "PLAINTEXT-SECRET-123" {
-		t.Fatal("★ 磁盘上是明文 —— 敏感项没有加密")
+	if string(raw) == secret || containsBytes(raw, []byte(secret)) {
+		t.Fatalf("secret written in plaintext on disk")
 	}
+
+	second := config.NewConfigRegistry(path)
+	defer second.Close()
+	second.SetCodec(config.NewTestCodec(t))
+	q := second.PluginConfig("alpha")
+	if got, err := q.GetSecret("api_key"); err != nil || got != secret {
+		t.Fatalf("GetSecret after restart = %q / %v", got, err)
+	}
+}
+
+func containsBytes(haystack, needle []byte) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
