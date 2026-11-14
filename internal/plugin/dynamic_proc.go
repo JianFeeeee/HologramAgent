@@ -118,7 +118,7 @@ func (r *Registry) ensureProcHost() (*proc.Host, error) {
 	if r.procHost != nil {
 		return r.procHost, nil
 	}
-	host, err := proc.NewHost()
+	host, err := proc.NewHostWithArenaSize(r.arenaBytesFromConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -277,4 +277,39 @@ func (r *Registry) ResetProcCrashCount(name string) {
 	r.crashMu.Lock()
 	defer r.crashMu.Unlock()
 	delete(r.procCrashes, name)
+}
+
+// arenaBytesFromConfig 读 arena 容量配置（core.plugin.shm_arena_mb）。
+//
+// ## 为什么容量只能在启动时决定
+//
+// arena 是统一区域里一段连续 mmap，而 SharedRef 存**绝对偏移**。
+// 变大需要 remap，而每个 plugin.bin 子进程可能正在读同一页 ——
+// 跨进程 munmap 会让它 SIGSEGV。该路径历史上三次被明确搁置。
+// ⇒ 这里只决定"这次启动开多大"，改配置必须重启内核才生效。
+//
+// ## 越界时记日志
+//
+// clamp 到 1..256 MB。超上限时**说出来**（否则"我配了 512"会静默变成
+// "仍是 256"，与配置系统其它项的行为不一致）。
+func (r *Registry) arenaBytesFromConfig() uint32 {
+	const defMB = 4
+	const minMB = 1
+	const maxMB = 256
+
+	mb := defMB
+	if r.cfgReg != nil {
+		if v := r.cfgReg.GetInt("core.plugin.shm_arena_mb", defMB); v != 0 {
+			mb = v
+		}
+	}
+	switch {
+	case mb < minMB:
+		log.Printf("[plugin] core.plugin.shm_arena_mb=%d 过小，按 %dMB 使用", mb, minMB)
+		mb = minMB
+	case mb > maxMB:
+		log.Printf("[plugin] core.plugin.shm_arena_mb=%d 超过上限，按 %dMB 使用", mb, maxMB)
+		mb = maxMB
+	}
+	return uint32(mb) * 1024 * 1024
 }

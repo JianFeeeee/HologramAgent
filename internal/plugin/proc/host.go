@@ -69,11 +69,33 @@ type Host struct {
 // 三者共同点：全部插件看到同一份物理页，段内一律用相对偏移而非指针
 // （实验 2 已验证各进程 mmap 到不同虚拟地址时偏移解引用仍正确）。
 func NewHost() (*Host, error) {
+	return NewHostWithArenaSize(arenaDefaultCapacity)
+}
+
+// NewHostWithArenaSize 与 NewHost 相同，但按调用方给定的 arena 容量创建段。
+//
+// ## 为什么容量只能在**构造时**决定
+//
+// arena 是统一区域里的一段连续 mmap，而 SharedRef 存的是**绝对偏移**。
+// 要变大就得 remap，而对端进程（每个 plugin.bin）可能正在读同一页 ——
+// munmap + 重新映射会让它 SIGSEGV。跨进程 remap 因此被明确否决
+// （历史上三次实现计划均搁置）。⇒ 容量只影响"启动时开多大"，
+// 改了配置必须重启内核。
+//
+// ## 越界如何处理
+//
+// 太小（低于 arenaMinSize）无法建立分配器；这里**返回明确错误**而不是
+// 静默回落到默认值 —— 配置写错要能看见，否则"我明明配了 32MB"会变成
+// "悄悄仍是 4MB"。调用方（Registry）负责读配置 + clamp。
+func NewHostWithArenaSize(arenaBytes uint32) (*Host, error) {
+	if arenaBytes < arenaMinSize() {
+		return nil, fmt.Errorf("共享段 arena 容量过小：%d 字节（至少 %d）", arenaBytes, arenaMinSize())
+	}
 	// 统一区域大小：SuperBlock + StageContext + EvtRing + Exchange Arena
 	//
 	// +8 是 arena 基址 8 字节对齐的 padding 余量：arenaOff 向上取整可能
-	// 吃掉最多 4 字节，预留 8 字节保证 arenaCap 不会小于 arenaPublishSize。
-	unifiedSize := superBlockSize + shmDefaultSize + evtTotalSize + int(arenaPublishSize) + 8
+	// 吃掉最多 4 字节，预留 8 字节保证 arenaCap 不会小于请求容量。
+	unifiedSize := superBlockSize + shmDefaultSize + evtTotalSize + int(arenaBytes) + 8
 	memfd, data, err := allocShm(unifiedSize)
 	if err != nil {
 		return nil, err

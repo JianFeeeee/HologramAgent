@@ -837,6 +837,7 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) bool {
 	}
 
 	set("core.plugin.dir", filepath.Join(dataDir, "plugins"))
+	set("core.plugin.shm_arena_mb", "4")
 	set("core.memory.graph", filepath.Join(dataDir, "memory", "graph.db"))
 	set("core.memory.text", filepath.Join(dataDir, "memory", "text"))
 	set("core.memory.documents", filepath.Join(dataDir, "memory", "documents"))
@@ -974,6 +975,11 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 
 	plgDir := filepath.Join(dataDir, "plugins")
 	reg(ConfigDef{Key: "core.plugin.dir", Default: plgDir, Type: "string", DisplayName: "插件目录", Description: "外部插件安装目录", Category: "paths"})
+	reg(ConfigDef{Key: "core.plugin.shm_arena_mb", Default: "4", Type: "int", DisplayName: "插件共享内存（MB）",
+		Description: "子进程插件共用的共享段 arena 容量（1–256MB）。" +
+			"段大小在启动时一次确定，**修改后必须重启内核才生效**；" +
+			"改大不会立刻占物理内存（memfd 惰性分配），但会扩大虚拟地址空间占用。",
+		Category: "plugin"})
 	reg(ConfigDef{Key: "core.memory.graph", Default: filepath.Join(dataDir, "memory", "graph.db"), Type: "string", DisplayName: "图数据库路径", Description: "长期记忆（图数据库）存储路径", Category: "paths"})
 	reg(ConfigDef{Key: "core.memory.text", Default: filepath.Join(dataDir, "memory", "text"), Type: "string", DisplayName: "文本记忆路径", Description: "短期文本记忆存储目录", Category: "paths"})
 	reg(ConfigDef{Key: "core.memory.documents", Default: filepath.Join(dataDir, "memory", "documents"), Type: "string", DisplayName: "文档记忆路径", Description: "文档记忆存储目录", Category: "paths"})

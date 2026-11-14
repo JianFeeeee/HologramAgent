@@ -98,8 +98,9 @@ const (
 // 但它让单个工具调用可以承载 MB 级 payload，不必再退回内联 RPC。
 const arenaDefaultCapacity = 4 * 1024 * 1024
 
-// arenaPublishSize 是统一区域里预留给 arena 的字节数。
-var arenaPublishSize = uint32(arenaDefaultCapacity)
+// 容量由 NewHostWithArenaSize 决定（见 host.go），这里不再维护第二份。
+// 之前有个 arenaPublishSize 变量，但自 NewHost 改为接受参数后已无人读取 ——
+// 留着一个"看着能改、改了没效果"的开关比没有更危险。
 
 // arenaRegion 是块分配器视图。
 //

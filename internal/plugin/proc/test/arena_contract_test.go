@@ -185,3 +185,26 @@ func TestArenaFragmentationPreventsLargeRequest(t *testing.T) {
 		t.Log("当前实现已能整理碎片；本判据需改为验证整理后的可用性")
 	}
 }
+
+// TestArenaHostHonoursRequestedCapacity：按调用方给定的容量创建共享段，
+// 容量必须真的生效（MaxPayload 随容量变化），而不是静默用默认值。
+func TestArenaHostHonoursRequestedCapacity(t *testing.T) {
+	const mb = 8
+	h, err := proc.NewHostWithArenaSize(mb * 1024 * 1024)
+	if err != nil {
+		t.Skipf("共享内存不可用：%v", err)
+	}
+	defer func() { _ = h.Close() }()
+
+	payload := bytes.Repeat([]byte("z"), mb*1024*1024/2)
+	ref := putBytes(t, h, proc.OwnerHost, payload)
+	assertReadable(t, h, ref, payload)
+}
+
+// TestArenaHostRejectsTooSmallCapacity：低于分配器最小尺寸时报明确错误，
+// 不静默回落到默认容量。
+func TestArenaHostRejectsTooSmallCapacity(t *testing.T) {
+	if _, err := proc.NewHostWithArenaSize(64); err == nil {
+		t.Fatal("过小的 arena 容量被接受（应报错而非回落默认值）")
+	}
+}
