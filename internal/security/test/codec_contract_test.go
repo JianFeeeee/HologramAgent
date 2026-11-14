@@ -4,6 +4,8 @@ package test
 // 不读源码、不碰 Codec/Store 内部字段、不用任何 ForTest 钩子。
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/security"
@@ -137,4 +139,110 @@ func TestCodecOpenRejectsCorruptedCiphertext(t *testing.T) {
 			t.Fatalf("★ Open(%q) 没报错 —— 损坏密文被静默吞下", in)
 		}
 	}
+}
+
+// ---- Gate 的模块职责：明文凭据在出向被换成别名，执行前再回填原值 ----
+
+func newGateStore(t *testing.T) *security.Store {
+	t.Helper()
+	st := security.New(security.Options{
+		Path:    filepath.Join(t.TempDir(), "vars.json"),
+		KeyFn:   func() ([]byte, error) { return fixedKey(11), nil },
+		Enabled: true,
+	})
+	if err := st.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return st
+}
+
+const contractSecret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+
+func TestGateReplacesSecretOutboundAndBackfillsForExecution(t *testing.T) {
+	store := newGateStore(t)
+	gate := security.NewGate(store)
+
+	out, n := gate.PrepareOutbound(security.Inspection{Stage: "to_llm"}, "key="+contractSecret)
+	if n == 0 {
+		t.Fatal("outbound secret was not intercepted")
+	}
+	if strings.Contains(out, contractSecret) {
+		t.Fatalf("outbound text still carries plaintext: %q", out)
+	}
+
+	// 出向文本里给出的是别名；执行前必须换回真实凭据。
+	alias := extractAlias(out)
+	if alias == "" {
+		t.Fatalf("alias not found in outbound text: %q", out)
+	}
+	back, filled := gate.FillForExecution(security.Inspection{Stage: "to_plugin"}, "key=@{"+alias+"}")
+	if filled != 1 {
+		t.Fatalf("backfill reported %d places", filled)
+	}
+	if back != "key="+contractSecret {
+		t.Fatalf("backfilled text = %q", back)
+	}
+}
+
+func TestGateScrubsSecretInbound(t *testing.T) {
+	gate := security.NewGate(newGateStore(t))
+	out, n := gate.ScrubInbound(security.Inspection{Stage: "tool_result"}, "leaked "+contractSecret)
+	if n == 0 || strings.Contains(out, contractSecret) {
+		t.Fatalf("inbound scrub failed: n=%d out=%q", n, out)
+	}
+}
+
+func TestGateDisabledPassesTextThrough(t *testing.T) {
+	st := security.New(security.Options{Enabled: false,
+		KeyFn: func() ([]byte, error) { return fixedKey(11), nil }})
+	gate := security.NewGate(st)
+	in := "key=" + contractSecret
+	if out, n := gate.PrepareOutbound(security.Inspection{}, in); out != in || n != 0 {
+		t.Fatalf("disabled gate modified text: %q n=%d", out, n)
+	}
+	if !gate.Enabled() == true {
+		t.Fatal("unexpected Enabled() result for disabled store")
+	}
+}
+
+func TestStoreAliasRoundTripSurvivesReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vars.json")
+	first := security.New(security.Options{Path: path,
+		KeyFn: func() ([]byte, error) { return fixedKey(11), nil }, Enabled: true})
+	if err := first.Load(); err != nil {
+		t.Fatal(err)
+	}
+	alias, err := first.Submit(contractSecret, "contract")
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if alias == "" || alias == contractSecret {
+		t.Fatalf("alias = %q", alias)
+	}
+
+	second := security.New(security.Options{Path: path,
+		KeyFn: func() ([]byte, error) { return fixedKey(11), nil }, Enabled: true})
+	if err := second.Load(); err != nil {
+		t.Fatal(err)
+	}
+	back, n, _ := second.Fill("@{" + alias + "}")
+	if n != 1 || !strings.Contains(back, contractSecret) {
+		t.Fatalf("fill after reopen = %q (n=%d)", back, n)
+	}
+}
+
+// extractAlias 从安全模块产物里取出别名（公开契约：@\{alias\}）。
+func extractAlias(text string) string {
+	const marker = "@{"
+	i := strings.Index(text, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := text[i+len(marker):]
+	j := strings.Index(rest, "}")
+	if j < 0 {
+		return ""
+	}
+	return rest[:j]
 }
