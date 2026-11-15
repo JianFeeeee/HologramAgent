@@ -1014,6 +1014,17 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 		Description: "归档后的日志保留多久：this_week（只留本周）/ this_month（只留本月）/ n_months（保留近 N 个月）/ forever（永不删除）。注意：本项影响的是**压缩归档**的清理，当月的原始 homed_*.log 在跨月归档前不会被删。", Category: "paths"})
 	regMeta(ConfigDef{Key: "core.log.retention_months", Default: "3", Type: "int", DisplayName: "日志保留月数",
 		Description: "当 core.log.retention=n_months 时保留的月数", Category: "paths"})
+	// 启动时立即补跑一轮压缩 + 保留清理。
+	//
+	// 三个压缩循环的首次 tick 是「下一个周一 / 下月 1 日 / 次年 1 月 1 日」，
+	// 不是「从现在起 24 小时」—— 实测周日 22:51 启动时 monthly 要等 **363 小时**
+	// 才第一次清理归档。接管旧数据目录的实例正好在最需要的窗口里不动手。
+	//
+	// 默认 false：常规重启不重复扫描，行为与引入前逐字一致。
+	regMeta(ConfigDef{Key: "core.log.compress_on_start", Default: "false", Type: "string",
+		DisplayName: "启动时补跑压缩",
+		Description: "false（默认）不补跑；weekly / monthly / yearly 只跑对应层；all 三层全跑。" +
+			"任一非 false 取值在压缩后都会执行一次保留清理（幂等）", Category: "paths"})
 
 	// ---- 安全策略（2026-10-29 补：此前只有 enabled 一个键被读）----
 	//

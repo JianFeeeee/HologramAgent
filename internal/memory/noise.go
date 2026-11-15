@@ -50,21 +50,6 @@ func IsNoiseEntity(name string) bool {
 	if n == "" {
 		return true
 	}
-	// 纯符号 / 纯标点串不是实体（2026-11-15）。
-	//
-	// 生产实测（homed_2026-11-15_13-08-13.log，7 小时 588 条 reject）：
-	// 82% 的单字主语是标点 —— 、（140 次）\（91）（（63），（56）「（49）：（28），
-	// 以及单字 n / 蒋 / 俺 / 灯。它们全部由 fallback POS 解析器在
-	// 「终端日志 + ADB 截图回执」这类散文上切出来。
-	//
-	// 落库闸门 validEntityName 本来就会拒（要求 2~50 rune），但那时已经是
-	// commit 阶段：既刷 588 条错误日志，又让「一条都没抽出来」与
-	// 「抽出来全被拒」两种情形混在一起（归档重试的判据因此分不清）。
-	// 收在抽取端 ⇒ 垃圾三元组根本不出现在 triples 里，
-	// 归档就能干净地走「只迁块、不建关系」的路径。
-	if !hasEntityRune(n) {
-		return true
-	}
 	if stopWords[n] {
 		return true
 	}
@@ -72,21 +57,6 @@ func IsNoiseEntity(name string) bool {
 		return true
 	}
 	return IsTemplateSummaryName(n)
-}
-
-// hasEntityRune 报告串中是否存在**可作实体**的字符（字母/汉字/数字/连接符）。
-//
-// 与 internal/memory 的 validEntityName 保持同一判定口径 —— 两处必须一致，
-// 否则「抽取端放行、落库端拒绝」会重新分裂成两个事实来源。
-func hasEntityRune(s string) bool {
-	for _, ch := range s {
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '\u4e00' && ch <= '\u9fff') || ch == '-' || ch == '_' ||
-			(ch >= '0' && ch <= '9') {
-			return true
-		}
-	}
-	return false
 }
 
 // IsTemplateSummaryName 判断实体名是否为模板摘要串（供调用方单独使用）。
@@ -110,10 +80,50 @@ func FilterNoiseTriples(triples []Triple) []Triple {
 		if IsNoiseEntity(t.Subject) || IsNoiseEntity(t.Object) {
 			continue
 		}
+		// ★ 第二道闸：与落库闸门**同构**的判定（2026-11-15）。
+		//
+		// ## 为什么这里需要它
+		//
+		// 生产实测（22:11 一轮归档的 19 条 reject）全部是「某一端只有 1 个
+		// 字符」：俺 / 蒋 / 灯 / 词 / 话 / 钱 —— fallback POS 解析器在
+		// 「你有一条未读会话」这类句子上切出来的。
+		//
+		// 它们能通过 IsNoiseEntity（单字汉字不是停用词、也不是标点），
+		// 于是走到 commit 才被 validEntityName 的 `len < 2` 拒掉。
+		// 后果有两个，都不是"少了一条记忆"那么简单：
+		//   · 每条拒都刷一行错误日志（19 条/轮，纯噪声）
+		//   · 「抽出来但全被拒」与「一条都没抽出来」在日志里长得一样，
+		//     归档判据因此分不清该重试还是该只迁块
+		//
+		// 收在抽取端 ⇒ triples 里只剩真正能落库的，判据一眼可读。
+		if !IsValidEntityName(t.Subject) || !IsValidEntityName(t.Object) {
+			continue
+		}
 		out = append(out, t)
 	}
 	return out
 }
+
+// IsValidEntityName 是落库闸门 validEntityName 的导出形态。
+//
+// ## 为什么必须导出
+//
+// 抽取端（FilterNoiseTriples）需要「与落库端同口径」的判定：口径不一致时，
+// 抽取端放行、落库端拒绝，两者中间那段就是清不掉的垃圾日志与分不清的判据。
+//
+// ## 为什么不在 IsNoiseEntity 里加这条
+//
+// IsNoiseEntity 有两个消费者，语义**相反**：
+//   - FilterNoiseTriples（抽取端预防）—— 收紧是安全的、想要的
+//   - GraphDB.PurgeNoise（历史清理，按文本反查块 ID 并**删除**）
+//     —— 收紧会**静默扩大删除范围**。实测生产库里有 5 个单字符块，
+//     其中 "2" 是纯数字（validEntityName 明确允许：端口/分机号是合法
+//     实体值）。把长度闸塞进 IsNoiseEntity，PurgeNoise 就会删掉它。
+//
+// ⇒ 两条判定线分开：IsNoiseEntity 管「像不像噪音词」（保守），
+//
+//	IsValidEntityName 管「能不能落库」（与 graph 层同一实现）。
+func IsValidEntityName(name string) bool { return validEntityName(name) }
 
 // NoiseEntities 列出库中现存的噪音实体，按 mention_count 降序。
 func (g *GraphDB) NoiseEntities() ([]Entity, error) {

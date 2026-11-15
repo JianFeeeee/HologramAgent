@@ -657,8 +657,22 @@ func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, too
 
 	isArchivedContext := coldDoc.Meta != nil && coldDoc.Meta["is_archived_context"] == "true"
 
-	// 文档元数据:仅当 summary 合理(非空、非模板化、长度适中)时才写「主题」
-	if !isArchivedContext && coldDoc.Summary != "" && len([]rune(coldDoc.Summary)) < 80 && !isTemplateSummary(coldDoc.Summary) {
+	// 文档元数据:仅当 summary 合理(非空、非模板化、**能落库**)时才写「主题」
+	//
+	// ★ 阈值必须与落库闸门同口径（2026-11-15 修正）。
+	//
+	// 此前写的是 `< 80`，而 validEntityName 要求 `len <= 50`：
+	// 长度 51~79 的 summary 会稳定产出一条**必然被拒**的三元组，
+	// 每轮刷一行 reject 日志，且让「抽不出来」与「抽出来全被拒」在日志里
+	// 长得一样（归档判据因此分不清该重试还是该只迁块）。
+	//
+	// 实测样本：`文档 --主题--> 排查 106 飞牛是否存在 Tailscale 内置 SSH
+	// 提权漏洞：未装 tailscale，不适用`（这条超 50 字，被拒）。
+	if !isArchivedContext && coldDoc.Summary != "" && len([]rune(coldDoc.Summary)) < 80 && !isTemplateSummary(coldDoc.Summary) &&
+		// 再按**落库闸门**判一次：能被 FilterNoiseTriples 留下才值得造。
+		// 两处口径（80 是「值不值得是主题」的语义阈值，50 是「能不能落库」
+		// 的存储约束）都必须满足，缺一个就会产生必然被拒的三元组。
+		memory.IsValidEntityName(coldDoc.Summary) {
 		triples = append(triples, memory.Triple{
 			Subject:     "文档",
 			SubjectType: "Concept",

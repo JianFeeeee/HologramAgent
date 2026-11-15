@@ -77,8 +77,25 @@ func compressMonthly(logDir string) error {
 		if m == nil {
 			continue
 		}
-		key := fmt.Sprintf("%s-%s", m[1], m[2][:2])
-		monthKey := key[:7]
+		// ★ 月份必须**从日期算出**，不能用 ISO 周号截断（2026-11-15 修）。
+		//
+		// 原实现是 `key := "<年>-<周号前两位>"` —— 把 **ISO 周号的前两位
+		// 当月份**。产出形如 `month_2026-27`（"27" 是第 27 周，不是 7 月），
+		// 而 `cleanupBeforeMonths` 用 `time.Parse("2006-01", ...)` 解析
+		// ⇒ **month out of range ⇒ 解析失败 ⇒ 一个都不会被删**。
+		//
+		// 生产实测：17 个 `month_2026-27…43` 从 2026-08-01 起一直在，且因
+		// `fileExists` 判重而**永远不会被重建或清理**（磁盘只增不减）。
+		//
+		// 判定月的口径：取该 ISO 周**周一所在月**。跨月的周（如 06-29 周一
+		// 到 07-05 周日）归到前一个月 —— 这只是命名约定，关键是它必须是
+		// 一个能被 `2006-01` 解析的真月份。
+		weekStart, parseErr := parseWeekKey(m[1] + "-W" + m[2])
+		if parseErr != nil {
+			// 解析不出就不动它：宁可留在 week_ 层，也不要造一个非法名。
+			continue
+		}
+		monthKey := weekStart.Format("2006-01")
 		groups[monthKey] = append(groups[monthKey], e.Name())
 	}
 

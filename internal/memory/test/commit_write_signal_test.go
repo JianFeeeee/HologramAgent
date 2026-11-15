@@ -17,6 +17,7 @@ package test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
@@ -145,5 +146,89 @@ func TestFilterNoiseTriplesDropsPunctuation(t *testing.T) {
 	}
 	if out[0].Subject != "账单服务" || out[0].Object != "8499" {
 		t.Fatalf("★ 留下的不是合法那条: %+v", out[0])
+	}
+}
+
+// TestFilterNoiseTriplesDropsSingleRuneEntities：单字汉字实体必须在**抽取端**被挡。
+//
+// ## 为什么（2026-11-15 实测）
+//
+// 22:11 那轮归档的 19 条 reject 全部是「某一端只有 1 个字符」：
+// 俺 / 蒋 / 灯 / 词 / 话 / 钱 —— fallback POS 在「你有一条未读会话」这类
+// 句子上切出来的。它们通过 IsNoiseEntity（单字汉字不是停用词也不是标点），
+// 于是走到 commit 才被 validEntityName 的 `len < 2` 拒掉。
+//
+// 代价不止「少一条记忆」：
+//
+//	· 每条拒刷一行错误日志（19 条/轮纯噪声）
+//	· 「抽出来但全被拒」与「一条都没抽出来」在日志里长得一样，
+//	  归档判据分不清该重试还是该只迁块
+//
+// 变异验证：把 FilterNoiseTriples 里的 IsValidEntityName 判断删掉 ⇒ 红。
+func TestFilterNoiseTriplesDropsSingleRuneEntities(t *testing.T) {
+	in := []memory.Triple{
+		{Subject: "俺", Relation: "是", Object: "看手相"},
+		{Subject: "蒋", Relation: "姓", Object: "历史名人"},
+		{Subject: "灯", Relation: "开关", Object: "计数"},
+		{Subject: "未读", Relation: "会", Object: "话"},  // object 单字
+		{Subject: "这种", Relation: "不用", Object: "钱"}, // object 单字
+		// 合法：两端都 ≥2 字符
+		{Subject: "账单服务", Relation: "端口", Object: "8499"},
+	}
+	out := memory.FilterNoiseTriples(in)
+	if len(out) != 1 {
+		t.Fatalf("★ 过滤后剩 %d 条，期望 1（只有合法那条）: %+v", len(out), out)
+	}
+	if out[0].Subject != "账单服务" {
+		t.Fatalf("★ 留下的不是合法那条: %+v", out[0])
+	}
+}
+
+// TestFilterNoiseTriplesDropsOverlongEntities：超长实体同样在抽取端挡。
+//
+// 与上一條同源：`文档 --主题--> <51~79 字的 summary>` 此前会稳定产出
+// 一条必然被拒的三元组（validEntityName 上限 50）。
+func TestFilterNoiseTriplesDropsOverlongEntities(t *testing.T) {
+	long := strings.Repeat("排查漏洞", 15) // 60 rune
+	out := memory.FilterNoiseTriples([]memory.Triple{{
+		Subject: "文档", Relation: "主题", Object: long,
+	}})
+	if len(out) != 0 {
+		t.Fatalf("★ 超长 object 未被挡下: %+v", out)
+	}
+}
+
+// TestPurgeNoiseScopeUnchangedByFilterGate 钉住一个**反向**风险：
+// 抽取端的收紧不得扩大历史清理（PurgeNoise）的删除范围。
+//
+// ## 为什么必须有这条（2026-11-15 一次真实走错）
+//
+// 第一版我把「长度 ≥2」塞进了 IsNoiseEntity。它有两个消费者，语义相反：
+//   - FilterNoiseTriples（抽取端预防）—— 收紧是想要的
+//   - PurgeNoise（历史清理，按文本反查块 ID 并**删除**）—— 收紧 = 静默扩大删除
+//
+// 实测生产库有 5 个单字符文本块，其中 "2" 是纯数字 ——
+// validEntityName 明确允许纯数字（端口/分机号是合法实体值）。
+// 塞进 IsNoiseEntity 就会让 PurgeNoise 把它们当噪音删掉。
+//
+// 本判据断言：单字/纯数字块**不是** IsNoiseEntity 认定的噪音。
+//
+// 变异验证：把长度闸移回 IsNoiseEntity ⇒ 本判据红。
+func TestPurgeNoiseScopeUnchangedByFilterGate(t *testing.T) {
+	for _, name := range []string{"2", "俺", "话", "8499"} {
+		if memory.IsNoiseEntity(name) {
+			t.Errorf("★ %q 被 IsNoiseEntity 判为噪音 —— PurgeNoise 会把它（及它的块）删掉", name)
+		}
+	}
+	// 真正的噪音仍须被认定（防止把闸门挪走后失效）。
+	//
+	// 注意：标点（、，）**从来**不在 IsNoiseEntity 的判定范围内 ——
+	// 它的口径是「像不像噪音**词**」（停用词/归档标记/模板摘要），
+	// 纯标点是「不像名字」，由 validEntityName / IsValidEntityName 管。
+	// 所以这里只断言词层面的噪音。
+	for _, name := range []string{"", "什么", "的", "那个", "结果"} {
+		if !memory.IsNoiseEntity(name) {
+			t.Errorf("★ 真噪音 %q 未被 IsNoiseEntity 识别", name)
+		}
 	}
 }

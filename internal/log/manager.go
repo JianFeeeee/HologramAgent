@@ -25,7 +25,63 @@ func NewManager(logDir string, cfg ConfigProvider) *Manager {
 	return &Manager{logDir: logDir, cfg: cfg, done: make(chan struct{})}
 }
 
+// 配置键：启动后立即补跑哪一层**压缩 + 保留清理**。
+//
+// ## 为什么需要它（不是测试专用开关）
+//
+// 三个循环的**首次 tick 是「下一个周一 01:00 / 下月 1 日 02:00 / 次年 1 月 1 日
+// 03:00」**，不是「从现在起 24 小时」。实测（2026-11-15 周日 22:51 启动）：
+//
+//	weekly  首次 tick = 2h 后
+//	monthly 首次 tick = **363h 后**（约 15 天）
+//
+// ⇒ 一个从旧数据目录接管的实例，最多要等半个月才第一次清理归档；
+// 磁盘紧张时那半个月正好是最需要的窗口。
+//
+// ## 为什么是「层级」而不是布尔
+//
+// 三层会**逐级收敛**（裸日志→week_→month_→year_）。全跑一轮会把任何足够老的
+// 日志一路塌到 `year_`，这对"补齐落后"是对的，但运维常常只想跑便宜的
+// weekly（把裸日志收进周归档）而不想触发整个级联。层级取值把选择交给运维。
+//
+//	"false"（默认） 不补跑 —— 常规重启不重复扫描，行为与引入前逐字一致
+//	"weekly"       只跑 compressWeekly
+//	"monthly"      只跑 compressMonthly
+//	"yearly"       只跑 compressYearly
+//	"all"          三层依次全跑
+//
+// ## `all` 的固有语义（不是缺陷）
+//
+// 三层是**逐级收敛**的：裸日志→`week_`→`month_`→`year_`。跑完 `all` 之后
+// 任何足够老的东西都塌进 `year_<年>.tar.gz`，于是按周/按月的保留粒度对它
+// 不再适用。这是级联的固有语义（不是 bug），但要知道后果再选它。
+//
+// 保留清理**不由本配置控制**：`Start` 总是先跑一次（见 Start 的注释）。
+const compressOnStartKey = "core.log.compress_on_start"
+
 func (m *Manager) Start(ctx context.Context) {
+	// 启动时**总是**跑一次保留清理（与 compress_on_start 无关）。
+	//
+	// ## 为什么不能只在压缩 tick 之后清理
+	//
+	// 三个循环的首次 tick 是「下一个周一 01:00 / 下月 1 日 02:00 / 次年 1 月 1 日
+	// 03:00」，不是「从现在起 24 小时」。实测（2026-11-15 周日 22:51 启动）：
+	//
+	//	weekly  首次 tick = 2h 后
+	//	monthly 首次 tick = **363h 后**（约 15 天）
+	//
+	// 而 `applyRetention` 只挂在压缩 tick 上 ⇒ 一个从旧数据目录接管的实例，
+	// 最坏要等半个月才第一次清理归档 —— 磁盘紧张时那半个月正好是最需要的窗口。
+	//
+	// 保留清理本身极便宜（列目录 + stat + 删除），且完全由 `core.log.retention`
+	// 决定行为：`forever` 什么都不删，`n_months` 只删按策略本就该删的。
+	// 所以「启动即跑一次」不改变语义，只是把第一次清理提前到启动。
+	go func() {
+		m.applyRetention()
+		if level := m.cfg.GetString(compressOnStartKey, "false"); level != "false" && level != "" {
+			m.compressOnStart(level)
+		}
+	}()
 	go m.runLoop(ctx, "weekly", 24*time.Hour, m.weeklyTick, m.compressWeekly)
 	go m.runLoop(ctx, "monthly", 24*time.Hour, m.monthlyTick, m.compressMonthly)
 	go m.runLoop(ctx, "yearly", 24*time.Hour, m.yearlyTick, m.compressYearly)
@@ -38,6 +94,38 @@ func (m *Manager) Start(ctx context.Context) {
 // `panic: close of closed channel` —— 而那种改动看起来与 close 无关。
 func (m *Manager) Stop() {
 	safeclose.Safe(&m.doneOnce, m.done)
+}
+
+// compressOnStart 按配置的层级补跑一轮压缩，随后执行保留清理。
+//
+// 幂等：压缩遇同名归档跳过、删除遇不存在忽略 —— 重复启动不会破坏任何东西。
+func (m *Manager) compressOnStart(level string) {
+	log.Printf("[log manager] compress_on_start=%s: running one immediate pass", level)
+	type step struct {
+		name string
+		work func(string) error
+	}
+	steps := map[string][]step{
+		"weekly":  {{"weekly", m.compressWeekly}},
+		"monthly": {{"monthly", m.compressMonthly}},
+		"yearly":  {{"yearly", m.compressYearly}},
+		"all": {
+			{"weekly", m.compressWeekly},
+			{"monthly", m.compressMonthly},
+			{"yearly", m.compressYearly},
+		},
+	}
+	list, ok := steps[level]
+	if !ok {
+		log.Printf("[log manager] unknown %s=%q (expected false|weekly|monthly|yearly|all); "+
+			"falling back to all", compressOnStartKey, level)
+		list = steps["all"]
+	}
+	for _, st := range list {
+		if err := st.work(m.logDir); err != nil {
+			log.Printf("[log manager] %s compression error: %v", st.name, err)
+		}
+	}
 }
 
 func (m *Manager) runLoop(ctx context.Context, name string, tickInterval time.Duration, nextFn func() time.Duration, work func(string) error) {
