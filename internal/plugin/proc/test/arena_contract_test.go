@@ -159,18 +159,29 @@ func TestArenaFreeTwiceIsRejected(t *testing.T) {
 	}
 }
 
-// TestArenaFragmentationPreventsLargeRequest 钉住"总量够但无连续块"的真实失败。
+// TestArenaFragmentationIsReclaimedByReuse：碎片是否**真的**被回收到可用。
 //
-// 这是现状行为，不是期望行为：1MB 大块与小块交替铺满后释放大块，
-// 剩余空间总量超过请求的一半，但被小块隔开 ⇒ 首次适配拿不到。
-// 引入整理回收后，本判据应改为「同一请求成功且内容可读」。
-func TestArenaFragmentationPreventsLargeRequest(t *testing.T) {
+// 原判据（2026-10-16 写入）是 `if _, err := Alloc(...); err == nil {
+// t.Log("当前实现已能整理碎片；本判据需改为验证整理后的可用性") }` ——
+// 它对自己的被测对象**两种结果都不红**：能分配就只打印一行，不能分配也不管。
+// 那等于没有判据，而这正是它落到现在还挂着的原因（引入 Compact 之后
+// 它连"需修正"都不会再说）。
+//
+// 现在的判据钉住可观测结果：同样大小的请求，在碎片里**必须能成功**，
+// 且跨过碎片边界的块内容必须能原样读出（整理会移动块，
+// 读回内容错位 = 静默数据损坏）。
+func TestArenaFragmentationIsReclaimedByReuse(t *testing.T) {
 	h := newArenaHost(t)
 	arena := h.Arena()
 	limit := arena.MaxPayload()
-	big := make([]byte, limit/4)
+	quarter := limit / 4
+	big := make([]byte, quarter)
+	for i := range big {
+		big[i] = byte('a' + i%26)
+	}
 	sep := []byte("separator")
 
+	// 布局：大 小 大 小 大 小 ⇒ 大块之间有活块隔着，回收后仍是碎片。
 	putBytes(t, h, proc.OwnerHost, sep)
 	var bigRefs []proc.SharedRef
 	for i := 0; i < 3; i++ {
@@ -183,8 +194,20 @@ func TestArenaFragmentationPreventsLargeRequest(t *testing.T) {
 		}
 	}
 
-	if _, err := arena.Alloc(proc.OwnerHost, int(limit/2-1024), h.Generation()); err == nil {
-		t.Log("当前实现已能整理碎片；本判据需改为验证整理后的可用性")
+	// 三个 1/4 大的块已释放，但被分隔块隔成三段 ⇒ **单个**空闲块都不到
+	// limit/2，首次适配必然失败。要拿到 limit/2 就必须先把存活块搬到段首。
+	//
+	// ★ 请求量必须**大于任何单个空闲块**，否则首次适配直接命中，
+	// 判据会在没有整理的情况下也通过（我第一版写成 quarter 正是这个坑）。
+	spanning := bytes.Repeat([]byte("S"), quarter*2)
+	ref, err := arena.Put(proc.OwnerHost, spanning, h.Generation())
+	if err != nil {
+		t.Fatalf("★ 碎片回收后仍无法分配 %d 字节（Compact 没生效或调用点缺失）: %v",
+			len(spanning), err)
+	}
+	assertReadable(t, h, ref, spanning)
+	if err := arena.Free(proc.OwnerHost, ref); err != nil {
+		t.Fatalf("Free: %v", err)
 	}
 }
 
