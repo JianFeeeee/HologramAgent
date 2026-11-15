@@ -145,14 +145,26 @@ func (l *Ladder) Run(ctx context.Context) *Result {
 		res.NetworkOK = len(nested) == 0
 		l.addStep(res, "network restore: %d changed", len(nested))
 	}
-	if ok, _ = l.Probe(ctx, "after-network"); err == nil && ok {
+	// ★ 每次都重新取 err，不复用初始探测的那个。
+	//
+	// 原实现是 `if ok, _ = l.Probe(...); err == nil && ok` —— `err` 仍绑在
+	// 初始探测上（第二个返回值被 `_` 丢弃）。于是：
+	//   初始探测报错(errProbe) → 网络还原后探测**查明可达** → 判成失败。
+	// 也就是说"自愈在最需要它的时刻宣布放弃"，而 Steps 里明明写着
+	// post-network probe: reachable。判据
+	// TestProbeErrorStillAdvancesLadder 抓的就是这条。
+	//
+	// 语义统一成"探测结论说了算，error 只进日志"：probe 报错本身不代表
+	// 不可达（生产里的 prober 把失败吞成 (false,nil)，第三方实现未必）。
+	ok, perr := l.Probe(ctx, "after-network")
+	if ok {
 		res.Success = true
 		res.Cause = "network_config"
 		l.addStep(res, "post-network probe: reachable")
 		l.finish(res)
 		return res
 	}
-	l.addStep(res, "post-network probe: unreachable")
+	l.addStep(res, "post-network probe: unreachable: %v", perr)
 
 	// 3. 还原 config 快照 + ReloadFromConfig（L1 第二步）
 	if n, cerr := l.RestoreConfig(); cerr != nil {
@@ -161,14 +173,15 @@ func (l *Ladder) Run(ctx context.Context) *Result {
 		res.ConfigRestored = n > 0
 		l.addStep(res, "config restore: %d keys", n)
 	}
-	if ok, _ = l.Probe(ctx, "after-config"); err == nil && ok {
+	ok, perr = l.Probe(ctx, "after-config")
+	if ok {
 		res.Success = true
 		res.Cause = "config"
 		l.addStep(res, "post-config probe: reachable")
 		l.finish(res)
 		return res
 	}
-	l.addStep(res, "post-config probe: unreachable")
+	l.addStep(res, "post-config probe: unreachable: %v", perr)
 	res.QuickChatOK = false
 	l.addStep(res, "ladder exhausted")
 
