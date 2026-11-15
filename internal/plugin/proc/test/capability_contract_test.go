@@ -43,15 +43,13 @@ package test
 //	                 登记了 kernel.restart/shutdown 但 corehandler 里
 //	                 **没有任何 case**（见 todo.md §8 第 1 条），这条
 //	                 渠道当前根本不通，用判据钉它只会钉出一个必然失败的断言。
-//	io            —— ★ 这条**能从外部证伪，但只能证伪到一半**：
-//	                 模板侧 `procIO.InjectTextOpts` 写的是
-//	                 `_, _ = callWithTextOpts(...)`，同步变体
-//	                 `InjectInputSyncOpts` 也是 `if err != nil { return "" }`
-//	                 —— 被权限拒绝的错误**被模板吞掉了**，插件作者
-//	                 完全看不到"这个能力没给我"。
-//	                 实测：只声明 io 之外的组时 probe_io 仍返回 "OK"。
-//	                 这是模板侧的缺陷（与 §3.8 第 3 条闸「被拒时返回明确
-//	                 错误」相违背），已记入 todo.md §8；判据不能替它掩盖。
+//	io            —— 由**另一个判据文件**覆盖（`io_report_contract_test.go`）。
+//	                 理由：IOInjector 的方法签名由公开 SDK 固定为无返回值 /
+//	                 返回 string，被拒时**拿不到 error**，只能观测 stderr。
+//	                 那是另一条可观测通道，用另一组判据更贴切：
+//	                 本文件按「被拒是否发生」判，那边按「失败是否有声音 +
+//	                 是否点名方法/通道 + 正常时是否安静」判。
+//	                 ★ 两组都源于同一个实测缺陷（模板 `_, _ =` 吞掉错误）。
 
 import (
 	"strings"

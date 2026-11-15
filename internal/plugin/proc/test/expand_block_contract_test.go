@@ -230,9 +230,19 @@ func newExpandHost(t *testing.T) *proc.Host {
 
 func startExpandPlugin(t *testing.T, host *proc.Host, core *recordingCore, src string) *proc.Plugin {
 	t.Helper()
-	bin := buildTemplatePlugin(t, src)
-	// onCrash 传 nil：崩溃判定不属于本判据的职责。
-	p := proc.New("expand-probe", bin, t.TempDir(), nil, host, nil)
+	return startNamedPlugin(t, host, core, "expand-probe", buildTemplatePlugin(t, src), nil)
+}
+
+// startNamedPlugin 编译好的插件以指定名字/能力集启动。
+//
+// 抽出来是因为不止一个判据文件要启动插件，而**能力集**是构造参数
+// （`proc.New(..., capabilities ...string)`）—— 每个判据各自声明
+// 自己关心的那一组，不共享可变状态。
+func startNamedPlugin(t *testing.T, host *proc.Host, core proc.CoreSDK,
+	name, bin string, declared []string) *proc.Plugin {
+	t.Helper()
+	// onCrash 传 nil：崩溃判定不属于这些判据的职责。
+	p := proc.New(name, bin, t.TempDir(), nil, host, nil, declared...)
 	if err := p.Start(core); err != nil {
 		t.Fatalf("插件启动失败（握手/init 阶段）: %v", err)
 	}
