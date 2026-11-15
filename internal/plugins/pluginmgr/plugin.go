@@ -1009,9 +1009,35 @@ func (p *Plugin) installFromURL(rawURL string, overwrite bool) (interface{}, err
 	return result, nil
 }
 
+// preservedPluginDirs 是升级时必须**原样保留**的顶层目录。
+//
+// ## 为什么（2026-11-15 线上事故：重装 qq 直接把它打挂）
+//
+// 升级实现是「旧目录改名 .bak → 解压新包 → 删 .bak」。而插件包里**不含**
+// 这些东西，它们按设计就在 .gitignore / 构建期注入：
+//
+//	work/              插件运行时可写目录（HA_PLUGIN_WORK_DIR）。
+//	                   qq 的 2.2GB NapCat 运行时、QQ 登录态、配置文件都在里面 ——
+//	                   整目录丢掉的后果是它再也拉不起 QQ（"未找到 QQ 可执行文件"），
+//	                   且用户必须重新扫码登录。
+//	rawfile/napcat/    构建脚本注入的内嵌 NapCat（112MB，不入包）
+//	rawfile/models/    Vosk ASR 模型（66MB，不入包）
+//
+// 这些都不是"包的旧版本"，而是**插件自己攒下的状态与随装资源**，
+// 换个包不该把它们清掉。所以升级时先从旧目录挪出来，解压完再挪回去。
+//
+// 只保这两类：其余（plugin.bin / plugin.json / skill / 包内 rawfile）
+// 都是"包的内容"，必须被新包整体替换，否则会出现新旧混装。
+var preservedPluginDirs = []string{
+	"work",
+	filepath.Join("rawfile", "napcat"),
+	filepath.Join("rawfile", "models"),
+}
+
 // installFromData 安装（或 overwrite=true 时原地更新）插件包。
-// 更新语义：StopAndUnload 停止旧实例但保留配置表，备份旧目录→解压新包→失败回滚；
-// 更新后配置原样生效，无需用户手动卸载重装。
+// 更新语义：StopAndUnload 停止旧实例但保留配置表；保留运行时目录
+// （见 preservedPluginDirs）、备份旧目录→解压新包→失败回滚。
+// 更新后配置与运行态原样生效，无需用户手动卸载重装。
 func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, error) {
 	pkg, err := validatePackage(data)
 	if err != nil {
@@ -1069,11 +1095,27 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 		}
 		backup := target + ".bak"
 		os.RemoveAll(backup)
+
+		// ★ 先把运行时目录挪到**独立的**暂存目录：它们不在包里，
+		// 改目录名+删 .bak 会连它们一起清掉。详见 preservedPluginDirs
+		// （2026-11-15 重装 qq 的事故）。
+		//
+		// ★★ 暂存目录必须与 backup 分开：stash 先建目录，紧接着
+		// os.Rename(target, backup) 会因目标目录已存在而 EEXIST 失败。
+		stash := target + ".rt"
+		os.RemoveAll(stash)
+		kept, keepErr := stashPreservedDirs(target, stash)
+
 		if err := os.Rename(target, backup); err != nil {
+			restorePreservedDirs(target, stash, kept)
+			os.RemoveAll(stash)
 			return map[string]interface{}{
 				"error":   "backup old plugin dir failed",
 				"details": err.Error(),
 			}, nil
+		}
+		if keepErr != nil {
+			log.Printf("[pluginmgr] %s: preserve runtime dirs: %v (它们可能丢失)", pkg.Name, keepErr)
 		}
 		if err := extractPackage(data, dir); err != nil {
 			// 回滚：恢复旧目录并重新加载旧版
@@ -1085,6 +1127,10 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 					"rollback": rbErr.Error(),
 				}, nil
 			}
+			if rerr := restorePreservedDirs(target, stash, kept); rerr != nil {
+				log.Printf("[pluginmgr] %s: rollback preserve dirs: %v", pkg.Name, rerr)
+			}
+			os.RemoveAll(stash)
 			if p.sdk != nil && p.sdk.PluginMgr() != nil {
 				_ = p.sdk.PluginMgr().ReloadOne(pkg.Name)
 			}
@@ -1093,6 +1139,11 @@ func (p *Plugin) installFromData(data []byte, overwrite bool) (interface{}, erro
 				"details": err.Error(),
 			}, nil
 		}
+		// ★ 把运行时目录挪回新目录（在删 .bak / .rt 之前做）。
+		if err := restorePreservedDirs(target, stash, kept); err != nil {
+			log.Printf("[pluginmgr] %s: restore runtime dirs: %v", pkg.Name, err)
+		}
+		os.RemoveAll(stash)
 		os.RemoveAll(backup)
 
 		// ★ 随包 skill 移交（升级路径）：解压完成后才扫，否则目录还不完整。
@@ -1701,6 +1752,56 @@ func extractPackage(data []byte, pluginDir string) error {
 		}
 	}
 
+	return nil
+}
+
+// stashPreservedDirs 把 target 下的运行时目录挪到 stashRoot 下，返回已挪动的相对路径。
+//
+// 为什么要挪而不是"先拷一份"：qq 的 work/ 是 2.2GB，拷贝既慢又要双倍空间，
+// 而同一文件系统内的 rename 是瞬时的、不占额外空间。
+//
+// 不存在的目录跳过（首次安装、或插件本来就没有这些目录），不算错误。
+func stashPreservedDirs(target, stashRoot string) ([]string, error) {
+	var moved []string
+	for _, rel := range preservedPluginDirs {
+		src := filepath.Join(target, rel)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(stashRoot, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return moved, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return moved, fmt.Errorf("stash %s: %w", rel, err)
+		}
+		moved = append(moved, rel)
+	}
+	return moved, nil
+}
+
+// restorePreservedDirs 把 stashPreservedDirs 挪走的目录挪回 target。
+//
+// 挪之前先删 target 下的同名路径：那是新包解出来的（例如包内 rawfile/），
+// 而我们要的是含 napcat/models 的旧目录，两者不能混。
+// 只删我们确实 stash 过的那些相对路径，不碰其它内容。
+func restorePreservedDirs(target, stashRoot string, rels []string) error {
+	for _, rel := range rels {
+		src := filepath.Join(stashRoot, rel)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(target, rel)
+		if err := os.RemoveAll(dst); err != nil {
+			return fmt.Errorf("clear %s: %w", rel, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("restore %s: %w", rel, err)
+		}
+	}
 	return nil
 }
 
