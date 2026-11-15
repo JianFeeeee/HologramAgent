@@ -6,6 +6,7 @@ package test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -49,18 +50,46 @@ func newHarness(t *testing.T) (*pipeline.Distiller, *memory.GraphDB, *spySplitte
 	return d, g, spy
 }
 
-func assertFactRecalled(t *testing.T, g *memory.GraphDB) {
+// assertFactRecalledEventually 等待「蒸馏产出可查」，而不是**立刻**断言。
+//
+// ## 为什么要等（一次真实的 CI 偶发）
+//
+// `spySplitter.Split` 里的 `calls.Add(1)` 发生在**拆分返回之前**，而三元组
+// 落库是随后的 `d.db.Commit(...)`。因此「观察到 calls>0」只说明 Split 进去了，
+// 不说明 Commit 回来了 —— 差多少取决于调度。
+//
+// 2026-11-15 CI 实测（`406e9cf` 的 Race detector 门）：
+//
+//	--- FAIL: TestAppendThenDistillWritesQueryableFact (0.03s)
+//	    distilled fact not queryable: &{Entities:[] Relations:[]}
+//
+// 本地连跑 8 次全绿 —— 典型的判据自身竞态：本判据想验证的是
+// 「Append → 蒸馏 → **最终**可查」这个契约，不是「Split 返回那一刻就已在库里」。
+//
+// ## 为什么不能改成「先等库里有、再看 calls」
+//
+// 那会把判据变成「等 10 秒看结果」，`calls` 就失去意义了。这里的顺序保留
+// 「先确认 splitter 真的被调用过」（注入的拆分器没被调用 = 蒸馏没跑，
+// 与「跑了但还没落库」是两件事），再在**有限时间**内等落库。
+func assertFactRecalledEventually(t *testing.T, g *memory.GraphDB, deadline time.Time) {
 	t.Helper()
-	got, err := g.Recall([]string{"billing服务"}, nil, 2, "")
-	if err != nil {
-		t.Fatalf("Recall: %v", err)
-	}
-	for _, r := range got.Relations {
-		if r.SourceName == "billing服务" && r.RelationType == "端口" && r.TargetName == "8499" {
-			return
+	var lastGot string
+	for {
+		got, err := g.Recall([]string{"billing服务"}, nil, 2, "")
+		if err != nil {
+			t.Fatalf("Recall: %v", err)
 		}
+		for _, r := range got.Relations {
+			if r.SourceName == "billing服务" && r.RelationType == "端口" && r.TargetName == "8499" {
+				return
+			}
+		}
+		lastGot = fmt.Sprintf("%+v", got)
+		if !time.Now().Before(deadline) {
+			t.Fatalf("distilled fact not queryable within budget: %s", lastGot)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("distilled fact not queryable: %+v", got)
 }
 
 func TestAppendThenDistillWritesQueryableFact(t *testing.T) {
@@ -72,7 +101,9 @@ func TestAppendThenDistillWritesQueryableFact(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if spy.calls.Load() > 0 {
-			assertFactRecalled(t, g)
+			// Split 已被调用 ⇒ 蒸馏确实跑起来了。落库是它的下一步，
+			// 给一段明确预算等它完成（而不是零等待断言）。
+			assertFactRecalledEventually(t, g, deadline)
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
