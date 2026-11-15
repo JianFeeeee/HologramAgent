@@ -148,16 +148,28 @@ func (d *Daemon) checkAllAgents() {
 }
 
 func (d *Daemon) checkAgent(id types.AgentID, agent *agentInstance) {
-	// 1) agent 存活源：只有确认存活才更新 lastHB
+	// 先无锁采集输入，再在锁内落状态。
+	//
+	// 为什么不能整段持锁：`AggregateResult` 单次约 55ms（真拨 DNS/TCP），
+	// 持写锁跑它会让 GetAgentStatus（WebUI 每帧都在查）卡住；
+	// 而 agent.health/lastHB/failCount 在锁外写，与 GetAgentStatus 的读
+	// 构成数据竞争（`go test -race` 实测三处 READ/WRITE 告警）。
 	d.mu.RLock()
 	hbSrc := d.heartbeatSource
 	d.mu.RUnlock()
 
+	var hbTime time.Time
+	var hbHealth types.HealthStatus
+	var hbErr error
 	if hbSrc != nil {
-		hbTime, hbHealth, err := hbSrc(id)
-		if err != nil || hbTime.IsZero() {
+		hbTime, hbHealth, hbErr = hbSrc(id)
+	}
+	netStatus := d.nm.AggregateResult()
+
+	d.mu.Lock()
+	if hbSrc != nil {
+		if hbErr != nil || hbTime.IsZero() {
 			agent.health = types.HealthDown
-			log.Printf("[homed] agent %s heartbeat lost: %v", id, err)
 		} else {
 			agent.lastHB = hbTime
 			agent.health = hbHealth
@@ -166,27 +178,52 @@ func (d *Daemon) checkAgent(id types.AgentID, agent *agentInstance) {
 		agent.health = types.HealthUnknown
 	}
 
-	// 2) 网络：仅在配置了探活端点时才据此判定降级
-	netStatus := d.nm.AggregateResult()
+	// 网络：仅在配置了探活端点时才据此判定降级
 	if netStatus.EndpointsConfigured && !netStatus.LLMAPIReachable {
 		if agent.health != types.HealthDown {
 			agent.health = types.HealthDegraded
 		}
 		agent.failCount++
-		log.Printf("[homed] agent %s: LLM API unreachable (fail %d)", id, agent.failCount)
 	} else if agent.health == types.HealthHealthy {
 		agent.failCount = 0
 	}
+	failCount := agent.failCount
+	maxRetries := agent.cfg.RollbackPolicy.MaxRetries
+	d.mu.Unlock()
 
-	if agent.failCount >= agent.cfg.RollbackPolicy.MaxRetries {
+	if hbSrc != nil && (hbErr != nil || hbTime.IsZero()) {
+		log.Printf("[homed] agent %s heartbeat lost: %v", id, hbErr)
+	}
+	if netStatus.EndpointsConfigured && !netStatus.LLMAPIReachable {
+		log.Printf("[homed] agent %s: LLM API unreachable (fail %d)", id, failCount)
+	}
+
+	if failCount >= maxRetries {
+		// 正在关闭 ⇒ 不再发起恢复。
+		//
+		// Shutdown 只 cancel ctx，而一轮 checkAllAgents 要跑完才轮到 select
+		// 看到 Done（AggregateResult 单次约 55ms，N 个 agent 就 N 倍）。
+		// 不在这里挡一下，退出过程会给一个正在关闭的 agent 发「重启」——
+		// restartHandler 在 direct 模式下是"清理后以特殊码退出"，等于在
+		// 关闭过程中再触发一次重启流程。
+		select {
+		case <-d.ctx.Done():
+			return
+		default:
+		}
 		d.handleFailure(id, agent)
 	}
 }
 
 func (d *Daemon) handleFailure(id types.AgentID, agent *agentInstance) {
-	log.Printf("[homed] agent %s failed %d times, initiating recovery", id, agent.failCount)
+	d.mu.RLock()
+	useTracker := agent.useTracker
+	failCount := agent.failCount
+	d.mu.RUnlock()
 
-	if agent.useTracker && d.trk != nil {
+	log.Printf("[homed] agent %s failed %d times, initiating recovery", id, failCount)
+
+	if useTracker && d.trk != nil {
 		log.Printf("[homed] rolling back agent %s via change tracker", id)
 		if err := d.trk.Rollback(); err != nil {
 			log.Printf("[homed] tracker rollback failed: %v — restarting agent", err)
@@ -194,7 +231,9 @@ func (d *Daemon) handleFailure(id types.AgentID, agent *agentInstance) {
 			return
 		}
 		log.Printf("[homed] agent %s tracker rollback complete", id)
+		d.mu.Lock()
 		agent.failCount = 0
+		d.mu.Unlock()
 		return
 	}
 
@@ -235,12 +274,11 @@ func (d *Daemon) Restart(id types.AgentID) error {
 }
 
 func (d *Daemon) restartAgent(id types.AgentID, agent *agentInstance) {
+	d.mu.Lock()
 	agent.state = types.AgentStateStopped
 	agent.failCount = 0
-
-	d.mu.RLock()
 	handler := d.restartHandler
-	d.mu.RUnlock()
+	d.mu.Unlock()
 
 	if handler != nil {
 		log.Printf("[homed] agent %s restart handler invoked", id)
@@ -250,13 +288,23 @@ func (d *Daemon) restartAgent(id types.AgentID, agent *agentInstance) {
 
 	// 无真实重启通道：退回内存态复位（记录，不再假装成功）
 	d.RegisterAgent(id)
-	agent.failCount = 0
 	log.Printf("[homed] agent %s reset in-memory only (no restart handler registered)", id)
 }
 
 func (d *Daemon) GetAgentStatus(id types.AgentID) (*AgentStatus, error) {
+	// ★ 必须在**同一段读锁**内把要用的字段读出来。
+	//
+	// 原实现是 `RLock → 取指针 → RUnlock → 锁外读 agent.state/health/lastHB`，
+	// 而 checkAgent 会并发写这些字段 —— `go test -race` 实测三处
+	// READ/WRITE 告警。取指针不是快照，指针指向的 struct 是活的。
 	d.mu.RLock()
 	agent, ok := d.agents[id]
+	var state types.AgentState
+	var health types.HealthStatus
+	var lastHB time.Time
+	if ok {
+		state, health, lastHB = agent.state, agent.health, agent.lastHB
+	}
 	d.mu.RUnlock()
 
 	if !ok {
@@ -272,9 +320,9 @@ func (d *Daemon) GetAgentStatus(id types.AgentID) (*AgentStatus, error) {
 
 	return &AgentStatus{
 		ID:           id,
-		State:        agent.state,
-		Health:       agent.health,
-		Uptime:       time.Since(agent.lastHB),
+		State:        state,
+		Health:       health,
+		Uptime:       time.Since(lastHB),
 		Network:      netStatus,
 		TrackerStats: trackerStats,
 	}, nil
