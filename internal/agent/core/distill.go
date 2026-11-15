@@ -156,8 +156,214 @@ func (a *Agent) distillContext() {
 	}
 }
 
+// 归档尝试上限。超过就**降级**（保留块成果、丢弃文档），而不是无限重试。
+//
+// 为什么必须有上限（2026-11-15 实测）：此前失败只是 `continue`（保留待下一轮），
+// 没有计数、没有退避、没有死信。生产日志显示 50 个文档每小时重试一次，
+// 从 2026-11-11 起连跑了 3 天共 2950 次，输入完全相同 ⇒ 必然失败的无限循环。
+const maxArchiveAttempts = 5
+
+// archiveStats 是一轮归档的汇总。每轮只落一条日志 ——
+// 此前只有失败逐条记、成功什么都不记，运维看不出「这轮扫了多少、成了多少」。
+//
+// 更要命的是 `len(triples) == 0` 那条分支完全静默：生产实测每轮
+// `FindColdContexts` 选出 199 个候选，日志只出 37 条 —— **162 个文档
+// 走进了那个分支就消失得无影无踪**，看起来像「每轮只处理 37 个」。
+type archiveStats struct {
+	Scanned   int // FindColdContexts 选出的候选数
+	Archived  int // 完全搬完并已删除的文档数
+	Blocks    int // 本轮迁移进 L3 的块数
+	Triples   int // 本轮真正落库的三元组条数
+	NoTriples int // 一步三元组都没抽出来的文档数（只靠块迁移）
+	Empty     int // 既无三元组也无块，直接删除的空文档数
+	Retried   int // 仍留在 L2 等待下一轮的文档数
+	Quarantin int // 达到重试上限、正文已在 L3，文档被丢弃
+	Stuck     int // 达到重试上限、**没有任何内容进 L3**，文档保留待人工
+}
+
+// archiveOneColdDoc 归档**一篇**冷文档。
+//
+// ## 为什么要把「块迁移」与「三元组」拆开（2026-11-15 修正）
+//
+// 此前是一个前置门：
+//
+//	写三元组 → 块数差值==0 ⇒ continue（扣住文档）
+//	                        ⇒ 后面的 linkBlocksToDocument **永远轮不到**
+//
+// 于是「三元组抽不出来」连带「文档自带的块也全部被扣在 L2」。
+// 生产实测：702 个文档持有 11994 块，图库里命中 **0** 个。
+// 这不是重试浪费，是 L2→L3 的整条块迁移路径被一个前置判断堵死。
+//
+// 现在的语义：**正文（块）是主资产，三元组（关系）是派生加工**。
+//
+//	· 块迁移成功 ⇒ 信息已经在 L3，删文档不丢数据
+//	· 三元组一条没落库 ⇒ 关系层没建成，重试；超上限则降级（见函数内注释）
+//
+// toolDeclaresNoMemory 查工具是否声明「输出不参与记忆计算」。
+//
+// 两处来源，与 textForVector 完全一致：
+//  1. 插件工具（含 proc 桥）→ StageHost 的 ToolDef 声明
+//  2. 内置工具（core 自己的 switch 分派）→ 包级声明表
+//
+// 两处都必须查：只查一处会让另一半工具在蒸馏侧享受不到自己的声明，
+// 而那正是「机制 ≠ 接线」的经典形态（生产里两条路径各查各的，漂移了没人发现）。
+func (a *Agent) toolDeclaresNoMemory(name string) bool {
+	if a.stageHost != nil {
+		if v, found := a.stageHost.NoMemoryOf(name); found {
+			return v
+		}
+	}
+	return noMemoryOf(name)
+}
+
+func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats) {
+	if coldDoc == nil || a.memory == nil {
+		return
+	}
+	st.Scanned++
+
+	// ── 第一步：三元组（关系层，派生加工）──
+	triples := coldDocToTriples(coldDoc, a.embedder, a.toolDeclaresNoMemory)
+	written := 0
+	if len(triples) > 0 {
+		w, _, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
+		if err != nil {
+			// 写库失败是**瞬时故障**（值得重试）；「抽不出来」不是，两者必须分开。
+			log.Printf("[agent] coldcontext->graph: %s commit failed (%d triples): %v",
+				coldDoc.ID, len(triples), err)
+			a.noteArchiveFailureWith(coldDoc, st, fmt.Sprintf("commit error: %v", err), false)
+			return
+		}
+		written = w
+		st.Triples += written
+	} else {
+		// ★ 这条分支此前**完全静默**。它是「NLP 在这段原文上抽不出东西」的
+		// **常态**（归档上下文以工具输出/终端日志为正文），不是异常。
+		// 静默会让运维误判吞吐（实测 199 候选 / 37 条日志，差 162 条无人知晓）。
+		st.NoTriples++
+	}
+
+	// 空文档：既没抽出三元组、也没有任何块 ⇒ 本来就没有内容可搬。
+	//
+	// 这不是失败：删掉它不丢任何东西。此前它会走「全部被拒」那条失败路径，
+	// 白白重试 5 次才进 STUCK，日志里还会被当成「关系层建不起来」。
+	if len(triples) == 0 && len(coldDoc.Blocks) == 0 {
+		a.coldcontextStore.Remove(coldDoc.ID)
+		st.Empty++
+		return
+	}
+
+	// ── 第二步：判定「内容有没有进 L3」──
+	//
+	// 这是**防误删**的唯一判据：交付到 L3 的是「三元组（关系）」或
+	// 「文档自带的块（正文）」，任一成功即安全。
+	//
+	// ★ 为什么不能用块数差值：块 ID 由内容派生，幂等命中时块数根本不涨
+	//   （详见 memory.CommitReady 的注释）。生产实测 259 条误判里 77 条
+	//   其实写了一两条。
+	//
+	// ★ 为什么 written>0 就够：那些三元组已经通过 putTripleBlocksTx 落库，
+	//   它的端点块与原句块都在 L3 里了。
+	//
+	// ★ 「全部被拒」**不是**可重试故障：coldDocToTriples 是确定性的，
+	//   同一段文本重跑必然得到同一批被拒的三元组。此前把它当失败无限重试，
+	//   正是 3 天 2950 次的来源。
+	contentSafe := written > 0 || len(coldDoc.Blocks) > 0
+	if !contentSafe {
+		// 三元组全被拒、且文档没有块 ⇒ 真的什么都没进 L3，删了就是丢数据。
+		a.noteArchiveFailureWith(coldDoc, st, fmt.Sprintf(
+			"%d triples all rejected and document holds no blocks — nothing reached L3", len(triples)), false)
+		return
+	}
+	if len(triples) > 0 && written == 0 {
+		// 有关系候选但一条都没进库：关系层没建成，正文照常迁（下行），
+		// 且**不再重试** —— 同一段文本重抽必然同样被拒。
+		log.Printf("[agent] coldcontext->graph: %s all %d triples rejected by entity-name validation, "+
+			"archiving blocks only (no relation edges for this document)", coldDoc.ID, len(triples))
+	}
+
+	// ── 第三步：块迁移（正文）──
+	//
+	// 必须排在判定之后：块一旦写进 memory_blocks，文档就不该继续留在 L2
+	// （「一块在任一层只有一个持有者」）。所以先判「将来能不能删」，
+	// 能删才动块 —— 否则会留下「L3 有块、L2 也还留着」的窗口。
+	//
+	// 迁移不完整时会留下一个短暂的窗口（部分块在 memory_blocks、文档仍在 L2）。
+	// 这是可以接受的：PutMemoryBlocks 是 upsert、AddMemoryBlockEdge 显式查重，
+	// 下一轮重试幂等收敛（补上缺的边），不会产生重复块。
+	if len(coldDoc.Blocks) > 0 {
+		bound := a.linkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source))
+		if bound != len(coldDoc.Blocks) {
+			// 迁移不完整：此时 L3 里已有一部分块，L2 仍是全量。
+			// 重试是靠 PutMemoryBlocks/AddMemoryBlockEdge 的幂等性收敛的
+			// （已迁的块不会二次插入，缺的边会补上）。
+			log.Printf("[agent] coldcontext->graph: %s block migration incomplete (%d/%d)",
+				coldDoc.ID, bound, len(coldDoc.Blocks))
+			// contentLanded=false：**必须**。bound>0 说明部分块进了 L3，
+			// 但 bound<len 说明还有 (len-bound) 块只在 L2 —— 到上限时删掉
+			// 文档就丢那部分正文。二者不是"差不多"，是一条数据丢失线。
+			a.noteArchiveFailureWith(coldDoc, st,
+				fmt.Sprintf("block migration incomplete (%d/%d)", bound, len(coldDoc.Blocks)), false)
+			return
+		}
+		st.Blocks += bound
+	}
+
+	a.coldcontextStore.Remove(coldDoc.ID)
+	st.Archived++
+	log.Printf("[agent] coldcontext->graph: %s archived (%d blocks migrated, %d/%d triples written)",
+		coldDoc.ID, len(coldDoc.Blocks), written, len(triples))
+}
+
+// noteArchiveFailureWith 记一次失败尝试；超过上限则**放弃重试**。
+//
+// ## 为什么必须带 contentLanded（这是唯一会造成数据丢失的分支）
+//
+// 到上限时的处置只有两种，选错的代价完全不同：
+//
+//	contentLanded = true   至少一部分内容已在 L3 ⇒ L2 这份是重复的，删掉安全
+//	contentLanded = false  **什么都没进 L3** ⇒ L2 是唯一副本，删掉就是数据丢失
+//
+// 此前只有一条路径（无条件 Remove），因为旧代码里「块迁移」是第一步、
+// 一定已经成功。现在块迁移排在判定之后（为了不在 L2/L3 双重持有块），
+// 于是「一块都没迁成」变成可达状态 —— 那就**必须保留**。
+//
+// 「静默卡住」与「每小时重试一次、永远失败」都不可观测，两者都不是答案：
+// 前者丢数据，后者把问题推给日志量。所以到上限一律响亮记录，分层处置。
+func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archiveStats, reason string, contentLanded bool) {
+	attempts := a.coldcontextStore.NoteArchiveFailure(coldDoc.ID, reason)
+	if attempts < maxArchiveAttempts {
+		st.Retried++
+		log.Printf("[agent] coldcontext->graph: %s kept for retry (attempt %d/%d): %s",
+			coldDoc.ID, attempts, maxArchiveAttempts, reason)
+		return
+	}
+	// 到上限。此时要分两种情况，**不能一刀切删**：
+	if !contentLanded {
+		// 什么都没进 L3 ⇒ L2 是唯一副本。删了就是真丢数据。
+		// 保留它、不再重试（重试是确定性的必然失败），并响亮告知人工。
+		st.Stuck++
+		log.Printf("[agent] coldcontext->graph: %s STUCK after %d attempts and NOTHING reached L3 "+
+			"(last error: %s). Document kept in L2 as the only copy; automatic retry stopped. "+
+			"Action: inspect this document, then either commit the facts explicitly with "+
+			"stablemem_commit or delete it manually.", coldDoc.ID, attempts, reason)
+		return
+	}
+	// 正文已在 L3 ⇒ L2 这份是重复的，可以丢。
+	//
+	// ★ 为什么不静默删：这批文档的关系层永远建不起来，是可观测的能力缺口。
+	//   「每小时重试一次、永远失败」也一样不可观测 —— 只是把问题推给日志量。
+	a.coldcontextStore.Remove(coldDoc.ID)
+	st.Quarantin++
+	log.Printf("[agent] coldcontext->graph: %s gave up after %d attempts, blocks stay in L3, "+
+		"no relation edges for this document (last error: %s). "+
+		"This is expected for archived tool/terminal transcripts; "+
+		"if the content mattered, commit the facts explicitly with stablemem_commit.",
+		coldDoc.ID, attempts, reason)
+}
+
 // ──────────────────────────────────────────────
-// 冷文档归档：coldcontextStore → GraphDB (L3→L4)
+// 冷文档归档：coldcontextStore → GraphDB (L2→L3)
 // ──────────────────────────────────────────────
 
 func (a *Agent) archiveColdDocs() {
@@ -187,120 +393,30 @@ func (a *Agent) archiveColdDocs() {
 	}
 
 	if a.coldcontextStore != nil {
-		a.coldcontextStore.Reindex()
+		// 文档有变化才重建 TF-IDF 索引。
+		//
+		// 此前每轮无条件 Reindex：它重置 sync.Once、重建 8.3MB 训练文本、
+		// 全量 Train 一次并持写锁 —— 每小时一次的 O(全库) 停顿，
+		// 与「这轮到底有没有新文档」无关。721 个文档时那是纯浪费。
+		if a.coldcontextStore.Dirty() {
+			a.coldcontextStore.Reindex()
+		}
 	}
 
 	if a.coldcontextStore != nil {
 		coldDocs := a.coldcontextStore.FindColdContexts(72*time.Hour, 2)
+		st := archiveStats{}
 		for _, coldDoc := range coldDocs {
-			triples := coldDocToTriples(coldDoc, a.embedder)
-			if len(triples) == 0 {
-				continue
-			}
-			// ★★ 写入前取块数基线（2026-10-04）
-			//
-			// 停旧表双写后 Commit 的 ec/rc 恒为 0，
-			// 「有没有真的写进图库」只剩块数这一个信号。
-			blocksBefore, err := a.memory.MemoryBlockCount()
-			if err != nil {
-				log.Printf("[agent] coldcontext->graph: %s failed to read block count, keeping doc: %v", coldDoc.ID, err)
-				continue
-			}
-
-			ec, rc, blocks, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
-			if err != nil {
-				log.Printf("[agent] doc→graph archival error: %v", err)
-				continue
-			}
-
-			// 归档的实质是「信息从 L2 搬到 L3」。什么都没写进图库时，
-			// 信息并没有搬过去，此时删文档等于直接丢数据。
-			//
-			// ★★★ 判据必须改用**块数**（2026-10-04）
-			//
-			// 原判据是 `ec == 0 && rc == 0`。而旧表双写已停，
-			// 这两个计数**恒为 0** ⇒ 每个文档都被判定「什么都没搬」
-			// ⇒ 文档永远不会被删除，L2 归档完全停摆。
-			//
-			// ★★ 而且这个防护恰好就是它自己想防的那件事：
-			//   它写下的注释说「实测 456 字图片描述得到 0 entities 0 relations，
-			//   随后文档被删、图片与描述彻底消失」——
-			//   现在它因为同一个原因（0 计数）而**永远保留**，
-			//   只是方向反了：从「误删」变成「永不删」。
-			//
-			// 正确的判据是**块数** —— 那是旧表停写后仍然有效的信号
-			// （commitTriplesWithMedia 的第三个返回值）。
-			//
-			// ★★ 不能用 blocks 判据（2026-10-04 修正）
-			//
-			// 我第一版改成 `if blocks == 0 { 保留文档 }`，结果文档永不被删
-			// —— 因为 **blocks 恒为 0**：coldDocToTriples 产出的三元组
-			// 没有 SentenceText（也没有 MediaDigests），
-			// 而 blocks 只统计「按原句挂接的媒体块」。
-			// 文档的媒体块走的是下面的 linkBlocksToDocument，不是这条路。
-			//
-			// ★ 真正的判据在下面：linkBlocksToDocument 的绑定数。
-			//   本文档没有块时（len(coldDoc.Blocks) == 0），
-			//   「三元组有没有写进图库」才是唯一的问题 ——
-			//   而那要看**块侧**有没有新增节点。
-			//
-			// ec/rc 已停用（恒 0），日志里如实标注。
-			// ★★★ 「图库有没有真的接住内容」（2026-10-04）
-			//
-			// 原判据 `ec == 0 && rc == 0` 已失效（旧表停写后恒 0），
-			// 它会**永远保留文档** —— 而那段防护的初衷恰恰是
-			// 「实测 456 字图片描述得到 0 计数，随后文档被删、
-			// 图片与描述彻底消失」。同一个原因，方向反了：
-			// 从「误删」变成「永不删」。
-			//
-			// ★ 中途试过 `blocks == 0`，不对 —— 而**原因不是缺陷**：
-			//
-			//	blocks 只统计 attachBlocksToSentenceBlock（按原句挂接媒体块），
-			//	而归档路径上的媒体块**设计上就不走那条路**：
-			//	coldDocToTriples 明确不把媒体放进三元组
-			//	（见其注释「媒体不再参与三元组」—— 那是准确的设计，不是遗留），
-			//	媒体由 linkBlocksToDocument 以 document --contains--> block
-			//	写入 L3。所以 blocks 在归档路径上**本来就该是 0**。
-			//
-			// ★★ 记一笔我在这里犯的错（2026-10-04）：
-			//   我把那句准确的设计注释读成「过时注释」，
-			//   于是去查「coldDocToTriples 的三元组没有 SentenceText」，
-			//   把它当成「媒体块无处挂接的功能缺口」。
-			//   —— 而没有 SentenceText 正是设计本意。
-			//   更糟的是我把这个错误判断写进了本注释，
-			//   会误导下一个接手的人。
-			//
-			// ★ 可靠信号是**块总数是否增长**。三条路径任一成功都会加块：
-			//
-			//	coldDoc.Blocks         → linkBlocksToDocument（媒体块）
-			//	triples 的实体名   → putTripleBlocksTx（subject/object 块）
-			//	triples 的原句     → 原句块
-			//
-			blocksAfter, err := a.memory.MemoryBlockCount()
-			if err != nil {
-				log.Printf("[agent] coldcontext->graph: %s failed to read block count, keeping doc: %v", coldDoc.ID, err)
-				continue
-			}
-			if blocksAfter == blocksBefore {
-				log.Printf("[agent] coldcontext->graph: %s wrote no blocks, keeping doc for retry next round "+
-					"(all %d triples rejected by entity-name validation)", coldDoc.ID, len(triples))
-				continue
-			}
-			log.Printf("[agent] coldcontext->graph: %s -> added %d blocks (%d triples, "+
-				"%d media attachments, legacy table counters disabled ec=%d rc=%d)",
-				coldDoc.ID, blocksAfter-blocksBefore, len(triples), blocks, ec, rc)
-
-			// 文档持有的一等块写入 L3，并以 document --contains--> block 边关联；
-			// 块 ID 原样保留（迁移而非重建）。块迁走后删除文档即完成迁移。
-			if len(coldDoc.Blocks) > 0 {
-				if bound := a.linkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source)); bound != len(coldDoc.Blocks) {
-					log.Printf("[agent] coldcontext->graph: %s block migration incomplete (%d/%d), keeping doc for retry next round",
-						coldDoc.ID, bound, len(coldDoc.Blocks))
-					continue
-				}
-			}
-			a.coldcontextStore.Remove(coldDoc.ID)
+			a.archiveOneColdDoc(coldDoc, &st)
 		}
+		// 一轮一条汇总日志：扫了多少、成了多少、多少只迁了块、多少在重试。
+		//
+		// 没有这条日志时，运维只能看到失败逐条打印，
+		// 而「199 个候选里 162 个静默跳过」完全不可见。
+		log.Printf("[agent] coldcontext archival done: scanned=%d archived=%d empty=%d quarantined=%d stuck=%d retried=%d "+
+			"blocks=%d triples=%d no_triples=%d",
+			st.Scanned, st.Archived, st.Empty, st.Quarantin, st.Stuck, st.Retried,
+			st.Blocks, st.Triples, st.NoTriples)
 	}
 }
 
@@ -524,7 +640,7 @@ func entitySimilarity(a, b string) float64 {
 	return float64(intersect) / float64(union)
 }
 
-func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer) []memory.Triple {
+func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, toolNoMemory func(name string) bool) []memory.Triple {
 	var triples []memory.Triple
 	if coldDoc == nil {
 		return triples
@@ -571,7 +687,7 @@ func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer) []m
 	if embedder != nil {
 		e.SetEmbedder(embedder)
 	}
-	result := e.Extract(coldcontextOriginalText(coldDoc))
+	result := e.Extract(coldcontextOriginalText(coldDoc, toolNoMemory))
 	if result != nil {
 		for _, nt := range result.Triples {
 			mt := nlp.ToMemoryTriple(nt)
@@ -662,7 +778,17 @@ func (a *Agent) processConsolidation(evt *agentIO.InputEvent, input string) {
 //
 // 有 Events 时按事件顺序拼正文（原文来自文本块）；存量文档退回 Content 视图。
 // 这是「视图不是记忆」在蒸馏侧的落地：抽取必须基于原文。
-func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc) string {
+//
+// ## 工具输出也受 NoMemory 约束（2026-11-15 修正）
+//
+// `textForVector`（L1 计算层）会按 `ToolDef.NoMemory` 跳过该工具的输出，
+// 而本函数此前**无条件**把全部 ToolResults 拼进蒸馏原文 —— 同一个问题、
+// 两条路径两种待遇。后果是声明了 NoMemory 的工具（如 coldcontext_query 的
+// 回填内容）在第二次蒸馏时被放行，构成自激回路的另一个入口。
+//
+// 声明查询由调用方注入（toolNoMemory），因为它依赖 agent 的工具表；
+// nil 时按「无声明」处理（与 SDK 零值语义一致，保守参与）。
+func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc, toolNoMemory func(name string) bool) string {
 	if coldDoc == nil {
 		return ""
 	}
@@ -671,6 +797,23 @@ func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc) string {
 	}
 	var b strings.Builder
 	for _, ev := range coldDoc.Events {
+		// ★ NoMemory 事件不参与蒸馏（2026-11-15 修正）。
+		//
+		// 声明（InjectOptions.NoMemory / ChannelDef.NoMemory）说的是
+		// 「不参与记忆计算（向量化/关键词/**蒸馏**）」。L1 的 textForVector
+		// 照做了，但 L3 这条路径此前**完全无视声明**：它把 L2 里的事件原文
+		// 无条件拼起来重抽三元组。
+		//
+		// 生产后果（实测 2026-11-15）：归档上下文以终端日志 / ADB 截图回执
+		// 为正文，NLP 抽出「、」「（」「，」当主语（82% 是单字标点），
+		// 被 validEntityName 全数拒掉 ⇒ 一条都没落库 ⇒ 文档被永久扣在 L2，
+		// 每小时重试一次、连跑 3 天 2950 次。
+		//
+		// ★ 正文（块）不受影响：块迁移在 archiveOneColdDoc 的第一步就已完成，
+		//   跳过蒸馏只意味着「这批内容不进关系网」，不丢原始材料。
+		if ev.NoMemory {
+			continue
+		}
 		// ★ 思考内容必须进蒸馏原文（2026-11-11 用户裁定）。
 		//
 		// 只取 Input/Response 会丢掉决策依据："排除掉了 B，因为 B 的接口
@@ -692,6 +835,9 @@ func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc) string {
 			b.WriteString("\n")
 		}
 		for _, tr := range ev.ToolResults {
+			if toolNoMemory != nil && toolNoMemory(tr.Name) {
+				continue
+			}
 			b.WriteString(tr.Output)
 			b.WriteString("\n")
 		}

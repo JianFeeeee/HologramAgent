@@ -1252,6 +1252,11 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 				Source:    s.event.Source,
 				Content:   s.event.Input,
 				Response:  s.event.Response,
+				// ★ NoMemory 声明必须一路带到 L2（2026-11-15）。
+				//   声明说的是「不参与记忆计算」，而 L3 蒸馏会拿 L2 的原文
+				//   重新跑一遍三元组抽取。声明在 L2 边界断掉 ⇒ 同一段内容
+				//   第一次蒸馏被挡、第二次被放行 ⇒ 声明等于失效。
+				NoMemory: s.event.NoMemory,
 				// ★ 思考内容必须随事件进 L2（2026-11-11 用户裁定）。
 				// 漏了它，事件一旦被裁下，思维链就永久丢失。
 				ReasoningContent: s.event.ReasoningContent,

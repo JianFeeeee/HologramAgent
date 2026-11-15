@@ -641,11 +641,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
 
-		// ★ ec/rc 丢弃（2026-10-05）：它们恒为 0（graph.go 里
-		// relationsCreated = 0 写死），拿它们当「写了几条」会**永远说 0**。
-		// 保留位置只是因为 commitTriplesWithMedia 的签名未变。
-		//   唯一可信信号是下面实测的 newBlocks / newEdges。
-		_, _, mb, err := a.commitTriplesWithMedia(triples, string(a.id), 0, nil)
+		// ★ 判「写了几条」只能用 written（真正走进 putTripleBlocksTx 的条数）。
+		//   ec/rc 恒为 0（旧表停写），块数差值也**不可靠** —— 块 ID 由内容
+		//   派生，同一实体第二次提交走 ON CONFLICT DO UPDATE，块数不涨。
+		//   两者都不涨时「幂等命中」与「全被拒」不可区分（2026-11-15 实测）。
+		written, mb, err := a.commitTriplesWithMedia(triples, string(a.id), 0, nil)
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
@@ -674,7 +674,12 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//	加字母数字），把记忆内容改坏。
 		//
 		//	⇒ 「报假失败」比「报假成功」危险：前者会诱发破坏性动作。
-		if newBlocks == 0 && mb == 0 {
+		//
+		// ★★ 判据必须是 written，不是 newBlocks（2026-11-15 修正）：
+		//   重新提交同一件事（模型高频重试）时块与边都不涨，
+		//   用块数差值会把**成功**的幂等写入报成「全部被拒」，
+		//   而那条文案会诱导模型去改实体名、把记忆改坏。
+		if written == 0 {
 			return fmt.Sprintf("Submitted %d triples but all were rejected (nothing written). Common causes: empty entity name, longer than 50 chars, or no letters/digits. Check subject/object spelling and retry.", len(triples))
 		}
 		// ★★★ 成功分支也**不能用 ec/rc**（2026-10-05）
@@ -694,10 +699,10 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//	唯一可信的信号是 newBlocks（块总量差值）——
 		//	它直接量「库里多了几个块」，不依赖任何旧表口径。
 		if mb > 0 {
-			return fmt.Sprintf("Wrote %d memory blocks and %d relation edges, linked %d media items",
-				newBlocks, newEdges, mb)
+			return fmt.Sprintf("Wrote %d triples (%d new blocks, %d new edges), linked %d media items",
+				written, newBlocks, newEdges, mb)
 		}
-		return fmt.Sprintf("Wrote %d memory blocks and %d relation edges", newBlocks, newEdges)
+		return fmt.Sprintf("Wrote %d triples (%d new blocks, %d new edges)", written, newBlocks, newEdges)
 
 	case "stablemem_introspect":
 		if msg := requireFull(); msg != "" {

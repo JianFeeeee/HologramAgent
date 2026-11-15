@@ -639,6 +639,45 @@ func (g *GraphDB) CommitWithMedia(triples []Triple, sessionID string, turnID int
 	return g.commit(triples, sessionID, turnID, true)
 }
 
+// CommitReady 是**写入条数与媒体桥**的合并形态，供归档路径使用。
+//
+// 归档需要三样东西：
+//  1. sentenceIDs —— 媒体块挂接「原句块 --contains--> 媒体块」边要用；
+//  2. written     —— 「这次到底写进去几条」，唯一可靠的信号（见下）；
+//  3. 错误。
+//
+// ec / rc 刻意不返回：旧表停写后它们恒为 0，留着只会让人误当判据用。
+func (g *GraphDB) CommitReady(triples []Triple, sessionID string, turnID int) (sentenceIDs map[string]string, written int, err error) {
+	sentenceIDs, _, _, wIDs, cIDs, cErr := g.commitLocked(triples, sessionID, turnID, true)
+	if cErr != nil {
+		return nil, 0, cErr
+	}
+	g.emitAccess(AccessEvent{Op: "commit", Blocks: wIDs, Created: cIDs})
+	return sentenceIDs, len(wIDs) / 2, nil
+}
+
+// 为什么「块数差值」不能当写入信号（2026-11-15，实测驱动的修正）
+//
+// 归档路径（`agent/core` 的 `archiveColdDocs`）此前用 `MemoryBlockCount` 的
+// **前后差值**判断「这次提交有没有写进图库」。那个判据在两个层面上都不可靠：
+//
+//  1. 块的 ID 由内容派生（`TripleBlockID` = sha256(实体名)）；
+//     同一实体第二次提交走 `ON CONFLICT DO UPDATE` ⇒ **块数不变**。
+//     「幂等命中」与「一条都没写」在块数上完全一样。
+//  2. 关系边同理：同一 (source,target,edge_type,session_id) 幂等收敛为一条。
+//
+// 生产实测证据（`homed_2026-11-15_13-08-13.log`）：259 条
+// `wrote no blocks, keeping doc for retry` 里，**77 条**的
+// 「all N triples rejected」与实际 reject 行数不符（差正好 1）——
+// 那一条通过了校验、写进了图库，只是两个端点块早已存在。
+// 文档因此被永久扣在 L2，每小时重试一次，无计数、无退避。
+//
+// 唯一可靠的信号是**真正走进 `putTripleBlocksTx` 的条数**：它在
+// `commitLocked` 里以 `writtenIDs` 的形式已经存在。CommitReady 把它出口出来
+// （与媒体桥共用同一次 commitLocked，不重复写库）。
+//
+// 没有独立函数是因为没人需要「只要 written 不要 sentenceIDs」：
+// 唯一的消费方是归档路径，它两者都要。
 func (g *GraphDB) commit(triples []Triple, sessionID string, turnID int, trackSentences bool) (map[string]string, int, int, error) {
 	sentenceIDs, ec, rc, written, created, err := g.commitLocked(triples, sessionID, turnID, trackSentences)
 	// ★ 上报必须在 commitLocked **返回之后**（即 g.mu 已释放）。

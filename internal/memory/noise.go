@@ -50,6 +50,21 @@ func IsNoiseEntity(name string) bool {
 	if n == "" {
 		return true
 	}
+	// 纯符号 / 纯标点串不是实体（2026-11-15）。
+	//
+	// 生产实测（homed_2026-11-15_13-08-13.log，7 小时 588 条 reject）：
+	// 82% 的单字主语是标点 —— 、（140 次）\（91）（（63），（56）「（49）：（28），
+	// 以及单字 n / 蒋 / 俺 / 灯。它们全部由 fallback POS 解析器在
+	// 「终端日志 + ADB 截图回执」这类散文上切出来。
+	//
+	// 落库闸门 validEntityName 本来就会拒（要求 2~50 rune），但那时已经是
+	// commit 阶段：既刷 588 条错误日志，又让「一条都没抽出来」与
+	// 「抽出来全被拒」两种情形混在一起（归档重试的判据因此分不清）。
+	// 收在抽取端 ⇒ 垃圾三元组根本不出现在 triples 里，
+	// 归档就能干净地走「只迁块、不建关系」的路径。
+	if !hasEntityRune(n) {
+		return true
+	}
 	if stopWords[n] {
 		return true
 	}
@@ -57,6 +72,21 @@ func IsNoiseEntity(name string) bool {
 		return true
 	}
 	return IsTemplateSummaryName(n)
+}
+
+// hasEntityRune 报告串中是否存在**可作实体**的字符（字母/汉字/数字/连接符）。
+//
+// 与 internal/memory 的 validEntityName 保持同一判定口径 —— 两处必须一致，
+// 否则「抽取端放行、落库端拒绝」会重新分裂成两个事实来源。
+func hasEntityRune(s string) bool {
+	for _, ch := range s {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '\u4e00' && ch <= '\u9fff') || ch == '-' || ch == '_' ||
+			(ch >= '0' && ch <= '9') {
+			return true
+		}
+	}
+	return false
 }
 
 // IsTemplateSummaryName 判断实体名是否为模板摘要串（供调用方单独使用）。

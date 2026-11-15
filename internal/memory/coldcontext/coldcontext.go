@@ -47,6 +47,15 @@ type ColdDoc struct {
 	AccessCount int               `json:"access_count"`
 	LastAccess  time.Time         `json:"last_access"`
 
+	// ArchiveAttempts 是 L2→L3 归档失败的累计次数。
+	//
+	// ★ 为什么必须持久化（2026-11-15）：归档失败此前只是「保留待下一轮」，
+	// 没有计数、没有退避。生产实测 50 个文档每小时重试一次，从 2026-11-11
+	// 连跑 3 天共 2950 次 —— 输入完全相同 ⇒ 必然失败的无限循环。
+	// 计数进不了内存以外的任何东西 ⇒ 重启后清零，无限继续。
+	ArchiveAttempts  int    `json:"archive_attempts,omitempty"`
+	ArchiveLastError string `json:"archive_last_error,omitempty"`
+
 	// Blocks 是本文档持有的**全部**块（事件里的文本块 + 媒体块去重后的并集）。
 	//
 	// ★ 为什么还留一个扁平列表而不是只看 Events：
@@ -77,6 +86,19 @@ type ColdEvent struct {
 	Source      string           `json:"source"`
 	ToolsUsed   []string         `json:"tools_used,omitempty"`
 	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
+
+	// NoMemory 继承自 L1 的 ContextEvent.NoMemory（声明源：插件注入的
+	// payload.no_memory 或 ChannelDef.NoMemory）。
+	//
+	// ★ 为什么必须一路带到 L2（2026-11-15）：
+	// 声明说的是「不参与记忆计算」，而 **L3 蒸馏（coldDocToTriples）会
+	// 拿 L2 的原文重新跑一遍三元组抽取**。若声明在 L2 边界断了，
+	// 同一段内容就在第一次蒸馏被挡、第二次蒸馏被放行 —— 声明等于失效。
+	//
+	// 生产后果（实测）：`context_archived` 文档以终端日志/ADB 截图回执为正文，
+	// NLP 抽出「、」「（」「，」当主语，被 validEntityName 全数拒掉 ⇒
+	// 块数不涨 ⇒ 文档被永久扣在 L2，每小时重试一次，连跑 3 天 2950 次。
+	NoMemory bool `json:"no_memory,omitempty"`
 	// ToolCalls 是每次工具调用的完整记录（含参数），与 ToolResults 靠 CallID 配对。
 	ToolCalls []ToolCallItem `json:"tool_calls,omitempty"`
 
@@ -347,7 +369,6 @@ func (s *Store) Reindex() {
 func (s *Store) Insert(doc *ColdDoc) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if doc.ID == "" {
 		doc.ID = fmt.Sprintf("doc_%d", time.Now().UnixNano())
 		doc.CreatedAt = time.Now()
@@ -717,6 +738,55 @@ func (s *Store) RecentColdContexts(n int) []*ColdDoc {
 	return list
 }
 
+// Dirty 报告自上次重建索引以来是否有文档变化。
+//
+// 用途：归档循环此前**每轮无条件** Reindex（重置 sync.Once、重建全部训练
+// 文本、全量 Train 并持写锁）—— 每小时一次 O(全库) 停顿，与「这轮有没有
+// 新文档」无关。有了这个查询，调用方可以只在真变化时重建。
+func (s *Store) Dirty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dirty
+}
+
+// NoteArchiveFailure 记录一次归档失败，返回累计次数。
+//
+// ★ 为什么计数必须落盘（2026-11-15）：归档失败此前只是「保留待下一轮」，
+// 没有计数、没有退避、没有死信。生产实测 50 个文档每小时重试一次，
+// 连跑 3 天 2950 次 —— 输入完全相同，所以必然失败的无限循环。
+// 内存计数会在重启时归零，于是「永不过期」。
+//
+// 同时把 dirty 置真，让下一次 flush 把新计数写进文档 JSON。
+func (s *Store) NoteArchiveFailure(id, reason string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.docs[id]
+	if !ok {
+		return 0
+	}
+	d.ArchiveAttempts++
+	d.ArchiveLastError = reason
+	d.UpdatedAt = time.Now()
+	s.dirty = true
+	// 立即落盘：计数只在内存里的话，一次崩溃就把「已经试过 N 次」忘了，
+	// 而那正是要防的那件事（无限重试）。
+	data, err := json.MarshalIndent(d, "", "  ")
+	if err == nil {
+		os.WriteFile(filepath.Join(s.dir, d.ID+".json"), data, 0644)
+	}
+	return d.ArchiveAttempts
+}
+
+// ArchiveAttempts 返回某篇文档已失败过几次（不存在则为 0）。
+func (s *Store) ArchiveAttempts(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if d, ok := s.docs[id]; ok {
+		return d.ArchiveAttempts
+	}
+	return 0
+}
+
 func (s *Store) Remove(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -808,6 +878,8 @@ type ContextEntry struct {
 	Source    string
 	Content   string
 	Response  string
+	// NoMemory 是 L1 事件上的同一声明，原样带到 L2（见 ColdEvent.NoMemory）。
+	NoMemory bool
 	// ReasoningContent 是本轮模型的思考内容（thinking 模式的思维链）。
 	//
 	// L2 必须存它（2026-11-11 用户裁定）：决策依据、排除掉的选项、
@@ -1253,6 +1325,7 @@ func docEventsFromEntries(entries []ContextEntry) []ColdEvent {
 		ev := ColdEvent{
 			Timestamp: e.Timestamp,
 			Source:    e.Source,
+			NoMemory:  e.NoMemory,
 			ToolsUsed: append([]string(nil), e.ToolsUsed...),
 			ToolCalls: append([]ToolCallItem(nil), e.ToolCalls...),
 			Blocks:    docBlocksForEntry(e),

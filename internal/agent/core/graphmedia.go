@@ -136,21 +136,33 @@ func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 // commitTriplesWithMedia 提交三元组并把三元组显式携带的媒体变成 L3 一等块。
 //
 // seed 是调用方已持有的一等块（如 L2 文档的 Blocks），用于保持块身份；
-// 普通对话路径传 nil。blocks 是本次写入 L3 的块数。
-func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string, turnID int, seed []memory.MemoryBlock) (entities, relations, blocks int, err error) {
-	g := a.graphMem()
-	if g == nil {
-		return 0, 0, 0, fmt.Errorf("graph memory 未启用")
-	}
-	// 轻量内核（memory == nil，子只有图记忆）：只写图记忆。
-	// 写目标由 a.graph 决定 —— 根落 main，子落自己的 temp。
+// 普通对话路径传 nil。blocks 是本次按原句挂接的媒体块数。
+//
+// ★ 返回值语义（2026-11-15 修正）：entities / relations 保持恒 0（旧表停写后
+// 已无意义，签名是 SDK 契约不改），但要判断「这次到底写没写进去」，必须看
+// **written**（真正通过校验并落库的三元组条数）。不要再用块数差值 ——
+// 块 ID 由内容派生，幂等命中时块数根本不涨（详见 memory.CommitReady 的注释）。
+func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string, turnID int, seed []memory.MemoryBlock) (written, blocks int, err error) {
 	if a.memory == nil {
-		ec, rc, cErr := g.Commit(triples, sessionID, turnID)
-		return ec, rc, 0, cErr
+		// 轻量内核（memory == nil，子只有图记忆）：只写图记忆。
+		// 写目标由 a.graph 决定 —— 根落 main，子落自己的 temp。
+		g := a.graphMem()
+		if g == nil {
+			return 0, 0, fmt.Errorf("graph memory 未启用")
+		}
+		if _, _, cErr := g.Commit(triples, sessionID, turnID); cErr != nil {
+			return 0, 0, cErr
+		}
+		// 轻量内存（LightMemory）没有 CommitReady 面，写入条数按
+		// 「提交了且无错误」计 —— 那是它的真实语义边界（见 memoryface.go）。
+		return len(triples), 0, nil
 	}
-	sentenceIDs, ec, rc, err := a.memory.CommitWithMedia(triples, sessionID, turnID)
+	// ★ 媒体桥与写入条数必须**同一次 commitLocked**产出。
+	//   分成 CommitWithMedia + 单独查写入条数会走两遍写库：关系边虽然幂等，
+	//   但 sentenceIDs 与 emitAccess 会多报一轮（星图会闪两次）。
+	sentenceIDs, written, err := a.memory.CommitReady(triples, sessionID, turnID)
 	if err != nil {
-		return ec, rc, 0, err
+		return 0, 0, err
 	}
 	byRef := make(map[string]memory.MemoryBlock, len(seed))
 	for _, b := range seed {
@@ -168,7 +180,7 @@ func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string
 		}
 		blocks += a.attachBlocksToSentenceBlock(sid, t.MediaDigests, byRef, t.Scene)
 	}
-	return ec, rc, blocks, nil
+	return written, blocks, nil
 }
 
 // RecallBlocksForSentence 按**原句块 ID**取回它承载的媒体块。
