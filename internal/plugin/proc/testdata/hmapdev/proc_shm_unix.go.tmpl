@@ -1,0 +1,54 @@
+//go:build linux || darwin || freebsd
+
+package main
+
+import (
+	"fmt"
+	"os"
+	"syscall"
+)
+
+// Unix 侧共享段挂载：内核经 ExtraFiles 传入继承的 fd。
+//
+// 统一共享内存区域布局（§13.1）：
+//
+//	fd 3 = 统一区域（SuperBlock + StageContext + EvtRing）
+//	fd 4 = 事件通知（Linux eventfd / macOS pipe 读端）
+//
+// 继承的 fd 无需文件名，也不残留——这是选 memfd 而非 /dev/shm 的原因。
+const (
+	fdUnifiedShm  = 3
+	fdEvtNotifier = 4
+)
+
+// attachUnifiedShm 挂载统一共享内存区域。
+//
+// 各进程 mmap 到不同虚拟地址，段内一律用相对偏移而非指针，故仍能正确解引用
+// （实验 2 已验证父子 mmap 基址不同时偏移解引用正确）。
+func attachUnifiedShm(size int) ([]byte, error) {
+	return syscall.Mmap(fdUnifiedShm, 0, size,
+		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+}
+
+// openEvtNotifier 打开事件通知读端。
+func openEvtNotifier() (evtWaiter, error) {
+	f := os.NewFile(fdEvtNotifier, "evtnotify")
+	if f == nil {
+		return nil, fmt.Errorf("fd %d 不是有效的通知句柄", fdEvtNotifier)
+	}
+	return &unixEvtWaiter{f: f}, nil
+}
+
+// unixEvtWaiter 用 eventfd/pipe 的阻塞 Read 等待通知。
+//
+// os.NewFile 把 fd 注册进 runtime netpoller，Read 阻塞时只 park goroutine，
+// 不占 OS 线程（实验 1：200 个等待者仅增 1 个 OS 线程）。
+// 反面对照是经 cgo 调 sem_wait——那会阻塞整个 M。
+type unixEvtWaiter struct {
+	f *os.File
+}
+
+func (w *unixEvtWaiter) Wait(buf []byte) error {
+	_, err := w.f.Read(buf)
+	return err
+}

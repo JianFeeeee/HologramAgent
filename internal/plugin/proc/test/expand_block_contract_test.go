@@ -26,6 +26,7 @@ package test
 // 用真实模板，本判据沿用同一做法。
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -325,40 +326,84 @@ func (c *recordingCore) InjectInterruptMediaOpts(source, channel, text string,
 func (c *recordingCore) SetToolBlocks(blocks []pubsdk.ContentBlock) {}
 func (c *recordingCore) SetAutoRestart(enabled bool)                {}
 
-// buildTemplatePlugin 用 **hmapdev 的真实模板**编译一个插件二进制。
+// buildTemplatePlugin 用 **hmapdev 的真实 proc 运行时模板**编译一个插件二进制。
 //
-// 跳过而不是失败的情形只有一种：核对工具链/模板本身不可用
-// （例如 SDK 仓未就位）。一旦模板在，编译失败就是真缺陷 —— 那时候
-// 是"模板 ↔ 内核"两侧失配，必须响。
+// ## 模板从哪来（两份来源，缺一不可）
+//
+//	hmapdev 工具链整个 `tools/` 目录属于 SDK 仓（`.gitignore:33`），
+//	本仓**不追踪** —— 所以主仓 CI 的干净检出里没有它：
+//
+//	    工作机：third_party/hologramagentsdk/tools/hmapdev/templates/*.tmpl   （完整 SDK 仓）
+//	    CI    ：**不存在**
+//
+//	第一版只读 SDK 路径 ⇒ CI 上三条判据全部 SKIP、恒绿、什么也没测。
+//	实测（干净 worktree 检出）：`--- SKIP: TestExpansionBlockReclaimedAfterToolCall`。
+//	一条会自认为"通过"的判据比没有更糟：它让人相信扩容块路径已被守住。
+//
+//	因此把 proc 运行时那三份模板**拷进本仓**作为 CI 用的夹具：
+//
+//	    internal/plugin/proc/testdata/hmapdev/proc_main.go.tmpl        （74KB）
+//	    internal/plugin/proc/testdata/hmapdev/proc_shm_unix.go.tmpl
+//	    internal/plugin/proc/testdata/hmapdev/proc_shm_windows.go.tmpl
+//
+// ## 两份来源为什么还要**比对**
+//
+//	夹具是副本，会腐坏：SDK 改了模板而这里没刷 ⇒ CI 测的是**上一代协议**，
+//	而工作机上照样绿。所以两边同时存在时逐字节比对，不一致就**响**，
+//	并在错误里直接给出刷新命令。只在本仓有夹具时（CI）才跳过比对。
+//
+//	模板只 import `github.com/JianFeeeee/hologramagentsdk/sdk`（已 vendor 的
+//	22 个文件里就有）与 stdlib，所以夹具自带即可编译，不依赖 SDK 仓其余部分。
 func buildTemplatePlugin(t *testing.T, businessCode string) string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("环境无 go 工具链，跳过（本判据需要真实模板编译）: %v", err)
 	}
 
-	tmplDir := filepath.Join("..", "..", "..", "..",
-		"third_party", "hologramagentsdk", "tools", "hmapdev", "templates")
 	// 平台模板与 proc 运行时的平台相关部分一一对应，缺一个都编不出来。
-	runtimeTemplates := []struct{ tmpl, out string }{
-		{"proc_main.go.tmpl", "z_proc_gen.go"},
-	}
+	runtimeTemplates := []string{"proc_main.go.tmpl"}
 	if runtime.GOOS == "windows" {
-		runtimeTemplates = append(runtimeTemplates,
-			struct{ tmpl, out string }{"proc_shm_windows.go.tmpl", "z_proc_shm_windows.go"})
+		runtimeTemplates = append(runtimeTemplates, "proc_shm_windows.go.tmpl")
 	} else {
-		runtimeTemplates = append(runtimeTemplates,
-			struct{ tmpl, out string }{"proc_shm_unix.go.tmpl", "z_proc_shm_unix.go"})
+		runtimeTemplates = append(runtimeTemplates, "proc_shm_unix.go.tmpl")
 	}
 
+	vendoredDir := filepath.Join("..", "testdata", "hmapdev")
+	sdkDir := filepath.Join("..", "..", "..", "..",
+		"third_party", "hologramagentsdk", "tools", "hmapdev", "templates")
+
 	dir := t.TempDir()
-	writeOrFail(t, filepath.Join(dir, "plugin.go"), businessCode)
-	for _, rt := range runtimeTemplates {
-		data, err := os.ReadFile(filepath.Join(tmplDir, rt.tmpl))
-		if err != nil {
-			t.Skipf("hmapdev 模板 %s 不可读（SDK 仓可能未就位）: %v", rt.tmpl, err)
+	pickTemplate := func(name string) {
+		t.Helper()
+		// 优先 SDK 原版：工作机上它是最新鲜的，能让本判据跟着模板演进。
+		sdkPath := filepath.Join(sdkDir, name)
+		live, err := os.ReadFile(sdkPath)
+		if err == nil {
+			copied, cerr := os.ReadFile(filepath.Join(vendoredDir, name))
+			if cerr == nil && !bytes.Equal(live, copied) {
+				t.Fatalf("★ 本仓的模板夹具已过期：%s\n"+
+					"  SDK 原版（%d 字节）与本仓副本（%d 字节）不一致。\n"+
+					"  刷新命令：\n"+
+					"    cp %s internal/plugin/proc/testdata/hmapdev/\n"+
+					"  不刷新则 CI 测的是上一代协议，而工作机照样绿。",
+					name, len(live), len(copied), sdkPath)
+			}
+			writeOrFail(t, filepath.Join(dir, templateOutputName(name)), string(live))
+			return
 		}
-		writeOrFail(t, filepath.Join(dir, rt.out), string(data))
+		// CI：SDK 仓不在，用本仓夹具。
+		copied, cerr := os.ReadFile(filepath.Join(vendoredDir, name))
+		if cerr != nil {
+			t.Fatalf("模板 %s 既不在 SDK 仓也不在本仓夹具里（两处都缺，判据无法运行）: %v",
+				name, cerr)
+		}
+		writeOrFail(t, filepath.Join(dir, templateOutputName(name)), string(copied))
 	}
+	for _, tmpl := range runtimeTemplates {
+		pickTemplate(tmpl)
+	}
+
+	writeOrFail(t, filepath.Join(dir, "plugin.go"), businessCode)
 
 	sdkPath, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "third_party", "hologramagentsdk"))
 	if err != nil {
@@ -378,6 +423,19 @@ func buildTemplatePlugin(t *testing.T, businessCode string) string {
 		t.Fatalf("用真实模板编译插件失败: %v\n%s", err, out)
 	}
 	return bin
+}
+
+// templateOutputName 把模板文件名映射成生成文件名（与 hmapdev 一致）。
+func templateOutputName(tmpl string) string {
+	switch tmpl {
+	case "proc_main.go.tmpl":
+		return "z_proc_gen.go"
+	case "proc_shm_unix.go.tmpl":
+		return "z_proc_shm_unix.go"
+	case "proc_shm_windows.go.tmpl":
+		return "z_proc_shm_windows.go"
+	}
+	return "z_" + tmpl
 }
 
 func writeOrFail(t *testing.T, path, content string) {

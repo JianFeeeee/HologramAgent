@@ -1,0 +1,153 @@
+//go:build windows
+
+package main
+
+import (
+	"fmt"
+	"os"
+	"syscall"
+	"unsafe"
+)
+
+// Windows 侧共享段挂载：走命名对象而非继承 fd。
+//
+// 为何不能照抄 Unix：Windows 没有 fd 继承语义，`ExtraFiles` 在 os/exec 的
+// Windows 实现里不被支持。等价机制是命名内核对象——父进程用
+// CreateFileMapping / CreateEvent 建带名字的对象，子进程按同名 Open 拿到同一对象。
+//
+// 名字经环境变量传入（内核 internal/plugin/proc/plugin_windows.go 设置），
+// 而不是硬编码：多个 homed 实例并存时不能撞名。
+//
+// **这是 §9.2 的正解**：C ABI 时代 Windows 是第三套独立 ABI 实现，
+// stage 只下发 3 个字段且完全没有写回，sanitizer 这类改写型插件静默失效。
+// 现在 Windows 与 Unix 共用同一份 RPC 逻辑与同一份共享段布局，
+// 差异被收敛到本文件的三个函数里。
+const (
+	envStageShmName = "HOMEAGENT_SHM_STAGE"
+	envEvtRingName  = "HOMEAGENT_SHM_EVTRING"
+	envEvtEventName = "HOMEAGENT_EVT_EVENT"
+)
+
+// Windows API 绑定：用 LazyDLL 而非 golang.org/x/sys/windows。
+//
+// 原因：OpenFileMappingW / OpenEventW 未被标准库 syscall 包导出。
+// 引入 x/sys 会给**每个插件的 go.mod 加一个新依赖**，
+// 而「外部插件零改动」是本次迁移的硬约束（插件仅依赖公开 SDK）。
+// LazyDLL 属于标准库 syscall，零新增依赖。
+var (
+	kernel32             = syscall.NewLazyDLL("kernel32.dll")
+	procOpenFileMappingW = kernel32.NewProc("OpenFileMappingW")
+	procOpenEventW       = kernel32.NewProc("OpenEventW")
+)
+
+const (
+	winEventModifyState = 0x0002
+	winSynchronize      = 0x00100000
+)
+
+// openFileMappingW 封装 OpenFileMappingW。
+func openFileMappingW(access uint32, inherit bool, name *uint16) (syscall.Handle, error) {
+	var inheritFlag uintptr
+	if inherit {
+		inheritFlag = 1
+	}
+	r, _, err := procOpenFileMappingW.Call(
+		uintptr(access), inheritFlag, uintptr(unsafe.Pointer(name)))
+	if r == 0 {
+		return 0, err
+	}
+	return syscall.Handle(r), nil
+}
+
+// openEventW 封装 OpenEventW。
+func openEventW(access uint32, inherit bool, name *uint16) (syscall.Handle, error) {
+	var inheritFlag uintptr
+	if inherit {
+		inheritFlag = 1
+	}
+	r, _, err := procOpenEventW.Call(
+		uintptr(access), inheritFlag, uintptr(unsafe.Pointer(name)))
+	if r == 0 {
+		return 0, err
+	}
+	return syscall.Handle(r), nil
+}
+
+// attachStageShm 按名字打开 StageContext 段并映射。
+func attachStageShm(size int) ([]byte, error) {
+	return openNamedMapping(os.Getenv(envStageShmName), size, "StageContext 段")
+}
+
+// attachEvtRingShm 按名字打开事件环段并映射。
+func attachEvtRingShm(size int) ([]byte, error) {
+	return openNamedMapping(os.Getenv(envEvtRingName), size, "事件环段")
+}
+
+// openNamedMapping 打开命名共享段并映射为 []byte。
+//
+// 与 Unix 的 mmap 语义对齐：MapViewOfFile 返回的地址在本进程虚拟空间，
+// 段内偏移仍是相对的，故跨进程解引用正确。
+func openNamedMapping(name string, size int, what string) ([]byte, error) {
+	if name == "" {
+		return nil, fmt.Errorf("%s 名字未经环境变量传入", what)
+	}
+	namePtr, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, fmt.Errorf("%s 名字非法: %w", what, err)
+	}
+
+	h, err := openFileMappingW(syscall.FILE_MAP_WRITE, false, namePtr)
+	if err != nil {
+		return nil, fmt.Errorf("打开 %s（%s）: %w", what, name, err)
+	}
+
+	addr, err := syscall.MapViewOfFile(h, syscall.FILE_MAP_WRITE, 0, 0, uintptr(size))
+	if err != nil {
+		syscall.CloseHandle(h)
+		return nil, fmt.Errorf("映射 %s: %w", what, err)
+	}
+	// 句柄不关：视图存活期间必须保持句柄有效，进程退出时由 OS 回收。
+
+	return unsafe.Slice((*byte)(unsafe.Pointer(addr)), size), nil
+}
+
+// openEvtNotifier 按名字打开事件通知对象。
+func openEvtNotifier() (evtWaiter, error) {
+	name := os.Getenv(envEvtEventName)
+	if name == "" {
+		return nil, fmt.Errorf("事件通知对象名字未经环境变量传入")
+	}
+	namePtr, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, fmt.Errorf("事件对象名字非法: %w", err)
+	}
+	h, err := openEventW(winSynchronize|winEventModifyState, false, namePtr)
+	if err != nil {
+		return nil, fmt.Errorf("打开事件对象（%s）: %w", name, err)
+	}
+	return &windowsEvtWaiter{h: h}, nil
+}
+
+// windowsEvtWaiter 用命名 Event 对象等待通知。
+//
+// 与 eventfd 的差异：Event 是二元信号而非计数器，多次 SetEvent 只对应
+// 一次唤醒。这不影响正确性——消费者被唤醒后按 readSeq 追 writeSeq
+// 批量 drain，一次唤醒能处理累积的全部事件。
+//
+// WaitForSingleObject 阻塞的是 OS 线程而非仅 goroutine，故不如 eventfd
+// 的 netpoller 路径省线程。每插件一个消费 goroutine，17 插件即 17 线程，
+// 在可接受范围（实验 5 实测 17 子进程共 84 线程）。
+type windowsEvtWaiter struct {
+	h syscall.Handle
+}
+
+func (w *windowsEvtWaiter) Wait(buf []byte) error {
+	ev, err := syscall.WaitForSingleObject(w.h, syscall.INFINITE)
+	if err != nil {
+		return err
+	}
+	if ev != syscall.WAIT_OBJECT_0 {
+		return fmt.Errorf("等待事件对象返回 0x%x", ev)
+	}
+	return nil
+}
