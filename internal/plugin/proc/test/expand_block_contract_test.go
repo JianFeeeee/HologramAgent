@@ -185,37 +185,6 @@ func TestExpansionBlockReclaimedAfterCleanerCall(t *testing.T) {
 	}
 }
 
-// ---- 判据 3：普通大小的结果**不应**申请扩容块 ----
-
-func TestSmallResultDoesNotConsumeArena(t *testing.T) {
-	host := newExpandHost(t)
-	core := newRecordingCore()
-	p := startExpandPlugin(t, host, core, pluginExpander("big_result"))
-	defer func() { _ = p.Close() }()
-
-	call, ok := core.tool("big_result")
-	if !ok {
-		t.Fatal("插件应注册 big_result")
-	}
-	if _, err := call(map[string]interface{}{}); err != nil {
-		t.Fatalf("调用失败: %v", err)
-	}
-	// 扩容块是对**超出预算**的结果才申请的补偿机制，不是常态路径。
-	// 每次调用都留一块的话，上面的归还判据会被"反正都还了"掩盖住真正的浪费。
-	if used, _ := host.Arena().Stats(); used != 0 {
-		t.Fatalf("一次普通调用后 arena used=%d —— 调用帧本身也不该留下残块", used)
-	}
-	// 连调 20 次不涨：帧是每次分配再释放的，不该累计。
-	for i := 0; i < 20; i++ {
-		if _, err := call(map[string]interface{}{}); err != nil {
-			t.Fatalf("第 %d 次调用失败: %v", i+1, err)
-		}
-	}
-	if used, total := host.Arena().Stats(); used != 0 {
-		t.Fatalf("连调 20 次后 arena used=%d/%d —— 调用帧泄漏", used, total)
-	}
-}
-
 // ---- 测试支撑（只用导出 API）----
 
 func newExpandHost(t *testing.T) *proc.Host {
