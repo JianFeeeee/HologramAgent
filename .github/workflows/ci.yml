@@ -320,6 +320,15 @@ jobs:
               -coverprofile=/tmp/cover.out -covermode=atomic \
               > /tmp/cover.log 2>&1 || {
             echo "★ 覆盖率跑挂了（这条同时兜住了 go test 的失败）"
+            # ★ 先打「谁挂了」再打尾部。
+            #
+            # 2026-11-15 实测：CI 在这条上红了一次，重跑即绿（不是代码问题），
+            # 但 tail -40 只截到一堆尾部 ok 行 + 一个裸 FAIL —— **看不到是哪个包失败**，
+            # 于是一次偶发故障变成了无法归因的悬案。裸 FAIL 是 go test 的收尾行，
+            # 真正点名的那行在更上面。
+            echo "--- 失败的包（若为空则不是测试断言失败，可能是编译失败/timeout）---"
+            grep -E '^(FAIL|--- FAIL|# |panic:)' /tmp/cover.log || echo "(未匹配到失败行)"
+            echo "--- 尾部 40 行 ---"
             tail -40 /tmp/cover.log
             exit 1
           }
