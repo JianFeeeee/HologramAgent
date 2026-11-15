@@ -433,6 +433,25 @@ func (h *Host) Generation() uint64 {
 // 从 1 开始（OwnerHost=0 保留给内核），单调递增，不会重复。
 func (h *Host) NextOwnerID() uint32 { return h.nextOwner.Add(1) }
 
+// CompactArena 消除 Arena 的碎片空洞，返回被搬动的块数。
+//
+// ## 何时调用
+//
+// 分配失败（"空间不足"）时先整理再重试一次 —— 这是唯一有意义的触发点：
+// 常态调用不需要付搬块成本，真撞上碎片才付。
+//
+// ## 为什么安全
+//
+// SharedRef 只存分配表下标，搬块只改表项 offset + 换 checkId，句柄不失效；
+// SDK 侧"查表 → 访问"的窗口由块头 checkId 兜住（读到过期 offset 会得到
+// ErrStaleRef 并重查）。内核侧所有读写都在同一把锁内，不会读到搬一半的状态。
+func (h *Host) CompactArena() int {
+	if h == nil || h.arena == nil {
+		return 0
+	}
+	return h.arena.Compact(h.Generation())
+}
+
 // ReclaimRefs 强制回收指定的一批扩容块（取消超时时由 Process 调用）。
 //
 // 这些块的 owner 是**插件**，回收决策来自内核——内核此刻是全权的

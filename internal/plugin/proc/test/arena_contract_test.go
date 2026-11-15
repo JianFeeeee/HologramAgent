@@ -88,14 +88,16 @@ func TestArenaCannotBeFreedByAnotherOwner(t *testing.T) {
 	assertReadable(t, h, ref, payload)
 }
 
-// TestArenaRejectsStaleReference：旧 generation 的引用必须报错，
-// 不允许返回可能错位的数据。
-func TestArenaRejectsStaleReference(t *testing.T) {
+// TestArenaRejectsReleasedHandle：已释放的表项再读必须报错，
+// 不允许把空表项当成有效数据。
+func TestArenaRejectsReleasedHandle(t *testing.T) {
 	h := newArenaHost(t)
 	ref := putBytes(t, h, proc.OwnerHost, []byte("data"))
-
-	if _, err := h.Arena().Read(ref, h.Generation()+1); err == nil {
-		t.Fatal("过期 generation 的读取被接受")
+	if err := h.Arena().Free(proc.OwnerHost, ref); err != nil {
+		t.Fatalf("Free: %v", err)
+	}
+	if _, err := h.Arena().Read(ref, h.Generation()); err == nil {
+		t.Fatal("已释放的表项仍可读取")
 	}
 }
 
@@ -135,7 +137,7 @@ func TestArenaReclaimDoesNotTouchHostBlocks(t *testing.T) {
 // 归还时必须报错而不是破坏分配器。
 func TestArenaInvalidReferenceIsRejected(t *testing.T) {
 	h := newArenaHost(t)
-	forged := proc.SharedRef{Offset: 1, Length: 8, Generation: uint32(h.Generation())}
+	forged := proc.SharedRef{Handle: 1, Length: 8}
 
 	if err := h.Arena().Free(proc.OwnerHost, forged); err == nil {
 		t.Fatal("伪造偏移的归还未被拒绝")

@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -44,27 +45,97 @@ var (
 	arenaOff uint32
 )
 
-// ---- Exchange Arena 槽池（与内核 proc/arena.go 一致）----
+// ---- Exchange Arena 分配表（与内核 proc/arena.go 一致）----
+//
+// v3 协议：SharedRef 只存分配表下标（Handle），真实地址经表查得。
+// 表在内核共享内存头，**内核写、插件只读** —— 插件不做任何分配决策。
 
 const (
-	arOffSlotCount = 8
-	arOffSlotSize  = 12
-	slotHeaderSize = 8
+	arOffTableBase = 20 // 表项数组起点（相对 arena 段起点）
+	arOffTableCap  = 24 // 表项个数
+	tblEntrySize   = 32
+	tblOffOffset   = 0  // 块数据区真实偏移
+	tblOffLength   = 4  // 数据字节数
+	tblOffRefCount = 8  // 引用计数
+	tblOffCheckID  = 12 // 校验头
+	tblOffFlags    = 16
+	tblOffLive     = 20 // 1=占用
+
+	blkOffCheckID = 16
+	blkHeaderSize = 24
 )
 
-// arenaSlotSize 返回单个槽的总字节数（含 8 字节槽头）。
-func arenaSlotSize() uint32 {
-	return binary.LittleEndian.Uint32(region[arenaOff+arOffSlotSize:])
+// resolveRef 查分配表把 Handle 换成真实偏移。
+//
+// 每次访问必走这里：表项里的 offset 才是权威，插件不保存它。
+// errStaleRef 表示查表与访问之间块被搬过 —— 调用方应重查一次
+// （不得持块自旋等待，搬块需要内核侧写锁）。
+func resolveRef(ref SharedRef) (uint32, error) {
+	if ref.IsZero() {
+		return 0, nil
+	}
+	arenaStart := int(regionU32(arenaOff))
+	tblBase := regionU32(uint32(arenaStart) + arOffTableBase)
+	tblCap := regionU32(uint32(arenaStart) + arOffTableCap)
+	if ref.Handle >= tblCap {
+		return 0, errBadRef
+	}
+	e := arenaStart + int(tblBase) + int(ref.Handle)*tblEntrySize
+	if regionU32(uint32(e+tblOffLive)) == 0 {
+		return 0, errReleasedRef
+	}
+	base := regionU32(uint32(e + tblOffOffset))
+	wantCheck := regionU32(uint32(e + tblOffCheckID))
+	if uint64(ref.InnerOffset)+uint64(ref.Length) > uint64(regionU32(uint32(e+tblOffLength))) {
+		return 0, errBadRef
+	}
+	start := base + ref.InnerOffset
+	blkStart := int(base) - blkHeaderSize
+	if blkStart < 0 || blkStart+blkHeaderSize > len(region) {
+		return 0, errBadRef
+	}
+	// ★ 校验头比对：表项与块头不一致 ⇒ 块被迁移过，本次查表结果已过期。
+	if regionU32(uint32(blkStart+blkOffCheckID)) != wantCheck {
+		return 0, errStaleRef
+	}
+	if uint64(start)+uint64(ref.Length) > uint64(len(region)) {
+		return 0, errBadRef
+	}
+	return start, nil
+}
+
+func regionU32(off uint32) uint32 { return binary.LittleEndian.Uint32(region[off:]) }
+
+var (
+	errStaleRef    = errors.New("shared-ref: 块已迁移（校验头不一致），需重新查表")
+	errReleasedRef = errors.New("shared-ref: 表项已释放")
+	errBadRef      = errors.New("shared-ref: 引用非法（越界或偏移不合法）")
+)
+
+// resolveRefRetry 查表，遇到 errStaleRef 重查一次（搬块已结束即可命中）。
+func resolveRefRetry(ref SharedRef) (uint32, error) {
+	off, err := resolveRef(ref)
+	if errors.Is(err, errStaleRef) {
+		return resolveRef(ref)
+	}
+	return off, err
 }
 
 // ---- 调用帧（funccall 模型）辅助 ----
 
 // frameInput 返回帧内的输入段（内核写入的参数/输入文本）。
 func frameInput(frame SharedRef, inputLen uint32) []byte {
-	if frame.IsZero() || int(inputLen) > len(frame.Slice(region)) {
+	if frame.IsZero() {
 		return nil
 	}
-	return frame.Slice(region)[:inputLen]
+	start, err := resolveRef(frame)
+	if err != nil {
+		return nil
+	}
+	if int(inputLen) > int(frame.Length) {
+		return nil
+	}
+	return region[start : start+inputLen]
 }
 
 // frameOutput 尝试把 payload 写进帧的结果区（帧内 [inputLen, frame.Length)）。
@@ -73,16 +144,21 @@ func frameOutput(frame SharedRef, inputLen uint32, payload []byte, jsonFlag bool
 	if frame.IsZero() {
 		return SharedRef{}, fmt.Errorf("无调用帧")
 	}
-	area := frame.Slice(region)
+	off, err := resolveRef(frame)
+	if err != nil {
+		return SharedRef{}, err
+	}
+	area := region[off : off+frame.Length]
 	start := int(inputLen)
 	if start > len(area) || len(payload) > len(area)-start {
 		return SharedRef{}, fmt.Errorf("帧内空间不足（需 %d，剩 %d）", len(payload), len(area)-start)
 	}
-	copy(region[frame.Offset+uint32(start):], payload)
+	// 结果区在帧块内部：复用同一个 Handle，只把 InnerOffset 往后挪。
+	copy(region[off+uint32(start):], payload)
 	ref := SharedRef{
-		Offset:     frame.Offset + uint32(start),
-		Length:     uint32(len(payload)),
-		Generation: frame.Generation,
+		Handle:      frame.Handle,
+		InnerOffset: frame.InnerOffset + uint32(start),
+		Length:      uint32(len(payload)),
 	}
 	if jsonFlag {
 		ref.Flags |= sharedRefFlagJSON
@@ -101,7 +177,12 @@ func arenaPut(payload []byte, jsonFlag bool) (SharedRef, error) {
 		arenaFree(ref)
 		return SharedRef{}, fmt.Errorf("扩容块容量不足（需 %d，得 %d）", len(payload), ref.Length)
 	}
-	copy(region[ref.Offset:ref.Offset+uint32(len(payload))], payload)
+	off, err := resolveRef(ref)
+	if err != nil {
+		arenaFree(ref)
+		return SharedRef{}, err
+	}
+	copy(region[off:off+uint32(len(payload))], payload)
 	ref.Length = uint32(len(payload))
 	ref.Flags |= sharedRefFlagExpand
 	if jsonFlag {
@@ -117,20 +198,13 @@ func arenaPut(payload []byte, jsonFlag bool) (SharedRef, error) {
 // 这是**内部实现**：真实插件不直接触碰它，模板运行时在传输层自动使用。
 // 本测试插件手写 RPC，所以需要显式声明。
 type SharedRef struct {
-	Offset     uint32 `json:"offset"`
-	Length     uint32 `json:"length"`
-	Generation uint32 `json:"generation"`
-	Flags      uint32 `json:"flags"`
+	Handle      uint32 `json:"handle"`
+	InnerOffset uint32 `json:"inner_offset"`
+	Length      uint32 `json:"length"`
+	Flags       uint32 `json:"flags"`
 }
 
-func (r SharedRef) IsZero() bool { return r.Offset == 0 && r.Length == 0 }
-
-func (r SharedRef) Slice(data []byte) []byte {
-	if r.IsZero() || int(r.Offset)+int(r.Length) > len(data) {
-		return nil
-	}
-	return data[r.Offset : r.Offset+r.Length]
-}
+func (r SharedRef) IsZero() bool { return r.Handle == 0 && r.Length == 0 }
 
 // SharedRef.Flags 语义位（须与内核 internal/plugin/proc/arena.go 一致）。
 const (
@@ -436,7 +510,13 @@ func main() {
 						send(response{ID: id, Error: err.Error()})
 						return
 					}
-					copy(region[ref.Offset:ref.Offset+uint32(len(text))], text)
+					off, rerr := resolveRefRetry(ref)
+					if rerr != nil {
+						arenaFree(ref)
+						send(response{ID: id, Error: rerr.Error()})
+						return
+					}
+					copy(region[off:off+uint32(len(text))], text)
 					ref.Length = uint32(len(text))
 					// 注入标志位随参数一起过 RPC：内核据此决定这次注入是否
 					// 记入记忆、是否据此裁剪上下文、用哪个已注册 cleaner 清洗。

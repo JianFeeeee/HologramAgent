@@ -70,35 +70,39 @@ const (
 	sbOffReserved8  = 60
 )
 
-// SharedRef 是跨进程共享内存描述符，替代内联 JSON 数据。
+// SharedRef 是跨进程共享内存句柄，替代内联 JSON 数据。
 //
-// 所有数据交换（工具调用参数/结果、Cleaner、输入/输出通道消息）
-// 都通过 SharedRef 传递：RPC 只传 16 字节描述符，实际数据在共享内存中。
+// ## 为什么不存真实地址（2026-11-14 改造）
 //
-// Generation 防 ABA：扩容 remap 后旧描述符自动失效。
+// 旧版本把 **绝对偏移**放在 ref 里，于是块一旦搬动（碎片整理），
+// 所有持有者的 ref 立刻失效 —— 而内核无法批量改写插件进程里的局部变量。
+// 结果就是整理做不了，只能靠邻块合并，碎片照样让大请求失败（实测：
+// 4MB 段里 used=64 字节却分不出 2MB）。
+//
+// 现在 ref 只存**分配表下标 + 块内偏移**：
+//
+//	ref.Handle      —— 共享内存头里分配表的下标（稳定，搬块不改变）
+//	ref.InnerOffset —— 块内偏移（调用帧里"结果段"就位于帧块中间）
+//
+// 真实地址必须经分配表查询（内核写、插件只读）。搬块只改表项里的
+// offset，句柄不变 ⇒ 持有者无需感知，整理随时可做。
+//
+// ## 块头校验头
+//
+// 查表与访问之间仍存在窗口（内核可能刚好搬完块）。块头带 checkId，
+// 与表项比对不一致即说明块迁移过：调用方应重查一次表。这是小众但
+// 真实存在的竞态，必须显式处理，不能静默读到错位数据。
 type SharedRef struct {
-	Offset     uint32 // 相对区域起始的偏移
-	Length     uint32 // 数据字节数
-	Generation uint32 // 扩容后 bump
-	Flags      uint32 // 保留，位 0 = 二进制，位 1 = JSON
+	Handle      uint32 // 分配表下标（0 = 空引用）
+	InnerOffset uint32 // 块内偏移（相对块数据区起点）
+	Length      uint32 // 数据字节数
+	Flags       uint32 // 位 0 = JSON，位 1 = 扩容块
 }
 
 const sharedRefSize = 16
 
 func (r SharedRef) IsZero() bool {
-	return r.Offset == 0 && r.Length == 0
-}
-
-// Slice 从共享内存中按 SharedRef 切片。data 必须是完整的 mmap 区域。
-//
-// 注意：这是**无校验**的原始切片，仅供已知安全的路径使用。
-// 跨进程引用一律走 arenaRegion.Read（校验 generation / 槽号 / 占用状态）。
-func (r SharedRef) Slice(data []byte) []byte {
-	end := uint64(r.Offset) + uint64(r.Length)
-	if r.IsZero() || end > uint64(len(data)) {
-		return nil
-	}
-	return data[r.Offset:uint32(end)]
+	return r.Handle == 0 && r.Length == 0
 }
 
 // unifiedRegion 统一共享内存区域的内核侧视图。

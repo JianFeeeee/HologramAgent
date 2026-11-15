@@ -274,6 +274,14 @@ type HandshakeParams struct {
 	ShmSize    int    `json:"shm_size"`
 	// EvtRingSize 是事件环段大小（0 表示不支持事件环）。插件据此 mmap fd 4。
 	EvtRingSize int `json:"evt_ring_size,omitempty"`
+	// ArenaVersion 是共享内存 arena 的协议版本。
+	//
+	// ★ 破坏性变更必须靠它拦在**握手阶段**（2026-11-14）：
+	// 旧插件把 SharedRef.Offset 当真实偏移用，而新内核的 ref 只存分配表
+	// 下标 —— 旧插件会按错误地址读写共享内存，表现为**段错误**而不是报错。
+	// 段错误无法诊断（崩在插件进程里，内核只看到"进程没了"），
+	// 所以在握手时比对，不匹配就明确拒绝并告知要重编。
+	ArenaVersion uint32 `json:"arena_version"`
 }
 
 // HandshakeResult 是插件 → 内核的建链应答：上报自身信息。

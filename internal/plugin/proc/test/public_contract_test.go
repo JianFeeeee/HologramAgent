@@ -45,26 +45,15 @@ func TestKnownCapabilitiesExcludesCoreAndIsStable(t *testing.T) {
 	}
 }
 
-func TestSharedRefSliceBoundary(t *testing.T) {
-	data := []byte("0123456789")
-	ok := proc.SharedRef{Offset: 2, Length: 4}
-	if got := ok.Slice(data); string(got) != "2345" {
-		t.Fatalf("Slice=%q", got)
-	}
-	if ok.IsZero() {
-		t.Fatal("非零 ref 被判为零值")
-	}
+func TestSharedRefIsZeroSemantics(t *testing.T) {
 	if !(proc.SharedRef{}).IsZero() {
 		t.Fatal("零值 ref 未判零")
 	}
-	// 越界: offset+length 超出 data 时返回 nil
-	oob := proc.SharedRef{Offset: 8, Length: 8}
-	if oob.Slice(data) != nil {
-		t.Fatalf("越界 Slice 未返回 nil：%q", oob.Slice(data))
+	if (proc.SharedRef{Handle: 3, Length: 8}).IsZero() {
+		t.Fatal("非零 ref 被判为零值")
 	}
-	// 零值: 长度 0
-	if zero := (proc.SharedRef{}).Slice(data); zero != nil {
-		t.Fatalf("零值 ref Slice 应 nil：%q", zero)
+	if (proc.SharedRef{Length: 8}).IsZero() {
+		t.Fatal("只有长度没有句柄的 ref 被判为零值")
 	}
 }
 

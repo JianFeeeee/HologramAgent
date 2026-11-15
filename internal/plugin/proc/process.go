@@ -289,11 +289,12 @@ func (p *Process) handshake(timeout time.Duration) error {
 	defer cancel()
 
 	raw, err := p.CallContext(ctx, MethodHandshake, HandshakeParams{
-		CoreVersion: meta.Version,
-		PluginName:  p.name,
-		FieldCount:  uint32(stageFieldCount),
-		ShmSize:     p.shmSize,
-		EvtRingSize: p.evtRingSize,
+		CoreVersion:  meta.Version,
+		PluginName:   p.name,
+		FieldCount:   uint32(stageFieldCount),
+		ShmSize:      p.shmSize,
+		EvtRingSize:  p.evtRingSize,
+		ArenaVersion: arenaVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("proc: %s 握手失败: %w", p.name, err)

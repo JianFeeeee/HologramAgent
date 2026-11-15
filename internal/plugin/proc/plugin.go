@@ -319,17 +319,16 @@ func (p *Plugin) invokeToolCtx(ctx context.Context, name string, args map[string
 	}
 
 	// 内核标定调用帧：参数段 + 结果预算段。
+	// 分配帧并写入参数：frame 长度是"参数段 + 结果预算段"，
+	// 先全量分配、再把参数写进前段（Write 在块锁内校验 checkId）。
 	frame, err := arena.Alloc(OwnerHost, len(argJSON)+toolResultBudget, gen)
 	if err != nil {
 		return nil, fmt.Errorf("proc: %s 工具 %s 分配调用帧失败: %w", p.name, name, err)
 	}
 	defer func() { _ = arena.Free(OwnerHost, frame) }()
-
-	area, err := arena.Read(frame, gen)
-	if err != nil {
-		return nil, fmt.Errorf("proc: %s 工具 %s 读取调用帧失败: %w", p.name, name, err)
+	if err := arena.Write(SharedRef{Handle: frame.Handle, Length: uint32(len(argJSON))}, argJSON); err != nil {
+		return nil, fmt.Errorf("proc: %s 工具 %s 写入调用帧失败: %w", p.name, name, err)
 	}
-	copy(area[:len(argJSON)], argJSON)
 
 	raw, err := p.proc.CallContext(ctx, MethodToolInvoke, ToolInvokeParams{
 		Name:    name,
@@ -353,7 +352,7 @@ func (p *Plugin) invokeToolCtx(ctx context.Context, name string, args map[string
 	if res.ResultRef.Flags&sharedRefFlagExpand != 0 {
 		defer func() { p.freeExpand("tool", name, res.ResultRef) }()
 	}
-	data, err := arena.Read(res.ResultRef, gen)
+	data, err := arena.ReadDup(res.ResultRef, gen)
 	if err != nil {
 		return nil, fmt.Errorf("proc: %s 工具 %s 读取共享结果失败: %w", p.name, name, err)
 	}
@@ -485,12 +484,9 @@ func (p *Plugin) invokeOutput(channel string, args map[string]interface{}) (inte
 			return nil, fmt.Errorf("proc: %s 输出通道 %s 分配调用帧失败: %w", p.name, channel, err)
 		}
 		defer func() { _ = arena.Free(OwnerHost, frame) }()
-
-		area, err := arena.Read(frame, gen)
-		if err != nil {
-			return nil, fmt.Errorf("proc: %s 输出通道 %s 读取调用帧失败: %w", p.name, channel, err)
+		if err := arena.Write(SharedRef{Handle: frame.Handle, Length: uint32(len(argJSON))}, argJSON); err != nil {
+			return nil, fmt.Errorf("proc: %s 输出通道 %s 写入调用帧失败: %w", p.name, channel, err)
 		}
-		copy(area[:len(argJSON)], argJSON)
 		params.Frame = frame
 		params.ArgsLen = uint32(len(argJSON))
 	}
@@ -513,7 +509,7 @@ func (p *Plugin) invokeOutput(channel string, args map[string]interface{}) (inte
 		if outRes.ResultRef.Flags&sharedRefFlagExpand != 0 {
 			defer func() { p.freeExpand("output", channel, outRes.ResultRef) }()
 		}
-		data, err := arena.Read(outRes.ResultRef, gen)
+		data, err := arena.ReadDup(outRes.ResultRef, gen)
 		if err != nil {
 			return nil, fmt.Errorf("proc: %s 输出通道 %s 读取共享结果失败: %w", p.name, channel, err)
 		}

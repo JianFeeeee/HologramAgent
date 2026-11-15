@@ -233,7 +233,7 @@ func (h *coreHandler) Handle(method string, params json.RawMessage) (interface{}
 // 子进程分配自己的槽并在收到应答后释放，因此这里读到的一定是 busy 槽。
 func (h *coreHandler) resolveText(p injectParams) string {
 	if !p.TextRef.IsZero() {
-		data, err := h.host.Arena().Read(p.TextRef, h.host.Generation())
+		data, err := h.host.Arena().ReadDup(p.TextRef, h.host.Generation())
 		if err != nil {
 			return ""
 		}
@@ -370,7 +370,7 @@ func (h *coreHandler) resolveJSONRef(ref SharedRef, out interface{}) error {
 	if ref.IsZero() {
 		return nil
 	}
-	data, err := h.host.Arena().Read(ref, h.host.Generation())
+	data, err := h.host.Arena().ReadDup(ref, h.host.Generation())
 	if err != nil {
 		return fmt.Errorf("读取共享内容失败: %w", err)
 	}
@@ -438,11 +438,9 @@ func (h *coreHandler) invokeCleanerText(scope, name, text string) (string, error
 	}
 	defer func() { _ = arena.Free(OwnerHost, frame) }()
 
-	area, err := arena.Read(frame, gen)
-	if err != nil {
+	if err := arena.Write(SharedRef{Handle: frame.Handle, Length: uint32(len(text))}, []byte(text)); err != nil {
 		return "", err
 	}
-	copy(area[:len(text)], text)
 
 	params := CleanerInvokeParams{
 		Scope:    scope,
@@ -468,7 +466,7 @@ func (h *coreHandler) invokeCleanerText(scope, name, text string) (string, error
 			}
 		}()
 	}
-	data, err := arena.Read(res.TextRef, gen)
+	data, err := arena.ReadDup(res.TextRef, gen)
 	if err != nil {
 		return "", err
 	}
