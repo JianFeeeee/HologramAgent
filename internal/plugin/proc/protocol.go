@@ -290,6 +290,17 @@ type HandshakeResult struct {
 	SDKVersion string `json:"sdk_version"`
 	PluginName string `json:"plugin_name"`
 	PID        int    `json:"pid"`
+	// ArenaVersion 是插件编译期绑定的 arena 协议版本。
+	//
+	// ★ 这是**内核侧**唯一能拦住旧插件的东西（2026-11-15）：
+	// HandshakeParams 里那份 arena_version 只让插件校验内核，方向是反的。
+	// 旧插件不认识这个字段 ⇒ 回报 0。若不校验，新内核照旧接受它，而旧插件
+	// 会把 arena.alloc 的应答（{handle, inner_offset, ...}）反序列化进
+	// {offset, length, ...} ⇒ Offset 解出 0 ⇒ 往 region[0:len] 写 ——
+	// 那正好是 SuperBlock，**静默破坏整个共享内存头**（比段错误更难查）。
+	//
+	// 所以两个方向都要堵：内核查插件（这里），插件查内核（HandshakeParams）。
+	ArenaVersion uint32 `json:"arena_version"`
 }
 
 // StageInvokeParams 是 stage.invoke 的参数。

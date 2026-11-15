@@ -303,6 +303,16 @@ func (p *Process) handshake(timeout time.Duration) error {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("proc: %s 握手应答解析失败: %w", p.name, err)
 	}
+	// arena 协议版本必须严格相等。
+	//
+	// 为什么必须在**内核侧**也查一次：旧插件不认识 arena_version 字段，
+	// 回报 0；若放过，它会把 {handle, inner_offset} 的应答反序列化进
+	// {offset, length} ⇒ Offset=0 ⇒ 往 region[0:] 写，直接覆盖 SuperBlock。
+	// 这是静默破坏（不是崩溃），排查成本远高于握手期明确报错。
+	if res.ArenaVersion != arenaVersion {
+		return fmt.Errorf("proc: %s arena 协议版本不匹配（插件 %d，内核 %d）——插件必须用配套 hmapdev 重编",
+			p.name, res.ArenaVersion, arenaVersion)
+	}
 	// 主版本号是唯一兼容判据：跨主版本必是被破坏性变更分开的两端。
 	if want, got := MajorVersion(meta.Version), MajorVersion(res.SDKVersion); want != got {
 		return fmt.Errorf("proc: %s 主版本不匹配（插件 SDK %s，内核 %s）——请用配套 hmapdev 重编",
