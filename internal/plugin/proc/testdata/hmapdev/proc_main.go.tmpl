@@ -989,36 +989,12 @@ func buildPluginSDK(name string) *sdk.PluginSDK {
 	return base
 }
 
-// logIOFailure 把一次注入失败**大声**报出来。
+// logIOFailure 把注入失败写进日志。
 //
-// ## 为什么存在这个函数（缺陷的来历）
-//
-// 2026-11-15 由 proc 的能力阶梯判据实测发现：manifest 只声明 `memory` 的
-// 插件调 `InjectText` 拿到的是「成功」、调 `InjectInputSync` 拿到空字符串。
-// 而这背后是权限闸门的拒绝 —— 插件作者**完全看不到**「这段代码没权限执行」，
-// 只会以为自己那段逻辑「没生效」或「对方没回我」。
-//
-// 这直接违背 §3.8 第三道闸：被拒时必须返回**明确错误**而不是静默。
-//
-// ## 为什么不去改签名返回 error
-//
-// `IOInjector` 的方法签名由公开 SDK 固定（`InjectText(source, channel, text)`
-// 无返回值），存量插件按那个签名编译。改接口 = 全部插件重新编译 +
-// 作者改代码，违反「外部插件零改动」的硬约束。
-//
-// ⇒ 折中：写 stderr。stderr 是插件的**日志通道**，内核把它直通到自己的日志
-// （internal/plugin/proc/process.go 的 `cmd.Stderr = os.Stderr`），
-// 所以运维在 homed 日志里能看到、插件作者在自己本地也能看到。
-// 语义保持 fire-and-forget 不变：不重试、不阻塞、不改变控制流。
-//
-// ## 为什么带上 source/channel
-//
-// 一个插件可能同时服务多个会话/通道（QQ 群 + 私聊、邮件 + WebUI）。
-// 只说「注入失败」无法定位是哪个通道，排查时要翻全部业务日志。
-func logIOFailure(method, source, channel string, err error) {
-	log.Printf("[plugin-io] %s failed (source=%q channel=%q): %v\n"+
-		"        ^ 若错误提到「被拒」「缺少 … 能力」，请在 plugin.json 的 "+
-		"capabilities 数组中声明 io", method, source, channel, err)
+// 注入方法没有返回值（IOInjector 的签名由公开 SDK 固定），错误只能这样出来。
+// 内核的拒绝消息本身已带能力名与修法，这里只负责让它可见。
+func logIOFailure(method string, err error) {
+	log.Printf("[plugin-io] %s: %v", method, err)
 }
 
 type procIO struct{}
@@ -1041,23 +1017,21 @@ func (procIO) InjectInputSync(s, c, t string) string {
 // 以下为带标志位的注入：opts 决定这次注入是否进记忆、是否据此裁剪上下文。
 
 func (procIO) InjectTextOpts(s, c, t string, opts sdk.InjectOptions) {
-	// 注入是 fire-and-forget：不重试、不阻塞业务。但失败必须**留下痕迹**，
-	// 理由见 logIOFailure 的注释（那里记着实测发现这个缺陷的经过）。
+	// 注入是 fire-and-forget：不重试、不阻塞业务，但失败要留痕。
 	if _, err := callWithTextOpts("io.injectText", s, c, t, opts); err != nil {
-		logIOFailure("io.injectText", s, c, err)
+		logIOFailure("io.injectText", err)
 	}
 }
 func (procIO) InjectInterruptTextOpts(s, c, t string, opts sdk.InjectOptions) {
 	if _, err := callWithTextOpts("io.injectInterrupt", s, c, t, opts); err != nil {
-		logIOFailure("io.injectInterrupt", s, c, err)
+		logIOFailure("io.injectInterrupt", err)
 	}
 }
 func (procIO) InjectInputSyncOpts(s, c, t string, opts sdk.InjectOptions) string {
 	raw, err := callWithTextOpts("io.injectInputSync", s, c, t, opts)
 	if err != nil {
-		// 空字符串在这里有两种完全不同的含义：「对方没回复」与「这次调用
-		// 根本没被允许执行」。后者不报出来，作者会一直以为是前者。
-		logIOFailure("io.injectInputSync", s, c, err)
+		// 空串无法区分「没人回」与「没权限执行」，所以要报。
+		logIOFailure("io.injectInputSync", err)
 		return ""
 	}
 	var r struct {
@@ -1102,7 +1076,7 @@ func (procIO) InjectInputMediaOpts(s, c, t string, blocks []sdk.ContentBlock, op
 	defer free()
 	applyInjectOpts(args, opts)
 	if err := callCoreVoid("io.injectMedia", args); err != nil {
-		logIOFailure("io.injectMedia", s, c, err)
+		logIOFailure("io.injectMedia", err)
 	}
 }
 
@@ -1112,7 +1086,7 @@ func (procIO) InjectInputMediaSyncOpts(s, c, t string, blocks []sdk.ContentBlock
 	applyInjectOpts(args, opts)
 	raw, err := callCore("io.injectMediaSync", args)
 	if err != nil {
-		logIOFailure("io.injectMediaSync", s, c, err)
+		logIOFailure("io.injectMediaSync", err)
 		return ""
 	}
 	var r struct {
@@ -1127,7 +1101,7 @@ func (procIO) InjectInterruptMediaOpts(s, c, t string, blocks []sdk.ContentBlock
 	defer free()
 	applyInjectOpts(args, opts)
 	if err := callCoreVoid("io.injectInterruptMedia", args); err != nil {
-		logIOFailure("io.injectInterruptMedia", s, c, err)
+		logIOFailure("io.injectInterruptMedia", err)
 	}
 }
 

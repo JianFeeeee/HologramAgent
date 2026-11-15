@@ -43,13 +43,9 @@ package test
 //	                 登记了 kernel.restart/shutdown 但 corehandler 里
 //	                 **没有任何 case**（见 todo.md §8 第 1 条），这条
 //	                 渠道当前根本不通，用判据钉它只会钉出一个必然失败的断言。
-//	io            —— 由**另一个判据文件**覆盖（`io_report_contract_test.go`）。
-//	                 理由：IOInjector 的方法签名由公开 SDK 固定为无返回值 /
-//	                 返回 string，被拒时**拿不到 error**，只能观测 stderr。
-//	                 那是另一条可观测通道，用另一组判据更贴切：
-//	                 本文件按「被拒是否发生」判，那边按「失败是否有声音 +
-//	                 是否点名方法/通道 + 正常时是否安静」判。
-//	                 ★ 两组都源于同一个实测缺陷（模板 `_, _ =` 吞掉错误）。
+//	io            —— 模板侧把注入错误**吞掉**了（`_, _ = callWithTextOpts(...)`），
+//	                 插件侧拿不到 error、也没有别的可观测出口，所以这组
+//	                 测不出边界。是缺陷，记在 todo.md §8 第 10 条，不是遗漏。
 
 import (
 	"strings"
