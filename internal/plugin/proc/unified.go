@@ -92,11 +92,30 @@ const (
 // 查表与访问之间仍存在窗口（内核可能刚好搬完块）。块头带 checkId，
 // 与表项比对不一致即说明块迁移过：调用方应重查一次表。这是小众但
 // 真实存在的竞态，必须显式处理，不能静默读到错位数据。
+//
+// ## ★ 必须显式声明 json tag（2026-11-15 线上事故）
+//
+// 曾以为"Go 的 JSON 字段匹配大小写不敏感，所以 Handle/InnerOffset 这类
+// 单词字段不需要 tag"。前半句对，但它**不忽略下划线**：
+//
+//	插件发 {"inner_offset":9}  → 内核字段 InnerOffset 匹配不上 ⇒ 解出 0
+//	插件发 {"offset":7}        → 内核字段 Offset 能匹配（无下划线，旧版侥幸可用）
+//
+// 旧协议三个字段（Offset/Length/Generation）恰好都是单词，于是这个坑
+// 一直被掩盖；改成 InnerOffset 后立刻爆出来 —— 表现为内核把结果从**块首**
+// 读起，读到"参数 JSON + 结果 JSON"拼接体，报
+// `invalid character '{' after top-level value`。
+//
+// 症状极具误导性：插件侧一切正常（它写在了正确位置），只有内核读错，
+// 且只有"结果写进帧内（未走扩容块）"的调用会中招 —— 正是 cmd_run 这类
+// 结果小于预算的常见调用。走扩容块的反而正常（InnerOffset 恰好为 0）。
+//
+// 所以这里逐个写明 tag，与 SDK 模板侧的 SharedRef 严格对齐。
 type SharedRef struct {
-	Handle      uint32 // 分配表下标（0 = 空引用）
-	InnerOffset uint32 // 块内偏移（相对块数据区起点）
-	Length      uint32 // 数据字节数
-	Flags       uint32 // 位 0 = JSON，位 1 = 扩容块
+	Handle      uint32 `json:"handle"`       // 分配表下标（0 = 空引用）
+	InnerOffset uint32 `json:"inner_offset"` // 块内偏移（相对块数据区起点）
+	Length      uint32 `json:"length"`       // 数据字节数
+	Flags       uint32 `json:"flags"`        // 位 0 = JSON，位 1 = 扩容块
 }
 
 const sharedRefSize = 16
