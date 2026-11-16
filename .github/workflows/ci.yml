@@ -186,7 +186,10 @@ jobs:
         working-directory: third_party/hologramagentsdk
         run: |
           set -euo pipefail
-          go test ./sdk/ ./meta/ -count=1 -timeout 5m
+          # ★ 路径必须是 ./sdk/test/：SDK 仓在 3a38ef5 把测试从 ./sdk/ 搬到
+          # sdk/test/（`package sdk_test` 形式）。写成 ./sdk/ 会打印
+          # "[no test files]" 而 **CI 仍然绿** —— 33 个 RUN 一个都没跑。
+          go test ./sdk/test/ ./meta/ -count=1 -timeout 5m
 
       # ── CI 配置门禁自检（.github/scripts/check-ci-gates.py）──
       #

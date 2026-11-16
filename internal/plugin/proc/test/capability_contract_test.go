@@ -432,3 +432,105 @@ func TestKnownCapabilitiesExcludesUnimplementedKernelControl(t *testing.T) {
 		}
 	}
 }
+
+// ---- 判据：每个 protocol method 常量都必须被分类 ----
+
+// TestEveryMethodConstantIsClassified：`protocol.go` 里**每一个导出的
+// `Method*` 常量**都必须能在 `CapabilityOf` 里查到能力组。
+//
+// ★ 这条是 §8 第 2 条补回来的东西：`53cdc7f` 删掉的
+// `TestCapability_AllMethodsClassified` 自己标注过「本文件最重要的测试」。
+// 它守的是「新增 method 忘了登记能力组」—— 而 `allows()` 对**未登记**的
+// method 返回 `(true, CapCore)`（按基础能力放行），于是漏登记不会报错，
+// 只会让权限梯度**静默少一格**。
+//
+// 判据的入口是 `MethodNames()` / `CapabilityOf()`（2026-11-16 新导出的两个
+// 诊断出口）—— 不读私有 map，符合「判据面向接口」。
+//
+// 变异：把 methodCapability 里任意一条删掉 ⇒ 本例红。
+func TestEveryMethodConstantIsClassified(t *testing.T) {
+	// protocol.go 的 method 常量清单（导出面）。这里用**显式列表**而不是
+	// 反射：反射能拿到常量的名字但拿不到「它是不是 method」这个语义，
+	// 而显式列表被删/被加时编译期就会暴露（与本表比对）。
+	//
+	// 维护约定：protocol.go 加 method 常量时必须同步这里 ——
+	// 这正是「有人守着它继续对」的含义。
+	want := proc.MethodNames()
+	registered := map[string]bool{}
+	for _, m := range want {
+		registered[m] = true
+	}
+
+	// ★ 全量：协议面**每一个** method 常量都必须在册。
+	//
+	// 只用抽查（原本写 5 条）会漏 —— 实测把 MethodMemoryIntrospect 的登记
+	// 删掉，抽查仍然全绿。必须逐个比。
+	//
+	// methodConsts 是 protocol.go 里全部 `Method* = "<name>"` 的**名字取值**。
+	// 维护约定：加 method 常量时把名字加进这里（漏加 ⇒ 本条红，正是想要的）。
+	methodConsts := []string{
+		proc.MethodAPIRegister, proc.MethodArenaAlloc, proc.MethodArenaFree,
+		proc.MethodCallCancel, proc.MethodCleanerInvoke, proc.MethodDocInsert,
+		proc.MethodDocInsertMedia, proc.MethodDocQuery, proc.MethodDocRemove,
+		proc.MethodDocStats, proc.MethodEventsSubscribe, proc.MethodEventsUnsubscribe,
+		proc.MethodHandshake, proc.MethodIOInjectInterrupt, proc.MethodIOInjectInterruptMedia,
+		proc.MethodIOInjectMedia, proc.MethodIOInjectMediaSync, proc.MethodIOInjectSync,
+		proc.MethodIOInjectText, proc.MethodIOInjectTextNoMem, proc.MethodIOSetToolBlocks,
+		proc.MethodInputRegister, proc.MethodKernelRestart, proc.MethodKernelShutdown,
+		proc.MethodKnowledgeAdd, proc.MethodKnowledgeAddMedia, proc.MethodKnowledgeList,
+		proc.MethodKnowledgeSearch, proc.MethodLLMCurrentSource, proc.MethodLLMListSources,
+		proc.MethodLLMSetSource, proc.MethodLifecycleAutoRestart, proc.MethodMemoryCommit,
+		proc.MethodMemoryIntrospect, proc.MethodMemoryMerge, proc.MethodMemoryPurge,
+		proc.MethodMemoryRecall, proc.MethodOutputInvoke, proc.MethodOutputRegister,
+		proc.MethodPluginInit, proc.MethodPluginIsDisabled, proc.MethodPluginListLoaded,
+		proc.MethodPluginMgrIsRuntimeStopped, proc.MethodPluginMgrStart, proc.MethodPluginMgrStop,
+		proc.MethodPluginReloadOne, proc.MethodPluginStart, proc.MethodPluginStop,
+		proc.MethodSecretsAvailable, proc.MethodSecretsDecrypt, proc.MethodSecretsEncrypt,
+		proc.MethodSecretsFill, proc.MethodSecretsForget, proc.MethodSecretsList,
+		proc.MethodSecretsStore, proc.MethodSecurityDeclareProfile, proc.MethodSecurityDeclareProfiles,
+		proc.MethodSettingsDataDir, proc.MethodSettingsDefs, proc.MethodSettingsDump,
+		proc.MethodSettingsGet, proc.MethodSettingsGetCore, proc.MethodSettingsGetPlugin,
+		proc.MethodSettingsGetSecret, proc.MethodSettingsList, proc.MethodSettingsListCore,
+		proc.MethodSettingsListPlugin, proc.MethodSettingsPlugins, proc.MethodSettingsRegisterDef,
+		proc.MethodSettingsSet, proc.MethodSettingsSetCore, proc.MethodSettingsSetPlugin,
+		proc.MethodSettingsSetSecret, proc.MethodSocialGetNetwork, proc.MethodSocialGetPerson,
+		proc.MethodSocialGetRelation, proc.MethodSocialGetTrait, proc.MethodSocialListPersons,
+		proc.MethodStageInvoke, proc.MethodStageLock, proc.MethodStageRegister,
+		proc.MethodStageUnlock, proc.MethodTextMemoryAppend, proc.MethodToolInvoke,
+		proc.MethodToolRegister,
+	}
+
+	// ★ 内核 → 插件 方向的 method **不需要**登记能力组：
+	// 它们由内核主动调用插件（`p.proc.Call(MethodCleanerInvoke, ...)`），
+	// 从不经过 `corehandler.Handle` 的 `allows()` 检查。
+	//
+	// 这不是遗漏，是方向不同 —— 所以判据必须把它们排除，
+	// 否则会为"没登记"报假红。
+	kernelToPlugin := map[string]bool{
+		proc.MethodCleanerInvoke: true,
+		proc.MethodOutputInvoke:  true,
+		proc.MethodPluginInit:    true,
+		proc.MethodPluginStart:   true,
+		proc.MethodPluginStop:    true,
+		proc.MethodToolInvoke:    true,
+		proc.MethodStageInvoke:   true,
+	}
+	for _, m := range methodConsts {
+		if kernelToPlugin[m] {
+			continue
+		}
+		if _, ok := proc.CapabilityOf(m); !ok {
+			t.Errorf("★ method %q 未登记能力组 —— allows() 会按 CapCore 放行，"+
+				"权限梯度静默少一格（新增 method 忘登记就是这个形态）", m)
+		}
+	}
+
+	// 反例保护：随便一个不存在的方法名必须报告未登记（否则 CapabilityOf 恒返回 true）
+	if _, ok := proc.CapabilityOf("no.such.method.exists"); ok {
+		t.Fatal("★ CapabilityOf 对不存在的方法也报告已登记 —— 漏登记再也查不出来")
+	}
+
+	if len(registered) < 50 {
+		t.Fatalf("★ 已登记 method 只有 %d 个，明显少于协议面（登记表被删空了？）", len(registered))
+	}
+}

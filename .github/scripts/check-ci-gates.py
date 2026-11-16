@@ -250,6 +250,85 @@ for _n, r in builds:
     check("steps.pure.outputs.cmds" in r,
           "交叉构建必须吃枚举结果 steps.pure.outputs.cmds，不许写死 cmd 列表")
 
+# ── 4.5 SDK 判据步骤：go test 的包参数必须**真的含测试** ──
+#
+# 真实事故（2026-11-16）：ci.yml 走 `go test ./sdk/ ./meta/`，而 SDK 仓在
+# 3a38ef5 把测试搬到 `sdk/test/`。于是该步骤打印 "[no test files]" 却
+# **退出码 0** —— CI 每轮报「SDK 判据通过」，33 个 RUN 一个都没跑。
+#
+# 判法：抽出 SDK 判据步骤里所有 `./xxx` 形式的包参数，逐个检查该目录下
+# 真有 *_test.go。写了个空目录就红。
+import glob
+import os
+
+sdk_runs = []
+for job in jobs.values():
+    for st in (job or {}).get("steps") or []:
+        name = st.get("name") or ""
+        run = st.get("run") or ""
+        if "SDK" in name or "hologramagentsdk" in run:
+            if "go test" in code_lines(run):
+                sdk_runs.append(run)
+
+check(bool(sdk_runs), "找不到跑 go test 的 SDK 判据步骤（ci.yml 结构变了？）")
+_sdkroot = "third_party/hologramagentsdk"
+for run in sdk_runs:
+    targets = [t for t in code_lines(run).split()
+               if t.startswith("./") and "/meta" not in t and t != "./"]
+    check(bool(targets), "SDK 判据的 go test 里没抽出包参数")
+    for t in targets:
+        d = os.path.join(_sdkroot, t.lstrip("./").rstrip("/"))
+        pat = glob.glob(os.path.join(d, "*_test.go"))
+        check(bool(pat),
+              "SDK 判据指向 %s，但那里没有 *_test.go —— 步骤会打印 "
+              "[no test files] 而退出码 0（判据静默不跑）" % t)
+
+# ── 4.6 protocol method 常量 vs 能力登记表：跨文件对账（2026-11-16 新增）──
+#
+# ## 为什么必须在 CI 里对（不能只靠 Go 判据）
+#
+# `allows()` 对**未登记**的 method 返回 `(true, CapCore)` —— 按基础能力放行。
+# 于是「新增一个 method 常量却忘了在 methodCapability 里登记」的结果不是报错，
+# 而是**权限梯度静默少一格**：那个 method 变成谁都能调。
+#
+# Go 侧判据做不到这件事：它只能比对自己那份**手抄的 method 列表**，
+# 新增常量不会自动进去（实测：加一个 MethodNewForgotten，判据全绿）。
+#
+# 所以对账放在 CI：两侧都是源码文本，扫一遍就能看见漂移。
+# 与 endpoint-align 同型 —— 运行时探测反而看不到「源码已加、登记还没加」那个窗口。
+#
+# ## 排除项（内核→插件方向，不经过 allows，因此不需要登记）
+#
+# 它们由内核主动调用插件（`p.proc.Call(...)`），从不进 corehandler.Handle。
+# 这不是遗漏，是方向不同 —— 列在这里让决策可见。
+_KERNEL_TO_PLUGIN = {
+    "MethodCleanerInvoke", "MethodOutputInvoke", "MethodPluginInit",
+    "MethodPluginStart", "MethodPluginStop", "MethodToolInvoke", "MethodStageInvoke",
+}
+import re as _re
+
+_proto = open("internal/plugin/proc/protocol.go", encoding="utf-8").read()
+_cap = open("internal/plugin/proc/capability.go", encoding="utf-8").read()
+
+# protocol.go 里所有 method 常量名（`MethodXxx = "..."`）
+_proto_methods = set(_re.findall(r'^\t?(Method[A-Za-z0-9]+)\s*=', _proto, _re.M))
+# capability.go 的 methodCapability 表里登记过的（`MethodXxx: Cap...`）
+_cap_registered = set(_re.findall(r'^\t?(Method[A-Za-z0-9]+)\s*:\s*Cap', _cap, _re.M))
+
+check(len(_proto_methods) > 50,
+      "protocol.go 只抽到 %d 个 method 常量 —— 正则与文件结构漂移了" % len(_proto_methods))
+check(len(_cap_registered) > 50,
+      "capability.go 只抽到 %d 条登记 —— 正则与文件结构漂移了" % len(_cap_registered))
+
+_forgotten = sorted(_proto_methods - _cap_registered - _KERNEL_TO_PLUGIN)
+check(not _forgotten,
+      "以下 protocol method 常量**未登记能力组**（allows() 会按 CapCore 放行，"
+      "权限梯度静默少一格）：%s" % ", ".join(_forgotten))
+
+_stale = sorted(_cap_registered - _proto_methods)
+check(not _stale,
+      "capability.go 登记了 protocol.go 里不存在的 method：%s" % ", ".join(_stale))
+
 # ── 5.5 code_lines 自测：这是「注释顶包」的唯一防线，必须自己也被验 ──
 #
 # ★ 为什么需要这段自测（M7 的教训）：

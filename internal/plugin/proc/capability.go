@@ -300,6 +300,29 @@ func (s *capabilitySet) allows(method string) (bool, Capability) {
 	return s.granted[cap], cap
 }
 
+// MethodNames 返回**全部已登记的 protocol method 名**（供诊断与判据）。
+//
+// 为什么需要它：`capabilityOf` 未导出，而「新增 method 忘了登记能力组」
+// 这件事在生产上没有观察出口 —— 漏登记的 method 会按 CapCore 放行
+// （见 allows 的注释），于是"权限梯度漏了一格"且**没人知道**。
+//
+// 判据拿它与「protocol.go 里导出的 Method* 常量集合」比对：
+// 常量有、登记表没有 ⇒ 漏登记。
+func MethodNames() []string {
+	out := make([]string, 0, len(methodCapability))
+	for m := range methodCapability {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CapabilityOf 返回某 method 所需的能力组。
+//
+// 第二个返回值为 false 表示**漏登记**（调用方应视为缺陷，不是"基础能力"）。
+// allows 在生产路径上对 false 采取放行（保守），但诊断面必须能看见它。
+func CapabilityOf(method string) (Capability, bool) { return capabilityOf(method) }
+
 // KnownCapabilities 返回全部可声明的能力名（供 manifest 校验与文档生成）。
 func KnownCapabilities() []string {
 	seen := map[Capability]bool{}
