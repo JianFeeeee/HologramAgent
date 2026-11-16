@@ -30,9 +30,18 @@
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const APP = join(here, "renderer", "app.js");
+
+function loadDisposePlan() {
+  try {
+    return createRequire(import.meta.url)(join(here, "renderer", "dispose-plan.js"));
+  } catch (e) {
+    return null;
+  }
+}
 
 let failures = 0;
 const check = (name, ok, detail) => {
@@ -49,6 +58,53 @@ if (!existsSync(APP)) {
   process.exit(1);
 }
 const src = readFileSync(APP, "utf8");
+// ── 释放决策：**调接口**断言 ────────────────────────────────────────
+//
+// 决策抽到 `renderer/dispose-plan.js` 的 `planDispose(root, shared)`，
+// 返回待释放清单。原判据只能正则匹配「remove 旁边有没有 dispose」——
+// 那证明不了三件真正要紧的事：去重、排除共享资源、纹理收齐。
+{
+  const D = loadDisposePlan();
+  check("能加载 dispose-plan.js", D !== null);
+  if (D) {
+    const g1 = {}, g2 = {}, sharedGeo = {};
+    const tex1 = { isTexture: true }, tex2 = { isTexture: true };
+    const mat1 = { map: tex1 };
+    const mat2 = { map: tex2, bumpMap: tex1 }; // 纹理被两个材质引用
+    const tree = {
+      traverse: (cb) => {
+        cb({ geometry: g1, material: mat1 });
+        cb({ geometry: g1, material: mat1 }); // 重复出现同一几何/材质
+        cb({ geometry: sharedGeo, material: mat2 }); // 共享几何不得释放
+        cb({ geometry: g2, material: [mat1, mat2] });
+      },
+    };
+    const plan = D.planDispose(tree, sharedGeo);
+    check(
+      "★ 共享几何体不进释放清单",
+      plan.geometries.indexOf(sharedGeo) < 0,
+      "共享球被 dispose ⇒ 仍在渲染的 mesh 变黑/报错（全场景共用一份）",
+    );
+    check(
+      "★ 同一几何体只释放一次",
+      plan.geometries.filter((x) => x === g1).length === 1,
+      "重复 dispose 同一几何体 ⇒ 第二次在已释放对象上调 dispose",
+    );
+    check(
+      "★ 同一材质只释放一次",
+      plan.materials.filter((x) => x === mat1).length === 1,
+      "材质被多个 mesh 共用时只该释放一次",
+    );
+    check(
+      "★ 纹理收齐且去重（含 material 的非 map 字段）",
+      plan.textures.length === 2 &&
+        plan.textures.indexOf(tex1) >= 0 &&
+        plan.textures.indexOf(tex2) >= 0,
+      "漏收 bumpMap 等字段上的纹理 ⇒ 只 remove 不 dispose 的泄漏原样存在",
+    );
+  }
+}
+
 
 // 从函数声明扫到列0 的 }（嵌套闭合都有缩进）。
 function sliceFunction(name) {
@@ -146,33 +202,24 @@ if (build) {
   );
 }
 
-// ── 3) dispose 必须递归到子节点 ─────────────────────────────────────
+// ── 3) dispose 决策：**调接口**断言（不再读 disposeStarmapObject 源码）──
 //
-// 节点 mesh 下挂着 glow sphere（子 mesh）与 label sprite，
-// 只 dispose 顶层会漏掉子节点的 geometry/material/texture。
-
+// 「递归到子节点 / 释放纹理 / 排除共享几何」这三条原是正则匹配源码，
+// 现在由 planDispose 的行为判定（见文件顶部那组判据）。
+// 这里只保留"入口存在"与"label 纹理有释放路径"两条结构性检查。
+//
+// ★ 判定标准：`planDispose` 收一棵带子节点的假树就能验这三件事，
+//   而正则只能验"源码里出现过 traverse / isTexture / starmapUnitSphere"。
 const disposeFn = sliceFunction("disposeStarmapObject");
 check(
-  "存在 disposeStarmapObject",
+  "存在 disposeStarmapObject（执行副作用的入口）",
   !!disposeFn,
   "找不到释放函数",
 );
 check(
-  "递归遍历子树",
-  disposeFn ? /traverse\(/.test(disposeFn) : false,
-  "没有 traverse —— 子节点（glow sphere / label sprite）资源会漏",
-);
-check(
-  "释放纹理",
-  disposeFn ? /isTexture/.test(disposeFn) && /\.dispose\(\)/.test(disposeFn) : false,
-  disposeFn ? "没有释放 texture（label 纹理 1294 个 × 64KB）" : "",
-);
-check(
-  "共享几何体不被误 dispose",
-  disposeFn ? /starmapUnitSphere/.test(disposeFn) : false,
-  disposeFn
-    ? "没有排除共享几何体 —— 释放后仍在渲染的 mesh 会变黑或报错"
-    : "",
+  "disposeStarmapObject 走 planDispose（决策与副作用分离）",
+  disposeFn ? /DisposePlan\.planDispose\(/.test(disposeFn) : false,
+  "释放入口没有走抽出的决策模块 —— 判据钉的行为与实际执行的可能漂移",
 );
 
 // ── 4) label 纹理数量应有上限感知的注释 ─────────────────────────────

@@ -3204,45 +3204,19 @@ function starmapSphereGeometry() {
 // 共享资源要防误 dispose：starmapUnitSphere 被全场景共用，
 // dispose 掉它会让仍在渲染的 mesh 变黑/报错 —— 用 seen 集合兜底。
 function disposeStarmapObject(root) {
-  var seenGeo = new Set();
-  var seenMat = new Set();
-  var seenTex = new Set();
+  // 释放决策抽在 dispose-plan.js（纯逻辑：去重 + 排除共享资源 + 收齐纹理）。
+  // 这里只负责执行副作用（THREE 的 dispose()）与场景移除。
   if (starmapScene) starmapScene.remove(root);
-  root.traverse(function (o) {
-    var g = o.geometry;
-    if (g && g.dispose && !seenGeo.has(g) && g !== starmapUnitSphere) {
-      seenGeo.add(g);
-      g.dispose();
-    }
-    var m = o.material;
-    if (!m) return;
-    var mats = Array.isArray(m) ? m : [m];
-    mats.forEach(function (mm) {
-      if (!mm || seenMat.has(mm)) return;
-      seenMat.add(mm);
-      // 纹理在 material.map / 上多通道贴图上。
-      Object.keys(mm).forEach(function (k) {
-        var v = mm[k];
-        if (v && v.isTexture && !seenTex.has(v)) {
-          seenTex.add(v);
-          v.dispose();
-        }
-      });
-      if (mm.dispose) mm.dispose();
-    });
+  var plan = DisposePlan.planDispose(root, starmapUnitSphere);
+  plan.geometries.forEach(function (g) {
+    if (g.dispose) g.dispose();
   });
-  if (root.geometry && root.geometry.dispose &&
-      root.geometry !== starmapUnitSphere && !seenGeo.has(root.geometry)) {
-    root.geometry.dispose();
-  }
-  var rm = root.material;
-  if (rm && !Array.isArray(rm) && !seenMat.has(rm)) {
-    Object.keys(rm).forEach(function (k) {
-      var v = rm[k];
-      if (v && v.isTexture && !seenTex.has(v)) v.dispose();
-    });
-    if (rm.dispose) rm.dispose();
-  }
+  plan.textures.forEach(function (t) {
+    if (t.dispose) t.dispose();
+  });
+  plan.materials.forEach(function (m) {
+    if (m.dispose) m.dispose();
+  });
 }
 
 function buildChatStarmapGraph() {
