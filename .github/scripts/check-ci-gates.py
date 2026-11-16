@@ -492,6 +492,77 @@ check(not _bad,
       "注释引用了不随仓库分发的文档（读者打不开）：\n    " +
       "\n    ".join(sorted(set(_bad))[:10]))
 
+# ── 4.11 测试归拢的**另一半**：测试目录必须在 <module>/test/ 且是外部包 ──
+#
+# ci.yml 的「测试归拢」步骤只查了「源码目录不得有 _test.go」。它守的是
+# 反方向的一半 —— 文件搬出去了就算过，而**搬到哪儿、用哪个包名**没守。
+#
+# 于是这两种退化都能过门禁：
+#
+#	internal/foo/bar_test.go       → 被第一条挡住（对）
+#	internal/foo/test_test/x_test.go → 第一条放过（它在 /test/ 路径下），
+#	                                  但那个包名不是 test，也不是 foo 的直接子目录
+#	internal/foo/test/x_test.go 写 package foo → 第一条放过，
+#	                                  但它成了**白盒**测试（能读私有符号）
+#
+# 「白盒测试必须整目录一起搬」这条纪律的判据只有 import 关系**看不出来**，
+# 只有包名能看出来。所以在这里机械地核一遍。
+import os as _os5
+import re as _re5
+
+_bad_pkg = []
+_bad_dir = []
+for _root in ("internal", "cmd", "pkg", "providers"):
+    for _dir, _dirs, _files in _os5.walk(_root):
+        # node_modules 里的第三方包自带 test 目录，与本仓纪律无关。
+        _dirs[:] = [d for d in _dirs if d != "node_modules"]
+        for _f in _files:
+            if not _f.endswith("_test.go"):
+                continue
+            _path = _os5.path.join(_dir, _f)
+            try:
+                _first = open(_path, encoding="utf-8").readline().strip()
+            except Exception:
+                continue
+            if _first != "package test":
+                _bad_pkg.append("%s -> %s" % (_path, _first or "(空)"))
+
+# 测试目录必须**恰好是某个模块的直接子目录 `test/`**，且不能再往下嵌套。
+#
+# 判据（两条都机械可核）：
+#   ① `<module>/test/` 里必须有 `_test.go`（空目录是搬走时漏了收尾）
+#   ② 一个模块的测试不得散进 `test/` 的子目录（那样 `go test ./<module>/test/`
+#      覆盖不到，而 CI 的 `go test ./...` 会跑到、看起来一切正常）
+#
+# ⚠️ 第二版才修对：第一版只查了「目录名是 test 且父目录名也是 test」，
+# 而 `internal/log/test/sub/` 的父目录名是 `test`、它自己是 `sub`
+# ⇒ 两个条件都不命中，变异实测**放过了**。现在改成扫 test/ 的**全部子孙**。
+for _root in ("internal", "cmd", "pkg", "providers"):
+    for _dir, _dirs, _files in _os5.walk(_root):
+        _dirs[:] = [d for d in _dirs if d != "node_modules"]
+        if _os5.path.basename(_dir) != "test":
+            continue
+        # ⚠️ 不查"空 test 目录"：git 不跟踪空目录，CI checkout 里根本不存在，
+        # 那种形态**测不到**（本地造出来是假红）。真要守住搬走后留空壳，
+        # 得在本地 `go vet ./...` 或独立脚本里做，不属于 CI 门禁。
+        # 扫这个 test/ 下面的每条子路径
+        for _sub, _subdirs, _subfiles in _os5.walk(_dir):
+            if _sub == _dir:
+                continue
+            if _subdirs:
+                _subdirs[:] = [d for d in _subdirs if d != "node_modules"]
+            if any(_x.endswith("_test.go") for _x in _subfiles):
+                _bad_dir.append(
+                    "%s（测试散进 test/ 的子目录 —— 该模块的 `go test ./test/` "
+                    "只跑顶层，这一层会被漏掉）" % _sub)
+
+check(not _bad_pkg,
+      "以下测试文件不是外部测试包 `package test`（白盒测试能读私有符号，"
+      "违反「从模块导出接口验证」）:\n    " + "\n    ".join(_bad_pkg[:10]))
+check(not _bad_dir,
+      "测试目录结构不合规（必须恰好是 <module>/test/）:\n    " +
+      "\n    ".join(_bad_dir[:10]))
+
 # ── 5.5 code_lines 自测：这是「注释顶包」的唯一防线，必须自己也被验 ──
 #
 # ★ 为什么需要这段自测（M7 的教训）：
