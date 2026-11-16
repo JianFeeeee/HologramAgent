@@ -19,6 +19,24 @@ type Manager struct {
 	logDir   string
 	cfg      ConfigProvider
 	done     chan struct{}
+
+	// wg 追踪 Start 里那个"跑一轮压缩 + 保留清理"的 goroutine。
+	//
+	// ## 为什么必须等它
+	//
+	// 那个 goroutine 不受 done 控制：Stop() 只关 done、不中断它。于是
+	// `Stop()` 返回时压缩可能仍在写归档 —— 而调用方通常紧接着用**新的**
+	// Manager 接管同一目录（热重载、测试的两段式）。新实例的 Start 会立刻
+	// 跑 applyRetention，看见的是**半成品目录**：只压缩了一半的月归档，
+	// 于是按 n_months 删掉它们，剩下那些还没生成的归档一个都没有。
+	//
+	// 实测（CI 覆盖率门偶发红，本机连跑 15 次全绿）：
+	//
+	//	--- FAIL: TestRetentionRemovesRealArchiveProducts
+	//	    ★ 本月的月归档被误删
+	//
+	// 判据本身只是在"压缩完成"这个前提下才成立，而 Stop 不保证那个前提。
+	wg sync.WaitGroup
 }
 
 func NewManager(logDir string, cfg ConfigProvider) *Manager {
@@ -76,7 +94,9 @@ func (m *Manager) Start(ctx context.Context) {
 	// 保留清理本身极便宜（列目录 + stat + 删除），且完全由 `core.log.retention`
 	// 决定行为：`forever` 什么都不删，`n_months` 只删按策略本就该删的。
 	// 所以「启动即跑一次」不改变语义，只是把第一次清理提前到启动。
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		m.applyRetention()
 		if level := m.cfg.GetString(compressOnStartKey, "false"); level != "false" && level != "" {
 			m.compressOnStart(level)
@@ -94,6 +114,9 @@ func (m *Manager) Start(ctx context.Context) {
 // `panic: close of closed channel` —— 而那种改动看起来与 close 无关。
 func (m *Manager) Stop() {
 	safeclose.Safe(&m.doneOnce, m.done)
+	// 等启动期的压缩/清理 goroutine 收尾（理由见 Manager.wg 的注释）。
+	// 它是有限时间的（列目录 + 压缩已有裸日志），且幂等。
+	m.wg.Wait()
 }
 
 // compressOnStart 按配置的层级补跑一轮压缩，随后执行保留清理。
