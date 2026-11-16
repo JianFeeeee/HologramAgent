@@ -669,9 +669,18 @@ jobs:
 
   # ── Electron GUI（纯 Node 测试，零依赖）──
   #
-  # `npm test` 跑五个 .mjs，全部只 import node: 内置模块（fs/url/path/vm），
+  # `npm test` 跑 **16 个** .mjs，全部只 import node: 内置模块（fs/url/path/vm），
   # 所以**不需要 npm ci、不需要 electron**，秒级完成。
   # `npm run test-live` 需真 Electron + 真后端 ⇒ 不进 CI。
+  #
+  # ★ 2026-11-16：此前只有 10 个接进 `npm test`，6 个**通过但从未在 CI 跑过**
+  #   （device-bridge-liveness / device-gateway-discovery / starmap-gpu-lifecycle /
+  #   window-liveness / chat-panel-dom / device-align）。全部实跑确认绿后接入了；
+  #   另删掉 screensue-source.test.mjs（测的是被服务端 content_path 取代的设计）。
+  #
+  # ★ 还有一道隐性缺口：`npm test` 是手写串起来的 && 链，新增测试文件
+  #   极易忘记串进去（上面 6 个就是这么漏的）。下面的「GUI 测试归拢」步骤
+  #   强制磁盘上每个 *.test.mjs 都必须出现在 npm test 里。
   #
   # endpoint-align.test.mjs 跨出 cmd/gui 读 ../../internal/plugins/webui/handler.go
   # 做端点对账 —— checkout 深度足够（默认 fetch-depth:1 已含工作树文件），
@@ -688,6 +697,27 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+      - name: GUI 测试归拢（每个 *.test.mjs 必须接进 npm test）
+        working-directory: cmd/gui
+        run: |
+          # 例外只有 test-live 那两个（需真 Electron + 真后端）。
+          declared="$(node -p 'require("./package.json").scripts.test')"
+          loose=0
+          for f in *.test.mjs; do
+            case "$f" in
+              chat-perf.test.mjs|protocol-align.test.mjs) continue ;;
+            esac
+            if ! printf '%s' "$declared" | grep -q "$f"; then
+              echo "★ $f 没有接进 package.json 的 npm test —— 它永远不会在 CI 跑"
+              loose=1
+            fi
+          done
+          if [ "$loose" = "1" ]; then
+            echo "修法：把上面列出的文件串进 scripts.test（或归入 test-live 并写明理由）"
+            exit 1
+          fi
+          echo "GUI 测试归拢通过"
+
       - name: npm test
         working-directory: cmd/gui
         run: npm test

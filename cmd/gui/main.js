@@ -3097,27 +3097,90 @@ return ($wins | ConvertTo-Json -Compress)
   }
 }
 
-// 简单安全校验：拒绝明显危险命令
-function argsSafe(cmd) {
-  if (!cmd) return false;
-  const cmdStr = String(cmd).toLowerCase();
-  const bad = [
-    "rm -rf",
-    "mkfs",
-    "dd if=",
-    "shutdown",
-    "reboot",
-    "curl ",
-    "wget ",
-    ":(){",
-    "eval ",
-    "su ",
-    "sudo ",
-  ];
-  for (const b of bad) {
-    if (cmdStr.indexOf(b) !== -1) return false;
+// 设备命令闸：**白名单**。
+//
+// ## 为什么必须是白名单而不是黑名单（2026-11-16 实测）
+//
+// 原实现是一份 11 条子串黑名单。它在 node 里实跑的结果：
+//
+//	"rm    -rf   /"   → ALLOW   （多空格躲过 "rm -rf"）
+//	"rm -r -f /"      → ALLOW   （拆开写）
+//	"rm -fr /"        → ALLOW   （换序）
+//	"/bin/rm -rf /"   → blocked （反而拦对了，纯属巧合）
+//
+// 也就是说：**看似更危险的写法全被放行，只有最常见的那种被拦**。
+// 根因是它匹配**字面子串**，而命令语义由分词后的 argv 决定。
+//
+// ★ 关键前提：触发这道闸的是 **agent**（经 device_ctl_cmdrun），不是人。
+//   人会看一眼再回车，agent 不会。所以这里必须是机器闸 ——
+//   白的确定性，黑的反脆弱性。
+//
+// ## 语义
+//
+//	· 取 argv[0] 的 basename 进白名单（/bin/ls 等价于 ls）
+//	· 跳过 `VAR=value` 形式的赋值前缀（常见于 `LANG=C ls`）
+//	· 配置为空 / 全空白 ⇒ **回退默认集**，绝不「全放行」
+// ★ 刻意**只列只读命令**，不放任何写/删命令。
+//
+// 为什么：这道闸拦的是 **agent**，不是人。白名单按 argv[0] 判，
+// 它没法判断 `rm -rf /` 与 `rm /tmp/x.log` 的区别 —— 所以只要放 `rm` 进来，
+// `rm -rf /` 就直接通过（实测：这正是白名单按 argv[0] 判的必然结果）。
+//
+// 想删临时文件、装包、改配置这些写操作，走**专用工具**
+// （cmd_run / device_ctl 的具名能力），那里有结构化参数可校验。
+const defaultGuiCmdAllowlist = [
+  "ls", "pwd", "cat", "head", "tail", "grep", "find", "wc", "sort", "uniq",
+  "cut", "tr", "awk", "echo", "printf", "date", "env", "which",
+  "whoami", "id", "uname", "uptime", "ps", "free", "df", "du", "ip",
+  "ifconfig", "netstat", "ss", "ping", "nslookup", "hostname", "stat",
+  "file", "md5sum", "sha256sum", "base64", "diff", "tree", "jq",
+  "sleep", "true", "false",
+];
+
+let guiCmdAllowed = null;
+
+// buildGuiCmdMatcher 构造一个「命令是否被允许」的判定函数。
+//
+// list 为空 / null / 全空白 ⇒ 回退默认集（绝不因为配置缺失而放行一切）。
+function buildGuiCmdMatcher(list) {
+  let allow = list;
+  if (!Array.isArray(allow) || allow.length === 0) {
+    allow = defaultGuiCmdAllowlist;
+  } else {
+    const cleaned = allow
+      .map((x) => String(x || "").trim().toLowerCase())
+      .filter((x) => x.length > 0);
+    allow = cleaned.length > 0 ? cleaned : defaultGuiCmdAllowlist;
   }
-  return true;
+  const set = new Set(allow);
+  return (cmd) => {
+    if (cmd === null || cmd === undefined) return false;
+    const tokens = String(cmd).trim().split(/[ \t\r\n]+/).filter((t) => t.length > 0);
+    if (tokens.length === 0) return false;
+    // 跳过 VAR=value 前缀（不是命令本身）。
+    let i = 0;
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+    if (i >= tokens.length) return false;
+    const base = tokens[i].split(/[\\/]/).pop().toLowerCase();
+    return !!base && set.has(base);
+  };
+}
+
+guiCmdAllowed = buildGuiCmdMatcher(null);
+
+// reloadGuiCmdAllowlist 从 prefs 的 deviceBridge.exec.allow 重新读取白名单。
+function reloadGuiCmdAllowlist() {
+  let list = null;
+  try {
+    const prefs = loadGuiPrefs();
+    list = ((prefs.deviceBridge || {}).exec || {}).allow || null;
+  } catch (e) {}
+  guiCmdAllowed = buildGuiCmdMatcher(list);
+}
+
+// argsSafe 用当前白名单判定一条命令。
+function argsSafe(cmd) {
+  return guiCmdAllowed(cmd);
 }
 
 // 启动设备桥：url/token 来自 gui-prefs.deviceBridge（独立于连接类型）

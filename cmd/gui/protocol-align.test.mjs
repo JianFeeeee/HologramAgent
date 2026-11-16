@@ -32,23 +32,38 @@ const PORT = Number(process.env.GUI_CDP_PORT || 9370);
 // ★ 默认**不能**用假 key：webui 对错误凭据返回 200 + 登录页 HTML
 //   （looks_like_login_page 会识别），于是所有取数都失败 ⇒ 判据全红，
 //   看起来像「代码坏了」，实际只是认证缺失。踩过一次。
+//
+// 数据目录**不写死**：生产在 /home/hologramagent，历史机器在 /home/newqqagent，
+// 开发机可能别处。硬编码单一路径的后果 = 换台机器判据直接红，看起来像代码坏了。
+//
+// 查找顺序：GUI_API_KEY 环境变量 → GUI_DATA_DIR → 常见生产路径 → 报错。
 function resolveApiKey() {
   if (process.env.GUI_API_KEY) return process.env.GUI_API_KEY;
-  const db = "/home/newqqagent/config.db";
-  if (!existsSync(db)) return "";
-  try {
-    const out = spawnSync("sqlite3", [db,
-      "select value from config_webui where key='api_key';"],
-      { encoding: "utf8" });
-    return (out.stdout || "").trim();
-  } catch {
-    return "";
+  const candidates = [];
+  if (process.env.GUI_DATA_DIR) {
+    candidates.push(join(process.env.GUI_DATA_DIR, "config.db"));
   }
+  candidates.push(
+    "/home/hologramagent/config.db",
+    "/home/newqqagent/config.db",
+    "/root/.config/hologramagent/config.db",
+  );
+  for (const db of candidates) {
+    if (!existsSync(db)) continue;
+    try {
+      const out = spawnSync("sqlite3", [db,
+        "select value from config_webui where key='api_key';"],
+        { encoding: "utf8" });
+      const key = (out.stdout || "").trim();
+      if (key) return key;
+    } catch {}
+  }
+  return "";
 }
 
 const API_KEY = resolveApiKey();
 if (!API_KEY) {
-  console.log("  ✗ 拿不到 webui api_key：设 GUI_API_KEY 或确认 /home/newqqagent/config.db 可读");
+  console.log("  ✗ 拿不到 webui api_key：设 GUI_API_KEY / GUI_DATA_DIR，或确认已知路径下有 config.db");
   process.exit(1);
 }
 
