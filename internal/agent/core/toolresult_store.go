@@ -42,7 +42,6 @@ package core
 
 import (
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -158,7 +157,7 @@ func (a *Agent) offloadToolResult(f *TaskFrame, tool, content string) (string, b
 	if err != nil {
 		// 落盘失败就保持原样：模型至少还能看到完整内容（哪怕撞窗口），
 		// 这比"什么都没看到"好。日志留痕供运维发现磁盘/权限问题。
-		log.Printf("[agent] toolresult offload failed (tool=%s): %v — 保持原内容", tool, err)
+		a.Logf("toolresult offload failed (tool=%s): %v — 保持原内容", tool, err)
 		return "", false
 	}
 	// ★ 登记到上下文里，否则 toolresult_read 找不到句柄。

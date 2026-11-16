@@ -823,7 +823,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 
 	go carrier.rtLoop(rc)
 
-	log.Printf("[rtchild] %s started (output=%s)", opts.ID, opts.Output)
+	rc.Logf("started (output=%s)", opts.Output)
 	return opts.ID, nil
 }
 
@@ -970,7 +970,7 @@ func (a *Agent) RTChildStats(id string) (RTChildStats, bool) {
 func (a *Agent) rtLoop(rc *rtChild) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[rtchild] %s loop panic recovered: %v\n%s", rc.ID, r, debug.Stack())
+			rc.Logf("loop panic recovered: %v\n%s", r, debug.Stack())
 		}
 	}()
 
@@ -1055,7 +1055,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 每轮进 LLM 前看一看：若这期间已有更新的输入进了槽，本轮就不必再跑了
 		// （新的一轮马上会用那条输入重开）。这是契约 1 在循环内的落点。
 		if a.rtSuperseded(rc, seq) {
-			log.Printf("[rtchild] %s round %d superseded by newer input before LLM", rc.ID, round)
+			rc.Logf("round %d superseded by newer input before LLM", round)
 			return
 		}
 
@@ -1079,7 +1079,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 工具批数上限（0 = 不限）。rt 是常驻对话，默认不限；
 		// 给了上限是为了让调用方能约束"一次插话最多查几步"。
 		if a.rtMaxTools > 0 && turns >= a.rtMaxTools {
-			log.Printf("[rtchild] %s round %d reached max tool turns %d", rc.ID, round, a.rtMaxTools)
+			rc.Logf("round %d reached max tool turns %d", round, a.rtMaxTools)
 			return
 		}
 		turns++
@@ -1112,8 +1112,9 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 否则 assistant(tool_calls) 与 tool 结果的配对会被上游 400 拒绝。
 		for i, r := range results {
 			if i < len(resp.ToolCalls) {
-				log.Printf("[rtchild] %s round %d tool %s -> %d bytes",
-					rc.ID, round, r.Name, len(r.Text))
+				// 身份由基类（rc.LogTag 来自嵌入的 child.Child）自动补，
+				// 这里只写业务内容 —— 与主 agent 的 a.Logf 同形态。
+				rc.Logf("round %d tool %s -> %d bytes", round, r.Name, len(r.Text))
 			}
 			msgs = append(msgs, agentAPI.Message{
 				Role: "tool", ToolCallID: r.CallID, Content: r.Text,
@@ -1180,7 +1181,7 @@ func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []
 		if errors.Is(err, context.Canceled) {
 			return nil, false
 		}
-		log.Printf("[rtchild] %s round %d stream connect failed: %v", rc.ID, round, err)
+		rc.Logf("round %d stream connect failed: %v", round, err)
 		return nil, false
 	}
 
@@ -1318,7 +1319,7 @@ func (a *Agent) rtEmit(rc *rtChild, text string) {
 		return
 	}
 	if _, err := dev.Execute(rc.output, map[string]interface{}{"text": text}); err != nil {
-		log.Printf("[rtchild] %s emit to %s failed: %v (pump 未建，走了同步兜底)", rc.ID, rc.output, err)
+		rc.Logf("emit to %s failed: %v (pump 未建，走了同步兜底)", rc.output, err)
 	}
 }
 

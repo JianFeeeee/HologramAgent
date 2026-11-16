@@ -68,7 +68,7 @@ func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{})
 		if d, err := time.ParseDuration(declared); err == nil && d > 0 {
 			base = d
 		} else if err != nil {
-			log.Printf("[agent] tool %s declares Timeout=%q which failed to parse (%v), using default %v",
+			a.Logf("tool %s declares Timeout=%q which failed to parse (%v), using default %v",
 				toolName, declared, err, defaultToolTimeout)
 		}
 	}
@@ -78,7 +78,7 @@ func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{})
 		}
 	}
 	if base > maxToolTimeout {
-		log.Printf("[agent] tool %s timeout %v exceeds hard cap, clamped to %v", toolName, base, maxToolTimeout)
+		a.Logf("tool %s timeout %v exceeds hard cap, clamped to %v", toolName, base, maxToolTimeout)
 		return maxToolTimeout
 	}
 	return base
@@ -95,17 +95,17 @@ func (a *Agent) resolveToolTimeoutDeclared(toolName string) time.Duration {
 	}
 	d, err := time.ParseDuration(strings.TrimSpace(def.Timeout))
 	if err != nil {
-		log.Printf("[agent] tool %s declares Timeout=%q which failed to parse (%v), falling back to default %v",
+		a.Logf("tool %s declares Timeout=%q which failed to parse (%v), falling back to default %v",
 			toolName, def.Timeout, err, defaultToolTimeout)
 		return defaultToolTimeout
 	}
 	if d <= 0 {
-		log.Printf("[agent] tool %s declares Timeout=%q which is not positive, falling back to default %v",
+		a.Logf("tool %s declares Timeout=%q which is not positive, falling back to default %v",
 			toolName, def.Timeout, defaultToolTimeout)
 		return defaultToolTimeout
 	}
 	if d > maxToolTimeout {
-		log.Printf("[agent] tool %s declares Timeout=%v exceeding hard cap, clamped to %v",
+		a.Logf("tool %s declares Timeout=%v exceeding hard cap, clamped to %v",
 			toolName, d, maxToolTimeout)
 		return maxToolTimeout
 	}
@@ -145,11 +145,11 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
-			log.Printf("[agent] tool %s panic: %v\n%s", tc.Name, r, stack)
+			a.Logf("tool %s panic: %v\n%s", tc.Name, r, stack)
 
 			if pluginName := a.resolveToolPlugin(tc.Name); pluginName != "" {
 				if a.pluginHealth.recordCrash(pluginName) {
-					log.Printf("[agent] plugin %s exceeded crash threshold, scheduling reload", pluginName)
+					a.Logf("plugin %s exceeded crash threshold, scheduling reload", pluginName)
 				}
 			}
 
@@ -260,7 +260,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 	case <-time.After(toolTimeout):
 		// 先 cancel 再返回：这一行就是"让插件停下来"的触发点。
 		cancel()
-		log.Printf("[agent] tool %s timed out after %v (cancel sent to executor)", tc.Name, toolTimeout)
+		a.Logf("tool %s timed out after %v (cancel sent to executor)", tc.Name, toolTimeout)
 		te := newToolError(ErrReasonTimeout, "", fmt.Sprintf("Tool %s timed out (%s)", tc.Name, fmtDuration(toolTimeout)),
 			"The tool did not return within its time limit. Split into a smaller task or use another tool.")
 		return toolOutcome{Text: te.Error(), Raw: te}
@@ -273,7 +273,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	// 模型看不出真因、只能原样重试（实测 cmd_run 失败率高达 34%~48%）。
 	// __arg_error 里带的已经是分因写好的可执行指引，直接交回模型。
 	if msg, ok := tc.Arguments["__arg_error"].(string); ok && msg != "" {
-		log.Printf("[agent] tool %s skipped: arguments unusable (truncated or malformed)", tc.Name)
+		a.Logf("tool %s skipped: arguments unusable (truncated or malformed)", tc.Name)
 		return toolOutcome{Text: msg}
 	}
 
@@ -282,7 +282,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	// ⚠️ 校验器刻意宽松（见 argvalidate.go）：只拦真正无法解析的形态，
 	// 对 "true"/20/"20s" 这类宽松等价形态一律放行，避免制造新失败。
 	if ve := a.validateArgsAgainstSchema(tc); ve != nil {
-		log.Printf("[agent] tool %s rejected by schema validation: field=%s reason=%s", tc.Name, ve.Field, ve.Reason)
+		a.Logf("tool %s rejected by schema validation: field=%s reason=%s", tc.Name, ve.Field, ve.Reason)
 		return toolOutcome{Text: renderToolError(tc.Name, ve), Raw: ve}
 	}
 
@@ -409,7 +409,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	result, err := a.io.ExecuteTool(tc.Name, tc.Arguments)
 	if a.tracker != nil {
 		if cs := a.tracker.PostAction(tc.Name); cs != nil && len(cs.Files) > 0 {
-			log.Printf("[agent] tool %s changed %d files (changeset: %s)", tc.Name, len(cs.Files), cs.ID)
+			a.Logf("tool %s changed %d files (changeset: %s)", tc.Name, len(cs.Files), cs.ID)
 		}
 	}
 	if err != nil {
@@ -1521,7 +1521,7 @@ func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) in
 		blocks += len(held)
 	}
 
-	log.Printf("[agent] doc->context: %s backfilled %d raw events one by one (%s -> %s), %d blocks migrated back to L1",
+	a.Logf("doc->context: %s backfilled %d raw events one by one (%s -> %s), %d blocks migrated back to L1",
 		d.ID, n,
 		d.Events[0].Timestamp.Format("01-02 15:04:05"),
 		d.Events[len(d.Events)-1].Timestamp.Format("01-02 15:04:05"), blocks)

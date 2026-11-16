@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+
+	"github.com/JianFeeeee/HologramAgent/internal/agent/core/child"
 )
 
 // 本文件实现「工具结果**只统计不裁剪**」（方案 B）。
@@ -42,10 +44,21 @@ type toolResultReporter interface {
 // 是在**已经花掉的 token 之上**再加一条 system 消息，且它对当前这轮
 // 决策毫无帮助。真正需要处置的是**下一轮**的调度（是否还塞更多上下文）。
 // 交由上层订阅日志或替换 reporter 决定。
-type logReporter struct{}
+//
+// ★ 它持有 LogIdentity 而不是直接 log.Printf：报告要能看出**是谁**
+// 产出了这条超大结果（主 agent / 驻留子 / rtchild 共用同一条执行路径）。
+// 身份由基类补，这里只转交。
+type logReporter struct {
+	id *child.LogIdentity
+}
 
-func (logReporter) report(tool string, tokens, budget int, msg string) {
-	log.Printf("[agent] tool %s result is large: %d tokens (%.0f%% of budget %d) — %s",
+func (r logReporter) report(tool string, tokens, budget int, msg string) {
+	if r.id == nil {
+		log.Printf("[agent] tool %s result is large: %d tokens (%.0f%% of budget %d) — %s",
+			tool, tokens, percentOf(tokens, budget), budget, msg)
+		return
+	}
+	r.id.Logf("tool %s result is large: %d tokens (%.0f%% of budget %d) — %s",
 		tool, tokens, percentOf(tokens, budget), budget, msg)
 }
 
@@ -75,7 +88,7 @@ func (a *Agent) checkToolResultSize(tool, result string) bool {
 		tool, tokens, limit, percentOf(tokens, limit))
 	r := a.toolResultReporter
 	if r == nil {
-		r = logReporter{}
+		r = logReporter{id: &a.logIdentity}
 	}
 	r.report(tool, tokens, limit, msg)
 	return true

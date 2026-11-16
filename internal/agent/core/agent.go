@@ -33,6 +33,13 @@ import (
 // 仍需跨 goroutine 保护的是：childMu/llmMu/lastInputMu/noMergeMu 与各子系统自己的锁；
 // interceptLoop 只允许触碰 preemptionRequest 与 cancelLLM（经 llmMu）。
 type Agent struct {
+	// logIdentity 提供日志身份标签（`[main]` / `[resident:<id>]` / `[rt:<id>]`）。
+	//
+	// ★ 主 agent 没有 child.Child（它是根），但工具执行日志是**共用代码路径**
+	// （toolcall.go 的 executeToolCallOutcome 三条路都经过它）。标签推导收在
+	// child.LogIdentity 里，这里嵌入一份，让主 agent 与子 agent 用同一个入口。
+	logIdentity child.LogIdentity
+
 	id              types.AgentID
 	provider        agentAPI.Provider
 	providerManager *agentAPI.ProviderManager
@@ -537,6 +544,7 @@ func New(cfg AgentConfig) *Agent {
 		taskPrompt:        cfg.TaskPrompt,
 		dataDir:           cfg.DataDir,
 		isRealtime:        cfg.IsRealtime,
+		logIdentity:       agentLogIdentity(cfg),
 		indexer:           cfg.Indexer,
 		tracker:           cfg.Tracker,
 		context:           rc,
@@ -617,7 +625,7 @@ func (a *Agent) Start() {
 	go a.offloadLoop()
 	a.reembedStaleMedia()
 	a.migrateLegacyGraphMedia()
-	log.Printf("[agent] %s started, waiting for IO interrupts", a.id)
+	a.Logf("%s started, waiting for IO interrupts", a.id)
 }
 
 func (a *Agent) Stop() {
@@ -651,7 +659,7 @@ func (a *Agent) drainPendingInterrupts(reason string) {
 	for _, evt := range pending {
 		a.emitSkippedReply(evt, reason)
 	}
-	log.Printf("[agent] %s: shutting down, filled skipped terminal state for %d pending task(s)", a.id, len(pending))
+	a.Logf("%s: shutting down, filled skipped terminal state for %d pending task(s)", a.id, len(pending))
 }
 
 // graphMemoryOf 决定本 agent 的图记忆共同面实现。
@@ -682,6 +690,51 @@ func (a *Agent) graphMem() GraphMemory {
 		return nil
 	}
 	return a.memory
+}
+
+// agentLogIdentity 由 AgentConfig 推导日志身份。
+//
+// 三类执行者的判定依据（与 child.Kind 同源）：
+//
+//	IsRealtime       ⇒ rt（rtchild：单槽覆盖、丢现场）
+//	ParentID 非空    ⇒ resident（驻留子 / 转投驻留子）
+//	其余             ⇒ 主 agent（根）
+func agentLogIdentity(cfg AgentConfig) child.LogIdentity {
+	switch {
+	case cfg.IsRealtime:
+		return child.LogIdentity{Kind: child.KindRT, ID: string(cfg.ID)}
+	case cfg.ParentID != "":
+		return child.LogIdentity{Kind: child.KindResident, ID: string(cfg.ID)}
+	}
+	return child.LogIdentity{Kind: "", ID: ""}
+}
+
+// Logf 写一行带身份标签的日志。
+//
+// ★ 身份由基类（child.LogIdentity）自动补，**调用方不需要手动带标签**：
+//
+//	a.Logf("tool %s result: %s", name, res)
+//	⇒ [resident:res_3] tool files_read result: ...
+//	⇒ [rt:rt_1]        tool files_read result: ...
+//	⇒ [main]           tool files_read result: ...
+//
+// 之前每个调用点都要 `a.Logf("...", ...)`，
+// 新加一处忘了补就又没有身份，而且没人会发现 —— 那正是本仓反复栽的
+// "改一处漏一处"。收进方法后，写成 a.Logf 就必然有身份。
+func (a *Agent) Logf(format string, args ...any) {
+	if a == nil {
+		(&child.LogIdentity{}).Logf(format, args...)
+		return
+	}
+	a.logIdentity.Logf(format, args...)
+}
+
+// logTag 返回本 agent 的日志身份标签（少数需要自己拼进格式串的地方用）。
+func (a *Agent) logTag() string {
+	if a == nil {
+		return child.LogTagMain
+	}
+	return a.logIdentity.LogTag()
 }
 
 func (a *Agent) ID() types.AgentID { return a.id }
@@ -759,6 +812,6 @@ func (a *Agent) injectSelfChannel(msg selfInputMsg) {
 	select {
 	case a.selfInputCh <- msg:
 	default:
-		log.Printf("[agent] self input channel full, dropping task: %s", truncateStr(msg.text, 80))
+		a.Logf("self input channel full, dropping task: %s", truncateStr(msg.text, 80))
 	}
 }

@@ -285,7 +285,7 @@ func (a *Agent) runTaskSteps(f *TaskFrame) stepOutcome {
 		// f.Turn 只在 stepTurnEnd 递增，所以它等于「已完成的工具批数」；
 		// 因此这里允许 maxToolTurns 批，而不会多跑第 maxToolTurns+1 轮。
 		if f.Step == StepLLM && a.maxToolTurns > 0 && f.Turn >= a.maxToolTurns {
-			log.Printf("[agent] reached max tool turns %d (turn=%d), forcing wrap-up", a.maxToolTurns, f.Turn)
+			a.Logf("reached max tool turns %d (turn=%d), forcing wrap-up", a.maxToolTurns, f.Turn)
 			if f.Resp != nil && strings.TrimSpace(f.Resp.Content) != "" {
 				f.Response = f.Resp.Content
 			} else {
@@ -695,7 +695,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	// 与工具轮产物都属于“本任务自己的现场”，恢复时要接回重建后的前缀之上。
 	f.PrefixLen = len(f.Msgs)
 
-	log.Printf("[agent] tool call loop start, max_ctx=%d target=%d fixed=%d mem=%d ctx=%d %d tools, %d events, personality=%t, docs=%d",
+	a.Logf("tool call loop start, max_ctx=%d target=%d fixed=%d mem=%d ctx=%d %d tools, %d events, personality=%t, docs=%d",
 		budget.MaxContext, budget.TargetUsage, budget.FixedTokens, budget.MemoryTokens, budget.ContextTokens,
 		len(f.Tools), a.context.Len(),
 		a.personality != nil && a.personality.Content != "",
@@ -1118,12 +1118,12 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 
 	f.appendToolCallRecord(tc)
 	pluginName := a.resolveToolPlugin(tc.Name)
-	log.Printf("[agent] executing tool: %s (plugin=%s, id=%s)", tc.Name, pluginName, tc.ID)
+	a.Logf("executing tool: %s (plugin=%s, id=%s)", tc.Name, pluginName, tc.ID)
 	if tc.RawArguments != "" {
 		// ★ 脱敏后再落盘：模型给的参数正常是别名（sec_xxx），但插件工具
 		// 可能被直接传明文（例如模型自己拼了一个 key）。日志是永久的，
 		// 一旦落盘就再也收不回来。
-		log.Printf("[agent] tool %s raw_arguments: %s", tc.Name,
+		a.Logf("tool %s raw_arguments: %s", tc.Name,
 			a.scrubForLog(truncateStr(tc.RawArguments, 300), "raw_args:"+tc.Name))
 	}
 
@@ -1155,7 +1155,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 
 	if pluginName != "" && !a.pluginHealth.isHealthy(pluginName) {
 		result := fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
-		log.Printf("[agent] skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
+		a.Logf("skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
 		f.ensureBatchAssistant()
 		f.Msgs = append(f.Msgs, agentAPI.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
 		// 同上：跳过执行也要落 result，否则 call/result 失配。
@@ -1266,7 +1266,7 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	f.ToolResults = append(f.ToolResults, ToolResultItem{CallID: f.CurTool.ID, Name: f.CurTool.Name, Output: result})
 	// ★ 工具输出可能含服务端回显的凭据（实测场景：enc_shell 跑 curl 拿 200，
 	// 响应体里带着上游 key 的完整值）。这一行以前原样打印。
-	log.Printf("[agent] tool %s result: %s", f.CurTool.Name,
+	a.Logf("tool %s result: %s", f.CurTool.Name,
 		a.scrubForLog(truncateStr(result, 100), "tool_result:"+f.CurTool.Name))
 
 	// Success 此前是**唯一**赋值点且硬编码 true ⇒ 该字段恒真、结构上不可能为
