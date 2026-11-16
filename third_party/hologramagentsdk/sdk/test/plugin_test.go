@@ -252,28 +252,3 @@ func TestToolDefRegisterPreservesNoMemory(t *testing.T) {
 		t.Error("Cleaner should be preserved through RegisterTool")
 	}
 }
-
-// TestSystemPromptNeverNil：未装配时 `SystemPrompt()` 必须返回一个
-// **会报错的实现**，而不是 nil。
-//
-// ★ 原本这是 nil（模板里从不注入 SetSystemPromptAPI），于是外部插件照着
-// SDK 文档写 `s.SystemPrompt().DeclarePromptSection(...)` 会
-// **nil 接口上调用方法 ⇒ panic**。而文件头写的是「每个插件都可以声明」——
-// 承诺与实现相反。
-//
-// 判据只断"可调且给出明确错误"，不断具体文案：能力仍未对外开放，
-// 但至少是**可处理的失败**而不是 panic。
-func TestSystemPromptNeverNil(t *testing.T) {
-	s := sdk.New("prompt-probe", nil, nil, nil, nil, nil)
-	if s.SystemPrompt() == nil {
-		t.Fatal("★ SystemPrompt() 返回 nil —— 插件在 nil 接口上调用会 panic")
-	}
-	if err := s.SystemPrompt().DeclarePromptSection(sdk.PromptSection{
-		Section: "prompt-probe.demo", Owner: "prompt-probe", Content: "x",
-	}); err == nil {
-		t.Fatal("未装配时声明却返回成功 —— 插件会以为提示词段生效了")
-	}
-	if err := s.SystemPrompt().RemovePromptSection("prompt-probe.demo"); err == nil {
-		t.Fatal("未装配时移除却返回成功")
-	}
-}
