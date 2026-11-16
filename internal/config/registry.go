@@ -919,7 +919,16 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	reg(ConfigDef{Key: "core.daemon.data_dir", Default: dataDir, Type: "string", DisplayName: "数据目录", Description: "数据存储根目录", Category: "daemon"})
 	reg(ConfigDef{Key: "core.daemon.heartbeat_interval", Default: "15s", Type: "duration", DisplayName: "心跳间隔", Description: "Agent 心跳检查间隔", Category: "daemon"})
 	reg(ConfigDef{Key: "core.daemon.check_interval", Default: "30s", Type: "duration", DisplayName: "检查间隔", Description: "网络状态检查间隔", Category: "daemon"})
-	reg(ConfigDef{Key: "core.daemon.log_level", Default: "info", Type: "select", DisplayName: "日志级别", Description: "日志输出级别", Options: []string{"debug", "info", "warn", "error"}, Category: "daemon"})
+	// ⚠️ 本项**当前不生效**（2026-11-16 核实）。
+	//
+	// 它只被读进 types.DaemonConfig.LogLevel，而全仓**没有任何代码消费**
+	// 那个字段 —— 843 处 log.Printf 直接打到标准库，没有级别判定。
+	// 于是设置页上这个下拉框选什么都没用，用户会以为调低了噪音。
+	//
+	// 保留它而不是删掉的理由：级别机制是要做的（见 todo 的日志治理项），
+	// 而删了会让已有部署的配置项失效、界面少一格也不说明原因。
+	// 描述里写明"未生效"，避免继续误导。
+	reg(ConfigDef{Key: "core.daemon.log_level", Default: "info", Type: "select", DisplayName: "日志级别（暂未生效）", Description: "日志输出级别；当前内核的日志尚未分级，本项暂不改变行为", Options: []string{"debug", "info", "warn", "error"}, Category: "daemon"})
 	regMeta(ConfigDef{Key: "core.defaults.llm_endpoints", Default: "", Type: "string", DisplayName: "探活端点", Description: "健康检查的 LLM 探活端点，逗号分隔；留空自动取 LLM 源 base_url", Category: "daemon"})
 
 	reg(ConfigDef{Key: "core.llm.provider", Default: "deepseek", Type: "string", DisplayName: "默认提供商", Description: "默认 LLM 提供商名称，需匹配 sources 中的定义", Category: "llm"})

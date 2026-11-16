@@ -401,7 +401,13 @@ func requestLog(r *http.Request, authType, ip string, status int, dur time.Durat
 			authType = "none"
 		}
 	}
-	log.Printf("[webui] %s %s from=%s auth=%s status=%d (%s)", r.Method, r.URL.Path, ip, authType, status, dur.Round(time.Millisecond))
+	// status < 0 表示"这条是提前记的、真实状态未知"（长连接），
+	// 打成 `status=-` 而不是一个看起来成功的数字。
+	statusText := strconv.Itoa(status)
+	if status < 0 {
+		statusText = "-"
+	}
+	log.Printf("[webui] %s %s from=%s auth=%s status=%s (%s)", r.Method, r.URL.Path, ip, authType, statusText, dur.Round(time.Millisecond))
 }
 
 // logged 中间件：包装任意 handler，记录请求 IP / 方法 / 路径 / 认证方式 / 状态码。
@@ -416,9 +422,20 @@ func (h *Handler) logged(next http.Handler) http.Handler {
 		case h.validSession(r):
 			authType = "session"
 		}
-		// SSE 长连接：不阻塞在完成时记录（连接可能持续很久），启动即记一条
+		// SSE 长连接：不阻塞在完成时记录（连接可能持续很久），启动即记一条。
+		//
+		// ★ 状态码记 -1（日志里显示 `status=-`），不是 200。
+		//
+		// 原实现硬编码 http.StatusOK，于是**被 requireAPI 拒掉的 SSE 请求**
+		// 在日志里也记成 200。实测同一客户端、同样 auth=none：
+		//
+		//	非 SSE 轮询 1619 次 → 全部 401
+		//	SSE          190 次 → 全部记 200
+		//
+		// 而那 190 次一次都没进 handler。日志撒谎比缺日志更糟：
+		// 缺了你会去别处找证据，撒谎你会得出错结论。
 		if strings.HasSuffix(r.URL.Path, "/chat/events") {
-			requestLog(r, authType, clientIP(r), http.StatusOK, 0)
+			requestLog(r, authType, clientIP(r), -1, 0)
 			next.ServeHTTP(w, r)
 			return
 		}
