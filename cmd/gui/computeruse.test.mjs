@@ -26,6 +26,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
@@ -33,6 +34,16 @@ const main = readFileSync(join(here, "main.js"), "utf8");
 const app = readFileSync(join(here, "renderer", "app.js"), "utf8");
 const css = readFileSync(join(here, "renderer", "style.css"), "utf8");
 const waiter = readFileSync(join(repoRoot, "cmd", "waiter", "device.go"), "utf8");
+
+function loadComputerUseActions() {
+  try {
+    return createRequire(import.meta.url)(
+      join(here, "renderer", "computeruse-actions.js"),
+    );
+  } catch (e) {
+    return null;
+  }
+}
 
 let failures = 0;
 const check = (name, ok, detail) => {
@@ -44,17 +55,16 @@ const check = (name, ok, detail) => {
 };
 
 // ── 1) 高级操作 ────────────────────────────────────────────────────
-const advanced = [
-  ["drag", "拖拽"],
-  ["hover", "悬停（触发 tooltip）"],
-  ["mousedown", "按键按下（与 mouseup 配对做按住）"],
-  ["mouseup", "按键释放"],
-  ["tripleclick", "三击选中整行"],
-  ["middleclick", "中键点击"],
-  ["hotkey", "组合键"],
-  ["wait", "显式等待（等 UI/动画完成）"],
-  ["display", "显示器几何信息（多屏定位）"],
-];
+// ★ 动作清单现在来自**接口**（renderer/computeruse-actions.js），
+// 不再在判据里硬编码副本。三份手抄（GUI switch / waiter switch / 判据数组）
+// 是漂移的温床 —— 判据自己那份最容易和实现脱节。
+const Actions = loadComputerUseActions();
+if (!Actions) {
+  console.error("✗ 无法加载 renderer/computeruse-actions.js");
+  process.exit(1);
+}
+const basic = Actions.basic.map((a) => [a.name, a.desc]);
+const advanced = Actions.advanced.map((a) => [a.name, a.desc]);
 for (const [act, desc] of advanced) {
   check(
     `GUI 支持 ${act}（${desc}）`,
