@@ -35,9 +35,18 @@
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAIN = join(here, "main.js");
+
+function loadWindowShow() {
+  try {
+    return createRequire(import.meta.url)(join(here, "renderer", "window-show.js"));
+  } catch (e) {
+    return null;
+  }
+}
 
 let failures = 0;
 const check = (name, ok, detail) => {
@@ -120,34 +129,56 @@ function sliceFunction(name) {
   return out.join("\n");
 }
 
-const showFn = sliceFunction("showMainWindow");
-// 只认**代码里的**判定（if (wc.isCrashed())），不认注释里的说明文字
-// ——注释里同样写着 isCrashed()。
-const hasCrashCheck = showFn ? /if \(\w+\.isCrashed\(\)\)/.test(showFn) : false;
-check(
-  "showMainWindow 检查 isCrashed",
-  hasCrashCheck,
-  showFn
-    ? "没有 isCrashed 判定 —— renderer 已死时仍会跳过 show，开出白窗口"
-    : "找不到 showMainWindow",
-);
+// ── 3) 「唤起窗口」的决策：**调接口**断言 ─────────────────────────
+//
+// 决策已抽到 `renderer/window-show.js` 的 `decideShow(state)`。
+// 原判据正则匹配 showMainWindow 切片里有没有 `if (wc.isCrashed())` 与
+// 紧跟的 `reload()` —— 那只能证明"源码里出现过这两个词"。
+//
+// 现在喂状态、断言动作：
+{
+  const W = loadWindowShow();
+  check("能加载 window-show.js", W !== null);
+  if (W) {
+    const d = W.decideShow;
 
-// 判据要钉的是「isCrashed 为真时 reload 被调用」。
-// 用 if(...) 紧跟 reload 的短窗匹配，避免 showMainWindow 之外任何
-// reload（render-process-gone 里就有一个）被误当成满足。
-// showMainWindow 现在是**字符串**（sliceFunction 的返回），不是 match 结果。
-// 早期版本这里写的是 showFn[0]，即取首字符 "f" —— 判据永远为红，
-// 而目之所及一切正常。最隐蔽的一类判据 bug：切片方式一换，取值就错。
-const crashReload = showFn
-  // 要求「if (...isCrashed()) {...reload()」的形状：
-  // 注释里也写着 isCrashed()，纯匹配 isCrashed 会命中注释。
-  ? showFn.match(/if \(\w+\.isCrashed\(\)\)\s*\{[\s\S]{0,400}?reload\(\)/)
-  : null;
-check(
-  "isCrashed 为真时重载",
-  !!crashReload,
-  "判定了崩溃但没在同一分支里 reload —— 白屏依旧",
-);
+    const crashed = d({ exists: true, crashed: true, visible: true });
+    check(
+      "★ renderer 崩溃时必须先 reload 再 show",
+      crashed.reload === true && crashed.show === true,
+      "崩溃了只 show 不 reload ⇒ 窗口句柄还在、isVisible() 仍为 true，" +
+        "但内容是空的 ⇒ 托盘打开就是白屏且**永远不会自愈**（2026-10-05 实测故障）",
+    );
+
+    const loading = d({ exists: true, crashed: true, loading: true, visible: true });
+    check(
+      "★ 加载中不 reload（会把正在进行的加载推倒重来）",
+      loading.reload === false,
+      "isLoading 时 reload ⇒ 白等一轮，用户看到的是长时间空白",
+    );
+
+    const gone = d({ exists: false });
+    check(
+      "★ 窗口不存在时重建",
+      gone.action === "create",
+      "只 show 不创建 ⇒ 托盘菜单点了没反应，进程成唤不起来的僵尸",
+    );
+
+    const hidden = d({ exists: true, visible: false });
+    check(
+      "隐藏窗口要 show",
+      hidden.show === true,
+      "静默创建的窗口可能无法被托盘唤起",
+    );
+
+    const visible = d({ exists: true, visible: true });
+    check(
+      "已可见时只 focus（不重复 show）",
+      visible.show === false && visible.focus === true,
+      "重复 show 会触发不必要的重绘/焦点抖动",
+    );
+  }
+}
 
 // ── 4) ready-to-show 不能是 once ──────────────────────────────────
 //

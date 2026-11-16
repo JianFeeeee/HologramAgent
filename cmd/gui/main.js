@@ -11,6 +11,8 @@ const http = require("http");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 const agentCursor = require("./agent-cursor");
+const PrefsParse = require("./renderer/prefs-parse.js");
+const WindowShow = require("./renderer/window-show.js");
 const agentInject = require("./agent-inject");
 
 const CONNECTIONS_FILE = path.join(app.getPath("userData"), "connections.json");
@@ -3482,43 +3484,49 @@ function initTray() {
   }
 }
 function showMainWindow() {
+  // 决策抽在 renderer/window-show.js（纯函数，判据直接调它）。
+  // 语义：窗口没了就重建；renderer 崩了先 reload 再 show（否则白屏不自愈）；
+  // loading 中不 reload（会把正在进行的加载推倒重来）。
+  let st = { exists: false };
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      // ★ 健康检查（2026-10-05 修白屏）：仅靠 isVisible() 不够。
-      //
-      // 长时间后台后 renderer 可能已被回收 —— 窗口句柄还在、isVisible()
-      // 仍为 true，但内容是空的。此时原逻辑会跳过 show()，从托盘打开
-      // 就是一片白，而且永远不会自愈。
-      //
-      // 两个判据：
-      //   isCrashed() —— 渲染进程已死，必须重载才能出内容；
-      //   isLoading() —— 还在加载，等ready-to-show 就行，不重载。
       const wc = mainWindow.webContents;
-      if (wc.isCrashed()) {
-        console.log("[window] renderer crashed, reloading before show");
-        try {
-          wc.reload();
-        } catch (e) {}
-      }
-      // 窗口是静默创建时已处于「未显示」态，这里正常显示即可。
-      // 用 showInactive + focus 两步：showInactive 不抢焦点地显示，
-      // focus 再把焦点给过来（纯 show 在部分 Win 版本上会导致
-      // 无边框窗口不获得焦点，用户还得再点一下）。
-      if (!mainWindow.isVisible()) mainWindow.show();
-      try {
-        mainWindow.focus();
-      } catch (e) {}
-      return;
+      st = {
+        exists: true,
+        destroyed: false,
+        crashed: !!(wc && wc.isCrashed && wc.isCrashed()),
+        loading: !!(wc && wc.isLoading && wc.isLoading()),
+        visible: !!mainWindow.isVisible(),
+      };
     }
   } catch (e) {
-    /* 落到下面重建 */
+    st = { exists: false };
   }
-  // 兜底：窗口不存在（异常退出后残留状态、或未来改成不建窗）时重建，
-  // 否则托盘菜单点了没反应，进程就成了唤不起来的僵尸。
+
+  const d = WindowShow.decideShow(st);
+  if (d.action === "create") {
+    try {
+      createWindow(true);
+    } catch (e) {
+      console.error("showMainWindow: recreate failed: " + e.message);
+    }
+    return;
+  }
+  if (d.reload) {
+    console.log("[window] renderer crashed, reloading before show");
+    try {
+      mainWindow.webContents.reload();
+    } catch (e) {}
+  }
+  // showInactive 不抢焦点地显示，focus 再把焦点给过来（纯 show 在部分 Win
+  // 版本上会导致无边框窗口不获得焦点，用户还得再点一下）。
   try {
-    createWindow(true);
-  } catch (e) {
-    console.error("showMainWindow: recreate failed: " + e.message);
+    if (d.show && !mainWindow.isVisible()) mainWindow.show();
+  } catch (e) {}
+  if (d.focus) {
+    try {
+      mainWindow.focus();
+    } catch (e) {}
   }
 }
 function destroyTray() {
@@ -3723,7 +3731,7 @@ ipcMain.handle("device:identity", () =>
 );
 const GUI_PREFS_FILE = path.join(app.getPath("userData"), "gui-prefs.json");
 
-const PrefsParse = require("./renderer/prefs-parse.js");
+
 
 function loadGuiPrefs() {
   // 解析与归一化抽在 renderer/prefs-parse.js（纯函数，判据直接调它）。
