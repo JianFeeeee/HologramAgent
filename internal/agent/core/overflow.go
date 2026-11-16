@@ -60,6 +60,27 @@ func (a *Agent) accumulatedTokens() int {
 	return acc
 }
 
+// hasOversizedFrame 报告是否存在「单条事件自己就超过上下文预算」的帧。
+//
+// 与 singleEventFitsBudget 的区别：那个用的是**平均值**（全局视角：
+// 平均每条是否装得下），本函数看的是**任意一条**是否越过预算。
+// 前者判断"裁剪是否无解"，后者是"有没有该走页级剔除的帧"。
+func (a *Agent) hasOversizedFrame() bool {
+	if a == nil || a.context == nil || a.context.Len() == 0 {
+		return false
+	}
+	budget := a.computeTokenBudget().ContextTokens
+	if budget <= 0 {
+		return false
+	}
+	for _, e := range a.context.Recent(0) {
+		if eventTokens(e) > budget {
+			return true
+		}
+	}
+	return false
+}
+
 // eventTokens 估算单条上下文事件的 token 占用。
 //
 // ★ ToolResults 必须计入 —— 这是实测踩过的坑：v4 与 T10 的 prompt 峰值
@@ -178,8 +199,18 @@ func (a *Agent) enforceContextBudget(f *TaskFrame, query string, force bool) (ha
 		// 轻量内核（驻留子）不做按相关度裁剪，见 pruneByQuery 的同款理由。
 		return false, 0
 	}
-	// 唯一判据点：本地水位 OR 外部明确报错。
-	if !force && ratio < overflowRatio {
+	// 判据点：本地水位 OR 外部明确报错 OR **单帧自己就撑爆预算**。
+	//
+	// ★ 第三条是 2026-11-16 补的。原判据只有"全局水位 >= 1.25×窗口"，
+	// 而段页式的设计目标恰恰是「单帧自己撑爆窗口」这一种病 ——
+	// 它可以在全局水位远未超限时发生（其余事件都很小，就这一帧是
+	// 468 个 tool_call 的巨帧）。原判据点让那一档页级剔除永远进不来，
+	// 病灶被拖到全局也超限时才处理，那时只能整帧归档（不可逆）。
+	//
+	// 单帧撑爆是"这一帧里有水页"，全局超限是"该遗忘的没忘"，两种病。
+	// 只要任一条成立就该进本函数 —— 后面 evictPagesToBudget 只处理
+	// 前者，后者仍走 Prune/L4，互不干扰。
+	if !force && ratio < overflowRatio && !a.hasOversizedFrame() {
 		return false, 0
 	}
 	if force {
@@ -308,18 +339,9 @@ func resumeQueryFrom(f *TaskFrame) string {
 // 却报超页 —— 这是判定逻辑的 bug，不是可恢复状态。此时保存现场并明确终止，
 // 绝不再次触发中断。
 func (a *Agent) handleContextOverflow(query string, ratio float64) int {
-	// 单条事件本身就超预算 ⇒ 裁剪在任何保护数下都无解（实测 T10c：
-	// 事件 40026 token vs 预算 10667）。此时直接终止并报真实原因，
-	// 而不是裁剪两轮后 Budget 耗尽 —— 后者会丢失已经裁掉的记忆。
-	if !a.singleEventFitsBudget() {
-		avg := a.accumulatedTokens() / a.context.Len()
-		log.Printf("[agent] context overflow: single event (%d tok) exceeds budget (%d tok) — "+
-			"pruning cannot help, terminating", avg, a.computeTokenBudget().ContextTokens)
-		a.markOverflowAborted(ratio, a.context.Len())
-		return 0
-	}
-
 	// ★ 段页式：先试**最轻的一档** —— 按页剔除（P5，2026-10-29）。
+	//   （顺序在 2026-11-16 修正：原先先判「单条撑爆就终止」，那会把
+	//     "剔页就能解决"的情形直接判成无解 —— 剔页正是治这种病的药。）
 	//
 	// 剔除是标注（InactivePages），不是删除也不是跨层迁移：
 	//   · 数据全在原位，随时可恢复（清空 InactivePages 即还原渲染）
@@ -336,6 +358,17 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 		log.Printf("[agent] context overflow: evicted %d page(s) across frames — "+
 			"trimmed (not archived), no layer migration", evicted)
 		return evicted
+	}
+
+	// 剔页之后仍无解：单条事件本身就超预算（实测 T10c：事件 40026 token
+	// vs 预算 10667）。此时裁剪在任何保护数下都无解，直接终止并报真实原因，
+	// 而不是裁剪两轮后 Budget 耗尽 —— 后者会丢失已经裁掉的记忆。
+	if !a.singleEventFitsBudget() {
+		avg := a.accumulatedTokens() / a.context.Len()
+		log.Printf("[agent] context overflow: single event (%d tok) exceeds budget (%d tok) — "+
+			"pruning cannot help, terminating", avg, a.computeTokenBudget().ContextTokens)
+		a.markOverflowAborted(ratio, a.context.Len())
+		return 0
 	}
 
 	// ★ 只发空中断，**不在这里裁剪**（2026-10-25 按原始设计修正）。
@@ -368,7 +401,24 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 // 剔除的唯一目的是让这一帧能被渲染进窗口。用与渲染同一套预算计算，
 // 避免"按 A 阈值剔除、按 B 阈值判定仍超"的自相矛盾。
 func (a *Agent) evictPagesToBudget(query string) (evicted int, reduced bool) {
-	if a == nil || a.context == nil || query == "" {
+	if a == nil || a.context == nil {
+		return 0, false
+	}
+	// ★ query 为空时**自己推导**，不是静默放弃（2026-11-16 修复）。
+	//
+	// 原实现 `if query == "" { return 0 }`，而两个调用点（发请求前预判、
+	// 上游 ErrContextFull）传的都是空串 ⇒ **页级剔除自 b850fea 引入以来
+	// 一次都没执行过**。它本应是"单帧撑爆窗口"的第一档处置（最轻、可逆），
+	// 结果一路落到整帧归档（L4 空中断，不可逆的层间迁移）。
+	//
+	// 推导口径与 pruneForAirInterrupt 一致：取上下文里最后一条真实用户输入。
+	// 剔除靠它给页打相似度分；拿不到才退化为按时间/顺序处理。
+	if query == "" {
+		query = a.lastUserQueryForPrune()
+	}
+	if query == "" {
+		// 连一条用户输入都没有（全新会话的首帧）⇒ 无从算相关性。
+		// 此时不做剔除：宁可不剔，也不按空 query 乱剔。
 		return 0, false
 	}
 	budget := a.computeTokenBudget().ContextTokens
