@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/JianFeeeee/hologramagentsdk/meta"
@@ -751,10 +752,45 @@ func (s *PluginSDK) Security() SecurityAPI {
 // ★ 只声明、不渲染：本接口没有"设置整个 system prompt"的方法。
 // 插件能改的只有自己那段（段名以插件名开头，内核强制），
 // 否则任一插件都能改写别人的人格/安全说明。
+// SystemPrompt 返回系统提示词声明面。
+//
+// ★ 永远**不返回 nil**（2026-11-16 修）。
+//
+// 原实现直接返回 s.sysPrompt，而外部插件（proc 子进程）从未被注入这个 API
+// （模板里 SetSystemPromptAPI 出现 0 次）。于是插件照着文档写
+//
+//	s.SystemPrompt().DeclarePromptSection(...)
+//
+// 得到的是 **nil 接口上的方法调用 ⇒ panic**，而不是一个可处理的错误。
+// 而文档（systemprompt.go 文件头）写的是「**每个**插件都可以声明」——
+// 承诺与实现相反。
+//
+// 现在返回一个"未装配"的桩：两个方法都返回明确错误（提到"仅内置插件可用"），
+// 插件能看见并据此降级。真正的桥（proc RPC）仍未实现 —— 这是**止血**，
+// 不是把能力做出来。
 func (s *PluginSDK) SystemPrompt() SystemPromptAPI {
 	s.apiMu.RLock()
-	defer s.apiMu.RUnlock()
-	return s.sysPrompt
+	api := s.sysPrompt
+	s.apiMu.RUnlock()
+	if api == nil {
+		return unassembledSystemPrompt{}
+	}
+	return api
+}
+
+// unassembledSystemPrompt 是「系统提示词声明面未装配」时的占位实现。
+//
+// 不返回 nil 的理由见 SystemPrompt 的注释：nil 会让插件 panic，
+// 而这个能力在外部插件里本来就拿不到 —— 那应该是可处理的错误。
+type unassembledSystemPrompt struct{}
+
+func (unassembledSystemPrompt) DeclarePromptSection(PromptSection) error {
+	return fmt.Errorf("sdk: SystemPrompt 未装配（该能力目前只对内置插件开放；" +
+		"外部插件请把说明写进自己的工具描述或 README）")
+}
+
+func (unassembledSystemPrompt) RemovePromptSection(string) error {
+	return fmt.Errorf("sdk: SystemPrompt 未装配（该能力目前只对内置插件开放）")
 }
 
 // SetSystemPromptAPI 由内核注入声明面的实现（插件不调用）。
