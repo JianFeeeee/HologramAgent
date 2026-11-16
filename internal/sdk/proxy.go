@@ -90,14 +90,23 @@ func RegisterBuiltinProxy(plugin, name string, d ProxyDef) {
 	builtinProxyVer++
 }
 
-// ClearBuiltinProxyDefs 清除某插件的声明（插件停止/卸载时调用）。
-func ClearBuiltinProxyDefs(plugin string) {
+// ClearBuiltinProxyDefs 清除某插件的声明，返回清掉了几条。
+//
+// 由 registry.detachPlugin 调用（插件停止 / 重载 / 卸载时）。
+//
+// ★ 返回条数而不是空：调用方要能区分「本来就没有」与「真清掉了」。
+// 前者在每次 Stop 都会出现（多数插件不声明反代），不值得打日志；
+// 后者是运维要知道的事件（尤其重载换 Host 时，旧声明是否真的下去了）。
+func ClearBuiltinProxyDefs(plugin string) int {
 	builtinProxyMu.Lock()
 	defer builtinProxyMu.Unlock()
-	if _, ok := builtinProxyDefs[plugin]; ok {
-		delete(builtinProxyDefs, plugin)
-		builtinProxyVer++
+	n := len(builtinProxyDefs[plugin])
+	if n == 0 {
+		return 0
 	}
+	delete(builtinProxyDefs, plugin)
+	builtinProxyVer++
+	return n
 }
 
 // BuiltinProxyDefs 返回内置声明的快照（plugin → defs）。

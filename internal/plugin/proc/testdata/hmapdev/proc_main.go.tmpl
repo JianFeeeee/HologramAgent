@@ -986,6 +986,25 @@ func buildPluginSDK(name string) *sdk.PluginSDK {
 			"has_cleaner": def.Cleaner != nil,
 		})
 	})
+	// ★ 反代声明的**运行期入口**（2026-11-16 补）。
+	//
+	// 之前这里没有这一行：proc 协议没有 proxy 注册方法，于是外部插件的
+	// `RegisterProxy(...)` 是一个**空实现** —— 声明写进代码却永远到不了内核，
+	// 而 plugin.json 的 proxies 才是唯一生效入口。这条边界写在 SDK 文档里，
+	// 但插件作者最容易写的是运行期那个，写完静默不生效、排查只查到端口/防火墙。
+	//
+	// 现在协议有 `proxy.register`，这里把它接上：声明真的到达内核，
+	// 与 plugin.json 的声明落到同一张表（反代层只认表）。
+	base.SetProxyRegistrar(func(svc string, d sdk.ProxyDef) {
+		// 整个结构体传（同 input.register）：手写字段白名单会让
+		// ProxyDef 新增字段静默丢失。
+		if err := callCoreVoid("proxy.register", map[string]interface{}{
+			"name": svc, "def": d,
+		}); err != nil {
+			// 声明失败不能静默：插件会以为自己的服务已对外可见。
+			log.Printf("[plugin-proxy] RegisterProxy(%q) 未生效: %v", svc, err)
+		}
+	})
 	return base
 }
 

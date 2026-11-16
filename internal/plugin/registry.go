@@ -1271,6 +1271,22 @@ func (r *Registry) detachPlugin(name string) {
 	if chans := r.releasePluginChannels(name); len(chans) > 0 {
 		log.Printf("[plugin] %s: removed IO channels %v", name, chans)
 	}
+	// 释放**反代声明**（2026-11-16 补）。
+	//
+	// ★ 原先这里没有这一步，而 ClearBuiltinProxyDefs 在生产**零调用**
+	// （只被测试用过）。后果：插件停掉/重载后，反代表里还留着它的 Host
+	// ⇒ 请求被打到一个已经下线的目标（连接拒绝），而 plugin_status 显示
+	// 该插件已停用 —— 用户看到「插件已停但它的子域还在」。
+	//
+	// 更糟的是重载：新版插件换个 Host，旧声明不消失 ⇒ 两条都留在表里，
+	// 旧 Host 那条永远 502。这类残留**没有任何退出路径**（表按插件名删，
+	// 只有 Clear 能删）。
+	//
+	// 与 tool/stage/channel 的摘除放同一处：它们都是"插件注册面"的一部分，
+	// 漏一处就是一类静默残留。
+	if n := sdk.ClearBuiltinProxyDefs(name); n > 0 {
+		log.Printf("[plugin] %s: removed %d reverse-proxy declaration(s)", name, n)
+	}
 }
 
 // runOnRemoveHandlers 执行插件注册的删除清理回调（SDK 层），插件 Stop() 之后、从注册表移除前执行。

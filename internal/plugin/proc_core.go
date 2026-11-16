@@ -214,6 +214,16 @@ func (c procCore) SetToolBlocks(blocks []pubsdk.ContentBlock) {
 	c.sdk.SetToolBlocks(blocks)
 }
 
+// RegisterProxy 把插件的运行期反代声明送到内核。
+//
+// ★ 转调 internal/sdk 的同名方法 ⇒ 落到**内置声明表**（RegisterBuiltinProxy）。
+// 那份表原先只有内置插件会写（外部插件没有协议入口），现在外部插件经
+// `proxy.register` 也写它 —— 反代层（webui.currentProxyTable）只认这一张表，
+// 两种入口因此收成一源。
+func (c procCore) RegisterProxy(name string, def pubsdk.ProxyDef) {
+	c.sdk.RegisterProxy(name, def)
+}
+
 // ---- 生命周期 ----
 
 func (c procCore) SetAutoRestart(enabled bool) { c.sdk.SetAutoRestart(enabled) }

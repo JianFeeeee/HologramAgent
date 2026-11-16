@@ -138,6 +138,18 @@ type CoreSDK interface {
 	// SetToolBlocks 注入媒体块，内核在下一条 tool message 携带（§3.8）。
 	SetToolBlocks(blocks []pubsdk.ContentBlock)
 
+	// RegisterProxy 是**运行期反代声明**（插件告诉内核「我起了个 HTTP 服务，
+	// 请把它反代出去」）。
+	//
+	// ★ 内置插件与外部插件都走这里：内置插件的实现把声明登记进内核的
+	// 内置声明表（进程内）；外部插件经 proc 协议回到 `proxy.register`，
+	// 落到**同一张表**。两条入口收成一张表，反代层只认表（见 webui 的
+	// currentProxyTable）。
+	//
+	// 权限：CapCore（与 tool/stage/output/input.register 同组 —— 注册自身
+	// 的工具与入口是插件的本分，不是额外能力）。
+	RegisterProxy(name string, def pubsdk.ProxyDef)
+
 	SetAutoRestart(enabled bool)
 }
 

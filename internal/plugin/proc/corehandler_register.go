@@ -56,6 +56,28 @@ func (h *coreHandler) handleRegister(method string, params json.RawMessage) (int
 		def.Cleaner = cleaner
 		return nil, h.sdk.RegisterInputChannel(p.Name, def)
 
+	case MethodProxyRegister:
+		var p struct {
+			Name string          `json:"name"`
+			Def  pubsdk.ProxyDef `json:"def"`
+		}
+		if err := unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		// 结构体整体传（同 input.register）：手写字段白名单会让 ProxyDef
+		// 新增的字段静默丢失（那正是「声明了却没生效」的历史形态）。
+		//
+		// ★ 校验放在这里而不是只在内核端做：插件作者拿到的是**明确的错误**，
+		// 而不是"声明了、反代层悄悄标成冲突/非法"。
+		if msg := pubsdk.ValidateProxyDef(p.Def); msg != "" {
+			return nil, fmt.Errorf("proxy.register: %s", msg)
+		}
+		if p.Name == "" {
+			p.Name = p.Def.Name
+		}
+		h.sdk.RegisterProxy(p.Name, p.Def)
+		return nil, nil
+
 	}
 
 	// 组内不应到达：Handle 的分派表与本函数的 case 标签同源，

@@ -302,8 +302,9 @@ func (c *recordingCore) InjectInputMediaSyncOpts(source, channel, text string,
 func (c *recordingCore) InjectInterruptMediaOpts(source, channel, text string,
 	b []pubsdk.ContentBlock, opts pubsdk.InjectOptions) {
 }
-func (c *recordingCore) SetToolBlocks(blocks []pubsdk.ContentBlock) {}
-func (c *recordingCore) SetAutoRestart(enabled bool)                {}
+func (c *recordingCore) SetToolBlocks(blocks []pubsdk.ContentBlock)     {}
+func (c *recordingCore) SetAutoRestart(enabled bool)                    {}
+func (c *recordingCore) RegisterProxy(name string, def pubsdk.ProxyDef) {}
 
 // buildTemplatePlugin 用 **hmapdev 的真实 proc 运行时模板**编译一个插件二进制。
 //

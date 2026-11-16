@@ -124,6 +124,15 @@ const (
 	MethodOutputRegister = "output.register" // 3  CORE_REGISTER_OUTPUT_CH
 	MethodAPIRegister    = "api.register"    // 4  CORE_REGISTER_PLUGIN_API
 	MethodInputRegister  = "input.register"  // 46 CORE_REGISTER_INPUT_CH
+	// MethodProxyRegister 是**运行期反代声明**（2026-11-16 新增）。
+	//
+	// ★ 为什么现在才有：设计上外部插件一直只能写 plugin.json 的 proxies，
+	// 运行期 RegisterProxy 对它们是个**空实现**（proc 协议没有这个方法）。
+	// 于是同一份「我要被反代」的意图有两种入口，各自谁能用写在 SDK 文档里
+	// —— 而插件作者最容易写的是运行期那个，写完了静默不生效。
+	//
+	// 有这个方法之后，插件的 RegisterProxy 才真的到达内核。
+	MethodProxyRegister = "proxy.register"
 
 	// IO 注入（原 case 5/6/7/47）
 	MethodIOInjectText      = "io.injectText"      // 5  CORE_INJECT_TEXT
