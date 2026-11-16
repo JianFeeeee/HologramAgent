@@ -112,3 +112,116 @@ func TestCheckNewAcceptsValidCall(t *testing.T) {
 		t.Fatalf("★ 合法 group 调用被拒：%v", err)
 	}
 }
+
+// ---- 跨序列调用图：零覆盖 ----
+
+// TestCheckGraphRejectsMissingTarget：调用了不存在的序列必须报错。
+//
+// ★ 为什么这条重要：`seq_call` 的 target 可以是**另一条序列**。写错名字
+// 时如果不报错，运行时到点才失败 —— 而那可能是半夜的定时任务。
+//
+// 生产调用点：`handlers.go:77` 在每次 Save 之后复查一次。
+func TestCheckGraphRejectsMissingTarget(t *testing.T) {
+	s := seq.NewStore(t.TempDir())
+	if err := s.Save(&seq.Sequence{Name: "caller", Groups: []seq.Group{{
+		Name:  "g",
+		Tools: []seq.ToolCall{{Tool: "seq_call", Args: map[string]interface{}{"target": "#ghost"}}},
+	}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.CheckGraph(); err == nil {
+		t.Fatal("★ 调用了不存在的序列却通过校验")
+	} else if !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("★ 报错没指出缺的是哪条（用户无从修复）：%v", err)
+	}
+}
+
+// TestCheckGraphRejectsCrossSequenceCycle：两条序列互调必须被检测出来。
+//
+// 这是跨序列的环 —— 单条序列的自递归由 CheckNew 挡，但 A→B→A 只有
+// 图级检查能看见。放任它的后果是运行时无限递归直到栈溢出。
+func TestCheckGraphRejectsCrossSequenceCycle(t *testing.T) {
+	s := seq.NewStore(t.TempDir())
+	// A → B
+	if err := s.Save(&seq.Sequence{Name: "a", Groups: []seq.Group{{
+		Name:  "g",
+		Tools: []seq.ToolCall{{Tool: "seq_call", Args: map[string]interface{}{"target": "#b"}}},
+	}}}); err != nil {
+		t.Fatalf("Save a: %v", err)
+	}
+	// B → A（此刻环形成）
+	if err := s.Save(&seq.Sequence{Name: "b", Groups: []seq.Group{{
+		Name:  "g",
+		Tools: []seq.ToolCall{{Tool: "seq_call", Args: map[string]interface{}{"target": "#a"}}},
+	}}}); err != nil {
+		t.Fatalf("Save b: %v", err)
+	}
+
+	err := s.CheckGraph()
+	if err == nil {
+		t.Fatal("★ a → b → a 的环没被检测出来（运行时会无限递归）")
+	}
+	// 错误必须带环路径，否则用户不知道是哪一圈
+	if !strings.Contains(err.Error(), "→") {
+		t.Fatalf("★ 报错没给出环路径（无法定位）: %v", err)
+	}
+}
+
+// TestCheckGraphAcceptsAcyclicChain：无环的多层调用链必须通过。
+//
+// 与上面两条成对 —— 只测"拒绝环"会放过"拒绝一切跨序列调用"的实现。
+func TestCheckGraphAcceptsAcyclicChain(t *testing.T) {
+	s := seq.NewStore(t.TempDir())
+	chain := []struct{ name, target string }{
+		{"level1", "#level2"},
+		{"level2", "#level3"},
+		{"level3", ""},
+	}
+	for _, c := range chain {
+		seqDef := &seq.Sequence{Name: c.name, Groups: []seq.Group{{Name: "g"}}}
+		if c.target != "" {
+			seqDef.Groups[0].Tools = []seq.ToolCall{{
+				Tool: "seq_call", Args: map[string]interface{}{"target": c.target},
+			}}
+		}
+		if err := s.Save(seqDef); err != nil {
+			t.Fatalf("Save %s: %v", c.name, err)
+		}
+	}
+	if err := s.CheckGraph(); err != nil {
+		t.Fatalf("★ 无环调用链被判成非法：%v", err)
+	}
+}
+
+// TestDeleteUpdatesTheGraph：删除序列后，指向它的引用必须变成"目标不存在"。
+//
+// ★ 这条钉的是"边随节点一起移除"。若只删文件不删边，CheckGraph 会永远
+// 报一条已经不存在的序列，而这个错误再也修不掉（用户只能看到
+// "调用了不存在的序列 ghost"，但 ghost 其实早已删除）。
+func TestDeleteUpdatesTheGraph(t *testing.T) {
+	s := seq.NewStore(t.TempDir())
+	if err := s.Save(&seq.Sequence{Name: "target", Groups: []seq.Group{{Name: "g"}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.Save(&seq.Sequence{Name: "caller", Groups: []seq.Group{{
+		Name:  "g",
+		Tools: []seq.ToolCall{{Tool: "seq_call", Args: map[string]interface{}{"target": "#target"}}},
+	}}}); err != nil {
+		t.Fatalf("Save caller: %v", err)
+	}
+	if err := s.CheckGraph(); err != nil {
+		t.Fatalf("保存完成后本该合法：%v", err)
+	}
+
+	if err := s.Delete("target"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	// 现在 caller 指向一个不存在的目标 —— 必须报出来，而不是沉默。
+	err := s.CheckGraph()
+	if err == nil {
+		t.Fatal("★ 目标被删后，指向它的引用没有被报出来（图没随删除更新）")
+	}
+	if !strings.Contains(err.Error(), "target") {
+		t.Fatalf("★ 报错没指出悬空引用指向谁：%v", err)
+	}
+}

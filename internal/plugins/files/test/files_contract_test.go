@@ -191,12 +191,18 @@ func TestLsEmptyPathMeansCurrentDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "in_root.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// 不传 path —— 应等价于列出沙箱根
+	// 不传 path —— 应等价于列出沙箱根。
+	//
+	// ★ 必须断言**真列出根目录里的文件**，不能只断言"没报错"：
+	//   实测把 `if path == "" { path = "." }` 改成 `return errorResult(...)`，
+	//   第一版判据仍然绿 —— 一个只测"不 panic"的判据等于没测。
 	got, err := tools["files_ls"](map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("ls 失败: %v", err)
 	}
-	_ = got // 真正的断言在 TestLsListsDirectory（显式给 path）；这里只要求不报错
+	if s := toStr(got); !strings.Contains(s, "in_root.txt") {
+		t.Fatalf("★ ls 不传 path 时没列出沙箱根内容（应当等价于 \".\"）: %s", s)
+	}
 }
 
 // TestLsListsDirectory 钉住 ls 的输出契约。
@@ -233,4 +239,128 @@ func toStr(v interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+// ---- files_edit：唯一零覆盖的工具 ----
+
+// TestEditRequiresUniqueMatch：`old` 必须在文件里**唯一**出现才动手。
+//
+// ★ 这条为什么重要：edit 是"改已有文件"，不唯一匹配时若随便改一处，
+// 后果是文件被悄悄改错 —— 而返回文案看起来是成功的。所以两条反例
+// （找不到 / 多处）都必须拒绝**且不落盘**。
+func TestEditRequiresUniqueMatch(t *testing.T) {
+	root := t.TempDir()
+	tools := startFilesPlugin(t, root)
+	f := filepath.Join(root, "dup.txt")
+	const body = "alpha\nbeta\nalpha\n"
+	if err := os.WriteFile(f, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 多处匹配 ⇒ 拒绝，文件不变
+	got, err := tools["files_edit"](map[string]interface{}{
+		"path":  f,
+		"edits": []interface{}{map[string]interface{}{"old": "alpha", "new": "ALPHA"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := toStr(got); strings.Contains(s, "Successfully") {
+		t.Fatalf("★ 多处匹配却报告成功（文件可能已被改坏）: %s", s)
+	}
+	if now, _ := os.ReadFile(f); string(now) != body {
+		t.Fatalf("★ 被拒的 edit 仍然改了文件: %q", string(now))
+	}
+
+	// ② 找不到 ⇒ 拒绝，文件不变
+	got, err = tools["files_edit"](map[string]interface{}{
+		"path":  f,
+		"edits": []interface{}{map[string]interface{}{"old": "gamma", "new": "G"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := toStr(got); strings.Contains(s, "Successfully") {
+		t.Fatalf("★ 找不到目标却报告成功: %s", s)
+	}
+	if now, _ := os.ReadFile(f); string(now) != body {
+		t.Fatalf("★ 被拒的 edit 仍然改了文件")
+	}
+}
+
+// TestEditAppliesUniqueMatch：唯一匹配时必须真的落盘，且只改那一处。
+func TestEditAppliesUniqueMatch(t *testing.T) {
+	root := t.TempDir()
+	tools := startFilesPlugin(t, root)
+	f := filepath.Join(root, "one.txt")
+	if err := os.WriteFile(f, []byte("keep\nunique\ntail\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tools["files_edit"](map[string]interface{}{
+		"path":  f,
+		"edits": []interface{}{map[string]interface{}{"old": "unique", "new": "changed"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := toStr(got); !strings.Contains(s, "Successfully") {
+		t.Fatalf("唯一匹配却没报告成功: %s", s)
+	}
+	want := "keep\nchanged\ntail\n"
+	if now, _ := os.ReadFile(f); string(now) != want {
+		t.Fatalf("★ 落盘内容不对：%q（期望 %q）", string(now), want)
+	}
+}
+
+// TestEditAppliesMultipleEditsInOneCall：一次给多条 edits，全部生效。
+//
+// ★ 这条钉的是"顺序应用"：第二条要看得到第一条的结果（后面的 edit 是在
+// 已修改的正文上匹配的）。如果实现是先各自匹配原文再合并，这里会红。
+func TestEditAppliesMultipleEditsInOneCall(t *testing.T) {
+	root := t.TempDir()
+	tools := startFilesPlugin(t, root)
+	f := filepath.Join(root, "multi.txt")
+	if err := os.WriteFile(f, []byte("step-one here"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tools["files_edit"](map[string]interface{}{
+		"path": f,
+		"edits": []interface{}{
+			map[string]interface{}{"old": "step-one", "new": "step-two"},
+			// 这一条的 old 只有在第一条生效后才存在 ⇒ 顺序性判据
+			map[string]interface{}{"old": "step-two here", "new": "done"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := toStr(got); !strings.Contains(s, "2/2") {
+		t.Fatalf("★ 两条 edits 没有都生效（顺序应用可能没做）: %s", s)
+	}
+	if now, _ := os.ReadFile(f); string(now) != "done" {
+		t.Fatalf("★ 落盘内容不对：%q", string(now))
+	}
+}
+
+// TestEditRespectsSandbox：edit 同样受沙箱约束（它比 read 更危险：能写）。
+func TestEditRespectsSandbox(t *testing.T) {
+	root := t.TempDir()
+	tools := startFilesPlugin(t, root)
+	outside := filepath.Join(t.TempDir(), "victim.txt")
+	if err := os.WriteFile(outside, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tools["files_edit"](map[string]interface{}{
+		"path":  outside,
+		"edits": []interface{}{map[string]interface{}{"old": "original", "new": "owned"}},
+	})
+	if err != nil {
+		return // 直接报错也算拒绝
+	}
+	if s := toStr(got); strings.Contains(s, "Successfully") {
+		t.Fatalf("★ 沙箱外文件被 edit 改了（任意文件写入）: %s", s)
+	}
+	if now, _ := os.ReadFile(outside); string(now) != "original" {
+		t.Fatalf("★ 沙箱外文件内容被改")
+	}
 }
