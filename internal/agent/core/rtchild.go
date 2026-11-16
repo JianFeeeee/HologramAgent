@@ -763,6 +763,14 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		for n, owner := range prevOwner {
 			_ = reg.Assign(n, owner, 0)
 		}
+		// ★ 入站通道也要撤：它在划拨**之前**就登记了（notifyParent 闭包要用），
+		// 而登记表按 name 全局唯一 —— 不放这里，每次创建失败都留一条
+		// `child/rt/<id>` 脏登记，且外部没有任何工具能单独注销 inputch。
+		//
+		// 实测形态（判据 TestSpawnFailureLeavesNoResidue/通道不存在 抓到）：
+		// 通道不存在时 AssignRealtime 失败 → rollback → 入站登记残留。
+		// 这与 StopRTChildren 漏注销是同一类缺陷（只是发生在创建侧）。
+		reg.Unregister(rtInboundCh)
 	}
 
 	if err := carrier.AssignRealtime(opts.Input); err != nil {
