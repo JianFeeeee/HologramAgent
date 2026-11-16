@@ -41,7 +41,6 @@ package systemd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -208,17 +207,6 @@ func sedEscapeRepl(s string) string {
 	return s
 }
 
-// RestartCommand 返回「热更新」命令：只重启（不动 systemd 配置）。
-//
-// 与 SyncCommand 的区别：配置没变、只换了二进制时用这个。
-// 走 WebUI 的 agent restart 端点即可（exit 42 → guard 用新二进制重拉），
-// 这里给出不依赖 WebUI 的等价 curl。
-func RestartCommand(addr, apiKey string) string {
-	return fmt.Sprintf(`curl -sS -X POST \
-  -H "X-API-Key: %s" \
-  "http://%s/api/v1/agents/agent/restart"`, apiKey, addr)
-}
-
 // IsUnderSystemd 报告当前进程是否由 systemd 拉起（用于决定是否提示提权）。
 func IsUnderSystemd() bool {
 	// INVOCATION_ID 由 systemd 注入，是最可靠的判据（容器里也可能有 systemd）。
@@ -230,15 +218,4 @@ func IsUnderSystemd() bool {
 		return false
 	}
 	return os.Getppid() == 1
-}
-
-// HasSudo 报告当前进程能否免密 sudo（决定提示里要不要写 sudo）。
-func HasSudo() bool {
-	if os.Geteuid() == 0 {
-		return true
-	}
-	if _, err := exec.LookPath("sudo"); err != nil {
-		return false
-	}
-	return exec.Command("sudo", "-n", "true").Run() == nil
 }

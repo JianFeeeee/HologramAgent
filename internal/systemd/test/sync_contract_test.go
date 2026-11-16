@@ -1,10 +1,9 @@
 package test
 
-// internal/systemd 的黑盒判据：State/NewMigratePlan 的导出方法，输入 → 输出。
+// internal/systemd 的黑盒判据：State 的导出方法，输入 → 输出。
 // 不读单元文件、不执行脚本、不碰系统状态。
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,30 +56,5 @@ func TestSyncCommand(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "/data/a") {
 		t.Fatalf("★ SyncCommand 不含目标路径：%q", cmd)
-	}
-}
-
-// TestNewMigratePlanNormalizesPaths：构造计划时路径被 Clean，脚本含新旧路径。
-func TestNewMigratePlanNormalizesPaths(t *testing.T) {
-	old := "/data/old/./"
-	newDir := "/data/new//"
-	p := systemd.NewMigratePlan(old, newDir)
-	if p.OldDir != filepath.Clean(old) || p.NewDir != filepath.Clean(newDir) {
-		t.Fatalf("★ 路径未 Clean：old=%q new=%q", p.OldDir, p.NewDir)
-	}
-	script := p.Script()
-	if !strings.Contains(script, p.OldDir) || !strings.Contains(script, p.NewDir) {
-		t.Fatal("★ 迁移脚本没内联新旧路径")
-	}
-	if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
-		t.Fatal("★ 脚本缺 shebang —— 不能直接执行")
-	}
-}
-
-// TestRestartCommand：重启命令必须包含给定地址。
-func TestRestartCommand(t *testing.T) {
-	cmd := systemd.RestartCommand("127.0.0.1:8080", "test-key")
-	if !strings.Contains(cmd, "127.0.0.1:8080") {
-		t.Fatalf("★ RestartCommand 不含地址：%q", cmd)
 	}
 }
