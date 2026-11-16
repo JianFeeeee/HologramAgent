@@ -1,5 +1,24 @@
-// Package client 提供设备桥客户端共享库，实现与 remotedevice 插件通信的完整协议。
-// 编译为 C 共享库后，GUI (Electron) 可通过 FFI 调用；CLI (waiter) 可直接导入 Go 包。
+// Package client 实现设备桥（remotedevice 插件）的**完整客户端协议**：
+// WebSocket 建链 / hello+bind / 命令路由 / 二进制分块回传 / 回执帧构造。
+//
+// ## 谁在用
+//
+//   - `cmd/waiter`（产品 CLI）：`Bridge` + `CmdRouter` + `ParseHomeagentCmd`
+//   - `cmd/mock-server`：同一套协议做假设备
+//
+// ## 关于「编译为 C 共享库给 GUI FFI 调用」
+//
+// 包文档历史上这么写过，但**现在没有 c-shared 构建**（全仓 `grep c-shared`
+// 只命中 SDK 工具链里的"不得再用 c-shared"注释）。而且本包在 `internal/`
+// 下，外部模块按 Go 规则无法 import —— 它从来就不是对外 API 面。
+//
+// GUI 那侧是**自己在 JS 里重写了一份协议**（cmd/gui/main.js 的
+// device-bridge 相关代码），不复用本包。
+//
+// ⇒ 这里的导出符号是给**同仓其他包**（waiter / mock-server）用的，
+//
+//	不是"给外部设备客户端实现者的公开协议面"。改导出签名前按内部
+//	API 对待即可，不必担心破坏外部消费者。
 package client
 
 import "encoding/json"

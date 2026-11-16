@@ -143,6 +143,18 @@ func (m *Memory) Append(evt Event) error {
 	return nil
 }
 
+// needRotate 报告当前文件是否该切到新文件（按时间或大小）。
+//
+// ★ 这一条**没有判据**（2026-11-16 实测：把它改成恒 false，现有 3 条判据
+// 全部仍绿）。原因是它不可黑盒触发：间隔默认 24h、上限 10MB，判据造不出
+// 那个量（造 10MB 数据要真写 10MB，且要改默认值才能缩短）。
+//
+// 而 `WithRotationInterval` / `WithMaxSizeBytes` 已经删了（零调用），
+// 所以连"在测试里缩短间隔"这条路也没有 —— **要有判据就得先把可调项
+// 提成配置项**（那本身是功能，不是测试）。
+//
+// 现状的风险如实记在这里：`return false` 会让单文件无限增长，
+// 而没有任何判据会红。生产上靠 24h / 10MB 的默认值兜底。
 func (m *Memory) needRotate() bool {
 	return time.Since(m.created) > m.interval || m.size > m.maxSize
 }
