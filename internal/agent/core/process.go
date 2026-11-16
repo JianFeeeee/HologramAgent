@@ -636,6 +636,30 @@ func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI
 //
 // tool_call 与 tool_result 按 CallID 配对；InactivePages 只隐藏完整的
 // tool page，不会留下半个 assistant/tool 对，避免上游 400。
+//
+// ## ★ 填充方向：**从新往旧**（2026-11-16）
+//
+// 原实现从最旧往新走，预算耗尽就 `return out` —— 保留的是**旧对话**，
+// 丢掉的是**最新几轮**。这与两处既定语义直接冲突：
+//
+//	① `ContextTuning.ProtectedCount` 说「裁剪时**无条件保留**的最近事件条数」
+//	   （`PruneWithProtected` 保护的正是尾部 N 条）；
+//	② 本函数旧注释自己写着「更新的对话更重要」。
+//
+// 后果是记忆时序错乱：`PruneWithProtected` 刚把最旧的淘汰进 L2，渲染又
+// 把尾部切掉 ⇒ 两头都错，模型看得到很久以前、看不到刚刚说过的。
+//
+// 现在的顺序：
+//
+//	· 从最新往旧遍历；
+//	· 尾部 `effectiveProtectedCount()` 条**无条件纳入**（那是承诺，
+//	  且该值已按预算收紧，见 effectiveProtectedCount）；
+//	· 更旧的部分按剩余预算补，正常组放不下就停（更旧的只会更超）；
+//	· 单个**超大帧**（> 总预算 1/4）跳过继续往旧找，而不是把它之后的
+//	  全部历史一起丢掉（实测见过 468 个 tool_call 的单帧占 51 万 token）。
+//
+// 组内完整性由 buildEventGroup 保证（要么全有要么全无），因此任何顺序
+// 都不会产生「有 tool_calls 无配对结果」的非法序列。
 func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
 	if a == nil || a.context == nil {
 		return nil
@@ -645,126 +669,121 @@ func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
 	copy(events, a.context.events)
 	a.context.mu.Unlock()
 
-	var out []agentAPI.Message
-	used := 0
+	// 先把每个事件组装成一个「消息组」，再决定哪些组进上下文。
+	// 组装与取舍分开，取舍逻辑才能只看预算，不看消息形态。
+	type l1Group struct {
+		msgs []agentAPI.Message
+		cost int
+	}
+	groups := make([]l1Group, 0, len(events))
 	for _, e := range events {
 		if e == nil {
 			continue
 		}
-		input := timelineUserText(e)
-		if input == "" && e.Input == "" && len(e.ToolCalls) == 0 && e.Response == "" {
+		msgs, ok := a.buildEventGroup(e)
+		if !ok {
 			continue
 		}
-		calls := make([]agentAPI.ToolCall, 0, len(e.ToolCalls))
-		activeCallIDs := make(map[string]bool)
-		for i, tc := range e.ToolCalls {
-			page := i + 2
-			if containsInt(e.InactivePages, page) {
-				continue
-			}
-			calls = append(calls, agentAPI.ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments})
-			if tc.CallID != "" {
-				activeCallIDs[tc.CallID] = true
-			}
-		}
-		msgs := make([]agentAPI.Message, 0, 2+len(calls))
-		if input != "" {
-			msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
-		}
-		if e.Response != "" || len(calls) > 0 {
-			// ★ ReasoningContent 必须跟着 assistant 消息一起回传（2026-11-11 生产故障）。
-			//
-			// DeepSeek thinking 模式：请求**带 tools** 时，所有历史轮的
-			// reasoning_content 都必须传回，否则 400（官方指南 thinking_mode）。
-			// 内核每轮都带工具定义，所以这里漏一个字段就会让会话永久不可用。
-			//
-			// omitempty 在 agentAPI.Message 上：空串不发该字段 ——
-			// 存量事件（本次修复前写入的 context.json）自然无该字段，
-			// 那种情况交给适配器兜底（见 deepseek.lua 的 transform_request）。
-			msgs = append(msgs, agentAPI.Message{
-				Role:             "assistant",
-				Content:          e.Response,
-				ReasoningContent: e.ReasoningContent,
-				ToolCalls:        calls,
-			})
-		}
-		for _, tr := range e.ToolResults {
-			if tr.CallID != "" && !activeCallIDs[tr.CallID] {
-				continue
-			}
-			if st, ok := a.toolResultStoreFor(e, tr.Name); ok {
-				msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID,
-					Content: fmt.Sprintf("[stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]", st.TotalBytes, st.TotalLines, e.ID)})
-			} else {
-				msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID, Content: tr.Output})
-			}
-		}
-		// ★ 预算截断以**事件（消息组）**为最小单位，绝不切开一组的内部
-		//（2026-11-04 生产故障修复）。
-		//
-		// 此前是逐条消息累加，超预算就 return —— 可能正好切在
-		// assistant(tool_calls) **之后**、它的 tool 结果**之前**。
-		// 这样的序列上游直接 400：
-		//
-		//	An assistant message with 'tool_calls' must be followed by
-		//	tool messages responding to each 'tool_call_id'
-		//
-		// ⇒ 所有 provider 全部失败 ⇒ 会话彻底不可用。
-		//
-		// 实测（用生产 context.json 真实数据跑渲染）：
-		//
-		//	budget=480000 → 469 calls / 386 answered / **83 dangling**
-		//	budget=100000 → 469 calls /  40 answered / 429 dangling
-		//
-		// 即**默认预算下就已经在切断**。这也解释了为什么新会话也报错：
-		// 不是历史脏数据，是渲染期把当前上下文切坏了。
-		//
-		// 这与 InactivePages 的约束是同一件事（那里注释写着"剔掉 call
-		// 却留下 result 就是造一个必崩的帧"）——整组要么全留，要么全丢。
-		groupCost := 0
+		cost := 0
 		for _, m := range msgs {
-			groupCost += EstimateTokens(m.Content)
-			if len(m.ToolCalls) > 0 {
-				for _, tc := range m.ToolCalls {
-					groupCost += EstimateTokens(tc.Name) + EstimateTokens(tc.RawArguments)
-				}
+			cost += EstimateTokens(m.Content)
+			for _, tc := range m.ToolCalls {
+				cost += EstimateTokens(tc.Name) + EstimateTokens(tc.RawArguments)
 			}
 		}
-		if maxTokens > 0 && used+groupCost > maxTokens {
-			// 整组放不下。
-			//
-			// ★ 两种处置，取决于"这个组是不是异常大"：
-			//
-			//  ① 正常组（> 剩余预算，但本身不失控）：**停止**。
-			//     再往前就是更旧的对话，继续追加只会更超。
-			//     这也是原来 `return out` 的语义。
-			//
-			//  ② **单组就超过总预算的 1/4**：这一组异常（实测见过
-			//     468 个 tool_call 的单帧，占 51 万 token），它放不下
-			//     不是因为"前面装了太多"，而是它自己失控。
-			//     此时 `return` 会把**它之后的全部历史**一起丢掉 ——
-			//     实测 49 个事件只剩 8 个，上下文几乎清空。
-			//     所以跳过这一组、继续往后渲染（更新的对话更重要）。
-			//
-			// 两种处置都保证**组内完整性**（要么全有要么全无），
-			// 因此都不会产生"有 tool_calls 无配对结果"的非法序列。
-			// ★ 判据只看"这一组自己是否失控"，不看 out 是否为空。
-			//
-			// 第一版写成 `len(out)==0 || groupCost*4 <= maxTokens`，
-			// 于是超大帧恰好排在**第一位**时（out 为空）仍然 return ——
-			// 判据实测抓到：渲染出 0 条消息，之后的新对话全部消失。
-			if groupCost*4 <= maxTokens {
-				return out
+		groups = append(groups, l1Group{msgs: msgs, cost: cost})
+	}
+
+	pCount := a.effectiveProtectedCount()
+	if pCount > len(groups) {
+		pCount = len(groups)
+	}
+
+	// kept 按「新的在前」累积，最后反转成时间序。
+	var kept []l1Group
+	used := 0
+	for pos := len(groups) - 1; pos >= 0; pos-- {
+		g := groups[pos]
+		protected := pos >= len(groups)-pCount
+		if !protected && maxTokens > 0 && used+g.cost > maxTokens {
+			if g.cost*4 <= maxTokens {
+				// 正常组放不下 ⇒ 更旧的组只会更超预算，停止。
+				break
 			}
+			// 异常大的单组：跳过它继续往旧找，避免把它之前的全部历史
+			// 一起丢掉（旧实现的 `return` 正是这个后果）。
 			log.Printf("[agent] skip oversized frame (cost=%d > budget/4=%d) — "+
-				"keeping %d earlier messages, continuing with newer frames",
-				groupCost, maxTokens/4, len(out))
+				"keeping %d newer frames, continuing with older ones",
+				g.cost, maxTokens/4, len(kept))
 			continue
 		}
-		used += groupCost
-		out = append(out, msgs...)
+		kept = append(kept, g)
+		used += g.cost
+	}
+
+	out := make([]agentAPI.Message, 0, len(kept)*2)
+	for i := len(kept) - 1; i >= 0; i-- {
+		out = append(out, kept[i].msgs...)
 	}
 	return out
+}
+
+// buildEventGroup 把一个 L1 事件展开成一条或多条 provider 消息。
+//
+// 返回 ok=false 表示该事件没有任何可渲染内容。
+// **组内完整性在这里保证**：tool_call 与其 tool 结果按 CallID 配对，
+// InactivePages 只整体隐藏一页，因此调用方无论怎么取舍都不会造出
+// 「assistant 带 tool_calls 却缺配对 tool 消息」的非法序列。
+func (a *Agent) buildEventGroup(e *ContextEvent) ([]agentAPI.Message, bool) {
+	input := timelineUserText(e)
+	if input == "" && e.Input == "" && len(e.ToolCalls) == 0 && e.Response == "" {
+		return nil, false
+	}
+	calls := make([]agentAPI.ToolCall, 0, len(e.ToolCalls))
+	activeCallIDs := make(map[string]bool)
+	for i, tc := range e.ToolCalls {
+		page := i + 2
+		if containsInt(e.InactivePages, page) {
+			continue
+		}
+		calls = append(calls, agentAPI.ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments})
+		if tc.CallID != "" {
+			activeCallIDs[tc.CallID] = true
+		}
+	}
+	msgs := make([]agentAPI.Message, 0, 2+len(calls))
+	if input != "" {
+		msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
+	}
+	if e.Response != "" || len(calls) > 0 {
+		// ★ ReasoningContent 必须跟着 assistant 消息一起回传（2026-11-11 生产故障）。
+		//
+		// DeepSeek thinking 模式：请求**带 tools** 时，所有历史轮的
+		// reasoning_content 都必须传回，否则 400（官方指南 thinking_mode）。
+		// 内核每轮都带工具定义，所以这里漏一个字段就会让会话永久不可用。
+		//
+		// omitempty 在 agentAPI.Message 上：空串不发该字段 ——
+		// 存量事件（本次修复前写入的 context.json）自然无该字段，
+		// 那种情况交给适配器兜底（见 deepseek.lua 的 transform_request）。
+		msgs = append(msgs, agentAPI.Message{
+			Role:             "assistant",
+			Content:          e.Response,
+			ReasoningContent: e.ReasoningContent,
+			ToolCalls:        calls,
+		})
+	}
+	for _, tr := range e.ToolResults {
+		if tr.CallID != "" && !activeCallIDs[tr.CallID] {
+			continue
+		}
+		if st, ok := a.toolResultStoreFor(e, tr.Name); ok {
+			msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID,
+				Content: fmt.Sprintf("[stored %d bytes / %d lines — read with toolresult_read(event_id=%q)]", st.TotalBytes, st.TotalLines, e.ID)})
+		} else {
+			msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: tr.CallID, Content: tr.Output})
+		}
+	}
+	return msgs, true
 }
 
 func (a *Agent) toolResultStoreFor(e *ContextEvent, tool string) (ToolResultStore, bool) {
