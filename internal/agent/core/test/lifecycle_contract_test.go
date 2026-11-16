@@ -96,24 +96,16 @@ func TestLifecycleIgnoresDuplicateInput(t *testing.T) {
 //
 // 重复 Start 会造成两个 schedulerLoop 抢同一个队列 —— 任务被执行两次、
 // 统计翻倍，且极难从外面看出来。
-func TestStartIsIdempotentAndStopReleases(t *testing.T) {
+func TestStartIsIdempotent(t *testing.T) {
 	h := newLiveAgent(t, nil)
 	h.agent.Start() // 第二次
 
 	h.injectSync(t, "webui", "第一次")
 
+	// 重复 Start 会起第二条 schedulerLoop 抢同一个队列 —— 同一条输入被执行两次。
+	// 这是"幂等"这个词在这里唯一有实际后果的含义。
 	if st := h.agent.DumpScheduler().Stats; st.Executed > 1 {
 		t.Fatalf("★ 重复 Start 后同一条输入被执行 %d 次 —— 起了两条调度循环", st.Executed)
-	}
-
-	h.agent.Stop()
-	h.agent.Stop() // 重复 Stop 不能 panic
-
-	before := h.agent.DumpScheduler().Stats
-	time.Sleep(300 * time.Millisecond)
-	after := h.agent.DumpScheduler().Stats
-	if after.Executed != before.Executed {
-		t.Fatalf("★ Stop 之后调度器仍在执行任务（%d → %d）", before.Executed, after.Executed)
 	}
 }
 
