@@ -329,6 +329,68 @@ _stale = sorted(_cap_registered - _proto_methods)
 check(not _stale,
       "capability.go 登记了 protocol.go 里不存在的 method：%s" % ", ".join(_stale))
 
+# ── 4.7 SDK 与主仓的双份副本：必须逐字节一致（2026-11-16 新增）──
+#
+# SDK 仓独立发布，但主仓有一份**镜像副本**供 Lua 插件在内核内使用：
+#
+#   internal/lua/sdk/sdk.lua                    （内核侧，Lua 插件 require 它）
+#   third_party/hologramagentsdk/sdk/lua/sdk.lua （SDK 仓，对外发布）
+#
+# 此刻 md5 相同（2be4cb73…），但**没有任何东西守着它们继续相同**。
+# 改一边忘另一边 ⇒ Lua 插件跑一套 API、文档说另一套，且两边都"能跑"。
+#
+# 这类漂移没法用 Go 判据抓（两份都在各自 module 之外），只能在 CI 对账。
+import hashlib
+import os
+
+_DUALS = [
+    ("internal/lua/sdk/sdk.lua", "third_party/hologramagentsdk/sdk/lua/sdk.lua"),
+]
+for a, b in _DUALS:
+    if not (os.path.exists(a) and os.path.exists(b)):
+        fails.append("双份副本缺文件：%s / %s" % (a, b))
+        continue
+    ha = hashlib.sha256(open(a, "rb").read()).hexdigest()
+    hb = hashlib.sha256(open(b, "rb").read()).hexdigest()
+    check(ha == hb,
+          "%s 与 %s 内容不一致（sha256 %s… vs %s…）—— "
+          "改一边忘另一边会让 Lua 插件与文档跑两套 API" %
+          (a, b, ha[:12], hb[:12]))
+
+# ── 4.8 设施名：内核 vs 公开 SDK 必须逐字一致（2026-11-16 新增）──
+#
+# `internal/kernelmod/facilities.go` 的注释写着「★ 判据
+# TestFacilityNamesMatchPublicSDK 守这个一致性」，而**那个判据不存在**
+# （全仓 grep = 0）。SDK 侧同样写着。两边都靠人眼比对。
+#
+# 而设施名是 plugin.json 的 `requires_facilities` 契约：拼错就是
+#'  "插件永远等不到就绪"（运行期静默挂起，极难排查）。
+#
+# 两侧都是 Go 常量字符串，扫一遍对账即可。
+import re as _re2
+
+_kfac = open("internal/kernelmod/facilities.go", encoding="utf-8").read()
+_sfac = open("third_party/hologramagentsdk/sdk/facilities.go", encoding="utf-8").read()
+
+# 内核侧：Fac<Name> = "<value>"（只取「插件可依赖」那一段之前的部分）
+_kernel_names = set(_re2.findall(r'^\t(Fac[A-Za-z0-9]+)\s*=\s*"([^"]+)"', _kfac, _re2.M))
+# SDK 侧：Facility<Name> = "<value>"
+_sdk_names = set(_re2.findall(r'^\t(Facility[A-Za-z0-9]+)\s*=\s*"([^"]+)"', _sfac, _re2.M))
+
+check(len(_kernel_names) > 10, "kernelmod/facilities.go 只抽到 %d 个设施" % len(_kernel_names))
+check(len(_sdk_names) > 10, "sdk/facilities.go 只抽到 %d 个设施" % len(_sdk_names))
+
+# 比对**字符串值**（常量名两侧不同是设计：FacMemory vs FacilityMemory）
+_kvals = {v for _n, v in _kernel_names}
+_svals = {v for _n, v in _sdk_names}
+# 内核内部顺序标记（不是给插件的契约，SDK 侧不该有）—— 它们在
+# 「内核内部顺序标记」那段注释之后，值形如 "migration"/"knowledge-migration" 等。
+# 用白名单排除：只要求「SDK 有的，内核必须有」+「内核对外那组，SDK 必须有」。
+_missing_in_kernel = sorted(_svals - _kvals)
+check(not _missing_in_kernel,
+      "公开 SDK 声明了内核不存在的设施：%s —— 插件照它声明就会永远等不到就绪"
+      % ", ".join(_missing_in_kernel))
+
 # ── 5.5 code_lines 自测：这是「注释顶包」的唯一防线，必须自己也被验 ──
 #
 # ★ 为什么需要这段自测（M7 的教训）：

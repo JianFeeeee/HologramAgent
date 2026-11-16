@@ -10,7 +10,10 @@ package kernelmod
 const (
 	// ── 插件可依赖的设施（与公开 SDK 的 sdk.Facility* **逐字一致**）──
 	//
-	// ★ 判据 TestFacilityNamesMatchPublicSDK 守这个一致性。
+	// ★ 由 CI 门禁守这个一致性（.github/scripts/check-ci-gates.py 的
+	//   「设施名：内核 vs 公开 SDK」一段）。
+	//   原先这里写着「判据 TestFacilityNamesMatchPublicSDK 守这个一致性」——
+	//   那个判据**从未存在**（全仓 grep = 0），纯属注释承诺。
 	// 这些名字会出现在 plugin.json 的 requires_facilities 里。
 	FacConfig     = "config"
 	FacKernelIO   = "kernel-io"
@@ -38,7 +41,7 @@ const (
 	// 而插件提交发生在装配**完成之后**……实际会立刻满足，但语义是错的：
 	// 它不该成为插件的契约）。
 	//
-	// 判据 TestFacilityNamesMatchPublicSDK 只比对上面那组 ⇒ 天然拦住
+	// CI 门禁只比对上面那组 ⇒ 天然拦住
 	// "把内部标记泄漏成对外契约"。
 
 	// FacMigrated 标记"知识库目录迁移已完成"（用于让 store 排在迁移之后）。

@@ -25,7 +25,8 @@
 // ## 内核侧的一致性
 //
 // 内核在 `internal/kernelmod/facilities.go` 定义同名常量，
-// 判据 `TestFacilityNamesMatchPublicSDK` 保证两边**逐字一致**
+// 由主仓 CI 门禁保证两边**逐字一致**（check-ci-gates.py 的设施名对账段）。
+// （原先这里写着判据 `TestFacilityNamesMatchPublicSDK` —— 那个判据从未存在。）
 // （防止改一处忘另一处 —— 那会让插件声明的名字悄悄失效）。
 package sdk
 
