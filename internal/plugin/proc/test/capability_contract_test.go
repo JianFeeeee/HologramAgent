@@ -402,3 +402,33 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+// ---- 判据：两个「未实现但登记着」的能力不得对外宣传 ----
+
+// TestKnownCapabilitiesExcludesUnimplementedKernelControl：`kernel_control`
+// 不得出现在 KnownCapabilities 里。
+//
+// ★ 这条钉的是**宣传面与实际的一致性**，不是权限。
+//
+// 事实（2026-11-16 核实）：`kernel.restart` / `kernel.shutdown` 登记在
+// methodCapability（那是权限门），但 proc 桥**从未实现**它们 ——
+// SDK 模板不设 KernelControlAPI、corehandler 没有 case、third_party 无发送者。
+//
+// 把它们列进 KnownCapabilities 等于告诉外部插件作者"可以声明这个能力"，
+// 作者声明后得到的是「未知 method」。主动误导比缺功能更糟。
+//
+// ★ 关联约束（写在这里而不是断言里）：**别为了"清理死代码"删掉
+//
+//	methodCapability 里那两条登记**。`allows()` 对未登记的 method 返回
+//	`(true, CapCore)` —— 删登记等于把 kernel.restart 放宽成基础能力。
+//	这条判据只要求"不宣传"，"登记必须留着"没有可观察出口（capabilityOf
+//	未导出），所以只写在注释里，不建断言。
+func TestKnownCapabilitiesExcludesUnimplementedKernelControl(t *testing.T) {
+	known := proc.KnownCapabilities()
+	for _, c := range known {
+		if c == string(proc.CapKernelControl) {
+			t.Fatalf("★ KnownCapabilities 宣传了 kernel_control，但 proc 桥没有实现 "+
+				"kernel.restart/shutdown —— 外部插件照着声明会得到「未知 method」。实际: %v", known)
+		}
+	}
+}

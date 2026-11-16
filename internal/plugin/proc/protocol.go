@@ -248,11 +248,29 @@ const (
 	MethodPluginMgrStart            = "plugin.mgrStart"            // 52
 	MethodPluginMgrIsRuntimeStopped = "plugin.mgrIsRuntimeStopped" // 53
 
-	// ---- 内核控制（重启/关机，供 WebUI 等界面插件用）----
+	// ---- 内核控制（重启/关机）：**登记留着，通道未实现**（2026-11-16 核实）----
 	//
-	// ★ 同样是**必须桥接**的方法：子进程插件走本桥，未登记的方法会被
-	// corehandler 直接拒（"未知 method"）。WebUI 是子进程插件，
-	// 不走这里就点不动按钮。
+	// ⚠️ 这两个常量**没有发送者，也没有接收者**：
+	//   · SDK 模板里 SetKernelControlAPI 出现 0 次
+	//   · corehandler*.go 的 `case MethodKernel*` 是 0 个（全历史也没写过）
+	//   · third_party/ 里 MethodKernelRestart 出现 0 次
+	//
+	// 原注释写着「WebUI 是子进程插件，不走这里就点不动按钮」—— 这句是**错的**。
+	// webui 是**进程内内置插件**（plugins/all.go 的编译期工厂，生产日志
+	// "loaded by compile-time factories" 里就有它），它拿内核控制通道走的是
+	// 进程内 setter（registry.go 的 kernelControlFor）。真正工作的通道是
+	// kernelControlAllowed / kernelRestartAllowed（1988112 起，走心跳复用）。
+	//
+	// 那为什么常量与 capability.go 里的能力登记都留着？
+	//
+	//   ① 能力登记是**权限门**：`allows()` 对**未登记**的 method 返回
+	//      `(true, CapCore)`（按基础能力放行）。撤掉登记不是"清理死代码"，
+	//      是把 kernel.restart 放宽成任何插件都能调。等哪天有人补上
+	//      corehandler 的 case，通道就对外敞开了。
+	//   ② 对外宣传面（KnownCapabilities）**已排除 kernel_control** ——
+	//      不能让外部插件作者照着声明一个用不了的能力。
+	//
+	// 结论：这里缺的是"实现"，不是缺"权限"。删登记是降安全性。
 	MethodKernelRestart  = "kernel.restart"  // 54
 	MethodKernelShutdown = "kernel.shutdown" // 55
 

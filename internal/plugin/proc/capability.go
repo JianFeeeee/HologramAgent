@@ -73,8 +73,27 @@ const (
 	//   CapKernelControl 能重启/关机**内核** —— 影响全部插件 + 全部用户
 	//
 	// 关机之后服务不会自己回来（systemd Restart=always 由 guard 显式
-	// systemctl stop 压制），必须人工介入。因此默认**不授予**任何插件，
-	// 必须由 manifest 显式声明。
+	// systemctl stop 压制），必须人工介入。因此默认**不授予**任何插件。
+	//
+	// ## 现状（2026-11-16 核实）：门留着，通道不通
+	//
+	// 这条能力**登记在 methodCapability 里**（kernel.restart / kernel.shutdown），
+	// 但 proc 桥从未实现这两个 method —— SDK 模板不设 SetKernelControlAPI、
+	// corehandler 没有 case、third_party 无发送者。所以外部插件声明了也调不通。
+	//
+	// ★ 那为什么保留登记？因为 `allows()` 对**未登记**的 method 返回
+	// `(true, CapCore)`（按基础能力放行）。删掉登记 = 把 kernel.restart
+	// 变成谁都能调；一旦将来补上 corehandler 的 case，通道就对外敞开了。
+	//
+	// 正确形态是"可声明、默认拒、且真能用"，现在缺的是"真能用"那一段。
+	// 撤销登记是**降低**安全性，不是清理死代码。
+	//
+	// 对外宣传面（KnownCapabilities）已把它排除 —— 不能让作者照着声明
+	// 一个用不了的能力。
+	//
+	// 真正在工作的内核控制通道是另一条：internal/plugin/registry.go 的
+	// kernelControlAllowed / kernelRestartAllowed（进程内 SDK，走心跳复用，
+	// 见 1988112）。那条只发内置插件。
 	CapKernelControl Capability = "kernel_control"
 
 	// CapCrossPluginSettings 读写**其他插件**的配置与内核核心配置。
@@ -291,6 +310,25 @@ func KnownCapabilities() []string {
 	for c := range seen {
 		if c == CapCore {
 			continue // core 无需声明
+		}
+		// ★ kernel_control 不算「可声明的能力」（2026-11-16）。
+		//
+		// 它登记在 methodCapability 里（那是**权限门**：外部插件不声明
+		// kernel_control 就不能调 kernel.restart/shutdown —— 这条必须留着，
+		// 见下面的说明），但 proc 桥**从来没有实现**这两个 method：
+		//   · SDK 模板里 SetKernelControlAPI 出现 0 次
+		//   · corehandler*.go 的 `case MethodKernel*` 是 0 个
+		//   · third_party/ 里 MethodKernelRestart 出现 0 次
+		//
+		// 把它列进 KnownCapabilities 等于对外宣传一个**声明了也用不了**的能力，
+		// 外部插件作者照着声明，然后得到「未知 method」。这是主动误导。
+		//
+		// ⚠️ 别因为「反正是死代码」就把 methodCapability 里那两条也删掉：
+		//    allows() 对**未登记**的 method 返回 `true, CapCore`（按基础能力
+		//    放行）。删掉登记反而会让 kernel.restart 变成谁都能调 ——
+		//    一旦哪天有人补上 corehandler 的 case，通道就对外敞开了。
+		if c == CapKernelControl {
+			continue
 		}
 		out = append(out, string(c))
 	}
