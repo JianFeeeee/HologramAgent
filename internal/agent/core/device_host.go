@@ -10,7 +10,8 @@ package core
 //	→ panic 恢复 → 明文脱敏（出向 + 入向）→ ToolResult 成败判定
 //
 // 这些是**执行安全**，与敏感信息安全（security 模块）是两件事，
-// 都不能被对方顶替（见 plan.md §五）。所以 device 只拿到窄接口
+// 都不能被对方顶替（分层规则见 docs/zh/kernel-modularization-design.md）。
+// 所以 device 只拿到窄接口
 // （api.ToolHost），拿不到 Agent 内部字段，也就绕过不了这条链。
 
 import (

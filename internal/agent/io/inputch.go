@@ -24,7 +24,7 @@ var (
 	// ErrChannelNotRealtime 表示该通道没有声明 CapRT 能力（不能承载 rt 流）。
 	//
 	// 两侧校矩的另一侧（"目标 agent 是不是 rtchild"）在 core 包，
-	// 因为 agent 类型属于 core 而非 io（plan.md 十一.三 F）。
+	// 因为 agent 类型属于 core 而非 io。
 	ErrChannelNotRealtime = errors.New("通道未声明 rt 能力（CapRT）")
 )
 

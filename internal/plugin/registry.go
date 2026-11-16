@@ -118,7 +118,7 @@ type Registry struct {
 	memDB            *memory.GraphDB
 	textMem          *text.Memory
 	coldcontextStore *coldcontext.Store
-	// CAS 已淘汰（块自带负载，见 plan.md）。本注册表不保留媒体存储字段：
+	// CAS 已淘汰（块自带负载）。本注册表不保留媒体存储字段：
 	// 留着会诱导后来者再接线，走回头路。媒体字节走 sdk.Memory().MediaBytes。
 	ks      *knowledge.Store
 	mgr     *agentAPI.ProviderManager

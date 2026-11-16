@@ -435,6 +435,63 @@ for _n in _nums:
           "README.md 写「%s 个内置插件」，而 internal/plugins/all.go 的 import 是 **%d** 个"
           "（%s）" % (_n, _nbuiltin, ", ".join(sorted(_builtin_imports))))
 
+# ── 4.10 注释不得引用被 gitignore 的文件（2026-11-16 新增）──
+#
+# 实测发现 35 处 Go 注释写着「见 plan.md 十一」「plan.md §D4」「plan.md 十一.三 B」，
+# 而：
+#   · `.gitignore:101` 有 `/plan.md` ⇒ 文件不在仓库里，读者打不开
+#   · 现存 plan.md（本机）是「rtchild 标准化实施计划」，grep '十一' = **0**
+#   · `git log --all -- plan.md` 的历史版本同样是 0 ⇒ 那些章节**从未入库过**
+#
+# 于是这 35 处指向的是"不存在、也从未存在过的章节"。本次已全部改写为自足说明。
+#
+# 这条门禁守的是同一个坑不再出现：注释里引用一个 gitignore 掉的文件，
+# 等于把读者引到死路，而 CI 不会因此变红。
+import os as _os4
+import re as _re4
+
+_gi = open(".gitignore", encoding="utf-8").read()
+_ignored_root_files = set()
+for _line in _gi.splitlines():
+    _line = _line.strip()
+    if not _line or _line.startswith("#"):
+        continue
+    # 形如 "/plan.md" 或 "plan.md" —— 只收根目录下的 .md
+    _m = _re4.match(r'^/?(\S+\.md)$', _line)
+    if _m:
+        _ignored_root_files.add(_os4.path.basename(_m.group(1)))
+
+check(_ignored_root_files, ".gitignore 里一个根目录 .md 都没抽到 —— 正则与文件结构漂移了")
+
+# 只扫源码注释里的「见 X.md」/「X.md 第/§」。跳过 third_party 的文档引用
+# （那些指向 docs/zh/ 下真实存在的文件，单独由 docs 构建门守）。
+_src_roots = ["internal", "cmd", "pkg", "providers"]
+_bad = []
+for _root in _src_roots:
+    for _dir, _dirs, _files in _os4.walk(_root):
+        for _f in _files:
+            if not _f.endswith(".go"):
+                continue
+            _path = _os4.path.join(_dir, _f)
+            try:
+                _txt = open(_path, encoding="utf-8").read()
+            except Exception:
+                continue
+            for _ln, _content in enumerate(_txt.splitlines(), 1):
+                _c = _content.strip()
+                if not (_c.startswith("//") or _c.startswith("*")):
+                    continue
+                for _ref in _ignored_root_files:
+                    # 只认"像文档引用"的形态：文件名 + 后续是 §/第/句末
+                    if _ref in _c and _re4.search(
+                            _re4.escape(_ref) + r'(\s|$|\u3001|\uff09|\))', _c):
+                        _bad.append("%s:%d 引用了被 gitignore 的 %s" % (_path, _ln, _ref))
+                        break
+
+check(not _bad,
+      "注释引用了不随仓库分发的文档（读者打不开）：\n    " +
+      "\n    ".join(sorted(set(_bad))[:10]))
+
 # ── 5.5 code_lines 自测：这是「注释顶包」的唯一防线，必须自己也被验 ──
 #
 # ★ 为什么需要这段自测（M7 的教训）：

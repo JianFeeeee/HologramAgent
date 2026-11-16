@@ -10,7 +10,7 @@ package child
 //	rtMu       + rtChildren map[string]*rtChild
 //
 // 于是每加一种类型就多一张表、一把锁、一段路由分支。实测新增一种子 agent
-// 需要改 18 个生产文件（见 plan.md §D4）。
+// 需要改 18 个生产文件（逐文件清单见 docs/zh/kernel-modularization-design.md）。
 //
 // 现在只有一把锁、一张表，类型差异全部下沉到 Entry 实现。
 //

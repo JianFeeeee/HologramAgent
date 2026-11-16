@@ -43,7 +43,8 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	// rt 实例从**统一登记表**取（不再是专用表 + 专用锁）。
 	if rt := a.rtChildOf(entry.Owner); rt != nil {
 		// 不区分 isInterrupt：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
-		// 这正是 plan.md 十一.三 B 说的"rt 输入不进四级中断阶梯"的落点。
+		// 这正是"rt 输入不进四级中断阶梯"的落点（rt 单槽 vs 四级阶梯是两套目标
+		// 函数相反的设计，见 rtchild.go 开头的取舍说明）。
 		rt.slot.Push(evt)
 		if rt.agent != nil && rt.agent.ctx != nil {
 			// 已存在且活着的轮次：取消它，让 rtLoop 立刻用新输入重开（契约 1）。

@@ -11,7 +11,7 @@ package security
 //	驻留子 轮次 B：注入 qq.owner    →  active = "qq.owner"     ← 覆盖
 //	主 agent 轮次 A 继续执行工具     →  判定按 qq.owner 走        ← 串档
 //
-// 这不是理论风险：驻留子与 rtchild 与主 agent **同进程并发**（见 plan.md 十一）。
+// 这不是理论风险：驻留子与 rtchild 与主 agent **同进程并发**。
 //
 // ## 但**不能**整份复制 Runtime
 //

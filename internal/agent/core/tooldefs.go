@@ -717,7 +717,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 
 	tools = append(tools, toolDefWith("output_list_channels", "列出所有可用输出通道及其能力（如 text/file/image/audio）和对应的输出门工具名称。", map[string]interface{}{}, nil, parallelOpts()))
 
-	// 父侧：rtchild 控制面（实时通话子 agent，plan.md 十一）。
+	// 父侧：rtchild 控制面（实时通话子 agent，见 rtchild.go）。
 	if a.parentID == "" {
 		tools = append(tools, toolDefWith("rt_children",
 			"管理实时子 agent（rtchild，用于通话/视频通话）：list 列出 / "+

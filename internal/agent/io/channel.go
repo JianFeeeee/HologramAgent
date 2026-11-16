@@ -54,7 +54,7 @@ const (
 	// CapRT 表示该通道**能承载 rt 流**（实时通话）。
 	//
 	// ★ 这是**通道**侧的声明，与 agent 是否为 rtchild 是两件事
-	//   （plan.md 十一.三 F）。rt 通道的划拨校验要两侧都满足：
+	//   。rt 通道的划拨校验要两侧都满足：
 	//     · 通道声明自己能承载 rt 流（本能力位）
 	//     · 目标 agent 是 rtchild（AgentConfig.IsRealtime）
 	//   校验落点是 AssignRealtime，而不是普通 Assign —— 计划原文：

@@ -51,7 +51,7 @@ type Agent struct {
 	taskPrompt   string
 	dataDir      string
 
-	// isRealtime 标记本 agent 是 **rtchild**（实时子 agent，plan.md 十一）。
+	// isRealtime 标记本 agent 是 **rtchild**（实时子 agent，见 rtchild.go）。
 	//
 	// 它是 agent **类型标签**，与通道侧的 CapRT 是两个不同结构：
 	//   · CapRT      —— “这个**通道**能承载 rt 流”（插件声明）
@@ -125,7 +125,7 @@ type Agent struct {
 	// 文本记忆（原始对话日志）
 	textMem *text.Memory
 
-	// 媒体存储句柄已随 CAS 淘汰（块自带负载，见 plan.md）。
+	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
 
 	// 人格设定（内容来自启动时载入的人格文件/配置项）
 	personality *agentPkg.Personality
@@ -358,7 +358,7 @@ type AgentConfig struct {
 	Knowledge   *knowledge.Store
 	SocialStore *social.SocialStore
 	TextMemory  *text.Memory
-	// 媒体存储句柄已随 CAS 淘汰（块自带负载，见 plan.md）。
+	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
 	MultimodalSpace vector.MultimodalEmbedder
 	// EmbeddingProvider / EmbeddingError 是向量空间的配置身份与打开失败原因，
 	// 供 healthcheck_kernel 状态报告区分「未配置 / 打开失败 / 已启用」。
@@ -410,11 +410,11 @@ type AgentConfig struct {
 	// 见 resident.go / rtchild.go 里 `Security: a.security`。
 	Security *security.Runtime
 
-	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，plan.md 十一）。
+	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，见 rtchild.go）。
 	//
 	// 置 true 后：
 	//   · 只有它能被划入带 CapRT 的 rt 通道（Agent.AssignRealtime 校验）；
-	//   · 打断不走四级中断阶梯，而走单槽覆盖（plan.md 十一.三 B）。
+	//   · 打断不走四级中断阶梯，而走单槽覆盖。
 	//
 	// ★ 这不是权限位，而是**类型标记**：另外两类子 agent 的设计目标函数
 	//   与 rt 相反（公平 vs 最新者胜），混用会两边都坏。

@@ -1,6 +1,8 @@
 package core
 
-// rtchild（实时子 agent）—— 通话场景。设计见 plan.md 第十一节。
+// rtchild（实时子 agent）—— 通话场景。设计依据就是本文件开头的
+// 「它是什么 / 四条内核契约 / 为什么另起一个文件」三段（历史线索见
+// docs/zh/engineering-lessons.md 与 docs/zh/input-scheduler-design.md 的 rt 差异段）。
 //
 // ## 它是什么（用户裁定 2026-10-30）
 //
@@ -12,9 +14,10 @@ package core
 //	rtchild      goroutine + 局部 msgs    ★ 通话 / 视频通话
 //
 // 它只服务一个场景：**实时对话**。所以延迟是架构约束而不是调优项 ——
-// 这条决定了本文件所有的取舍（详见 plan.md 十一.四 空白 2 的生产实测）。
+// 这条决定了本文件所有的取舍（生产实测：不同 provider 的单次往返差 2–5 倍，
+// 而 rt 的首字预算是 500ms 级 —— 见下方 PreferredProvider 的注释）。
 //
-// ## 四条内核契约（plan.md 十一.二）
+// ## 四条内核契约
 //
 //  1. 输入可打断：新输入到达立即中断当前生成，以新输入重开一轮（不排队等它说完）
 //  2. 输出连续：流式、不攒整段；被中断时就地截断
@@ -29,7 +32,7 @@ package core
 //	rt 单槽（本文件）         ：最新者胜、可饿死、丢现场  ← rt 要的
 //
 // 硬凑在一起会让两边都坏。所以 rt 输入**不进** registerInterrupt（避开
-// preemptCooldown=2s、临界区、同级不抢占三道闸，见 plan.md 十一.三 B）。
+// preemptCooldown=2s、临界区、同级不抢占三道闸）。
 
 import (
 	"context"
@@ -53,7 +56,7 @@ import (
 //
 // ★ 为何与 io 包的 ErrChannelNotRealtime 分开：它们是两侧校验的两个不同失败。
 // io 包只知道自己那一侧（通道能力）；"目标 agent 是不是 rtchild" 是
-// agent 类型，属于 core 包（plan.md 十一.三 F）。分开后错误文案能直接指向
+// agent 类型，属于 core 包。分开后错误文案能直接指向
 // 该动哪一边，而不是一句笼统的"不是 rt"。
 var ErrAgentNotRealtime = errors.New("目标 agent 不是 rtchild")
 
@@ -64,7 +67,7 @@ var ErrAgentNotRealtime = errors.New("目标 agent 不是 rtchild")
 // 而那两处都不会指向"少划了一条通道"。
 var ErrRTChannelNotPaired = errors.New("rt 通道必须成对（inputch + outputch 都要）")
 
-// AsRealtime 把本 agent 标记为 rtchild（类型标签，plan.md 十一.三 F 的 agent 侧）。
+// AsRealtime 把本 agent 标记为 rtchild（类型标签，agent 侧这一半）。
 //
 // ★ 为什么是"标记"而不是"构造参数才可设"：现有三类 agent 的构造点分散
 // （New(AgentConfig) / SpawnResident / runChildTask），rt 的骨架要复用其中一部分。
@@ -85,7 +88,7 @@ func (a *Agent) IsRealtime() bool { return a != nil && a.isRealtime }
 //	   OutputCapabilities()/InputChannel 里声明。没声明 ⇒ 它根本不知道怎么
 //	   处理"新值作废旧值"的语义，划进去只会把它当成普通消息收。
 //	② agent 侧：本 agent 必须是 rtchild —— 否则一个跑 3–5 秒工具的主 agent
-//	   会混进通话链路，用户听到的是长静默（生产实测中位数 2–5s，见 plan.md）。
+//	   会混进通话链路，用户听到的是长静默（生产实测中位数 2–5s）。
 //
 // ## 为什么不复用 Assign
 //
@@ -130,7 +133,7 @@ func (a *Agent) AssignRealtime(name string) error {
 
 // ── rtSlot：rt 输入的**唯一**入口（单槽覆盖，不排队） ──
 //
-// 设计见 plan.md 十一.五。它是契约 1 与契约 3 的落地形态：
+// 它是契约 1（可打断）与契约 3（不吃队列）的落地形态：
 //
 //	契约 1「新输入一到立刻真打断，不是排队等它说完」
 //	契约 3「不吃队列、不保序、不补偿」
@@ -448,7 +451,7 @@ type RTChildOptions struct {
 	// PreferredProvider 是**这个 rtchild** 优先使用的模型源（空 = 继承父的）。
 	//
 	// 通话场景应选**首字延迟最低**的源：生产实测不同源的单次往返差 2–5 倍
-	// （见 plan.md 十一.四 空白 2），而 rt 的首字预算是 500ms 级。
+	// （生产实测差 2–5 倍），而 rt 的首字预算是 500ms 级。
 	PreferredProvider string
 	// MaxTools 是本轮允许的最大工具批数（0 = 不限）。
 	//
@@ -494,7 +497,7 @@ type RTChildOptions struct {
 //
 // 【实时通话】段是用户裁定 R4 的落地：调用工具**之前**先用 outputch 告知用户稍等。
 // 这是**提示词**要求而非内核强制——内核无法判断"这次工具调用是否真的慢"，
-// 强行插入会破坏模型的自然表达（plan.md 十一.三 G）。
+// 强行插入会破坏模型的自然表达。
 const rtChildDefaultPrompt = `你正在与用户实时通话。
 
 【实时通话】这是硬性要求：
@@ -524,7 +527,7 @@ func (a *Agent) RTChildren() []string {
 //	goroutine 数            Start() 起 7 个           只起 1 个 rtLoop
 //	输入                    通道 + 队列（不丢活）       单槽覆盖（最新者胜）
 //	残余回灌                ResidualPolicy keep/drop   无（契约 3）
-//	上下文                  RelevanceContext + 不裁    局部消息页（plan.md 十一.四）
+//	上下文                  RelevanceContext + 不裁    局部消息页
 func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	if strings.TrimSpace(opts.ID) == "" {
 		return "", fmt.Errorf("rtchild 必须有 id")
@@ -874,7 +877,7 @@ func (a *Agent) StopRTChildren() int {
 //
 // 它是 rt 的唯一输入入口。与 `InjectInterruptTextOpts` 的关键差别：
 // 后者进四级中断阶梯（会被 preemptCooldown=2s 降级为入队），
-// 本函数直接覆盖单槽（最新者胜，永不排队）。见 plan.md 十一.三 B。
+// 本函数直接覆盖单槽（最新者胜，永不排队）。
 func (a *Agent) PushRTInput(id, text string) (uint64, error) {
 	rc := a.rtChildOf(id)
 	if rc == nil {
@@ -942,7 +945,7 @@ func (a *Agent) RTChildStats(id string) (RTChildStats, bool) {
 
 // ── rtLoop：rtchild 的执行循环（R3–R6 的载体） ──
 //
-// 形状由契约决定（plan.md 十一.二）：
+// 形状由契约决定（见本文件开头的四条契约）：
 //
 //	for {
 //	    block on Wake                      ← 契约 4：待机零消耗，不轮询
@@ -957,7 +960,7 @@ func (a *Agent) RTChildStats(id string) (RTChildStats, bool) {
 // ## 为什么不用 step 状态机（task.go 的 runTaskSteps）
 //
 // 主 agent 的 runTaskSteps 承载 7 个 Step + 挂起/恢复/中断栈，那是为
-// 「可抢占、现场可恢复」设计的。rt 的规则更窄（plan.md 十一.三 A）：
+// 「可抢占、现场可恢复」设计的。rt 的规则更窄：
 //
 //	ChatStream 期间     ⇒ 可打断（cancel 自己的 ctx）
 //	工具执行期间       ⇒ 不可打断（临界区，与 StepToolExec 同义）
@@ -995,7 +998,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 
 	// ★ 安全轮次边界（rtchild 路径）。
 	//
-	// rtchild 不走 `runInputTask`（它没有调度器、不吃队列，见 plan.md 十一.三 D），
+	// rtchild 不走 `runInputTask`（它没有调度器、不吃队列 —— 契约 3），
 	// 所以这是一条**独立**的输入路径。收敛前 agent 侧的档位激活只写在
 	// `prepareInputTask` 里，rtchild 根本不会经过那里 —— 若只接一条，
 	// rtchild 就永远没有档位。
@@ -1085,7 +1088,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		msgs = append(msgs, agentAPI.Message{
 			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
 		})
-		// ★ 工具执行期间**不可打断**（R5 / plan.md 十一.三 A 的临界区）：
+		// ★ 工具执行期间**不可打断**（R5 的临界区语义）：
 		// 副作用不可回滚，打断只会让"决定执行但未执行"变成尴尬状态。
 		//
 		// ★★ 走共享的 runToolBatch（2026-11-04 重构）：
@@ -1143,7 +1146,7 @@ func respContentOr(resp *agentAPI.CompletionResponse) string {
 // rtStream 跑一次**流式**生成，把每个增量立刻写给 outputch(rt)。
 //
 // 返回 ok=false 表示被打断（ctx 被 cancel）——调用方必须**就地截断、不重试**
-// （契约 2；也对应 plan.md 十一.三 C 的"ChatStream 被 cancel 即截断"）。
+// （契约 2：ChatStream 被 cancel 即截断，不是换源重试）。
 func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []agentAPI.Message, tools []interface{}) (*agentAPI.CompletionResponse, bool) {
 	req := &agentAPI.CompletionRequest{
 		Messages:        msgs,
@@ -1349,7 +1352,7 @@ func (a *Agent) rtSuperseded(rc *rtChild, seq uint64) bool {
 //
 // 用户 2026-10-30 裁定：rtchild 的上下文模型 = **普通上下文 + 上下文窗口**。
 // 所以这里没有"页"、没有"锚点"、没有"自降级阶梯" —— 那些是我先前把问题
-// 设计复杂了（plan.md 十一.四 空白 1 的初版）。rt 的上下文就是：
+// 设计复杂了（初版曾想复用 RelevanceContext 那套）。rt 的上下文就是：
 //
 //	system 提示词 + 正常累积的消息序列（user / assistant / tool）
 //
