@@ -501,11 +501,10 @@ async function notifyTurn(title, body, msgKey) {
 // notifyTurnOnce 保证同一轮只通知一次。
 function notifyTurnOnce(sig, title, body, msgKey) {
   if (!shouldNotify()) return;
-  if (!state._notifyState || state._notifyState.turnSig !== sig) {
-    state._notifyState = { turnSig: sig, notified: false };
-  }
-  if (state._notifyState.notified) return;
-  state._notifyState.notified = true;
+  // 去重决策抽在 notify-once.js（纯函数，判据直接调它断言）。
+  var d = NotifyOnce.decideNotify(state._notifyState, sig);
+  state._notifyState = d.state;
+  if (!d.notify) return;
   notifyTurn(title, body, msgKey);
 }
 
@@ -773,8 +772,11 @@ async function loadDiscoveredGateway() {
       if (window.homeagent && window.homeagent.deviceBridge) {
         try {
           var cur = await window.homeagent.deviceBridge.get();
-          if (cur && !cur.gateway && state.discoveredGateway) {
-            await window.homeagent.deviceBridge.set({ gateway: state.discoveredGateway });
+          // 回写决策抽在 gateway-backfill.js（纯函数，判据直接调它）。
+          // 语义：本地已配置则手填优先；只 set gateway，不碰 token。
+          var backfillGw = GatewayBackfill.decideBackfill(cur, state.discoveredGateway);
+          if (backfillGw) {
+            await window.homeagent.deviceBridge.set({ gateway: backfillGw });
             console.log(
               "[device-bridge] gateway auto-configured from discovery: " +
                 state.discoveredGateway,

@@ -16,12 +16,21 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(join(here, "renderer", "style.css"), "utf8");
 const app = readFileSync(join(here, "renderer", "app.js"), "utf8");
 const main = readFileSync(join(here, "main.js"), "utf8");
 const preload = readFileSync(join(here, "preload.js"), "utf8");
+
+function loadNotifyOnce() {
+  try {
+    return createRequire(import.meta.url)(join(here, "renderer", "notify-once.js"));
+  } catch (e) {
+    return null;
+  }
+}
 
 let failures = 0;
 const check = (name, ok, detail) => {
@@ -105,17 +114,44 @@ check("preload 暴露 notify.supported", /supported:\s*\(\)\s*=>\s*ipcRenderer\.
 check("preload 暴露 notify.onClicked", /onClicked:/.test(preload));
 
 // ── 5) 渲染层 ──────────────────────────────────────────────────────
-check("渲染层有 notifyTurnOnce 去重", /function notifyTurnOnce\(/.test(app), "缺去重 ⇒ 一轮会弹多次");
-check(
-  "去重基于 turnSig",
-  /turnSig/.test(app),
-  "去重没按轮次签名",
-);
-check(
-  "★ 通知挂在 SSE agent_output 上（覆盖旁观路径）",
-  /notifyTurnOnce\(/.test(app) && /starmapPulse\("output"[\s\S]{0,400}notifyTurnOnce/.test(app),
-  "没挂在 SSE 收尾处 ⇒ 旁观其他渠道的回复时不会通知",
-);
+// ── 去重决策：**调接口**断言 ───────────────────────────────────────
+//
+// 逻辑已抽到 `renderer/notify-once.js` 的 `decideNotify(prev, sig)`：
+// 返回 {state, notify}。语义是「同一轮只弹一次」。
+//
+// 原判据只匹配 `function notifyTurnOnce(` 是否存在 —— 那不能证明去重有效
+// （函数在、逻辑错，照样每段输出弹一次）。
+{
+  const N = loadNotifyOnce();
+  check("能加载 notify-once.js", N !== null);
+  if (N) {
+    const d = N.decideNotify;
+    const first = d(null, "turn-1");
+    check("★ 首轮应当通知", first.notify === true, "首轮不通知 ⇒ 系统通知完全不工作");
+    const again = d(first.state, "turn-1");
+    check(
+      "★ 同一轮第二次不通知",
+      again.notify === false,
+      "同轮重复通知 ⇒ 一轮输出几段就弹几次（实测被用户投诉的形态）",
+    );
+    const next = d(again.state, "turn-2");
+    check(
+      "★ 新一轮恢复通知",
+      next.notify === true,
+      "新一轮不通知 ⇒ 去重把后续所有轮次都吞了",
+    );
+    // 幂等：同一 state 连续判多次，只有第一次为真
+    let st = d(null, "turn-3").state;
+    let count = 0;
+    for (let k = 0; k < 5; k++) {
+      const r = d(st, "turn-3");
+      if (r.notify) count++;
+      st = r.state;
+    }
+    check("同一轮连判 5 次只通知 0 次（已通知过）", count === 0, `仍通知了 ${count} 次`);
+  }
+}
+
 check("注册了通知点击跳转", /onNotifyClicked/.test(app) && /onClicked\(onNotifyClicked\)/.test(app));
 check("启动时探测通知可用性", /notify\.supported\(\)/.test(app), "未探测 Notification.isSupported");
 

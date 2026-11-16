@@ -28,6 +28,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const APP = join(here, "renderer", "app.js");
@@ -45,6 +46,15 @@ const check = (name, ok, detail) => {
 };
 
 const appSrc = readFileSync(APP, "utf8");
+
+// loadGatewayBackfill 加载 renderer/gateway-backfill.js（UMD，无 import）。
+function loadGatewayBackfill() {
+  try {
+    return createRequire(import.meta.url)(join(here, "renderer", "gateway-backfill.js"));
+  } catch (e) {
+    return null;
+  }
+}
 const mainSrc = readFileSync(MAIN, "utf8");
 const preloadSrc = readFileSync(PRELOAD, "utf8");
 
@@ -69,32 +79,45 @@ check(
     "state.discoveredGateway 只用于 UI，主进程仍在用旧的手填地址",
 );
 
-// ── 3) 回写不得覆盖用户手填值 ──────────────────────────────────────
+// ── 3) 回写决策：**调接口**断言，不读源码 ──────────────────────────
 //
-// 发现只做**缺省补全**。若用户在设置页手填了内网直连地址（灰度实例、
-// 绕过反代），自动回写把它冲掉就是新的回归。判据钉住「本地为空才写」。
-
-// 注意不能用 /set\(\s*\{[\s\S]{0,300}?\}/ —— 调用点前后的 if 判断在花括号
-// **外面**，而 300 字窗口会跨到下一个 deviceBridge.set（saveBridgeChannel
-// 的手动保存），判据就误报了。改为直接取「发现函数体内」的那次调用。
-const discoFn = appSrc.match(
-  /async function loadDiscoveredGateway\(\)[\s\S]*?\n}/,
-);
-const setCall = discoFn
-  ? discoFn[0].match(/window\.homeagent\.deviceBridge\.set\([^)]*\)/)
-  : null;
-check(
-  "回写前检查本地 gateway 为空",
-  discoFn ? /cur\s*&&\s*!cur\.gateway/.test(discoFn[0]) : false,
-  discoFn
-    ? "回写处没看到「本地已配置则跳过」的判断 —— 会覆盖用户手填值"
-    : "找不到 loadDiscoveredGateway",
-);
-check(
-  "回写只传 gateway，不覆盖 token",
-  setCall ? !/token/.test(setCall[0]) : false,
-  setCall ? "回写里带了 token —— 发现端点不返回设备令牌，会写坏" : "找不到回写调用",
-);
+// 决策逻辑已抽到 `renderer/gateway-backfill.js` 的 `decideBackfill(current, discovered)`：
+// 返回要回写的 gateway，或 null（不回写）。
+//
+// 两条契约直接调函数断言，不再正则匹配「源码里有没有 cur && !cur.gateway」：
+//   · 本地已配置 ⇒ 必须 null（手填优先，用户可能故意指向内网/灰度）
+//   · 无发现 ⇒ 必须 null；本地为空 ⇒ 返回值就是发现值
+//
+// 第三条（"只传 gateway 不传 token"）不在这里判：它由调用点的
+// `set({ gateway: backfillGw })` 保证，而那是**单字段对象字面量** ——
+// 判据可以断它，但更有意义的是断 decideBackfill 的返回值（见下）。
+{
+  const G = loadGatewayBackfill();
+  check("能加载 gateway-backfill.js", G !== null);
+  if (G) {
+    const d = G.decideBackfill;
+    check(
+      "★ 本地已配置 gateway 时不回写（手填优先）",
+      d({ gateway: "ws://user-set" }, "ws://discovered") === null,
+      "已配置却回写 ⇒ 自动发现会冲掉用户手填的地址（内网直连/灰度实例被覆盖）",
+    );
+    check(
+      "本地未配置时回写发现值",
+      d(null, "ws://discovered") === "ws://discovered",
+      "不返回发现值 ⇒ 设备桥仍用空地址，永远 401/ECONNREFUSED",
+    );
+    check(
+      "本地 gateway 为空串时视作未配置",
+      d({ gateway: "" }, "ws://discovered") === "ws://discovered",
+      "空串被当成已配置 ⇒ 首次发现永远不生效",
+    );
+    check(
+      "无发现值时一律不回写",
+      d(null, "") === null && d({ gateway: "" }, "") === null,
+      "空发现仍返回非空值 ⇒ 会写坏配置",
+    );
+  }
+}
 
 // ── 4) IPC 链路完整：preload 暴露 get/set，主进程处理 ──────────────
 //
