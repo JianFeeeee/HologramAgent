@@ -103,7 +103,7 @@ N 默认 10，实际取值受预算约束：`min(配置值, ContextTokens / 单�
 - **工具**：文件、命令、代码、浏览器（真实 Chrome）、日程、备忘、RSS、音乐
 - **模态**：图片、视频、语音、截图、网页
 
-28 个内置插件、89 个模型可调工具。外部插件一插件一仓，见 [github.com/HologramAgent](https://github.com/HologramAgent)。
+**12 个内置插件**（编译进 `homed`）；其余全部是外部插件，一插件一仓，按需安装 —— 装多少就多出多少工具，因此不在这里钉具体工具数（生产实测 43 个插件 / 209 个工具）。见 [github.com/HologramAgent](https://github.com/HologramAgent)。
 
 ## 下载
 
@@ -124,7 +124,7 @@ macOS 的 `homed` 需在原生 macOS 构建（CGO + sqlite3），发布包仅含
 
 ## 构建
 
-依赖 Go 1.25+、CGo（go-sqlite3）、Linux。
+依赖 Go 1.27+、CGo（go-sqlite3）、Linux。
 
 ```bash
 make build build-cli    # 守护进程 + CLI

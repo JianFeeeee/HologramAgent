@@ -391,6 +391,50 @@ check(not _missing_in_kernel,
       "公开 SDK 声明了内核不存在的设施：%s —— 插件照它声明就会永远等不到就绪"
       % ", ".join(_missing_in_kernel))
 
+# ── 4.9 README 事实漂移：Go 版本 / 内置插件数（2026-11-16 新增）──
+#
+# `README.md` 曾写「28 个内置插件、89 个模型可调工具」与「Go 1.25+」。
+# 实测：`internal/plugins/all.go` 的 import 是 **12** 个，`go.mod` 是 **1.27.1**。
+#
+# 这类数字没人守着就会持续漂 —— 而 README 是外部读者的第一入口，
+# 写错等于对外承诺了不存在的东西。
+#
+# ## 只钉"能机械核算的两项"
+#
+# 工具数**故意不钉**：它随用户装了哪些外部插件而变（生产实测 209，空装是 0），
+# 钉死必然很快过期。README 现在改成了「不钉具体工具数」的写法。
+import re as _re3
+
+_gomod = open("go.mod", encoding="utf-8").read()
+_m = _re3.search(r'^go\s+([0-9]+)\.([0-9]+)', _gomod, _re3.M)
+check(_m is not None, "go.mod 里找不到 go 指令")
+_gover = "%s.%s" % (_m.group(1), _m.group(2))
+
+_allgo = open("internal/plugins/all.go", encoding="utf-8").read()
+_builtin_imports = _re3.findall(
+    r'^\t_ "github\.com/JianFeeeee/HologramAgent/internal/plugins/([a-z0-9_]+)"',
+    _allgo, _re3.M)
+_nbuiltin = len(_builtin_imports)
+
+for _readme in ("README.md", "README_EN.md"):
+    _txt = open(_readme, encoding="utf-8").read()
+    # Go 版本：形如 "Go 1.25+" / "Go 1.27+"；只认主版本+次版本
+    _vers = _re3.findall(r'Go\s+([0-9]+\.[0-9]+)\+', _txt)
+    check(_vers, "%s 里没找到「Go <版本>+」的表述 —— 若是有意删掉，同步删本条门禁" % _readme)
+    for _v in _vers:
+        check(_v == _gover,
+              "%s 写「Go %s+」，而 go.mod 是 **%s** —— 对外承诺了错的版本要求"
+              % (_readme, _v, _gover))
+
+# 内置插件数：README 里形如 "**12 个内置插件**"
+_txt_zh = open("README.md", encoding="utf-8").read()
+_nums = _re3.findall(r'\*\*([0-9]+) 个内置插件\*\*', _txt_zh)
+check(_nums, "README.md 里没找到「**N 个内置插件**」—— 若是有意改写法，同步删本条门禁")
+for _n in _nums:
+    check(int(_n) == _nbuiltin,
+          "README.md 写「%s 个内置插件」，而 internal/plugins/all.go 的 import 是 **%d** 个"
+          "（%s）" % (_n, _nbuiltin, ", ".join(sorted(_builtin_imports))))
+
 # ── 5.5 code_lines 自测：这是「注释顶包」的唯一防线，必须自己也被验 ──
 #
 # ★ 为什么需要这段自测（M7 的教训）：

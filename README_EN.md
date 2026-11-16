@@ -139,7 +139,7 @@ make test               # go test ./...
 make install            # Install to system
 ```
 
-Dependencies: Go 1.25+, CGo (go-sqlite3), Linux.
+Dependencies: Go 1.27+, CGo (go-sqlite3), Linux.
 
 > `homed` requires Linux (it relies on fd inheritance and intra-segment offset
 dereferencing of the shared memory region; see `cmd/homed/platform_windows.go`).
