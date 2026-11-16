@@ -3723,57 +3723,17 @@ ipcMain.handle("device:identity", () =>
 );
 const GUI_PREFS_FILE = path.join(app.getPath("userData"), "gui-prefs.json");
 
+const PrefsParse = require("./renderer/prefs-parse.js");
+
 function loadGuiPrefs() {
+  // 解析与归一化抽在 renderer/prefs-parse.js（纯函数，判据直接调它）。
+  // 这里只负责读文件；BOM 去除 / 缺省值合并都在那边。
   try {
     if (fs.existsSync(GUI_PREFS_FILE)) {
-      // ★ 去 BOM 后再 parse。
-      //
-      // Windows 上用 PowerShell Set-Content -Encoding UTF8、记事本等工具改过
-      // 这个文件，会在开头写入 UTF-8 BOM（EF BB BF）。JSON.parse 遇到它直接
-      // 抛错 → 走 catch → 返回**默认 prefs**（silentStart/exitToTray/
-      // deviceBridge 全部被重置）→ 用户界面上的开关像是"保存了但不起作用"。
-      //
-      // 本次实测踩到：判据脚本用 Set-Content 改 silentStart，文件带上 BOM 后
-      // 静默启动不生效，而 loadConnections 早就有去 BOM 处理、这里没有 ——
-      // 两个读取点不一致，属实打实的疏漏。
-      const d = JSON.parse(
-        fs.readFileSync(GUI_PREFS_FILE, "utf-8").replace(/^\uFEFF/, ""),
-      );
-      const db = d.deviceBridge || {};
-      return {
-        autoLaunch: !!d.autoLaunch,
-        silentStart: !!d.silentStart,
-        exitToTray: d.exitToTray === undefined ? true : !!d.exitToTray,
-        deviceBridge: {
-          enabled: !!db.enabled,
-          authorized: !!db.authorized, // 客户端本地授权（用户在设备上手动开启，服务端不存储）
-          gateway: db.gateway || "",
-          token: db.token || "",
-          screensueDisplay: db.screensueDisplay || "0",
-          screensueDuration: db.screensueDuration === undefined || db.screensueDuration === null || db.screensueDuration === "" ? "5" : String(db.screensueDuration),
-          exec: db.exec || {},
-          authSchedule: db.authSchedule || {},
-          audio: db.audio || {},
-        },
-      };
+      return PrefsParse.parsePrefs(fs.readFileSync(GUI_PREFS_FILE, "utf-8"));
     }
   } catch (e) {}
-  return {
-    autoLaunch: false,
-    silentStart: false,
-    exitToTray: true,
-    deviceBridge: {
-      enabled: true,
-      authorized: false, // 默认不授权，用户手动开启
-      gateway: "",
-      token: "",
-      screensueDisplay: "0",
-      screensueDuration: "5",
-      exec: {},
-      authSchedule: {},
-      audio: {},
-    },
-  };
+  return PrefsParse.defaultPrefs();
 }
 
 function saveGuiPrefs(p) {

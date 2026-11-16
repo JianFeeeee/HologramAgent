@@ -21,9 +21,18 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "main.js"), "utf8");
+
+function loadPrefsParse() {
+  try {
+    return createRequire(import.meta.url)(join(here, "renderer", "prefs-parse.js"));
+  } catch (e) {
+    return null;
+  }
+}
 
 let failures = 0;
 const check = (name, ok, detail) => {
@@ -105,17 +114,51 @@ check(
   "未处理 isVisible() ⇒ 静默创建的窗口可能无法被唤起",
 );
 
-// ── 4) loadGuiPrefs 必须去 BOM ────────────────────────────────────────
-const prefsIdx = src.indexOf("function loadGuiPrefs(");
-check("能定位 loadGuiPrefs", prefsIdx > 0);
-const prefsBlock = src.slice(prefsIdx, src.indexOf("\nfunction ", prefsIdx + 10));
-
-check(
-  "★ loadGuiPrefs 读取时去 UTF-8 BOM",
-  /readFileSync\(GUI_PREFS_FILE[\s\S]{0,80}replace\(\s*\/\^\\uFEFF\//.test(prefsBlock),
-  "未去 BOM ⇒ Windows 工具(PowerShell Set-Content -Encoding UTF8/记事本)改过文件后，" +
-    "JSON.parse 抛错 → 返回默认 prefs → 所有偏好静默失效",
-);
+// ── 4) 偏好解析：**调接口**断言（不读源码）──────────────────────────
+//
+// 解析与归一化已抽到 `renderer/prefs-parse.js` 的 `parsePrefs(text)`。
+// 原判据正则匹配 `readFileSync(GUI_PREFS_FILE[...]replace(/^\uFEFF/`
+// —— 那只能证明"源码里出现过这个 replace"，不能证明 BOM 真的被处理掉。
+//
+// 现在喂真实字符串、断言产出的结构。
+{
+  const P = loadPrefsParse();
+  check("能加载 prefs-parse.js", P !== null);
+  if (P) {
+    const bom = P.parsePrefs("\uFEFF{\"silentStart\":true}");
+    check(
+      "★ 带 UTF-8 BOM 的文件仍能解析（且值生效）",
+      bom.silentStart === true,
+      "未去 BOM ⇒ JSON.parse 抛错 → 返回默认 prefs → " +
+        "Windows 工具(PowerShell/记事本)改过的文件所有偏好静默失效",
+    );
+    const empty = P.parsePrefs("");
+    check(
+      "空文件返回默认值（不抛）",
+      empty.silentStart === false && empty.exitToTray === true,
+      "空文件崩掉 ⇒ 首次启动没偏好文件时界面异常",
+    );
+    const bad = P.parsePrefs("{not json");
+    check(
+      "坏 JSON 返回默认值（不抛）",
+      bad.silentStart === false,
+      "坏 JSON 抛异常 ⇒ 调用方 catch 后行为不确定",
+    );
+    const partial = P.parsePrefs('{"deviceBridge":{"gateway":"ws://x"}}');
+    check(
+      "★ 缺字段时逐个补默认值（不是整块重置）",
+      partial.deviceBridge.gateway === "ws://x" &&
+        partial.deviceBridge.screensueDuration === "5" &&
+        partial.deviceBridge.enabled === false,
+      "整块替换会把用户已配的 gateway 冲掉（部分写入的目标就是这个）",
+    );
+    check(
+      "exitToTray 缺省为 true（与历史行为一致）",
+      P.parsePrefs("{}").exitToTray === true,
+      "默认改成 false ⇒ 关窗口就退出，托盘功能失效",
+    );
+  }
+}
 
 // ── 5) loadConnections 的 BOM 处理不能被回退 ─────────────────────────
 const connIdx = src.indexOf("function loadConnections(");
