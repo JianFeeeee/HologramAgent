@@ -25,6 +25,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, "..", "..");
 const APP = join(here, "renderer", "app.js");
 const src = readFileSync(APP, "utf8");
 
@@ -38,6 +39,27 @@ function funcBody(name) {
   return end < 0 ? rest : rest.slice(0, end);
 }
 
+// loadLayout 加载**唯一事实源** shared/starmap/layout.js 并取出三个纯函数。
+//
+// 它不是模块（没有 module.exports）：它是被 tools/starmap-sync.mjs 注入到
+// 两个客户端标记块里的源码片段，用 var 声明。所以这里用 new Function 包一层
+// 把三个函数导出 —— 等价于「渲染进程 script 标签加载后全局可用」。
+//
+// ★ 不用 require 是因为它确实不是 CJS 模块；不改成 CJS 是因为那样
+//   渲染进程（<script src>，无 require）就用不了，sync 工具也注入不了。
+function loadLayout() {
+  try {
+    const src = readFileSync(join(repoRoot, "shared", "starmap", "layout.js"), "utf8");
+    const fn = new Function(
+      src +
+        "\nreturn { starmapLayoutRelax, starmapLayoutIterationsFor, starmapLayoutMaxMoveThreshold };"
+    );
+    return fn();
+  } catch (e) {
+    return null;
+  }
+}
+
 let failures = 0;
 const check = (name, ok, detail) => {
   if (ok) console.log(`  ✓ ${name}`);
@@ -49,36 +71,82 @@ const check = (name, ok, detail) => {
 
 console.log("星图性能判据（GUI）：");
 
-// ── ① 力导向布局必须是网格近邻（O(n·k)），不得再是全对全（O(n²)）──
+// ── ① 力导向布局必须是「近邻施力」而不是全对全（O(n²)）──
 //
 // 旧实现 `for (it<50) { for (i) { for (j=i+1) } }`：生产库 3754 块
-// = 3.52 亿次配对，Electron 实测单次建图阻塞 1.8–9 秒。
+// = 每轮 704 万次配对、50 轮 3.52 亿次。实测单次建图阻塞主线程 1.8–10.9 秒。
+//
+// ★ 判据改成**测行为**（2026-11-16）。
+//
+// 原先断的是「源码里有 grid / CUTOFF 这两个词」—— 那是**实现形态**：
+// 换个同样快但不用网格的实现（k-d tree / 八叉树）会假红，
+// 而它给出的理由是"源码里少了某个词"，排查的人拿到这条红会去加两个词。
+//
+// 现在直接 require **唯一事实源** `shared/starmap/layout.js`（纯函数，
+// 零 DOM/THREE/state）。它由 `tools/starmap-sync.mjs` 注入两个客户端的
+// BEGIN/END 标记块，所以测它就等于同时测 WebUI 与 GUI 的布局数学。
+//
+// 行为判据：**规模翻倍时工作量必须近线性**。
+// 用时间比做代理：n 从 500→2000（4 倍），全对全会是 16 倍耗时。
+//
+// ★ 阈值取 7（不是 10）：实测正常实现 3.4~3.5x，把网格退化成全表遍历
+// 得到 9.8x —— 10 的阈值刚好放过它。7 把两者分开，且仍留 2 倍噪声余量
+// （CI 机器比本机慢，但比值不受绝对速度影响）。
 {
-  const relax = funcBody("starmapLayoutRelax");
-  check("存在 starmapLayoutRelax（网格近邻实现）", relax !== null);
-  if (relax) {
-    check(
-      "starmapLayoutRelax 走空间网格（grid + CUTOFF）",
-      /\bgrid\b/.test(relax) && /\bCUTOFF\b/.test(relax),
-      "缺网格：全对全斥力在生产库实测阻塞数秒",
+  const layout = loadLayout();
+  check("能加载 shared/starmap/layout.js", layout !== null);
+
+  if (layout) {
+    const t = (n) => {
+      const nodes = [];
+      for (let i = 0; i < n; i++) nodes.push({ id: "n" + i, mention_count: i % 7 });
+      const edges = [];
+      for (let i = 1; i < n; i++) edges.push({ source_id: "n" + ((i - 1) % n), target_id: "n" + i });
+      const flat = new Float64Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        flat[i * 3] = Math.cos(i) * 100;
+        flat[i * 3 + 1] = Math.sin(i) * 100;
+        flat[i * 3 + 2] = 0;
+      }
+      const iters = layout.starmapLayoutIterationsFor(n);
+      const maxR = 200;
+      const t0 = process.hrtime.bigint();
+      layout.starmapLayoutRelax(flat, nodes, edges, maxR);
+      const dt = Number(process.hrtime.bigint() - t0) / 1e6;
+      return { ms: dt, iters: iters };
+    };
+
+    const small = t(500);
+    const big = t(2000);
+    const ratio = big.ms / Math.max(small.ms, 1);
+    console.log(
+      `  · 松弛 n=500 ${small.ms.toFixed(1)}ms(${small.iters}轮) / ` +
+        `n=2000 ${big.ms.toFixed(1)}ms(${big.iters}轮) ⇒ 耗时比 ${ratio.toFixed(1)}x`,
     );
     check(
-      "starmapLayoutRelax 不再有 Object.keys(pos) 全量遍历",
-      !/Object\.keys/.test(relax),
-      "Object.keys 全量遍历是 O(n²) 写法的特征",
+      "★ 规模 4 倍时耗时不到 7 倍（全对全会是 16 倍）",
+      ratio < 7,
+      `耗时比 ${ratio.toFixed(1)}x —— 接近 16x 说明退回了 O(n²) 全对全`,
     );
   }
-  check(
-    "存在迭代数自适应 starmapLayoutIterationsFor",
-    src.includes("function starmapLayoutIterationsFor("),
-    "固定 50 轮在大图上绝大多数轮次是在重复收敛后的状态",
-  );
-  // 全对全的字符特征：`for (var it = 0; it < 50` 配 `for (var j = i + 1`
-  check(
-    "已无「50 轮 × 全对全」双层循环",
-    !/for \(var it = 0; it < 50; it\+\+\)[\s\S]{0,900}?for \(var j = i \+ 1/.test(src),
-    "这正是被替换掉的 O(n²) 布局",
-  );
+  if (layout) {
+    // 迭代数自适应：小图跑满、大图递减。行为断言（不是「源码里有这个函数」）。
+    check(
+      "★ 迭代数随规模递减（自适应）",
+      layout.starmapLayoutIterationsFor(100) === 50 &&
+        layout.starmapLayoutIterationsFor(4000) < 50,
+      `n=100 → ${layout.starmapLayoutIterationsFor(100)} 轮，` +
+        `n=4000 → ${layout.starmapLayoutIterationsFor(4000)} 轮 —— ` +
+        "固定轮数在大图上绝大多数轮次是在重复收敛后的状态",
+    );
+    // 收敛早停阈值：必须随规模变小（相对量而非绝对量）
+    check(
+      "★ 早停阈值随 n 增大而减小（相对量）",
+      layout.starmapLayoutMaxMoveThreshold(1000, 100) >
+        layout.starmapLayoutMaxMoveThreshold(4000, 100),
+      "阈值取绝对量的话，同一数值在不同规模的图上含义完全不同",
+    );
+  }
 }
 
 // ── ② 光晕必须合并成 InstancedMesh（每节点一个 mesh = 1294 draw call）──
@@ -117,6 +185,16 @@ console.log("星图性能判据（GUI）：");
 }
 
 // ── ④ 空闲帧跳过 + 星空时间驱动 ──
+//
+// ★ 这一组仍是形态断言，与 ①②（已改成对共享源的行为测）不同。
+// 原因：这几条的判定逻辑**与渲染循环、THREE 对象、全局 state 深度耦合**
+// （camKey 由相机位置 + 脉冲数 + 悬停/选中组成），要抽成纯函数得先把
+// 相机/state 都参数化 —— 那是重构渲染循环，不是抽一个函数。
+// 而 WebUI 侧的同名逻辑形态不同（dashboard.js:7856 是另一种 camKey 组成），
+// 硬合并会把两份都改坏。
+//
+// 折中：保留形态断言，但**明确它钉的是什么** —— 「这几处性能优化还在不在」，
+// 而不是「性能好不好」。后者需要真 WebGL 计时，CI 跑不了。
 {
   const anim = funcBody("starmapAnimate");
   check("starmapAnimate 存在", anim !== null);
