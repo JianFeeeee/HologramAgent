@@ -169,3 +169,28 @@ func TestFingerprintAndDim(t *testing.T) {
 		t.Fatal("★ Fingerprint 为空 —— 下游靠它判断缓存是否还有效")
 	}
 }
+
+// ---- 判据：未训练时必须明确报错 ----
+
+// TestUntrainedEmbedderRejectsVectorizeDense：`Train` 之前调
+// `VectorizeDense` 必须返回错误，而不是给出一个"看起来正常"的零向量。
+//
+// ★ 为什么这条重要：`coldcontext` 用 `Loaded()` 决定是否走 dense 路径
+// （`if s.denseSpace != nil && s.denseSpace.Loaded()`）。一个未训练却
+// 声称已加载的 embedder 会让调用方拿到零向量并当成有效向量入库 ——
+// 之后所有相似度都是 0，排序退化成随机顺序，而**没有任何错误可查**。
+//
+// 变异：`Loaded()` 恒 true、或 Train 里不设 loaded ⇒ 本例红。
+func TestUntrainedEmbedderRejectsVectorizeDense(t *testing.T) {
+	emb := tfidf.NewEmbedder(func(s string) []string { return []string{s} }, 64)
+
+	if emb.Loaded() {
+		t.Fatal("★ 未 Train 的 embedder 声称已 loaded —— 调用方会据此走 dense 路径")
+	}
+	if _, err := emb.VectorizeDense("未训练的内容"); err == nil {
+		t.Fatal("★ 未训练却返回了向量 —— 零向量会被当成有效向量入库，相似度全 0")
+	}
+	if emb.Fingerprint() != "" {
+		t.Fatalf("★ 未训练却有非空指纹 %q —— 缓存有效性会误判", emb.Fingerprint())
+	}
+}

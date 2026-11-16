@@ -131,18 +131,6 @@ func (m *Monitor) Status() []EndpointStatus {
 	return status
 }
 
-func (m *Monitor) AllReachable() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for _, s := range m.status {
-		if !s.Reachable {
-			return false
-		}
-	}
-	return len(m.status) > 0
-}
-
 func (m *Monitor) AggregateResult() types.NetworkCheckResult {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

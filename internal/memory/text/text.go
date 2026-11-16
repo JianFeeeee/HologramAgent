@@ -43,15 +43,17 @@ type Memory struct {
 	stopCh chan struct{}
 }
 
+// Option 是构造参数（保留变参签名，便于将来加可调项）。
+//
+// ★ 2026-11-16：删掉 WithRotationInterval / WithMaxSizeBytes —— 两个都
+// **零生产调用方**。生产的两处实例化（kernelmod/textmem、sdk/selftest）
+// 都不传 opt，所以旋转间隔与大小上限永远是默认值（24h / 10MB）。
+//
+// 留着它们的代价不是"多几行"，而是**误导**：看到 WithMaxSizeBytes 会以为
+// 这层大小上限可配，去配置里找对应项（找不到），或者以为改了默认值会影响
+// 生产（实际两处都不传参）。要让它可配，正确做法是把默认值提到配置项，
+// 而不是留一个没人调的 setter。
 type Option func(*Memory)
-
-func WithRotationInterval(d time.Duration) Option {
-	return func(m *Memory) { m.interval = d }
-}
-
-func WithMaxSizeBytes(n int64) Option {
-	return func(m *Memory) { m.maxSize = n }
-}
 
 func New(dir string, opts ...Option) *Memory {
 	m := &Memory{
