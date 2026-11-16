@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,11 +23,26 @@ const (
 
 // wsConn 封装一条 WebSocket 连接（客户端视角，帧带 mask）。
 type wsConn struct {
-	conn   net.Conn
-	br     *bufio.Reader
-	bw     *bufio.Writer
-	closed bool
+	conn net.Conn
+	br   *bufio.Reader
+	bw   *bufio.Writer
+
+	// closed 是**跨 goroutine** 的：写者是 Stop()（或 readLoop 退出时），
+	// 读者是 readFrame（读循环）、writeFrame（发送路径）、以及 Bridge 的
+	// 若干状态查询。
+	//
+	// ★ 原实现是裸 bool（`go test -race` 实测 DATA RACE：readFrame 的读
+	// 与 close() 的写并发）。Bridge 的方法持 b.mu 读它，但写者 close()
+	// 不持同一把锁 —— 锁保护不了它。改成 atomic.Bool 才有真正的可见性保证
+	// （inline 写过之后，跨 goroutine 也能看见连接已关闭）。
+	closed atomic.Bool
 }
+
+// isClosed 报告连接是否已被关闭（可并发调用）。
+func (w *wsConn) isClosed() bool { return w.closed.Load() }
+
+// markClosed 标记连接已关闭（可并发调用）。
+func (w *wsConn) markClosed() { w.closed.Store(true) }
 
 // dialWS 发起 WS 客户端握手升级。
 // 支持 ws:// 和 wss://（wss 暂未实现，若需要需加 TLS dial）。
@@ -111,7 +127,7 @@ func (w *wsConn) writeBinary(payload []byte) error {
 
 // writeFrame 发送一个 WS 帧（客户端 mask 模式）。
 func (w *wsConn) writeFrame(opcode byte, payload []byte) error {
-	if w.closed {
+	if w.isClosed() {
 		return fmt.Errorf("devicebridge: connection closed")
 	}
 	length := len(payload)
@@ -164,7 +180,7 @@ func (w *wsConn) writeFrame(opcode byte, payload []byte) error {
 // readFrame 读取一个 WS 帧。返回 (payload, isClose, opcode, error)。
 // 客户端收到的帧不带 mask。
 func (w *wsConn) readFrame() ([]byte, bool, byte, error) {
-	if w.closed {
+	if w.isClosed() {
 		return nil, true, 0, fmt.Errorf("devicebridge: connection closed")
 	}
 	b0, err := w.br.ReadByte()
@@ -223,7 +239,7 @@ func (w *wsConn) writePong() error {
 
 // close 发送关闭帧并关闭连接。
 func (w *wsConn) close() error {
-	w.closed = true
+	w.markClosed()
 	_ = w.writeFrame(0x8, nil)
 	return w.conn.Close()
 }

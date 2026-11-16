@@ -133,7 +133,7 @@ func (b *Bridge) SetAuthorized(auth bool) {
 	// 重新 hello 同步状态
 	b.mu.RLock()
 	ws := b.ws
-	connected := ws != nil && !ws.closed
+	connected := ws != nil && !ws.isClosed()
 	b.mu.RUnlock()
 	if connected {
 		b.sendJSON(map[string]interface{}{
@@ -328,7 +328,7 @@ func (b *Bridge) DeviceID() string {
 func (b *Bridge) Connected() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.ws != nil && !b.ws.closed
+	return b.ws != nil && !b.ws.isClosed()
 }
 
 // ===== 发送消息 =====
@@ -367,7 +367,7 @@ func (b *Bridge) SendDataChunk(data []byte) error {
 	b.mu.RLock()
 	ws := b.ws
 	b.mu.RUnlock()
-	if ws == nil || ws.closed {
+	if ws == nil || ws.isClosed() {
 		return fmt.Errorf("devicebridge: not connected")
 	}
 	return ws.writeBinary(data)
@@ -429,7 +429,7 @@ func (b *Bridge) sendJSON(v interface{}) {
 	b.mu.RLock()
 	ws := b.ws
 	b.mu.RUnlock()
-	if ws == nil || ws.closed {
+	if ws == nil || ws.isClosed() {
 		return
 	}
 	payload := mustJSON(v)
@@ -644,7 +644,7 @@ func (b *Bridge) pingLoop() {
 			b.mu.RLock()
 			ws := b.ws
 			b.mu.RUnlock()
-			if ws != nil && !ws.closed {
+			if ws != nil && !ws.isClosed() {
 				_ = ws.writeFrame(0x9, nil) // ping
 			}
 		}
