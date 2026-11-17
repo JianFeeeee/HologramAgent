@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"math"
 	"sort"
@@ -36,7 +37,7 @@ type Indexer struct {
 }
 
 // SetDenseSpace 注入稠密多模态空间（由内核装配时传入）。
-func (idx *Indexer) SetDenseSpace(ds vector.MultimodalEmbedder) {
+func (idx *Indexer) SetDenseSpace(ds kernelapi.MultimodalSpace) {
 	if idx == nil {
 		return
 	}

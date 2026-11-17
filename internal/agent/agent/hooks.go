@@ -171,3 +171,13 @@ func (e *MissingHookError) Error() string {
 // （用户裁定），接口只有一份定义（在叶子包里），这里不再自造一份
 // （两份会让"哪份才是契约"变成不可判定）。
 type SecurityGate = kernelapi.SecurityGate
+
+// Embedder 是共享词嵌入的窄面（蒸馏与上下文语义相似度用）。
+//
+// 实现者：`*memory.StaticEmbedder`。方法名带 Map：接口包/本包都不能
+// import vector 实现包，而 `vector.Vector` 底层就是 `map[string]float64`。
+type Embedder interface {
+	VectorizeMap(text string) map[string]float64
+	VectorizeCleanMap(text string) map[string]float64
+	Loaded() bool
+}

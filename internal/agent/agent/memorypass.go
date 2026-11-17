@@ -435,7 +435,7 @@ func partOfDay(t time.Time) string {
 // 一次强度，"工具调得多"会被误读成"这个场面更常出现"。
 func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 	var out memory.TurnScene
-	if a == nil || a.memory == nil {
+	if a == nil || a.graphDB() == nil {
 		return out
 	}
 	if f != nil && f.sceneDone {
@@ -446,7 +446,7 @@ func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 	feats := a.situationFeaturesFor(evtOf(f), cleanInputOf(f), tool)
 	sig := memory.NewSituation(feats...)
 
-	turn, err := a.memory.EnterSceneWithHint(sig, declared)
+	turn, err := a.graphDB().EnterSceneWithHint(sig, declared)
 	if err != nil {
 		log.Printf("[agent] scene enter failed: %v", err)
 		// 出错时至少把声明场景交给召回，不让整条召回链一起失效

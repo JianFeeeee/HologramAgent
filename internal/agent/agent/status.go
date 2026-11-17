@@ -2,21 +2,16 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/nlp"
-	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 )
 
 // StatusProvider 内核状态查询接口。插件通过此接口查看内核运行动态。
@@ -84,13 +79,13 @@ func collectKernelStatus(
 	sourceCount int,
 	stageHost *StageHost,
 	iom *agentIO.IOManager,
-	pluginReg *plugin.Registry,
-	memDB *memory.GraphDB,
+	pluginReg kernelapi.PluginHost,
+	memDB kernelapi.GraphMemory,
 	ks interface{ List() []string },
-	coldcontextStore *coldcontext.Store,
-	textMem *text.Memory,
-	socialStore *social.SocialStore,
-	trk *tracker.Tracker,
+	coldcontextStore kernelapi.DocStore,
+	textMem kernelapi.TextMemory,
+	socialStore kernelapi.SocialStore,
+	trk kernelapi.Tracker,
 ) *KernelStatus {
 	status := &KernelStatus{
 		Uptime:    time.Since(startTime).Round(time.Second).String(),
@@ -248,20 +243,9 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 		providerName = a.provider.Name()
 	}
 
-	var textMem *text.Memory
-	if a.textMem != nil {
-		textMem = a.textMem
-	}
-
-	var socialStore *social.SocialStore
-	if a.social != nil {
-		socialStore = a.social
-	}
-
-	var trk *tracker.Tracker
-	if a.tracker != nil {
-		trk = a.tracker
-	}
+	textMem := a.textMem
+	socialStore := a.social
+	trk := a.tracker
 
 	// 注意：knowledge 在 collectKernelStatus 里是**接口**参数，
 	// 而 (*knowledge.Store)(nil) 塞进接口后 `ks != nil` 仍为真 → 调 List() 直接 panic。
@@ -279,7 +263,7 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 		a.stageHost,
 		a.io,
 		a.pluginReg,
-		a.memory,
+		a.graphDB(),
 		knowledgeLister,
 		a.coldcontextStore,
 		textMem,

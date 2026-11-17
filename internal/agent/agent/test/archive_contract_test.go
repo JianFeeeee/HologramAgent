@@ -33,6 +33,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -62,6 +63,7 @@ func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) *agent.Age
 	iom := io.NewIOManager()
 
 	a := factory(agent.AgentConfig{
+		Security: security.NewDisabledRuntime().AsGate(),
 		ID:       types.AgentID("archive-contract"),
 		Memory:   g,
 		DocStore: store,
@@ -102,6 +104,11 @@ func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// ★ 归档是**类型注册的定时任务**（2026-11-17 用户裁定：基座暴露定时器
+	// 回调接口，而不是在 Start 里硬编码五个循环）。
+	// ⇒ 判据必须显式注册主 agent 的维护任务全集；Start 只拉起已注册的。
+	//   （旧判据依赖"Start 隐含起归档循环"，那是被本次改造移除的内部结构。）
+	a.RegisterMaintenanceTasks()
 	a.Start()
 	defer a.Stop()
 
@@ -143,6 +150,11 @@ func TestArchiveKeepsDocumentWhenItHoldsNothing(t *testing.T) {
 	doc.LastAccess = time.Now().Add(-96 * time.Hour)
 	doc.AccessCount = 0
 
+	// ★ 归档是**类型注册的定时任务**（2026-11-17 用户裁定：基座暴露定时器
+	// 回调接口，而不是在 Start 里硬编码五个循环）。
+	// ⇒ 判据必须显式注册主 agent 的维护任务全集；Start 只拉起已注册的。
+	//   （旧判据依赖"Start 隐含起归档循环"，那是被本次改造移除的内部结构。）
+	a.RegisterMaintenanceTasks()
 	a.Start()
 	defer a.Stop()
 

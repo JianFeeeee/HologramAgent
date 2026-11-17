@@ -421,3 +421,15 @@ func (e *StaticEmbedder) Loaded() bool {
 	defer e.mu.RUnlock()
 	return e.loaded
 }
+
+// VectorizeMap / VectorizeCleanMap 是 `map[string]float64` 形态的入口。
+//
+// ★ 为什么需要它们：`vector.Vector` 是命名类型，而接口层（kernelapi /
+// 插件 SDK）不能 import vector 实现包 —— 底层是同一个类型，只需一次转换。
+func (e *StaticEmbedder) VectorizeMap(text string) map[string]float64 {
+	return map[string]float64(e.Vectorize(text))
+}
+
+func (e *StaticEmbedder) VectorizeCleanMap(text string) map[string]float64 {
+	return map[string]float64(e.VectorizeClean(text))
+}

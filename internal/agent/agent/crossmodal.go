@@ -105,11 +105,11 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 
 	// ---- 视觉路（多模态文本编码 → 媒体块自己的向量）----
 	var visualHits []CrossModalHit
-	if a.multimodalSpace != nil && a.multimodalSpace.Loaded() && a.memory != nil {
+	if a.multimodalSpace != nil && a.multimodalSpace.Loaded() && a.graphDB() != nil {
 		qv, err := a.multimodalSpace.VectorizeDense(query)
 		if err != nil {
 			log.Printf("[crossmodal] multimodal text encoding failed: %v", err)
-		} else if hits, err := a.memory.RecallBlocks(memory.BlockRecallQuery{
+		} else if hits, err := a.graphDB().RecallBlocks(memory.BlockRecallQuery{
 			Vector:      qv,
 			Fingerprint: a.multimodalSpace.Fingerprint(),
 			TopK:        per,

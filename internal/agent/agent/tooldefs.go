@@ -499,7 +499,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 		tools = append(tools, secretToolDefs()...)
 	}
 
-	if a.memory != nil {
+	if a.graphDB() != nil {
 		tools = append(tools, toolDef("stablemem_merge", "【记忆清理】合并两个同义实体。将所有关系从 source 重定向到 target，然后彻底删除 source。注意：实体删除后不可恢复，合并前请确认语义一致。", map[string]interface{}{
 			"source": map[string]interface{}{"type": "string", "description": "被合并的实体名（合并后消失）"},
 			"target": map[string]interface{}{"type": "string", "description": "保留的实体名"},

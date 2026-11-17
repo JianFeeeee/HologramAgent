@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,14 +13,8 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
-	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -48,7 +41,6 @@ type Agent struct {
 	// 语义见 AgentConfig.PreferredProvider：优先而非独占。
 	preferredProvider string
 	io                *agentIO.IOManager
-	memory            *memory.GraphDB
 	// graph 是本 agent 的**图记忆共同面**（根 = 同一个 GraphDB；驻留子 = LightMemory）。
 	// 整理面仍走 memory 字段（子为 nil ⇒ 既有的 nil 关卡自动禁用整理面）。
 	graph GraphMemory
@@ -112,24 +104,24 @@ type Agent struct {
 	inputchTable   []InputchRecord
 	inputchPending *InputchRecord
 	currentInputch string
-	indexer        *memory.Indexer
-	tracker        *tracker.Tracker
+	indexer        kernelapi.MemoryIndexer
+	tracker        kernelapi.Tracker
 	context        *RelevanceContext
 	systemPrompt   string
 	ctx            context.Context
 	cancel         context.CancelFunc
 
 	// 文档记忆（第二层）
-	coldcontextStore *coldcontext.Store
+	coldcontextStore kernelapi.DocStore
 
 	// 知识库
-	knowledge *knowledge.Store
+	knowledge kernelapi.Knowledge
 
 	// 人物特质与关系网
-	social *social.SocialStore
+	social kernelapi.SocialStore
 
 	// 文本记忆（原始对话日志）
-	textMem *text.Memory
+	textMem kernelapi.TextMemory
 
 	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
 
@@ -150,7 +142,7 @@ type Agent struct {
 	toolResultReporter toolResultReporter
 
 	// 插件注册表（用于 plgreload）
-	pluginReg *plugin.Registry
+	pluginReg kernelapi.PluginHost
 	pluginDir string
 
 	// 定期心跳蒸馏
@@ -282,11 +274,11 @@ type Agent struct {
 	lastInputMu sync.Mutex
 
 	// 词嵌入模型，用于实体语义相似度计算
-	embedder *memory.StaticEmbedder
+	embedder Embedder
 
 	// multimodalSpace 是统一多模态向量空间（可选）。实现可以是内嵌 ONNX，
 	// 也可以是外部 API 客户端；两者共享同一套 L0/L2/L3 向量缓存与检索基础设施。
-	multimodalSpace vector.MultimodalEmbedder
+	multimodalSpace kernelapi.MultimodalSpace
 
 	// embeddingProvider 是配置里指定的统一向量空间 provider 名；
 	// embeddingError 是打开/适配失败的原因（成功时为空）。
@@ -337,6 +329,13 @@ type Agent struct {
 	//   装配期由类型模块（main / resident / rtchild）通过 SetHooks 挂上；
 	//   未挂必填槽位是装配错误（见 Hooks.Validate）。
 	hooks Hooks
+
+	// periodic 是**类型注册**的定时任务（用户裁定：基座暴露定时器回调接口，
+	// 而不是在 Start 里硬编码 distill/archive/merge/review/offload 五个循环）。
+	//
+	// 装配期由类型模块调用 RegisterPeriodic 填充；Start 统一拉起。
+	// 基座自己**不注册任何任务** —— 它不知道有谁会用它。
+	periodic []PeriodicTask
 }
 
 type AgentConfig struct {
@@ -364,21 +363,21 @@ type AgentConfig struct {
 	// 名字不存在时**响亮回退到默认源并记日志**（不静默）：配置拼错要能看见。
 	PreferredProvider string
 	IO                *agentIO.IOManager
-	Memory            *memory.GraphDB
+	Memory            kernelapi.GraphMemory
 	// LightMemory 是**轻量内核**的图记忆装配（驻留子用；读 temp∪main，只写 temp）。
 	//
 	// 给了它就意味着这是轻量内核：`Memory` 必须为 nil，
 	// 于是记忆整理面（块/媒体/流水线/整理工具）全部不可达（见 memoryface.go）。
 	LightMemory *memory.LightMemory
-	Indexer     *memory.Indexer
-	Tracker     *tracker.Tracker
+	Indexer     kernelapi.MemoryIndexer
+	Tracker     kernelapi.Tracker
 
-	DocStore    *coldcontext.Store
-	Knowledge   *knowledge.Store
-	SocialStore *social.SocialStore
-	TextMemory  *text.Memory
+	DocStore    kernelapi.DocStore
+	Knowledge   kernelapi.Knowledge
+	SocialStore kernelapi.SocialStore
+	TextMemory  kernelapi.TextMemory
 	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
-	MultimodalSpace vector.MultimodalEmbedder
+	MultimodalSpace kernelapi.MultimodalSpace
 	// EmbeddingProvider / EmbeddingError 是向量空间的配置身份与打开失败原因，
 	// 供 healthcheck_kernel 状态报告区分「未配置 / 打开失败 / 已启用」。
 	EmbeddingProvider string
@@ -445,9 +444,9 @@ type AgentConfig struct {
 	// 为何必须能从配置传进来：这些阈值原本写死在 ComputeTokenBudget 里，
 	// 界面改不了、不同窗口的实例也没法各自调优（详见 ContextTuning 的注释）。
 	CtxTuning          ContextTuning
-	ContextSavePath    string                 // 上下文持久化路径，空则不持久化
-	EmbeddingModelPath string                 // 预训练词嵌入模型路径（word2vec 文本格式），空则不使用
-	Embedder           *memory.StaticEmbedder // 共享词嵌入实例；nil 时按 EmbeddingModelPath 自建
+	ContextSavePath    string // 上下文持久化路径，空则不持久化
+	EmbeddingModelPath string // 预训练词嵌入模型路径（word2vec 文本格式），空则不使用
+	Embedder           Embedder
 	StageHost          *StageHost
 	// EventBus 是**发布代理的注入源**（见 agent_eventbus.go）。
 	//
@@ -489,7 +488,11 @@ func New(cfg AgentConfig) *Agent {
 
 	embedder := cfg.Embedder
 	if embedder == nil {
-		embedder = memory.NewStaticEmbedder(strings.Split(cfg.EmbeddingModelPath, ",")...)
+		// 未注入共享实例时自建：`memory.NewStaticEmbedder` 是**实现构造**，
+		// 但 agent 不允许 import 实现包 ⇒ 构造点挪到装配处（kernelmod/agent
+		// 从 kernelapi.FacEmbedder 取）。这里只接受已注入的实例。
+		log.Printf("[agent] WARNING: no shared embedder injected — embedding-based similarity disabled " +
+			"(assembly should Provide(kernelapi.FacEmbedder, *memory.StaticEmbedder))")
 	}
 	// DocStore 无需处理：TF-IDF 内置为 fallback，不需要外部注入向量器。
 	if cfg.Knowledge != nil {
@@ -548,7 +551,6 @@ func New(cfg AgentConfig) *Agent {
 		preferredProvider: cfg.PreferredProvider,
 		providerManager:   cfg.ProviderManager,
 		io:                cfg.IO,
-		memory:            cfg.Memory,
 		graph:             graphMemoryOf(cfg),
 		kernelSource:      cfg.KernelSource,
 		parentID:          cfg.ParentID,
@@ -609,6 +611,12 @@ func New(cfg AgentConfig) *Agent {
 		lastInput:      make(map[string]time.Time),
 	}
 
+	// ★ 授权事实声明给**安全模块**（用户裁定 2026-11-17）。
+	//   agent 只提供事实（谁被委派了什么），判定由安全模块做。
+	if g := a.gate(); g != nil {
+		g.DeclareOutputs(string(a.id), a.allowedOutputs)
+	}
+
 	// 变量库注入：context 的落盘前脱敏要用**本 agent** 的变量库，
 	// 而不是进程级单例（见 RelevanceContext.secretStore 的注释）。
 	if gate := a.gate(); gate != nil {
@@ -627,6 +635,12 @@ func New(cfg AgentConfig) *Agent {
 		}
 	}
 
+	// ★ typed-nil 归一化（经典陷阱，实测已复现）：
+	//   接口字段装的是"具体类型的 nil 指针"时，接口值本身**不是 nil**
+	//   ⇒ `if a.pluginReg != nil` 会放行，随后方法内部解引用空指针 panic。
+	//   这里把每一处 typed-nil 显式折成真 nil。
+	a.normalizeNilServices()
+
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
 	// （设计 §4.1「路由发生在进内核之前」）。io 层不认识 agent，所以在这里把路由器
 	// 注入进去：插件注入输入时先问它，被别的 agent 接管就不再进本内核队列。
@@ -639,11 +653,10 @@ func New(cfg AgentConfig) *Agent {
 func (a *Agent) Start() {
 	go a.schedulerLoop()
 	go a.interceptLoop()
-	go a.distillLoop()
-	go a.archiveLoop()
-	go a.mergeLoop()
-	go a.reviewLoop()
-	go a.offloadLoop()
+	// ★ 后台维护任务由**类型注册**（ticker.go），基座不硬编码任何一条。
+	//   主 agent 在装配点调 RegisterMaintenanceTasks；驻留子/rtchild 不调 ⇒
+	//   它们一个多余的后台 goroutine 都不会起。
+	a.startPeriodic()
 	a.reembedStaleMedia()
 	a.migrateLegacyGraphMedia()
 	a.Logf("%s started, waiting for IO interrupts", a.id)
@@ -659,6 +672,10 @@ func (a *Agent) Stop() {
 	// "上一个任务留下的访客权限"被新一代默默沿用。
 	// 与主体策略撤销（revokeChildPolicy）同一纪律。
 	a.ReleaseSecurityScope()
+	// 授权事实也一起撤销（防同名重建继承旧授权，与主体策略同纪律）。
+	if g := a.gate(); g != nil {
+		g.ReleaseOutputs(string(a.id))
+	}
 	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse
 	// 自然拿到终态，但**从未运行**（排队/待处理）与**已挂起**的任务不会有任何人
 	// 回它们；带 ResponseCh 的同步注入方（cli / clawhubadapter 均无超时）会永久挂起
@@ -697,20 +714,33 @@ func graphMemoryOf(cfg AgentConfig) GraphMemory {
 	return cfg.Memory
 }
 
-// graphMem 返回本 agent 的图记忆**共同面**。
+// graphMem 返回本 agent 的图记忆**共同面**（七公共面第 2 项：可选记忆）。
 //
-// `graph` 显式为 nil 时回落到 `memory` —— 这样"只设 memory 的构造"
-// （大量既有测试直接用 Agent 字面量）照常工作，不需要同时维护两个字段。
-// 轻量内核则显式设 graph=LightMemory 且 memory=nil：共同面走 LightMemory，
-// 整理面因 memory==nil 而全部不可达。
+// ★ 唯一事实源：`graph` 槽位。它可以是 GraphDB（主）、LightMemory（驻留/rt），
+//
+//	也可以是 nil（工作式子 / 独立工具）—— 用户原话「图记忆是可选配置」。
 func (a *Agent) graphMem() GraphMemory {
-	if a.graph != nil {
-		return a.graph
-	}
-	if a.memory == nil {
+	if a == nil {
 		return nil
 	}
-	return a.memory
+	return a.graph
+}
+
+// graphDB 返回**完整**图记忆面（整理面：蒸馏/归档/合并/场景衰减…）。
+//
+// 只有真正的图库满足它（LightMemory 不满足 ⇒ 驻留子的整理面全部不可达，
+// 这是设计意图：轻量内核不该有那些代码路径）。
+func (a *Agent) graphDB() kernelapi.GraphMemory {
+	if a == nil {
+		return nil
+	}
+	if cfg, ok := a.graph.(graphFace); ok {
+		return cfg.g
+	}
+	if full, ok := a.graph.(kernelapi.GraphMemory); ok {
+		return full
+	}
+	return nil
 }
 
 // agentLogIdentity 由 AgentConfig 推导日志身份。
@@ -756,6 +786,17 @@ func (a *Agent) ID() types.AgentID { return a.id }
 //
 // 默认（未配置白名单）= **完整授权**；这是"默认完整授权、父可收窄"的落点。
 func (a *Agent) IsOutputAllowed(channel string) bool {
+	// ★ 判定在**安全模块**（用户裁定 2026-11-17：「设备是否授权不应该安全
+	//   模块负责吗？」）。agent 只提供事实（`allowedOutputs` 在构造期由父
+	//   声明给安全模块），不再自己比较字段 —— 否则同一个判定有两份实现。
+	//
+	// ★ 无 ID 的 agent（判据里的匿名构造）无法在安全模块的按-agentID 表里
+	//   定位，因此退回本地事实比较 —— 否则会落到"未声明 ⇒ 放行"，把
+	//   白名单判据变成假绿（实测：`TestOutputAllowlist` 先撞这个）。
+	if g := a.gate(); g != nil && a.id != "" {
+		return g.CheckOutput(string(a.id), channel).Allowed
+	}
+	// 未装配闸门 / 无身份：退回本地事实，与改造前行为一致。
 	if len(a.allowedOutputs) == 0 {
 		return true
 	}

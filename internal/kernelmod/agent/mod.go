@@ -91,7 +91,16 @@ func (Module) Init(k *kstate.State) error {
 	if !k.Has(kernelapi.FacSecurity) {
 		return errMissing("agent", kernelmod.FacSecurity)
 	}
-	k.Provide(kernelapi.FacAgent, buildAgent(k))
+	// ★ 主 agent 的唯一实例化点（用户裁定：「内核启动后自动实例化一个主 agent」）。
+	//
+	// 走类型注册表而不是直接 `agent.New(...)`：这样主 agent 与驻留子 / rtchild
+	// 走**同一张表、同一个调用**，而"某类 agent 有没有实例"完全由
+	// "有没有那条 Instantiate 调用"决定。
+	mainAgent, err := buildAgent(k)
+	if err != nil {
+		return err
+	}
+	k.Provide(kernelapi.FacAgent, mainAgent)
 
 	// 插件 SDK 接线（必须在 loadPlugins 之前）。
 	wirePluginSDK(k)
@@ -110,7 +119,7 @@ Answer only from what the tools actually return. If something could not be retri
 
 Reply in natural language, like a person talking: do not enumerate which tools you called, their parameters, or timings unless the user explicitly asks. For how to address the user and what tone to use, see [Persona].`
 
-func buildAgent(k *kstate.State) *agentCore.Agent {
+func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	cfg := k.Cfg
 	cfgReg := k.CfgReg
 	// ★ 能力一律从挂载点按**具名设施**取，再断言到具体/接口类型。
@@ -158,7 +167,7 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 	// 而 registry 早于 agent 构造（故这里传的是晚绑定闭包）。
 	// 未注入时 ToolAPI 路径对设备放行：那是"授权可被绕过"的既成缺口。
 	// 注入后，cli 的 /terminal、seq 序列等一切走 ToolAPI 的调用都受同一道闸。
-	agent := agentCore.New(agentCore.AgentConfig{
+	agent, instErr := agentCore.Instantiate(agentCore.TypeNameMain, agentCore.AgentConfig{
 		ID:              "main",
 		SystemPrompt:    sysPrompt,
 		Provider:        provider,
@@ -281,6 +290,10 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 		})
 	}
 
+	if instErr != nil {
+		return nil, instErr
+	}
+
 	// D4：把「设备是否已授权」的判据注入插件侧（toolImpl.CanUse 消费它）。
 	//
 	// 为什么必须在这里：判据要用 agent 自己的 allowedOutputs，而
@@ -293,6 +306,8 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 	// 凡是走 ToolAPI 的调用都能绕过 AllowedOutputs。实测范围不止序列：
 	// cli 的 /terminal 就直接经 ToolAPI 调 agentcli 的终端工具。
 	pluginReg.SetDeviceAuthQuery(func(deviceID string) bool {
+		// ★ 走**安全模块**的同一道闸（用户裁定：设备授权归安全模块）。
+		//   agent 只回答"我是谁"，判定由 gate 做 ⇒ 与工具链同源同语义。
 		return agent.IsOutputAllowed("device/" + deviceID)
 	})
 
@@ -307,7 +322,24 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 	// （memory/knowledge 是否就绪），而 provider 持有的是 agent。
 	agent.InstallBuiltinToolProvider()
 
-	return agent
+	// ★ 主 agent 的**标准实现**在这里显式注册（用户裁定 2026-11-17）：
+	// 「基座不假设任何 agentloop 样式」⇒ 用哪个 loop / 哪些定时任务，
+	// 是装配点的显式决定，不是基座的默认行为。
+	agent.SetHooks(agentCore.Hooks{
+		// 主 agent：标准同步 loop（异步样式由 rt 类型模块注册自己的实现）。
+		Loop: agentCore.LoopStandard,
+	})
+
+	// ★ 主 agent 的**后台维护任务**在这里注册（用户裁定 2026-11-17：
+	// 「agent 基类应该暴露一个定时器回调接口用于触发定时任务，而不是现在
+	// 这样硬编码」）。
+	//
+	// 为什么在装配点而不是基座：蒸馏/归档/合并/复审/转投是**主 agent 的职责**，
+	// 驻留子与 rtchild 不该跟着起这些 goroutine。基座只提供 RegisterPeriodic，
+	// 由类型模块决定注册什么、间隔多少。
+	agent.RegisterMaintenanceTasks()
+
+	return agent, nil
 }
 
 // wirePluginSDK 注入**只有 agent 才知道**的那两项（KERNEL-REGISTRY-SETLOCK 去重后）。

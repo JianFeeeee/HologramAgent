@@ -174,7 +174,7 @@ const contextFlushInterval = 5 * time.Second
 type RelevanceContext struct {
 	mu         sync.Mutex
 	events     []*ContextEvent
-	embedder   *memory.StaticEmbedder
+	embedder   Embedder
 	denseSpace vector.MultimodalEmbedder
 	savePath   string
 	// pendingToolResults 存放"已落盘但事件还没进 L1"的超长工具结果记录。
@@ -303,7 +303,7 @@ func (c *RelevanceContext) pageSimilarity(e *ContextEvent, page int,
 				return
 			}
 		}
-		if s := vector.CosineSimilarity(queryVec, c.embedder.VectorizeClean(text)); s > best {
+		if s := vector.CosineSimilarity(queryVec, c.vectorizeClean(text)); s > best {
 			best = s
 		}
 	}
@@ -423,7 +423,7 @@ func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, q
 		}
 
 		queryDense, queryFP := c.queryDenseFor(query)
-		queryVec := c.embedder.VectorizeClean(query)
+		queryVec := c.vectorizeClean(query)
 		for i := range cands {
 			cands[i].score = c.pageSimilarity(e, cands[i].page, queryDense, queryFP, queryVec)
 		}
@@ -550,7 +550,7 @@ func (c *RelevanceContext) planColdRecall(docs []*coldcontext.ColdDoc, query str
 		score    float64
 	}
 	queryDense, queryFP := c.queryDenseFor(query)
-	queryVec := c.embedder.VectorizeClean(query)
+	queryVec := c.vectorizeClean(query)
 
 	var pool []pageCand
 	for di, d := range docs {
@@ -699,7 +699,7 @@ func coldPageSimilarity(c *RelevanceContext, d *coldcontext.ColdDoc, eventIdx, p
 				return
 			}
 		}
-		if s := vector.CosineSimilarity(queryVec, c.embedder.VectorizeClean(text)); s > best {
+		if s := vector.CosineSimilarity(queryVec, c.vectorizeClean(text)); s > best {
 			best = s
 		}
 	}
@@ -768,7 +768,7 @@ func (c *RelevanceContext) SetSecretStore(s kernelapi.SecretStore) {
 	c.mu.Unlock()
 }
 
-func NewRelevanceContext(savePath string, embedder *memory.StaticEmbedder) *RelevanceContext {
+func NewRelevanceContext(savePath string, embedder Embedder) *RelevanceContext {
 	rc := &RelevanceContext{
 		embedder:       embedder,
 		savePath:       savePath,
@@ -989,7 +989,7 @@ func (c *RelevanceContext) computeVector(evt *ContextEvent) {
 	text := textForVector(evt, c.toolDefLookup, c.channelDefLookup)
 	// 稀疏向量始终计算（TF-IDF/fastText，退化时仍可用）
 	if text != "" {
-		evt.Vector = c.embedder.Vectorize(text)
+		evt.Vector = c.vectorize(text)
 	}
 	// 稠密向量：文本向量 ⊕ 本事件持有的一等记忆块媒体向量（同一统一空间）。
 	// 只有媒体的输入（无文本）也要有可比较的坐标，因此不再按 text=="" 提前返回。
@@ -1134,7 +1134,7 @@ type scoredEvent struct {
 
 // pCount <= 0 时用protectedCount 上限。调用方（pruneByQuery）传
 // effectiveProtectedCount，按预算收紧后的值。
-func (c *RelevanceContext) Prune(currentInput string, topK int, coldcontextStore *coldcontext.Store) int {
+func (c *RelevanceContext) Prune(currentInput string, topK int, coldcontextStore kernelapi.DocStore) int {
 	return c.PruneWithProtected(currentInput, topK, coldcontextStore, 0)
 }
 
@@ -1150,7 +1150,7 @@ func (c *RelevanceContext) resetInactivePagesLocked() {
 }
 
 // PruneWithProtected 是带显式保护条数的 Prune。
-func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, coldcontextStore *coldcontext.Store, pCount int) int {
+func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, coldcontextStore kernelapi.DocStore, pCount int) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1193,7 +1193,7 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 			useDense = true
 		}
 	}
-	queryVec := c.embedder.VectorizeClean(currentInput)
+	queryVec := c.vectorizeClean(currentInput)
 
 	scoredEvents := make([]scoredEvent, len(candidates))
 	for i, evt := range candidates {
@@ -1690,3 +1690,22 @@ func renderEventsForSummary(evts []*ContextEvent) string {
 
 // compactionToolResultMaxRunes 是喂给摘要器时单条工具结果的字符上限。
 const compactionToolResultMaxRunes = 400
+
+// vectorize / vectorizeClean 是**空安全的**词向量入口。
+//
+// ★ 为什么需要它们：共享词嵌入是可选装配（未注入时 `c.embedder == nil`）。
+// 直接 `c.embedder.Vectorize(...)` 会 panic（实测：判据构造点不注入 embedder
+// 就撞 nil pointer）。空安全在这里收一处，而不是让 6 个调用点各判一次。
+func (c *RelevanceContext) vectorize(text string) map[string]float64 {
+	if c == nil || c.embedder == nil {
+		return nil
+	}
+	return c.embedder.VectorizeMap(text)
+}
+
+func (c *RelevanceContext) vectorizeClean(text string) map[string]float64 {
+	if c == nil || c.embedder == nil {
+		return nil
+	}
+	return c.embedder.VectorizeCleanMap(text)
+}

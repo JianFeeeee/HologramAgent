@@ -14,6 +14,7 @@ package test
 // 同一个状态、两种相反的预期。这条判据钉的是那个 `return false`。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
@@ -29,7 +30,10 @@ func orphanHarness(t *testing.T) (*agentIO.IOManager, *agentIO.ChannelRegistry) 
 		t.Fatalf("Register: %v", err)
 	}
 
-	a := agent.New(agent.AgentConfig{ID: "root", IO: iom})
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "root", IO: iom})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	t.Cleanup(a.Stop)
 	return iom, reg
 }

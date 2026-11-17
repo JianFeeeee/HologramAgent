@@ -28,6 +28,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // rtHarness 是真 agent + 真 IO + 两个声明了 Realtime 的通道。
@@ -40,7 +41,10 @@ type rtHarness struct {
 func newRTHarness(t *testing.T) *rtHarness {
 	t.Helper()
 	iom := io.NewIOManager()
-	a := agent.New(agent.AgentConfig{ID: "parent", IO: iom})
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "parent", IO: iom})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 
 	iom.RegisterInputChannel("rt-in", io.ChannelDef{Realtime: true})
 	iom.RegisterInputChannel("rt-out", io.ChannelDef{Realtime: true})
@@ -110,7 +114,10 @@ func TestSpawnRTChildClaimsBothChannels(t *testing.T) {
 // 走到回滚路径（input 已经划上了）。
 func TestSpawnFailureLeavesNoHalfClaim(t *testing.T) {
 	iom := io.NewIOManager()
-	a := agent.New(agent.AgentConfig{ID: "parent", IO: iom})
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "parent", IO: iom})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	defer a.Stop()
 
 	iom.RegisterInputChannel("rt-in", io.ChannelDef{Realtime: true})
@@ -126,6 +133,9 @@ func TestSpawnFailureLeavesNoHalfClaim(t *testing.T) {
 	if _, err := a.SpawnRTChild(agent.RTChildOptions{
 		ID: "kid", Input: "rt-in", Output: "rt-out",
 	}); err == nil {
+		if instErr != nil {
+			t.Fatalf("Instantiate(main): %v", instErr)
+		}
 		t.Fatal("★ output 通道未声明 CapRT，SpawnRTChild 却成功了")
 	}
 

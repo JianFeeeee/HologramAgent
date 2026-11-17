@@ -174,9 +174,16 @@ func (a *Agent) overflowRatioNow() float64 {
 //
 // 幂等：未超页时零开销（一次 token 估算 + 一次比较），可安全地在热路径调用。
 func (a *Agent) enforceContextBudget(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
-	// ★ 超页处置是**类型注册的钩子**：整窗型（驻留/rt）不注册它
-	//   （它们靠 contextfull 上报父 agent 决策，见本文件顶部注释）。
-	//   基座不再按 isLightKernel 分支。
+	// ★ 超页处置是**类型注册的钩子**：未注册 ⇒ 本类型不做（整窗型靠
+	//   contextfull 上报父 agent 决策，见本文件顶部注释）。
+	if a == nil || a.hooks.EnforceOverflow == nil {
+		return false, 0
+	}
+	return a.hooks.EnforceOverflow(a, f, query, force)
+}
+
+// enforceContextBudgetDefault 是标准超页处置的实现（由 hooks 注册）。
+func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
 	light := a != nil && a.hooks.EnforceOverflow == nil
 	noCtx := a == nil || a.context == nil
 	var ratio float64

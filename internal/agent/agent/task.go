@@ -264,11 +264,40 @@ func (a *Agent) newTaskFrame(input string, stageCtx *sdk.StageContext) *TaskFram
 	return &TaskFrame{Input: input, StageCtx: stageCtx, Step: StepPrepare}
 }
 
-// runTaskSteps 驱动状态机直到任务结束或被抢占挂起。
+// runTaskSteps 把一帧交给**类型注册的 loop**（基座不假设任何 loop 样式）。
 //
-// 这是 M1 的驱动循环，M3a 从 process() 抽出来，使调用方可以拿到
-// outcomeSuspended 并把帧留给调度器保存。
+// ## 用户裁定（2026-11-17）
+//
+// > 「基座标准骨架？基座不假设任何 agentloop 样式」
+//
+// 所以基座这里**没有任何**内置状态机：它只做一次转发。loop 由类型模块在
+// 装配点注册（`Hooks.Loop`），未注册即装配错误（`Hooks.Validate` 拦住）。
+//
+// 下面这段 `LoopStandard` 是**标准实现**（供主 agent / 驻留子注册）：
+// 它现在与基座同包只是因为拆包（→ `internal/agent/standard`）还没做完；
+// 但它**不会被基座自动启用** —— 基座不认识它，也不调用它。
 func (a *Agent) runTaskSteps(f *TaskFrame) stepOutcome {
+	if a == nil || a.hooks.Loop == nil {
+		// 装配错误：Validate 应该已经在构造期拦住。这里返回失败而不是
+		// 退回某个"默认骨架" —— 基座不假设任何 loop 样式。
+		f.Err = fmt.Errorf("agent %q: no agent loop registered (Hooks.Loop is nil) — "+
+			"the assembly point must register this type's loop (standard.Loop for main/resident, async for rt)", a.id)
+		return outcomeFailed
+	}
+	return a.hooks.Loop(a, f)
+}
+
+// LoopStandard 是**标准同步 loop**（主 agent / 驻留子的实现）。
+//
+// 它在装配点显式注册：
+//
+//	base.SetHooks(agent.Hooks{Loop: agent.LoopStandard, …})
+//
+// ★ 为什么不作为基座默认：那会让"这个 agent 用哪种 loop"变成隐式事实
+//
+//	（rt 的异步 loop 就只能靠覆盖默认值来表达），而用户要求基座**不假设**
+//	任何样式。注册是显式的、可审计的。
+func LoopStandard(a *Agent, f *TaskFrame) stepOutcome {
 	// 步数上限只是防"转移缺失导致死循环"的护栏；正常任务远达不到。
 	const maxSteps = 1 << 20
 	for i := 0; i < maxSteps; i++ {

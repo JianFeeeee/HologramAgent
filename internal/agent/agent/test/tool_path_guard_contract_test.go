@@ -57,9 +57,12 @@ func pathGuardHarnessDef(t *testing.T, dataDir string, sandbox security.SandboxP
 	if err := sh.RegisterTool(def.Name, def, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
-	a := agent.New(agent.AgentConfig{
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
 		ID: "pathguard", StageHost: sh, Security: rt.AsGate(), DataDir: dataDir,
 	})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	t.Cleanup(a.Stop)
 	return a
 }

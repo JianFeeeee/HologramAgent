@@ -29,6 +29,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // recordingProbe 记录每次请求的 messages，并按内容回一条答复。
@@ -76,12 +77,21 @@ func newRenderAgent(t *testing.T, protected int) (*agent.Agent, *io.IOManager, *
 	pm := agentProvider.NewProviderManager()
 	pm.Register(prov.Name(), prov)
 
-	a := agent.New(agent.AgentConfig{
+	// ★ 实例化走**类型注册表**（用户裁定 2026-11-17：每个 agent 都有对应的
+	// 实例化调用；基座不假设 loop 样式）⇒ 判据用公开入口 Instantiate("main")。
+	_ = iom
+	_ = prov
+	_ = pm
+	a, err := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
+		Security:        security.NewDisabledRuntime().AsGate(),
 		ID:              "l1order",
 		Provider:        prov,
 		ProviderManager: pm,
 		IO:              iom,
 	})
+	if err != nil {
+		t.Fatalf("Instantiate(main): %v", err)
+	}
 	a.Start()
 	t.Cleanup(a.Stop)
 

@@ -11,6 +11,15 @@ import (
 )
 
 func (a *Agent) runStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
+	// ★ 阶段执行是**类型注册的钩子**（用户裁定：stage 与 agentloop 同理）。
+	if a == nil || a.hooks.RunStage == nil {
+		return false
+	}
+	return a.hooks.RunStage(a, string(stage), ctx)
+}
+
+// runStageDefault 是标准阶段执行（由 hooks 注册）。
+func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 	// 通道从 stage ctx 上取（由发起方写入）——内核不持有"当前通道"。
 	ch := ""
 	if ctx != nil && ctx.Extra != nil {

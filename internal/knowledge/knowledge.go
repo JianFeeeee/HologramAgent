@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"os"
 	"path/filepath"
@@ -167,7 +168,7 @@ func newLexicalStore() *vector.Store {
 
 // SetDenseSpace 注入多模态统一向量空间（text ↔ image 共享坐标系）。
 // 未注入时知识库退化为原有的稀疏两路（词向量 + TF-IDF），保持既有行为。
-func (s *Store) SetDenseSpace(ds vector.MultimodalEmbedder) {
+func (s *Store) SetDenseSpace(ds kernelapi.MultimodalSpace) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dense = ds
@@ -324,13 +325,25 @@ func (s *Store) DenseStats() map[string]interface{} {
 }
 
 // SetVectorizer 设置词嵌入向量化器，优先于 TF-IDF
-func (s *Store) SetVectorizer(v vector.Vectorizer) {
-	s.vectorizer = v
+func (s *Store) SetVectorizer(v any) {
+	vec, _ := v.(vector.Vectorizer)
+	if vec == nil {
+		return
+	}
+	s.vectorizer = vec
 }
 
 // ReindexWithVectorizer 用给定的向量化器重建稀疏两路索引。
 // 稠密路不在此重建：它由独立的 ReindexDense 负责（换模型只影响它）。
-func (s *Store) ReindexWithVectorizer(v vector.Vectorizer) {
+func (s *Store) ReindexWithVectorizer(v any) {
+	vec, _ := v.(vector.Vectorizer)
+	if vec == nil {
+		return
+	}
+	s.reindexWithVectorizer(vec)
+}
+
+func (s *Store) reindexWithVectorizer(v vector.Vectorizer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

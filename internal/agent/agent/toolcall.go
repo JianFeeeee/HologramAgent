@@ -423,12 +423,12 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	}
 
 	if a.tracker != nil {
-		a.tracker.PreAction(tc.Name)
+		a.tracker.PreActionView(tc.Name)
 	}
 	result, err := a.io.ExecuteTool(tc.Name, tc.Arguments)
 	if a.tracker != nil {
-		if cs := a.tracker.PostAction(tc.Name); cs != nil && len(cs.Files) > 0 {
-			a.Logf("tool %s changed %d files (changeset: %s)", tc.Name, len(cs.Files), cs.ID)
+		if cs := a.tracker.PostActionView(tc.Name); cs != nil && len(cs.Files) > 0 {
+			a.Logf("tool %s changed %d files (changeset: %s)", tc.Name, len(cs.Files), tc.Name)
 		}
 	}
 	if err != nil {
@@ -478,7 +478,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 	// 整理类工具需要**完整内核**的记忆整理面（块/媒体/结构操作）。
 	// 轻量内核（驻留子）只有图记忆共同面 ⇒ 这些操作明确不可用，不静默降级。
 	requireFull := func() string {
-		if a.memory == nil {
+		if a.graphDB() == nil {
 			return "this agent is a lightweight kernel: it can read and write stable memory, but maintenance (merge/delete/purge/edit/stats) is unavailable"
 		}
 		return ""
@@ -651,11 +651,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//
 		// 旧表双写已停 ⇒ Commit 的 ec/rc 恒为 0，
 		// 拿它们判断「有没有写进去」会**永远判成没写进去**。
-		blocksBefore, err := a.memory.MemoryBlockCount()
+		blocksBefore, err := a.graphDB().MemoryBlockCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
-		edgesBefore, err := a.memory.MemoryEdgeCount()
+		edgesBefore, err := a.graphDB().MemoryEdgeCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
@@ -668,11 +668,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
-		blocksAfter, err := a.memory.MemoryBlockCount()
+		blocksAfter, err := a.graphDB().MemoryBlockCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
-		edgesAfter, err := a.memory.MemoryEdgeCount()
+		edgesAfter, err := a.graphDB().MemoryEdgeCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
@@ -727,7 +727,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
-		stats, err := a.memory.Introspect()
+		stats, err := a.graphDB().Introspect()
 		if err != nil {
 			return fmt.Sprintf("query failed: %v", err)
 		}
@@ -742,7 +742,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if source == "" || target == "" {
 			return "source and target are required"
 		}
-		count, err := a.memory.MergeEntities(source, target)
+		count, err := a.graphDB().MergeEntities(source, target)
 		if err != nil {
 			return fmt.Sprintf("merge failed: %v", err)
 		}
@@ -756,7 +756,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if name == "" {
 			return "name is required"
 		}
-		res, err := a.memory.DeleteEntity(name)
+		res, err := a.graphDB().DeleteEntity(name)
 		if err != nil {
 			return fmt.Sprintf("delete failed: %v", err)
 		}
@@ -789,7 +789,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if mode == "" {
 			mode = "soft"
 		}
-		n, err := a.memory.Purge(criteria, mode)
+		n, err := a.graphDB().Purge(criteria, mode)
 		if err != nil {
 			return fmt.Sprintf("stable memory delete failed: %v", err)
 		}
@@ -839,15 +839,15 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		// 而且没有任何日志——这类「静默降级」比报错难查得多。
 		var carriedConf float64
 		var carriedSentence, carriedScene string
-		if olds, ferr := a.memory.FindRelations(oldSubject, oldRelation, oldObject); ferr == nil && len(olds) > 0 {
+		if olds, ferr := a.graphDB().FindRelations(oldSubject, oldRelation, oldObject); ferr == nil && len(olds) > 0 {
 			carriedConf = olds[0].Confidence
 			carriedSentence = olds[0].SentenceText
-			if keys, serr := a.memory.ScenesOfRelation(olds[0].ID); serr == nil && len(keys) > 0 {
+			if keys, serr := a.graphDB().ScenesOfRelation(olds[0].ID); serr == nil && len(keys) > 0 {
 				carriedScene = keys[0]
 			}
 		}
 
-		n, err := a.memory.Purge(map[string]string{
+		n, err := a.graphDB().Purge(map[string]string{
 			"subject_contains": oldSubject,
 			"relation_type":    oldRelation,
 			"target_contains":  oldObject,
@@ -863,7 +863,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			SentenceText: carriedSentence,
 			Scene:        carriedScene,
 		}}
-		ec, rc, err := a.memory.Commit(triples, string(a.id), 0)
+		ec, rc, err := a.graphDB().Commit(triples, string(a.id), 0)
 		if err != nil {
 			return fmt.Sprintf("stable memory edit failed (writing new record): %v", err)
 		}
@@ -994,12 +994,12 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 // 模型偶尔会把 ID 记错，不该让整次写入失败。MIME 从块回读，嵌入时需要
 // （EmbedImageDense 靠它判定模态）。字节随条目落盘（writeMediaFiles）。
 func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef {
-	if a.memory == nil || len(refs) == 0 {
+	if a.graphDB() == nil || len(refs) == 0 {
 		return nil
 	}
 	var out []knowledge.KnowledgeMediaRef
 	for _, r := range refs {
-		b, ok, err := a.memory.BlockByIDPrefix(r)
+		b, ok, err := a.graphDB().BlockByIDPrefix(r)
 		if err != nil || !ok {
 			log.Printf("[knowledge] media block ref %s could not be resolved uniquely, skipping", r)
 			continue
@@ -1280,7 +1280,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		// 不再往正文写 marker——文档向量会融合这些块的媒体向量，
 		// 图片按自己的向量被检索。值是块 ID（或其唯一前缀）。
 		for _, ref := range a.resolveMediaRefs(getStringSlice(tc.Arguments, "media_digests")) {
-			if b, ok, err := a.memory.BlockByIDPrefix(ref); err == nil && ok {
+			if b, ok, err := a.graphDB().BlockByIDPrefix(ref); err == nil && ok {
 				doc.Blocks = append(doc.Blocks, b)
 			}
 		}
@@ -1311,7 +1311,7 @@ func sortLabel(m memory.SortMode) string {
 // 返回空串让调用方无缝退回符号路 —— 这保证了「向量侧没配好」不会让
 // memory_recall 整体失败（那会让模型完全失去记忆，比召回差得多）。
 func (a *Agent) recallByBlocks(query string) string {
-	if a == nil || a.memory == nil || a.multimodalSpace == nil {
+	if a == nil || a.graphDB() == nil || a.multimodalSpace == nil {
 		return ""
 	}
 	if !a.multimodalSpace.Loaded() {
@@ -1358,7 +1358,7 @@ func (a *Agent) recallByBlocks(query string) string {
 	// ⇒ 向量却仍给 0.84+ 的高分（grafana/kafka/容灾演练 三类都是）。
 	// 先召回再判断的话，看到的是一堆高分块 ——
 	// 而「分数高」本身不能证明相关。
-	hits, abstain, arb, err := a.memory.RecallBlocksGuarded(
+	hits, abstain, arb, err := a.graphDB().RecallBlocksGuarded(
 		memory.BlockRecallQuery{
 			Vector:      vec,
 			Fingerprint: a.multimodalSpace.Fingerprint(),

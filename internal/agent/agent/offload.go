@@ -22,8 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"runtime/debug"
-
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
@@ -381,37 +379,3 @@ func sortStrings(s []string) {
 //
 // 检查间隔取 BusyAfter 的 1/5（不低于 1 秒）：保证在跨过阈值后能在合理时间内
 // 触发，又不至于空转打日志。
-func (a *Agent) offloadLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[agent] offloadLoop panic recovered: %v\n%s", r, debug.Stack())
-			time.Sleep(time.Second)
-			go a.offloadLoop()
-		}
-	}()
-
-	if !a.offload.Enabled {
-		return // 未启用：不占 goroutine，也不打日志（默认关闭是常态）
-	}
-	// 只让**根 agent** 做转投：驻留子自己也可能忙，但让子再去拉孙子会形成
-	// 无界增殖（每层都能拉 MAX 个），而积压的源头是根那一条调度链。
-	if !a.hooks.MayOffload {
-		return
-	}
-
-	interval := a.offload.BusyAfter / 5
-	if interval < time.Second {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			a.offloadPendingTasks(a.offload)
-		case <-a.ctx.Done():
-			return
-		}
-	}
-}

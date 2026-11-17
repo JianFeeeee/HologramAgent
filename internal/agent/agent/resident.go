@@ -14,6 +14,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"os"
 	"path/filepath"
@@ -229,7 +230,7 @@ func (a *Agent) residentOf(id string) *residentChild {
 }
 
 // mainGraph 返回父自己的完整图记忆库（驻留子的受限句柄由它派生）。
-func (a *Agent) mainGraph() *memory.GraphDB { return a.memory }
+func (a *Agent) mainGraph() kernelapi.GraphMemory { return a.graphDB() }
 
 // SpawnResident 创建一个驻留子（父的"创建"动作）。
 func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {

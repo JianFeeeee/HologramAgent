@@ -37,11 +37,11 @@ import (
 // 并发数在 ONNX 内嵌路径下不超 CPU 核心数（避免 ONNX 并发限流），
 // 外部 API 路径下不超 8（避免打爆外部服务）。
 func (a *Agent) reembedStaleMedia() {
-	if a.multimodalSpace == nil || !a.multimodalSpace.Loaded() || a.memory == nil {
+	if a.multimodalSpace == nil || !a.multimodalSpace.Loaded() || a.graphDB() == nil {
 		return
 	}
 	fp := a.multimodalSpace.Fingerprint()
-	stale, err := a.memory.StaleBlockVectors(fp)
+	stale, err := a.graphDB().StaleBlockVectors(fp)
 	if err != nil {
 		log.Printf("[media] querying blocks needing re-embedding failed: %v", err)
 		return
@@ -143,7 +143,7 @@ func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
 	data := b.Data
 	if len(data) == 0 {
 		var err error
-		data, err = a.memory.BlockData(b.ID)
+		data, err = a.graphDB().BlockData(b.ID)
 		if err != nil {
 			return err
 		}
@@ -155,7 +155,7 @@ func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.memory.SetBlockVector(b.ID, vec, fp); err != nil {
+	if err := a.graphDB().SetBlockVector(b.ID, vec, fp); err != nil {
 		return err
 	}
 	return nil

@@ -9,16 +9,22 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
-func newAgent(cfg agent.AgentConfig) *agent.Agent {
-	return agent.New(cfg)
+func newAgent(t *testing.T, cfg agent.AgentConfig) *agent.Agent {
+	t.Helper()
+	a, err := agent.Instantiate(agent.TypeNameMain, cfg)
+	if err != nil {
+		t.Fatalf("Instantiate: %v", err)
+	}
+	return a
 }
 
 // TestAgentID：构造时给的 ID 必须能从 ID() 读回。
 func TestAgentID(t *testing.T) {
-	a := newAgent(agent.AgentConfig{ID: types.AgentID("contract-agent")})
+	a := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: types.AgentID("contract-agent")})
 	if got := a.ID(); got != types.AgentID("contract-agent") {
 		t.Fatalf("★ ID() = %q，期望 contract-agent", got)
 	}
@@ -26,11 +32,12 @@ func TestAgentID(t *testing.T) {
 
 // TestOutputAllowlist：AllowedOutputs 为空 = 完整授权；非空 = 白名单。
 func TestOutputAllowlist(t *testing.T) {
-	all := newAgent(agent.AgentConfig{})
+	all := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate()})
 	if !all.IsOutputAllowed("qq") || !all.IsOutputAllowed("webui") {
 		t.Fatal("★ 空白名单应完整授权")
 	}
-	limited := newAgent(agent.AgentConfig{
+	limited := newAgent(t, agent.AgentConfig{
+		Security:       security.NewDisabledRuntime().AsGate(),
 		AllowedOutputs: []string{"qq"},
 	})
 	if !limited.IsOutputAllowed("qq") {
@@ -43,7 +50,7 @@ func TestOutputAllowlist(t *testing.T) {
 
 // TestDuplicateInputWindow：同源同内容短窗口内第二次判重；异源/异内容不判重。
 func TestDuplicateInputWindow(t *testing.T) {
-	a := newAgent(agent.AgentConfig{})
+	a := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate()})
 	if a.IsDuplicateInput("webui", "再发一次") {
 		t.Fatal("★ 第一次输入被判成重复")
 	}
@@ -60,7 +67,7 @@ func TestDuplicateInputWindow(t *testing.T) {
 
 // TestRealtimeFlag：IsRealtime 是构造期的可观察输出；nil receiver 安全。
 func TestRealtimeFlag(t *testing.T) {
-	if newAgent(agent.AgentConfig{}).IsRealtime() {
+	if newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate()}).IsRealtime() {
 		t.Fatal("★ 普通 agent 报告自己是 realtime")
 	}
 	var nilAgent *agent.Agent
@@ -71,7 +78,7 @@ func TestRealtimeFlag(t *testing.T) {
 
 // TestEmptyCollectionsOnFreshAgent：新 agent 的驻留子 / rt 子 / 队列视图为空。
 func TestEmptyCollectionsOnFreshAgent(t *testing.T) {
-	a := newAgent(agent.AgentConfig{IO: io.NewIOManager()})
+	a := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), IO: io.NewIOManager()})
 	if got := a.Residents(); len(got) != 0 {
 		t.Fatalf("★ Residents() = %v，期望空", got)
 	}
@@ -87,7 +94,7 @@ func TestEmptyCollectionsOnFreshAgent(t *testing.T) {
 
 // TestResolveOutputTargetWithoutRegistry：未装配通道注册表时 ok=false，不 panic。
 func TestResolveOutputTargetWithoutRegistry(t *testing.T) {
-	a := newAgent(agent.AgentConfig{})
+	a := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate()})
 	if _, ok := a.ResolveOutputTarget("anything"); ok {
 		t.Fatal("★ 无注册表却报告解析成功")
 	}
@@ -95,7 +102,7 @@ func TestResolveOutputTargetWithoutRegistry(t *testing.T) {
 
 // TestGetKernelStatusNeverNil：状态查询必须返回可用对象。
 func TestGetKernelStatusNeverNil(t *testing.T) {
-	a := newAgent(agent.AgentConfig{IO: io.NewIOManager()})
+	a := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), IO: io.NewIOManager()})
 	if st := a.GetKernelStatus(); st == nil {
 		t.Fatal("★ GetKernelStatus() 返回 nil")
 	}

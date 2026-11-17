@@ -2,8 +2,8 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -34,110 +34,12 @@ func (a *Agent) enqueueConsolidationTask(task ConsolidationTask) {
 // ──────────────────────────────────────────────
 
 // distillLoop 上下文裁剪（L1→L2），使用 distillInterval
-func (a *Agent) distillLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[agent] distillLoop panic recovered: %v\n%s", r, debug.Stack())
-			time.Sleep(time.Second)
-			go a.distillLoop()
-		}
-	}()
-	if a.coldcontextStore == nil {
-		return
-	}
-	ticker := time.NewTicker(a.distillInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			log.Printf("[agent] heartbeat distill tick")
-			a.distillContext()
-			a.autoReloadPlugins()
-		case <-a.ctx.Done():
-			return
-		}
-	}
-}
 
 // archiveLoop 冷文档归档（L2→L3），使用 archiveInterval
-func (a *Agent) archiveLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[agent] archiveLoop panic recovered: %v\n%s", r, debug.Stack())
-			time.Sleep(time.Second)
-			go a.archiveLoop()
-		}
-	}()
-	if a.memory == nil {
-		return
-	}
-	ticker := time.NewTicker(a.archiveInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			log.Printf("[agent] heartbeat archive tick")
-			a.archiveColdDocs()
-		case <-a.ctx.Done():
-			return
-		}
-	}
-}
 
 // mergeLoop 实体合并检测（GraphDB → LLM 裁决），使用 mergeInterval
-func (a *Agent) mergeLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[agent] mergeLoop panic recovered: %v\n%s", r, debug.Stack())
-			time.Sleep(time.Second)
-			go a.mergeLoop()
-		}
-	}()
-	if a.memory == nil {
-		return
-	}
-	ticker := time.NewTicker(a.mergeInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			log.Printf("[agent] heartbeat merge tick")
-			a.detectEntityMerge()
-			a.dedupeScenes()
-		case <-a.ctx.Done():
-			return
-		}
-	}
-}
 
 // reviewLoop 关系复审（GraphDB → ClearSentenceID → CleanupOrphanedSentences），使用 reviewInterval
-func (a *Agent) reviewLoop() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[agent] reviewLoop panic recovered: %v\n%s", r, debug.Stack())
-			time.Sleep(time.Second)
-			go a.reviewLoop()
-		}
-	}()
-	if a.memory == nil {
-		return
-	}
-	ticker := time.NewTicker(a.reviewInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			log.Printf("[agent] heartbeat review tick")
-			a.reviewRelations()
-		case <-a.ctx.Done():
-			return
-		}
-	}
-}
 
 // ──────────────────────────────────────────────
 // 蒸馏逻辑
@@ -217,13 +119,13 @@ func (a *Agent) toolDeclaresNoMemory(name string) bool {
 }
 
 func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats) {
-	if coldDoc == nil || a.memory == nil {
+	if coldDoc == nil || a.graphDB() == nil {
 		return
 	}
 	st.Scanned++
 
 	// ── 第一步：三元组（关系层，派生加工）──
-	triples := coldDocToTriples(coldDoc, a.embedder, a.toolDeclaresNoMemory)
+	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.embedder}, a.toolDeclaresNoMemory)
 	written := 0
 	if len(triples) > 0 {
 		w, _, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
@@ -367,7 +269,7 @@ func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archive
 // ──────────────────────────────────────────────
 
 func (a *Agent) archiveColdDocs() {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		return
 	}
 
@@ -384,8 +286,8 @@ func (a *Agent) archiveColdDocs() {
 	// 不做衰减的后果不是"多记一点"，而是**注入预算被一次性巧合吃光**——
 	// 场景是每轮都要注入的常驻内容，关联只增不减时，越老的库注入越糊。
 	// 半衰期取 30 天：比"这个月没做过这类事"更久，避免把季节性的事误删。
-	if a.memory != nil {
-		if n, err := a.memory.DecaySceneRefs(30*24*time.Hour, 0.05); err != nil {
+	if a.graphDB() != nil {
+		if n, err := a.graphDB().DecaySceneRefs(30*24*time.Hour, 0.05); err != nil {
 			log.Printf("[agent] scene decay error: %v", err)
 		} else if n > 0 {
 			log.Printf("[agent] scene-association decay: pruned %d long-unseen references", n)
@@ -425,13 +327,13 @@ func (a *Agent) archiveColdDocs() {
 // ──────────────────────────────────────────────
 
 func (a *Agent) detectEntityMerge() {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		return
 	}
 
 	log.Printf("[agent] entity merge detection start")
 
-	result, err := a.memory.Recall(nil, nil, 1, "")
+	result, err := a.graphDB().Recall(nil, nil, 1, "")
 	if err != nil || result == nil || len(result.Entities) < 2 {
 		return
 	}
@@ -513,10 +415,10 @@ func (a *Agent) detectEntityMerge() {
 // 所以这里只做确定性的同键合并，不做相似度合并：把「chan:qq 与
 // chan:webui 很像」也合并是危险的，那会把不同场面糊成一个。
 func (a *Agent) dedupeScenes() {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		return
 	}
-	merged, err := a.memory.DedupeScenes()
+	merged, err := a.graphDB().DedupeScenes()
 	if err != nil {
 		log.Printf("[agent] scene dedup failed (will retry next round): %v", err)
 		return
@@ -531,7 +433,7 @@ func (a *Agent) dedupeScenes() {
 // ──────────────────────────────────────────────
 
 func (a *Agent) reviewRelations() {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		return
 	}
 
@@ -539,7 +441,7 @@ func (a *Agent) reviewRelations() {
 
 	reviewCount := 0
 	const maxReviewBatch = 5
-	relResult, err := a.memory.Recall(nil, nil, 1, "")
+	relResult, err := a.graphDB().Recall(nil, nil, 1, "")
 	if err != nil || relResult == nil {
 		return
 	}
@@ -568,7 +470,7 @@ func (a *Agent) reviewRelations() {
 		})
 
 		// 清除句子引用（复审后解除关联）
-		if err := a.memory.ClearSentenceID(rel.ID); err != nil {
+		if err := a.graphDB().ClearSentenceID(rel.ID); err != nil {
 			log.Printf("[agent] clear sentence_id for relation %d: %v", rel.ID, err)
 		}
 		reviewCount++
@@ -576,7 +478,7 @@ func (a *Agent) reviewRelations() {
 
 	if reviewCount > 0 {
 		// 清理无引用的句子
-		if deleted, err := a.memory.CleanupOrphanedSentences(); err != nil {
+		if deleted, err := a.graphDB().CleanupOrphanedSentences(); err != nil {
 			log.Printf("[agent] cleanup orphaned sentences: %v", err)
 		} else if deleted > 0 {
 			log.Printf("[agent] cleanup %d orphaned sentences", deleted)
@@ -586,12 +488,12 @@ func (a *Agent) reviewRelations() {
 }
 
 // entitySemanticSimilarity 使用词嵌入向量余弦相似度计算实体名语义相似度
-func entitySemanticSimilarity(a, b string, embedder *memory.StaticEmbedder) float64 {
+func entitySemanticSimilarity(a, b string, embedder Embedder) float64 {
 	if a == "" || b == "" || embedder == nil || !embedder.Loaded() {
 		return 0
 	}
-	va := embedder.Vectorize(a)
-	vb := embedder.Vectorize(b)
+	va := embedder.VectorizeMap(a)
+	vb := embedder.VectorizeMap(b)
 	if len(va) == 0 || len(vb) == 0 {
 		return 0
 	}
@@ -640,7 +542,7 @@ func entitySimilarity(a, b string) float64 {
 	return float64(intersect) / float64(union)
 }
 
-func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, toolNoMemory func(name string) bool) []memory.Triple {
+func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, toolNoMemory func(name string) bool) []model.Triple {
 	var triples []memory.Triple
 	if coldDoc == nil {
 		return triples

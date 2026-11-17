@@ -28,6 +28,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // ---- 判据 1：完整的同步闭环 ----
@@ -175,12 +176,16 @@ func newLiveAgent(t *testing.T, reply func(*api.CompletionRequest) string) *live
 	pm := agentProvider.NewProviderManager()
 	pm.Register(prov.Name(), prov)
 
-	a := agent.New(agent.AgentConfig{
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
+		Security:        security.NewDisabledRuntime().AsGate(),
 		ID:              "lifecycle",
 		Provider:        prov,
 		ProviderManager: pm,
 		IO:              iom,
 	})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	a.Start()
 
 	iom.RegisterInputChannel("webui", io.ChannelDef{})

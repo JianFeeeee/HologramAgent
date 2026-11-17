@@ -63,8 +63,8 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 				// 兜底：从**主图库路径**推导（<data>/memory/graph.db ⇒ <data>）。
 				// 为什么不静默失败：这条路径只在"配置漏接线"时走到，
 				// 静默报错会让线上表现为"工具能调但永远建不出来"（实测就是这样）。
-				if a.memory != nil && a.memory.Path() != "" {
-					anchor = filepath.Dir(filepath.Dir(a.memory.Path()))
+				if a.graphDB() != nil && a.graphDB().Path() != "" {
+					anchor = filepath.Dir(filepath.Dir(a.graphDB().Path()))
 					log.Printf("[resident] data_dir not wired, falling back to main graph dir: %s", anchor)
 				}
 			}

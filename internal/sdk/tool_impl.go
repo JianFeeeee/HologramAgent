@@ -143,6 +143,11 @@ func (t *toolImpl) CanUse(toolName string, args map[string]interface{}) bool {
 // 为何不直接在 toolImpl 里调 Agent：toolImpl 在 internal/sdk 包，
 // 而 IsOutputAllowed 是 core.*Agent 的方法（core 反向依赖 sdk，
 // sdk 不能依赖 core）。故内核在装配时把查询函数注入进来。
+// deviceAuthQuery 是**历史注入面**（保留以兼容存量装配点）。
+//
+// ★ 2026-11-17：授权判定已归安全模块（`kernelapi.SecurityGate.CheckOutput`）。
+// 内核装配点现在注入的是"经安全模块的查询"，而不是 agent 自己的字段比较 ——
+// 于是 ToolAPI 与 agent 工具链**同源同语义**，不需要再靠两处对齐。
 var deviceAuthQuery func(deviceID string) bool
 
 // SetDeviceAuthQuery 注入"设备是否已授权"的查询（由内核在装配时调用）。

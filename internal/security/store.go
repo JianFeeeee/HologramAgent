@@ -126,6 +126,9 @@ type Store struct {
 
 	// onIntercept 是拦截回调（可观测：每次拦截都通知出去）。
 	onIntercept func(Evt)
+
+	// keyErr 保留 KeyFn 失败的原因（由 Load 响亮报出，见 New 的注释）。
+	keyErr error
 }
 
 // keyGen 是一代主密钥（含代号，便于审计“这条密文是哪一代加的”）。
@@ -164,8 +167,20 @@ func New(opt Options) *Store {
 		onIntercept: opt.OnIntercept,
 	}
 	// 建初始密钥环：当前钥在头，历史钥在后。
+	//
+	// ★ KeyFn 的错误**必须留住**（2026-11-17 实测缺陷）：
+	// 原先写成 `if k, err := opt.KeyFn(); err == nil && len(k) == 32`，
+	// 错误被整个吞掉 ⇒ 钥环空 ⇒ `Fill` 里 `if len(s.keys) == 0 { return text, 0, nil }`
+	// ⇒ 变量库"看起来正常、实际解不出任何凭据"，且**零日志零报错**。
+	// 这正是本仓反复禁止的静默降级。现在把原因留到 Load 里响亮报出。
 	if opt.KeyFn != nil {
-		if k, err := opt.KeyFn(); err == nil && len(k) == 32 {
+		k, err := opt.KeyFn()
+		switch {
+		case err != nil:
+			s.keyErr = fmt.Errorf("security: 取主密钥失败（KeyFn）: %w", err)
+		case len(k) != 32:
+			s.keyErr = fmt.Errorf("security: 主密钥长度是 %d，必须是 32 字节（AES-256）", len(k))
+		default:
 			s.keys = append(s.keys, keyGen{Key: k, ID: keyID(k)})
 		}
 	}
@@ -192,6 +207,17 @@ func keyID(k []byte) string {
 func (s *Store) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// ★ 无可用主密钥 ⇒ **响亮失败**（读路径同样需要闸门，不只是写路径）。
+	//
+	// 没有钥环时 `Fill` 只能静默返回原文（物理上解不开任何条目），
+	// 那种"看起来正常的空结果"是最难排查的形态：模型拿到未回填的 `@{别名}`，
+	// 以为凭据不存在，转而去猜/去读文件。
+	if len(s.keys) == 0 {
+		if s.keyErr != nil {
+			return s.keyErr
+		}
+		return fmt.Errorf("security: 变量库 %s 无可用主密钥：%w", s.path, ErrNoMasterKey)
+	}
 	b, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {

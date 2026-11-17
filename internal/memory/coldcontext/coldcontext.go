@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"math"
 	"os"
@@ -23,7 +24,8 @@ import (
 
 // ChannelCleaner 按事件来源查找输入通道的 Cleaner 函数。
 // 返回 nil 表示不使用额外清洗。
-type ChannelCleaner func(source string) func(string) string
+// ChannelCleaner 是 kernelapi 里同名类型的别名（声明点在接口包）。
+type ChannelCleaner = kernelapi.ChannelCleaner
 
 // ColdDoc — 记忆文档：由上下文提炼而来
 //
@@ -98,6 +100,9 @@ type Store struct {
 
 	// 主路径
 	denseSpace vector.MultimodalEmbedder
+
+	// secretStore 是变量库（落盘前脱敏）。可 nil = 未启用安全模块。
+	secretStore kernelapi.SecretStore
 }
 
 // NewStore 创建文档存储。tokenizer 由外层注入（如 jieba），供 TF-IDF 回退路径使用
@@ -148,14 +153,14 @@ func (s *Store) Start() error {
 func (s *Store) Stop() { s.flush() }
 
 // SetDenseSpace 设置稠密多模态向量空间（主路径）。
-func (s *Store) SetDenseSpace(ds vector.MultimodalEmbedder) {
+func (s *Store) SetDenseSpace(ds kernelapi.MultimodalSpace) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.denseSpace = ds
 }
 
 // BuildDenseIndex 为所有文档计算稠密向量（文本 ⊕ 媒体块）。
-func (s *Store) BuildDenseIndex(ds vector.MultimodalEmbedder) {
+func (s *Store) BuildDenseIndex(ds kernelapi.MultimodalSpace) {
 	if ds == nil || !ds.Loaded() {
 		return
 	}
@@ -342,7 +347,7 @@ func (s *Store) Insert(doc *ColdDoc) error {
 }
 
 // ContextToColdContext 将上下文对话历史提炼为文档。
-func (s *Store) ContextToColdContext(source string, entries []ContextEntry, _ interface{}, cleanFn func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) (*ColdDoc, error) {
+func (s *Store) ContextToColdContext(source string, entries []ContextEntry, embedder interface{}, cleanFn func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) (*ColdDoc, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -1303,4 +1308,12 @@ func InOut(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
 // 这个信号淹没在一堆样板修改里。
 func InOutWithReasoning(ev *ColdEvent) (input, response, reasoning string, held []memory.MemoryBlock) {
 	return blocksToEntryWithReasoning(ev)
+}
+
+// SetSecretStore 注入变量库（落盘前脱敏用；装配期由 agent 调用）。
+func (s *Store) SetSecretStore(st kernelapi.SecretStore) {
+	if s == nil {
+		return
+	}
+	s.secretStore = st
 }

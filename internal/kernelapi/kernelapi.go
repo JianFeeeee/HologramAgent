@@ -201,6 +201,8 @@ type MemoryIndexer interface {
 	GetToolDefinitions() []map[string]interface{}
 	MarkRecalled(names ...string)
 	Sync() error
+	// SetDenseSpace 是装配期接线（多模态空间就绪后注入）。
+	SetDenseSpace(space MultimodalSpace)
 }
 
 // TextMemory 是原始对话日志（JSONL，可滚动）。
@@ -208,6 +210,8 @@ type TextMemory interface {
 	Append(evt model.TextEvent) error
 	PurgeByFilter(match func(model.TextEvent) bool) (int, error)
 	ReplaceByFilter(match func(model.TextEvent) bool, replace func(model.TextEvent) model.TextEvent) (int, error)
+	// FileCount 返回当前滚动文件数（状态面用）。
+	FileCount() int
 	Stop()
 }
 
@@ -217,6 +221,8 @@ type SocialStore interface {
 	SetTrait(name, trait, value string) error
 	AddRelation(personA, relation, personB string) error
 	GetNetwork(name string, depth int) ([]*model.PersonProfile, error)
+	// ListPersons 列出全部人名（状态面用）。
+	ListPersons() ([]string, error)
 }
 
 // Distiller 是记忆蒸馏流水线（可暂停/恢复，供伪关机）。
@@ -226,6 +232,12 @@ type Distiller interface {
 }
 
 // ───────────────────────── 文档记忆 / 知识库 ─────────────────────────
+
+// ChannelCleaner 是「给某个来源取一个清洗器」的函数类型（可 nil）。
+//
+// ★ 声明点在本包，实现包（coldcontext）以别名转发 —— 这样两边的
+// 方法签名逐字相同，接口断言才能通过。
+type ChannelCleaner func(source string) func(string) string
 
 // DocStore 是 L2 文档记忆。
 type DocStore interface {
@@ -239,6 +251,16 @@ type DocStore interface {
 	Reindex()
 	Stats() map[string]interface{}
 	Stop()
+	// ContextToColdContext 把 L1 事件归档成 L2 文档。
+	//
+	// ★ 参数用 model 值类型 + 裸函数：接口包不能 import coldcontext 实现包。
+	ContextToColdContext(source string, entries []model.ContextEntry, embedder any,
+		cleanFn func(string) string, toolCleanFn func(name, output string) string,
+		channelCleaner ChannelCleaner) (*model.ColdDoc, error)
+	SetDenseSpace(space MultimodalSpace)
+	BuildDenseIndex(space MultimodalSpace)
+	// SetSecretStore 注入变量库（落盘前脱敏用）。
+	SetSecretStore(store SecretStore)
 }
 
 // Knowledge 是知识库（文档树 + 检索 + 导入）。
@@ -251,6 +273,14 @@ type Knowledge interface {
 	List() []string
 	Start() error
 	Stop()
+	// SetDenseSpace / ReindexDense 是装配期接线（多模态空间）。
+	SetDenseSpace(space MultimodalSpace)
+	ReindexDense() (built, skipped int)
+	// SetVectorizer / ReindexWithVectorizer 是稀疏词嵌入接线。
+	// 参数用 any：接口包不能 import vector 实现包（`vector.Vectorizer` 是接口，
+	// 由实现在收到后自己断言）。
+	SetVectorizer(v any)
+	ReindexWithVectorizer(v any)
 }
 
 // ───────────────────────── LLM ─────────────────────────
@@ -323,6 +353,21 @@ type SecurityGate interface {
 	CheckNetwork() model.Decision
 	// ScanContentForAgent 做内容审查，返回命中、是否阻断、替换文本。
 	ScanContentForAgent(agentID string, isChild bool, ins model.Inspection, text string) ([]model.Finding, bool, string)
+	// ReleaseOutputs 撤销授权声明（销毁时调，防同名重建继承旧授权）。
+	ReleaseOutputs(agentID string)
+	// DeclareOutputs 登记"这个 agent 被授权了哪些输出通道"（授权事实由父声明）。
+	//
+	// ★ 为什么它属于安全模块（用户裁定 2026-11-17：「设备是否授权不应该
+	//   安全模块负责吗？」）：设备/通道授权是**横在 core 与外部之间**的
+	//   边界判定，与工具策略、路径策略、内容审查同一类。授权事实由 agent
+	//   提供（谁被委派了什么），**判定**由安全模块做。
+	//
+	// 空/nil = 完整授权（默认）。重复声明覆盖（子被缩小授权后重建是常规操作）。
+	DeclareOutputs(agentID string, outputs []string)
+	// CheckOutput 判定某 agent 能否使用某个输出通道（含 `device/<id>` 形态）。
+	//
+	// 未装配安全模块时调用方应视为放行 —— 但那是"未装配"，不是"授权通过"。
+	CheckOutput(agentID string, channel string) model.Decision
 	// Store 返回变量库（明文 ↔ 别名）。
 	Store() SecretStore
 }
@@ -413,6 +458,8 @@ type StageHost interface {
 type Tracker interface {
 	PreActionView(action string) *model.TrackedChange
 	PostActionView(action string) *model.TrackedChange
+	// MergeDir 返回变更记录的落盘目录（状态面用）。
+	MergeDir() string
 }
 
 // ───────────────────────── 守护 / Lua / 同步总线 ─────────────────────────

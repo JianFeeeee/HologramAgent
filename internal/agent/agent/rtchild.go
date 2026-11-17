@@ -682,7 +682,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// 而它比主 agent 更危险 —— 通话场景下它一边听用户说话一边执行工具，
 		// 没有任何人工复核的窗口。
 		// ★ 图记忆共同面（与驻留子同一个字段、同一套语义）：
-		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.memory 保持 nil
+		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.graphDB() 保持 nil
 		// ⇒ 记忆整理面（块/媒体/流水线）全部不可达，只有 Recall/Commit 可用。
 		LightMemory: rtLight,
 		Security:    a.gate(),

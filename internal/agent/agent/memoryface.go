@@ -15,7 +15,7 @@ package agent
 //     memory_purge / memory_edit / memory_introspect
 //
 // 所以驻留子的轻量内核**不该有那些代码路径**：它用 `*memory.LightMemory` 接上 `graph`，
-// 而 `a.memory`（整理面）保持 nil —— 既有的 22 处 `if a.memory != nil` 关卡
+// 而 `a.graphDB()`（整理面）保持 nil —— 既有的 22 处 `if a.graphDB() != nil` 关卡
 // 会自动把整理面全部禁掉，不需要写"每个方法都返回错误"的受限包装。
 
 import "github.com/JianFeeeee/HologramAgent/internal/memory"

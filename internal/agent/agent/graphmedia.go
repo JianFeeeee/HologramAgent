@@ -32,12 +32,12 @@ import (
 // digest 取回字节，所以旧媒体实体的字节若已无从取得（CAS 已删），
 // 该实体只能如实删除而不建块——不造一个没有内容的空块。
 func (a *Agent) migrateLegacyGraphMedia() {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		return
 	}
-	blocks, entities, err := a.memory.MigrateLegacyMediaEntities(func(short string) (memory.MemoryBlock, bool) {
+	blocks, entities, err := a.graphDB().MigrateLegacyMediaEntities(func(short string) (memory.MemoryBlock, bool) {
 		// 先看该内容是否已经有对应的块（内容派生 ID，前缀可查）。
-		if b, ok, err := a.memory.BlockByIDPrefix("blk_media_" + short); err == nil && ok {
+		if b, ok, err := a.graphDB().BlockByIDPrefix("blk_media_" + short); err == nil && ok {
 			return b, true
 		}
 		return memory.MemoryBlock{}, false
@@ -58,7 +58,7 @@ func (a *Agent) migrateLegacyGraphMedia() {
 // 保持块身份不变）。
 // ★ sentenceBlockID 是**原句块 ID**（原为 sentences 表行号）。
 func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []string, seed map[string]memory.MemoryBlock, scene string) int {
-	if a.memory == nil || sentenceBlockID == "" {
+	if a.graphDB() == nil || sentenceBlockID == "" {
 		return 0
 	}
 	bound := 0
@@ -66,7 +66,7 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 		b, ok := seed[ref]
 		if !ok {
 			var err error
-			b, ok, err = a.memory.BlockByIDPrefix(ref)
+			b, ok, err = a.graphDB().BlockByIDPrefix(ref)
 			if err != nil {
 				log.Printf("[media] lookup block %s failed: %v", ref, err)
 				continue
@@ -81,11 +81,11 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 		if b.Scene == "" {
 			b.Scene = scene
 		}
-		if err := a.memory.PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		if err := a.graphDB().PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
 			log.Printf("[media] L3 block write failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
-		if err := a.memory.AddMemoryBlockEdge("block", sentenceBlockID, "block", b.ID, "contains"); err != nil {
+		if err := a.graphDB().AddMemoryBlockEdge("block", sentenceBlockID, "block", b.ID, "contains"); err != nil {
 			log.Printf("[media] sentence->block edge creation failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
@@ -97,17 +97,17 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 // linkBlocksToDocument 把文档持有的块写入 L3，并建立
 // document --contains--> block 边。块的 ID 原样保留（迁移而非重建）。
 func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, scene string) int {
-	if a.memory == nil || docID == "" || len(blocks) == 0 {
+	if a.graphDB() == nil || docID == "" || len(blocks) == 0 {
 		return 0
 	}
-	if err := a.memory.PutDocumentNode(docID, ""); err != nil {
+	if err := a.graphDB().PutDocumentNode(docID, ""); err != nil {
 		log.Printf("[media] L3 doc node write failed (%s): %v", docID, err)
 		return 0
 	}
 	// 文档层与场景模型兼容：文档节点也进场景，好让「这个场面有哪些文档」
 	// 可枚举、可统计（场景贯穿流水线的 doc 层落地）。
 	if scene != "" {
-		if err := a.memory.TagSceneDocument(scene, docID); err != nil {
+		if err := a.graphDB().TagSceneDocument(scene, docID); err != nil {
 			log.Printf("[media] attaching doc to scene failed (%s): %v", docID, err)
 		}
 	}
@@ -118,13 +118,13 @@ func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 			blocks[i].Scene = scene
 		}
 	}
-	if err := a.memory.PutMemoryBlocks(blocks); err != nil {
+	if err := a.graphDB().PutMemoryBlocks(blocks); err != nil {
 		log.Printf("[media] L3 memory block write failed (doc %s): %v", docID, err)
 		return 0
 	}
 	bound := 0
 	for _, b := range blocks {
-		if err := a.memory.AddMemoryBlockEdge("document", docID, "block", b.ID, "contains"); err != nil {
+		if err := a.graphDB().AddMemoryBlockEdge("document", docID, "block", b.ID, "contains"); err != nil {
 			log.Printf("[media] doc->block edge creation failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
@@ -143,7 +143,7 @@ func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 // **written**（真正通过校验并落库的三元组条数）。不要再用块数差值 ——
 // 块 ID 由内容派生，幂等命中时块数根本不涨（详见 memory.CommitReady 的注释）。
 func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string, turnID int, seed []memory.MemoryBlock) (written, blocks int, err error) {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		// 轻量内核（memory == nil，子只有图记忆）：只写图记忆。
 		// 写目标由 a.graph 决定 —— 根落 main，子落自己的 temp。
 		g := a.graphMem()
@@ -160,7 +160,7 @@ func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string
 	// ★ 媒体桥与写入条数必须**同一次 commitLocked**产出。
 	//   分成 CommitWithMedia + 单独查写入条数会走两遍写库：关系边虽然幂等，
 	//   但 sentenceIDs 与 emitAccess 会多报一轮（星图会闪两次）。
-	sentenceIDs, written, err := a.memory.CommitReady(triples, sessionID, turnID)
+	sentenceIDs, written, err := a.graphDB().CommitReady(triples, sessionID, turnID)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -189,10 +189,10 @@ func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string
 //
 //	改成「原句块 ID」（sentences 表退场后行号不存在）。
 func (a *Agent) RecallBlocksForSentence(sentenceBlockID string) ([]memory.MemoryBlock, error) {
-	if a.memory == nil {
+	if a.graphDB() == nil {
 		return nil, nil
 	}
-	return a.memory.BlocksForNode("block", sentenceBlockID)
+	return a.graphDB().BlocksForNode("block", sentenceBlockID)
 }
 
 // resolveMediaRefs 把模型给的（多为短）块引用补全成唯一的块 ID。
@@ -200,13 +200,13 @@ func (a *Agent) RecallBlocksForSentence(sentenceBlockID string) ([]memory.Memory
 // 补不上或歧义就丢弃那一条并记日志：模型可能凭印象编了个 ID，
 // 也可能内容已被删除。宁可不解析也不猜（猜错 = 挂错媒体）。
 func (a *Agent) resolveMediaRefs(refs []string) []string {
-	if a.memory == nil || len(refs) == 0 {
+	if a.graphDB() == nil || len(refs) == 0 {
 		return nil
 	}
 	seen := make(map[string]bool, len(refs))
 	var out []string
 	for _, r := range refs {
-		b, ok, err := a.memory.BlockByIDPrefix(r)
+		b, ok, err := a.graphDB().BlockByIDPrefix(r)
 		if err != nil || !ok {
 			log.Printf("[media] model-provided block ref %s could not be resolved uniquely", r)
 			continue
@@ -278,14 +278,14 @@ func formatRecallRelations(relations []memory.Relation, max int) []string {
 // Indexer.BuildContext 刻意不返回关系（只给实体索引以省 token），
 // 因此这里用命中的实体名再查一次关系，只为拿到原句。
 func (a *Agent) mediaContextForInjectedEntities(injected *memory.InjectedContext) string {
-	if a.memory == nil || injected == nil || len(injected.Entities) == 0 {
+	if a.graphDB() == nil || injected == nil || len(injected.Entities) == 0 {
 		return ""
 	}
 	names := make([]string, 0, len(injected.Entities))
 	for _, e := range injected.Entities {
 		names = append(names, e.Name)
 	}
-	res, err := a.memory.Recall(nil, names, 1, "")
+	res, err := a.graphDB().Recall(nil, names, 1, "")
 	if err != nil || res == nil {
 		return ""
 	}
@@ -311,12 +311,12 @@ func (a *Agent) blockLabelsForDoc(d *coldcontext.ColdDoc) string {
 // 标签只含 MIME 与短块 ID：图片按向量检索，标签的作用是告诉模型
 // "这条记忆当时带着哪份媒体、可用该块 ID 取回"。
 func (a *Agent) mediaContextForSentences(sentenceBlockIDs []string) string {
-	if a.memory == nil || len(sentenceBlockIDs) == 0 {
+	if a.graphDB() == nil || len(sentenceBlockIDs) == 0 {
 		return ""
 	}
 	var lines []string
 	for _, sid := range sentenceBlockIDs {
-		blocks, err := a.memory.BlocksForNode("block", sid)
+		blocks, err := a.graphDB().BlocksForNode("block", sid)
 		if err != nil || len(blocks) == 0 {
 			continue
 		}

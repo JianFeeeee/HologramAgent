@@ -23,6 +23,7 @@ package test
 // 作者以为自己在保护，实际毫无作用，且不会有任何报错。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
@@ -39,7 +40,10 @@ func toolDefHarness(t *testing.T, defs ...sdk.ToolDef) *agent.Agent {
 			t.Fatalf("RegisterTool(%s): %v", d.Name, err)
 		}
 	}
-	a := agent.New(agent.AgentConfig{ID: "tooldef", StageHost: sh})
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "tooldef", StageHost: sh})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	t.Cleanup(a.Stop)
 	return a
 }
@@ -134,7 +138,10 @@ func TestUnregisteredPluginToolsLeaveNoTrace(t *testing.T) {
 	if err := sh.RegisterTool("keep_tool", sdk.ToolDef{Name: "keep_tool", Plugin: "other"}, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
-	a := agent.New(agent.AgentConfig{ID: "tooldef", StageHost: sh})
+	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "tooldef", StageHost: sh})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	t.Cleanup(a.Stop)
 
 	sh.UnregisterPluginTools("acme")

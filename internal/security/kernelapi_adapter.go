@@ -77,6 +77,16 @@ func (g gateAdapter) ScanContentForAgent(agentID string, isChild bool, ins model
 	return g.rt.ScanContentForAgent(agentID, isChild, ins, text)
 }
 
+func (g gateAdapter) DeclareOutputs(agentID string, outputs []string) {
+	g.rt.DeclareOutputs(agentID, outputs)
+}
+
+func (g gateAdapter) ReleaseOutputs(agentID string) { g.rt.ReleaseOutputs(agentID) }
+
+func (g gateAdapter) CheckOutput(agentID string, channel string) model.Decision {
+	return g.rt.CheckOutput(agentID, channel)
+}
+
 func (g gateAdapter) Store() kernelapi.SecretStore {
 	st := g.rt.Store()
 	if st == nil {

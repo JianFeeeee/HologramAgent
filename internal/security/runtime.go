@@ -43,6 +43,13 @@ type Runtime struct {
 	policy Policy
 	// content 是内容审查策略（敏感词 + 注入检测）。
 	content ContentPolicy
+	// outputsByAgent / outputsMu 是**输出授权**的登记表（declare → check）。
+	//
+	// ★ 2026-11-17：设备/通道授权判定从 agent 字段搬到本模块（用户裁定
+	// 「设备是否授权不应该安全模块负责吗？」）。语义不变（空 = 完整授权）。
+	outputsMu      sync.RWMutex
+	outputsByAgent map[string][]string
+
 	// scopes 是插件可声明的轮次作用域（内核持有，deny 优先）。
 	scopes *ScopeRegistry
 	// profiles 是**插件声明的命名限式**（`qq.owner` / `qq.guest` …）。
