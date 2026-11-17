@@ -119,7 +119,7 @@ func workerToolReject(ct agentAPI.ToolCall) string {
 	return fmt.Sprintf("子 Agent 不允许调用 %s: %s（%s）", r.class, ct.Name, r.hint)
 }
 
-func (a *Agent) executeSpawnChild(tc agentAPI.ToolCall, parentChannel string) string {
+func (a *Agent) ExecuteSpawnChild(tc agentAPI.ToolCall, parentChannel string) string {
 	task, _ := tc.Arguments["task"].(string)
 	if task == "" {
 		if b, _ := json.Marshal(tc.Arguments); len(b) > 2 {
@@ -253,7 +253,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			MaxTokens:       4096,
 			Tools:           childTools,
 			ToolChoice:      "auto",
-			DisableThinking: !a.mainState().thinkingEnabled,
+			DisableThinking: !a.MainState().thinkingEnabled,
 		}
 
 		// ★ 走与主 agent 同一套 provider 选择（而不是直接 a.provider.Chat）。
@@ -359,7 +359,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 // 这一点至关重要——完成通知会长期留在持久上下文里（formatMergedTimeline
 // 每轮重新注入），如果重复查询返回“不存在”这种失败信号，模型会认定任务
 // 未完成而无限重试（实测单轮 35 次工具调用、持续 514 秒）。
-func (a *Agent) executeChildResultTool(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteChildResultTool(tc agentAPI.ToolCall) string {
 	taskID, _ := tc.Arguments["task_id"].(string)
 	if taskID == "" {
 		return "请提供 task_id 参数"
@@ -420,7 +420,7 @@ func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) strin
 		Messages:        salvageMsgs,
 		MaxTokens:       4096,
 		ToolChoice:      "none", // 不给工具，强制走文本产出
-		DisableThinking: !a.mainState().thinkingEnabled,
+		DisableThinking: !a.MainState().thinkingEnabled,
 	})
 	if err != nil {
 		log.Printf("[child] wrap-up distillation failed (falling back to factual summary): %v", err)
@@ -433,7 +433,7 @@ func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) strin
 	return fmt.Sprintf("（注：已达 %d 轮工具上限，以下为已取得成果的收尾提炼，可能不完整）\n%s", maxTurns, content)
 }
 
-func (a *Agent) executeLLMTool(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteLLMTool(tc agentAPI.ToolCall) string {
 	if a.providerManager == nil {
 		return "LLM 源管理器不可用"
 	}

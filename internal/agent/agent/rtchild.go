@@ -493,7 +493,7 @@ type RTChildOptions struct {
 	//
 	// 参照驻留子（`SpawnResident` 的 LightMemory 装配）：驻留子是
 	// 「轻量内核 = 传统上下文 + 图记忆共同面」，rt 原先**零图记忆**
-	// （carrier 既没有 Memory 也没有 LightMemory ⇒ graphMem() == nil），
+	// （carrier 既没有 Memory 也没有 LightMemory ⇒ GraphMem() == nil），
 	// 于是 memory_recall / memory_commit 这类共同面工具在 rt 里全部不可达。
 	//
 	// 但 rt 恰恰需要它：通话里用户会提到人、地点、约定、偏好，
@@ -671,7 +671,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// 硬锁定会让"首选源抖动"直接变成"通话中断"。
 		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
-		StageHost:         a.mainState().stageHost,
+		StageHost:         a.MainState().stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
 		AllowedOutputs: []string{opts.Output},
 		KernelSource:   string(a.id),
@@ -683,10 +683,10 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// 而它比主 agent 更危险 —— 通话场景下它一边听用户说话一边执行工具，
 		// 没有任何人工复核的窗口。
 		// ★ 图记忆共同面（与驻留子同一个字段、同一套语义）：
-		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.graphDB() 保持 nil
+		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.GraphDB() 保持 nil
 		// ⇒ 记忆整理面（块/媒体/流水线）全部不可达，只有 Recall/Commit 可用。
 		LightMemory: rtLight,
-		Security:    a.gate(),
+		Security:    a.Gate(),
 		IsRealtime:  true, // ★ 类型标签：只有它可被划 rt 通道
 	})
 	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 3 个记忆
@@ -1034,7 +1034,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 	// 这是“每多一条输入路径就要多接一次”的典型代价。收敛后，
 	// 判定逻辑在 security 内部只剩一份，但**轮次边界仍得每条路径自己声明** ——
 	// 因为只有该路径知道一轮何时开始/结束。
-	secRound := a.beginSecurityRound(evt.Payload, evt.Source)
+	secRound := a.BeginSecurityRound(evt.Payload, evt.Source)
 	defer secRound.End()
 
 	rc.mu.Lock()
@@ -1651,7 +1651,7 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 	ar.closed[id] = transcript
 	ar.mu.Unlock()
 
-	a.raiseVector(VectorRTChildClosed, vectorArgs{RTID: id, RTCount: n, RTChars: chars})
+	a.RaiseVector(VectorRTChildClosed, vectorArgs{RTID: id, RTCount: n, RTChars: chars})
 	log.Printf("[rtchild] %s closed: %d messages (%d chars) kept for on-demand transcript", id, n, chars)
 	return n, nil
 }
@@ -1713,7 +1713,7 @@ func (a *Agent) RTTranscript(id string) ([]agentAPI.Message, bool) {
 //	offset    从第几条消息开始（0 = 从头）—— 让父能分段读大记录
 //	limit     最多返回多少条（0 = 默认 rtTranscriptDefaultLimit）
 //	format    "text"（默认，给人/模型读的渲染）/ "raw"（原始消息 JSON 风格逐条）
-func (a *Agent) executeRTTranscript(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteRTTranscript(tc agentAPI.ToolCall) string {
 	id := strArg(tc, "id")
 	if id == "" {
 		return "请提供 id 参数（rtchild 标识）"
@@ -1795,7 +1795,7 @@ const rtTranscriptDefaultLimit int = 40
 //	create  创建（**必须成对**给 input + output）
 //	send    向 rtchild 注入一条新输入（= 打断当前轮，契约 1）
 //	stop    回收（先推交接信号，再停；正文由 rt_transcript 按需拉）
-func (a *Agent) executeRTChildren(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteRTChildren(tc agentAPI.ToolCall) string {
 	switch action := strArg(tc, "action"); action {
 	case "", "list":
 		ids := a.RTChildren()

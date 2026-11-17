@@ -36,13 +36,13 @@ import (
 //
 // where 用于日志里标注拦截位置（如 "tool_result:enc_shell"），
 // 便于事后审计"哪些工具的输出带凭据"。
-// ★ 2026-11-04：从包级自由函数改为 Agent 方法（变量库走 a.secretStore()）。
-// 原实现读 security.Global() —— 那绕开了统一挂载点，见 RelevanceContext.secretStore。
+// ★ 2026-11-04：从包级自由函数改为 Agent 方法（变量库走 a.SecretStore()）。
+// 原实现读 security.Global() —— 那绕开了统一挂载点，见 RelevanceContext.SecretStore。
 func (a *Agent) scrubForLog(text, where string) string {
 	if text == "" {
 		return text
 	}
-	st := a.secretStore()
+	st := a.SecretStore()
 	if st == nil {
 		return text
 	}

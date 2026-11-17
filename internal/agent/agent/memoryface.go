@@ -17,7 +17,7 @@ import "github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 //     memory_purge / memory_edit / memory_introspect
 //
 // 所以驻留子的轻量内核**不该有那些代码路径**：它用 `*memory.LightMemory` 接上 `graph`，
-// 而 `a.graphDB()`（整理面）保持 nil —— 既有的 22 处 `if a.graphDB() != nil` 关卡
+// 而 `a.GraphDB()`（整理面）保持 nil —— 既有的 22 处 `if a.GraphDB() != nil` 关卡
 // 会自动把整理面全部禁掉，不需要写"每个方法都返回错误"的受限包装。
 
 import "github.com/JianFeeeee/HologramAgent/internal/memory"
@@ -29,7 +29,7 @@ import "github.com/JianFeeeee/HologramAgent/internal/memory"
 //	          不做任何策略性裁剪（不按相关度挑、不向 doc 记忆归档）；
 //	          而且在撞到硬上限之前，contextfull（90% 窗口）已按 L4 上报父 agent
 //	          决策（压缩/回收/销毁）—— 丢事件的决定权在父，不在内核。
-func (a *Agent) contextTokenBudget(b kit.TokenBudget) int {
+func (a *Agent) ContextTokenBudget(b kit.TokenBudget) int {
 	// ★ 预算策略由**类型注册的钩子**决定（用户裁定：各类型通过回调注册
 	// 各自的管理方式）。此前基座自己按 isLightKernel 分支 —— 那是按类型
 	// 嵌合，每加一种类型就得回来加一条 if。

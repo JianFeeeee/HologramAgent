@@ -56,7 +56,7 @@ func (a *Agent) SetEventBus(bus kernelapi.EventBus, pluginName string) {
 //
 // 被拒只记日志、不阻断业务：事件是旁路信号（状态面/诊断/插件观察），
 // 丢了不该让一轮任务失败。但**必须留痕**——静默丢弃是最难查的一类故障。
-func (a *Agent) publish(evtType events.EventType, payload map[string]interface{}) {
+func (a *Agent) Publish(evtType events.EventType, payload map[string]interface{}) {
 	if a == nil || a.publisher.bus == nil || evtType == "" {
 		return
 	}

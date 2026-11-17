@@ -83,10 +83,10 @@ func (a *Agent) MountDevice(d api.DeviceSurface) {
 		return
 	}
 	// 挂载同时接上路由适配器：device 由此拿到"选族后调谁"。
-	a.mainState().builtinHandlers = builtinHandlers{a: a}
-	a.mainState().deviceMu.Lock()
-	a.mainState().device = d
-	a.mainState().deviceMu.Unlock()
+	a.MainState().builtinHandlers = builtinHandlers{a: a}
+	a.MainState().deviceMu.Lock()
+	a.MainState().device = d
+	a.MainState().deviceMu.Unlock()
 }
 
 // Device 返回已挂载的数据面（未挂载时为 nil）。
@@ -94,9 +94,9 @@ func (a *Agent) Device() api.DeviceSurface {
 	if a == nil {
 		return nil
 	}
-	a.mainState().deviceMu.RLock()
-	defer a.mainState().deviceMu.RUnlock()
-	return a.mainState().device
+	a.MainState().deviceMu.RLock()
+	defer a.MainState().deviceMu.RUnlock()
+	return a.MainState().device
 }
 
 // errNoAgentForDevice 表示 device 调用时 Agent 未装配（装配顺序错误）。
@@ -144,13 +144,13 @@ func (h builtinHandlers) ExecuteInputChannels(tc api.ToolCall) string {
 	return h.a.executeInputChannels(tc)
 }
 func (h builtinHandlers) ExecuteResidentAgents(tc api.ToolCall) string {
-	return h.a.executeResidentAgents(tc)
+	return h.a.ExecuteResidentAgents(tc)
 }
 func (h builtinHandlers) ExecuteNotifyParent(tc api.ToolCall) string {
-	return h.a.executeNotifyParent(tc)
+	return h.a.ExecuteNotifyParent(tc)
 }
 func (h builtinHandlers) ExecuteInputchNote(tc api.ToolCall) string {
-	return h.a.executeInputchNote(tc)
+	return h.a.ExecuteInputchNote(tc)
 }
 func (h builtinHandlers) ExecutePluginReload() string {
 	return h.a.executePluginReload()

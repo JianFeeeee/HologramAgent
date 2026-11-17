@@ -37,11 +37,11 @@ import (
 // 并发数在 ONNX 内嵌路径下不超 CPU 核心数（避免 ONNX 并发限流），
 // 外部 API 路径下不超 8（避免打爆外部服务）。
 func (a *Agent) reembedStaleMedia() {
-	if a.mainState().multimodalSpace == nil || !a.mainState().multimodalSpace.Loaded() || a.graphDB() == nil {
+	if a.MainState().multimodalSpace == nil || !a.MainState().multimodalSpace.Loaded() || a.GraphDB() == nil {
 		return
 	}
-	fp := a.mainState().multimodalSpace.Fingerprint()
-	stale, err := a.graphDB().StaleBlockVectors(fp)
+	fp := a.MainState().multimodalSpace.Fingerprint()
+	stale, err := a.GraphDB().StaleBlockVectors(fp)
 	if err != nil {
 		log.Printf("[media] querying blocks needing re-embedding failed: %v", err)
 		return
@@ -65,7 +65,7 @@ func (a *Agent) reembedStaleMedia() {
 		workers = 8
 	}
 	log.Printf("[media] starting vector migration: %d image blocks -> fp=%s dim=%d workers=%d",
-		len(targets), shortFP(fp), a.mainState().multimodalSpace.Dim(), workers)
+		len(targets), shortFP(fp), a.MainState().multimodalSpace.Dim(), workers)
 
 	var jobsOnce sync.Once
 	jobs := make(chan memory.MemoryBlock, workers*2)
@@ -143,7 +143,7 @@ func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
 	data := b.Data
 	if len(data) == 0 {
 		var err error
-		data, err = a.graphDB().BlockData(b.ID)
+		data, err = a.GraphDB().BlockData(b.ID)
 		if err != nil {
 			return err
 		}
@@ -151,11 +151,11 @@ func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("block %s has no payload", b.ID)
 	}
-	vec, err := a.mainState().multimodalSpace.EmbedImageDense(data, mime)
+	vec, err := a.MainState().multimodalSpace.EmbedImageDense(data, mime)
 	if err != nil {
 		return err
 	}
-	if err := a.graphDB().SetBlockVector(b.ID, vec, fp); err != nil {
+	if err := a.GraphDB().SetBlockVector(b.ID, vec, fp); err != nil {
 		return err
 	}
 	return nil

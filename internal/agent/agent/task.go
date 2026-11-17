@@ -128,7 +128,7 @@ func (a *Agent) runTaskSteps(f *TaskFrame) stepOutcome {
 		// 装配错误：Validate 应该已经在构造期拦住。这里返回失败而不是
 		// 退回某个"默认骨架" —— 基座不假设任何 loop 样式。
 		f.Err = fmt.Errorf("agent %q: no agent loop registered (Hooks.Loop is nil) — "+
-			"the assembly point must register this type's loop (kit.Loop for main/resident, async for rt)", a.id)
+			"the assembly point must register this type's loop (kit.Loop for main/Resident, async for rt)", a.id)
 		return outcomeFailed
 	}
 	return a.hooks.Loop(a, f)
@@ -222,7 +222,7 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 	// ★ defer End() 而非在末尾调：一条输入可能经过多个 return 出口
 	// （跳过 / 短路 / 挂起 / 正常），逐个加必然漏一个 —— 与
 	// `executeToolCallOutcome` 的入向脱敏用 defer 同一理由。
-	round := a.beginSecurityRound(evt.Payload, evt.Source)
+	round := a.BeginSecurityRound(evt.Payload, evt.Source)
 	// ★ nil 安全（未装配闸门的单测/独立工具）：接口是**非 nil 接口值**才可调，
 	// 所以必须显式判 nil —— typed-nil 陷阱的同类（见 Hooks 的注释）。
 	if round != nil {
@@ -275,7 +275,7 @@ func (a *Agent) rebaseFramePrefix(f *TaskFrame) {
 	budget := a.computeTokenBudget()
 	memContext := a.buildTaskMemoryContext(f, f.Input, budget.MemoryTokens)
 	sysPrompt := a.buildSystemPrompt(memContext, f.Input)
-	prefix := a.buildMessages(sysPrompt, f.Input, a.contextTokenBudget(budget))
+	prefix := a.buildMessages(sysPrompt, f.Input, a.ContextTokenBudget(budget))
 
 	// 重建会丢掉 prepare 段对尾部消息的两处改写，这里等价地补回。
 	if f.IsInterrupt && len(prefix) > 0 {
@@ -308,10 +308,10 @@ func (a *Agent) rebaseFramePrefix(f *TaskFrame) {
 func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTerminal) {
 	start := time.Now()
 
-	in, ok := a.resolveInput(evt)
+	in, ok := a.ResolveInput(evt)
 	if !ok {
 		// 空输入（文本与媒体都空）：没有可处理内容，但同步调用方仍在等回执。
-		a.emitSkippedReply(evt, "empty_input")
+		a.EmitSkippedReply(evt, "empty_input")
 		return nil, terminalSkipped
 	}
 
@@ -322,7 +322,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 		log.Printf("[agent] dropped duplicate input from %s: %s", evt.Source, truncateStr(in.text, 60))
 		// 去重是「不处理」而不是「不回」，否则同步调用方（cli/clawhub 无超时）
 		// 会永久挂起（设计文档 §7 不变量 I5、§11.3 X2/X4）。
-		a.emitSkippedReply(evt, "duplicate")
+		a.EmitSkippedReply(evt, "duplicate")
 		return nil, terminalSkipped
 	}
 
@@ -341,7 +341,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 原始 data/url，也是这三个工具是否出现在工具表里的开关。仅对用户直接上传成立
 	//（payload 里才有 data/url）；插件注入的是成品 block，取不到原始数据。
 	if evt.Type == "image" || evt.Type == "audio" {
-		a.mainState().pendingMedia = evt.Payload
+		a.MainState().pendingMedia = evt.Payload
 	}
 
 	// 媒体先变成一等块（字节进块的 Data）。不存的后果是 ContextEvent.Input
@@ -396,7 +396,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 
 	if a.runStage(sdk.StageOnInput, stageCtx) {
 		// 插件在 OnInput 短路：本轮一个 LLM 都没跑，用量为零是如实的。
-		a.emitResponse(evt, *stageCtx.Response, agentAPI.TokenUsage{})
+		a.EmitResponse(evt, *stageCtx.Response, agentAPI.TokenUsage{})
 		return nil, terminalStageShortCircuit
 	}
 
@@ -420,10 +420,10 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	a.publishEvent(events.EventRawInput, rawPayload)
 
 	// 裁剪与审计统一在 memoryPass 内（日志已带 trigger）。
-	a.pruneOnInput(evt, cleanInput)
+	a.PruneOnInput(evt, cleanInput)
 
 	// 本轮 inputch（处理表按它记账）+ contextfull 检测（只有驻留子设了钩子）。
-	if r := a.resident(); r != nil {
+	if r := a.Resident(); r != nil {
 		r.tableMu.Lock()
 		r.currentInputch = outputChannelOf(evt)
 		r.tableMu.Unlock()
@@ -455,13 +455,13 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 
 	// pendingMedia 是「本轮」语义：任务结束即清（挂起时保留，见 runInputTask）。
 	if evt != nil && (evt.Type == "image" || evt.Type == "audio") {
-		a.mainState().pendingMedia = nil
+		a.MainState().pendingMedia = nil
 	}
 
 	if out == outcomeFailed {
 		log.Printf("[agent] process %s error: %v", evt.Type, f.Err)
 		resp := fmt.Sprintf("处理错误: %v", f.Err)
-		a.emitResponse(evt, resp, f.TurnUsage)
+		a.EmitResponse(evt, resp, f.TurnUsage)
 		a.context.Append(ContextEvent{Timestamp: time.Now(), Source: "agent", Input: f.Input, Response: resp})
 		f.Terminal = terminalError
 		return
@@ -469,7 +469,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 
 	// inputch 处理表：本轮**未主动写入**时由系统自动写（保证每轮必有记录）。
 	// 只有驻留子会用到（根 agent 的 children 为 0 时这只是几个空操作）。
-	a.autoRecordInputch(f)
+	a.AutoRecordInputch(f)
 
 	elapsed := time.Since(f.StartedAt)
 	log.Printf("[agent] %s from %s → response (%dms, tools=%v)",
@@ -508,7 +508,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 	// 不是在每个调用点 —— 写 context 的地方有 5 处，逐个补必漏。
 	a.context.Append(turnEvt)
 
-	a.emitResponse(evt, f.Response, f.TurnUsage)
+	a.EmitResponse(evt, f.Response, f.TurnUsage)
 
 	if !f.StageCtx.NoMemory {
 		a.emitMemoryCandidate(evt.Source, f.CleanInput, f.Response, f.TurnReasoning, f.ToolResults, f.ToolsUsed)
@@ -547,7 +547,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	sysPrompt := a.buildSystemPrompt(memContext, f.Input)
 	f.Tools = a.buildToolDefs()
 
-	f.Msgs = a.buildMessages(sysPrompt, f.Input, a.contextTokenBudget(budget))
+	f.Msgs = a.buildMessages(sysPrompt, f.Input, a.ContextTokenBudget(budget))
 	// ★ 插件声明的**本轮提示**（SDK InjectOptions.TurnHint）。
 	//
 	// 以**独立 system 消息**注入，绝不拼进用户消息正文：
@@ -580,7 +580,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	a.Logf("tool call loop start, max_ctx=%d target=%d fixed=%d mem=%d ctx=%d %d tools, %d events, personality=%t, docs=%d",
 		budget.MaxContext, budget.TargetUsage, budget.FixedTokens, budget.MemoryTokens, budget.ContextTokens,
 		len(f.Tools), a.context.Len(),
-		a.mainState().personality != nil && a.mainState().personality.Content != "",
+		a.MainState().personality != nil && a.MainState().personality.Content != "",
 		a.coldcontextStoreSize())
 
 	if a.runStage(sdk.StagePreAction, f.StageCtx) {
@@ -608,7 +608,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	// 上下文占满检测：**上报**给上级（驻留子），不在此处裁剪。
 	// 只有驻留子设了 onContextFull ⇒ 对根 agent 是 no-op（根自己走
 	// enforceContextBudget 就地裁，没有上级可报）。
-	a.checkContextFull()
+	a.CheckContextFull()
 
 	f.Step = StepLLM
 	return outcomeContinue
@@ -664,7 +664,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		MaxTokens:       4096,
 		Tools:           f.Tools,
 		ToolChoice:      "auto",
-		DisableThinking: !a.mainState().thinkingEnabled,
+		DisableThinking: !a.MainState().thinkingEnabled,
 	}
 
 	providers := a.resolveProviders(req)
@@ -965,7 +965,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
 	// 插件崩溃态：不执行
-	if pluginName != "" && !a.mainState().pluginHealth.IsHealthy(pluginName) {
+	if pluginName != "" && !a.MainState().pluginHealth.IsHealthy(pluginName) {
 		res.text = fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		res.denied = true
 		return res
@@ -1035,7 +1035,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	}
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
-	if pluginName != "" && !a.mainState().pluginHealth.IsHealthy(pluginName) {
+	if pluginName != "" && !a.MainState().pluginHealth.IsHealthy(pluginName) {
 		result := fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		a.Logf("skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
 		ensureBatchAssistant(f)
@@ -1195,7 +1195,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	// 同一次预算与审计）。查询向量取清洗后的有效内容，否则噪声
 	// （ANSI/base64/JSON 包装）会把相关性打分带偏，裁错事件、召回错记忆。
 	var recallText string
-	if def := a.mainState().stageHost.ToolDef(tc.Name); def != nil {
+	if def := a.MainState().stageHost.ToolDef(tc.Name); def != nil {
 		needPrune := def.ContextPolicy == sdk.ContextPolicyPrune
 		needRecall := def.RecallPolicy == sdk.RecallPolicyAuto
 		if needPrune || needRecall {

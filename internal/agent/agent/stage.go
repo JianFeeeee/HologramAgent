@@ -33,7 +33,7 @@ func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 		payload["tool"] = ctx.ToolCalls[0].Name
 	}
 	a.publishEvent(events.EventStage, payload)
-	if a.mainState().stageHost == nil {
+	if a.MainState().stageHost == nil {
 		return false
 	}
 	ctx.Phase = stage
@@ -43,13 +43,13 @@ func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 				log.Printf("[agent] stage %q plugin panic: %v\n%s", stage, r, debug.Stack())
 			}
 		}()
-		a.mainState().stageHost.RunStage(stage, ctx)
+		a.MainState().stageHost.RunStage(stage, ctx)
 	}()
 	return ctx.Response != nil
 }
 
 func (a *Agent) publishEvent(evtType events.EventType, payload map[string]interface{}) {
-	a.publish(evtType, payload)
+	a.Publish(evtType, payload)
 }
 
 func (a *Agent) stageCtxFromInput(input, userID, groupID string) *sdk.StageContext {
@@ -63,7 +63,7 @@ func (a *Agent) stageCtxFromInput(input, userID, groupID string) *sdk.StageConte
 	// ★ 来源标识必须在**帧的起点**就写入，不能只写在工具帧上：
 	// 插件可能在 on_input 阶段就据此决定是否介入（而那个阶段早于工具帧构造）。
 	// 见 comefrom.go 的完整说明。
-	stampComeFrom(ctx.Extra, a.comefromForAgent())
+	stampComeFrom(ctx.Extra, a.ComefromForAgent())
 	return ctx
 }
 

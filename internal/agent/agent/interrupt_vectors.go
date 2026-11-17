@@ -181,7 +181,7 @@ func lookupVector(id VectorID) (interruptVector, bool) {
 // 正文构造全部来自向量表，调用点只声明"哪一类中断 + 载荷"。
 //
 // 返回 true 表示中断真的占了 immediate 槽（会立即生效）。
-func (a *Agent) raiseVector(id VectorID, args vectorArgs) bool {
+func (a *Agent) RaiseVector(id VectorID, args vectorArgs) bool {
 	v, ok := lookupVector(id)
 	if !ok {
 		// 未登记是**编码错误**：宁可响亮失败，也不要静默发出一个没人认领的中断。

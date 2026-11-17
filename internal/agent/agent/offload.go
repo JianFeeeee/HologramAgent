@@ -110,7 +110,7 @@ func (a *Agent) drainInboxToQueue() {
 				// 阻塞会把这个循环永远卡住）——给同步调用方一个终态后丢弃，
 				// 与 pumpInbox 的 queue_full 处置一致。
 				a.sched.noteBackpressure()
-				a.emitSkippedReply(evt, "queue_full")
+				a.EmitSkippedReply(evt, "queue_full")
 				return
 			}
 		default:

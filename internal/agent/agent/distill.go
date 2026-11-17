@@ -25,7 +25,7 @@ func (a *Agent) enqueueConsolidationTask(task ConsolidationTask) {
 		"【记忆整理任务】\n类型: %s\n说明: %s\n\n注意：\n1. 仅使用 stablemem_merge 合并实体，或使用 stablemem_block_merge 标记不合并\n2. 不要使用 stablemem_commit 写入新的三元组\n3. 不要从这段任务文本中提取任何信息写入图库\n4. 只需要做出合并/不合并的判断并执行对应工具",
 		task.Type, task.Reason,
 	)
-	a.injectSelf(msg)
+	a.InjectSelf(msg)
 	log.Printf("[agent] enqueued consolidation task: %s", task.Reason)
 }
 
@@ -46,12 +46,12 @@ func (a *Agent) enqueueConsolidationTask(task ConsolidationTask) {
 // ──────────────────────────────────────────────
 
 func (a *Agent) distillContext() {
-	if a.mainState().coldcontextStore == nil {
+	if a.MainState().coldcontextStore == nil {
 		return
 	}
 	n := a.context.Len()
-	if n > a.mainState().maxContextSize*2 {
-		archived := a.context.Prune("", a.mainState().maxContextSize, a.mainState().coldcontextStore)
+	if n > a.MainState().maxContextSize*2 {
+		archived := a.context.Prune("", a.MainState().maxContextSize, a.MainState().coldcontextStore)
 		if archived > 0 {
 			log.Printf("[agent] distill: pruned %d low-relevance events to document memory (total=%d)", archived, n)
 		}
@@ -110,8 +110,8 @@ type archiveStats struct {
 // 两处都必须查：只查一处会让另一半工具在蒸馏侧享受不到自己的声明，
 // 而那正是「机制 ≠ 接线」的经典形态（生产里两条路径各查各的，漂移了没人发现）。
 func (a *Agent) toolDeclaresNoMemory(name string) bool {
-	if a.mainState().stageHost != nil {
-		if v, found := a.mainState().stageHost.NoMemoryOf(name); found {
+	if a.MainState().stageHost != nil {
+		if v, found := a.MainState().stageHost.NoMemoryOf(name); found {
 			return v
 		}
 	}
@@ -119,13 +119,13 @@ func (a *Agent) toolDeclaresNoMemory(name string) bool {
 }
 
 func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats) {
-	if coldDoc == nil || a.graphDB() == nil {
+	if coldDoc == nil || a.GraphDB() == nil {
 		return
 	}
 	st.Scanned++
 
 	// ── 第一步：三元组（关系层，派生加工）──
-	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.mainState().embedder}, a.toolDeclaresNoMemory)
+	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.MainState().embedder}, a.toolDeclaresNoMemory)
 	written := 0
 	if len(triples) > 0 {
 		w, _, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
@@ -150,7 +150,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	// 这不是失败：删掉它不丢任何东西。此前它会走「全部被拒」那条失败路径，
 	// 白白重试 5 次才进 STUCK，日志里还会被当成「关系层建不起来」。
 	if len(triples) == 0 && len(coldDoc.Blocks) == 0 {
-		a.mainState().coldcontextStore.Remove(coldDoc.ID)
+		a.MainState().coldcontextStore.Remove(coldDoc.ID)
 		st.Empty++
 		return
 	}
@@ -211,7 +211,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 		st.Blocks += bound
 	}
 
-	a.mainState().coldcontextStore.Remove(coldDoc.ID)
+	a.MainState().coldcontextStore.Remove(coldDoc.ID)
 	st.Archived++
 	log.Printf("[agent] coldcontext->graph: %s archived (%d blocks migrated, %d/%d triples written)",
 		coldDoc.ID, len(coldDoc.Blocks), written, len(triples))
@@ -233,7 +233,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 // 「静默卡住」与「每小时重试一次、永远失败」都不可观测，两者都不是答案：
 // 前者丢数据，后者把问题推给日志量。所以到上限一律响亮记录，分层处置。
 func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archiveStats, reason string, contentLanded bool) {
-	attempts := a.mainState().coldcontextStore.NoteArchiveFailure(coldDoc.ID, reason)
+	attempts := a.MainState().coldcontextStore.NoteArchiveFailure(coldDoc.ID, reason)
 	if attempts < maxArchiveAttempts {
 		st.Retried++
 		log.Printf("[agent] coldcontext->graph: %s kept for retry (attempt %d/%d): %s",
@@ -255,7 +255,7 @@ func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archive
 	//
 	// ★ 为什么不静默删：这批文档的关系层永远建不起来，是可观测的能力缺口。
 	//   「每小时重试一次、永远失败」也一样不可观测 —— 只是把问题推给日志量。
-	a.mainState().coldcontextStore.Remove(coldDoc.ID)
+	a.MainState().coldcontextStore.Remove(coldDoc.ID)
 	st.Quarantin++
 	log.Printf("[agent] coldcontext->graph: %s gave up after %d attempts, blocks stay in L3, "+
 		"no relation edges for this document (last error: %s). "+
@@ -269,14 +269,14 @@ func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archive
 // ──────────────────────────────────────────────
 
 func (a *Agent) archiveColdDocs() {
-	if a.graphDB() == nil {
+	if a.GraphDB() == nil {
 		return
 	}
 
 	log.Printf("[agent] coldcontext archival start")
 
-	if a.mainState().indexer != nil {
-		if err := a.mainState().indexer.Sync(); err != nil {
+	if a.MainState().indexer != nil {
+		if err := a.MainState().indexer.Sync(); err != nil {
 			log.Printf("[agent] indexer sync error: %v", err)
 		}
 	}
@@ -286,27 +286,27 @@ func (a *Agent) archiveColdDocs() {
 	// 不做衰减的后果不是"多记一点"，而是**注入预算被一次性巧合吃光**——
 	// 场景是每轮都要注入的常驻内容，关联只增不减时，越老的库注入越糊。
 	// 半衰期取 30 天：比"这个月没做过这类事"更久，避免把季节性的事误删。
-	if a.graphDB() != nil {
-		if n, err := a.graphDB().DecaySceneRefs(30*24*time.Hour, 0.05); err != nil {
+	if a.GraphDB() != nil {
+		if n, err := a.GraphDB().DecaySceneRefs(30*24*time.Hour, 0.05); err != nil {
 			log.Printf("[agent] scene decay error: %v", err)
 		} else if n > 0 {
 			log.Printf("[agent] scene-association decay: pruned %d long-unseen references", n)
 		}
 	}
 
-	if a.mainState().coldcontextStore != nil {
+	if a.MainState().coldcontextStore != nil {
 		// 文档有变化才重建 TF-IDF 索引。
 		//
 		// 此前每轮无条件 Reindex：它重置 sync.Once、重建 8.3MB 训练文本、
 		// 全量 Train 一次并持写锁 —— 每小时一次的 O(全库) 停顿，
 		// 与「这轮到底有没有新文档」无关。721 个文档时那是纯浪费。
-		if a.mainState().coldcontextStore.Dirty() {
-			a.mainState().coldcontextStore.Reindex()
+		if a.MainState().coldcontextStore.Dirty() {
+			a.MainState().coldcontextStore.Reindex()
 		}
 	}
 
-	if a.mainState().coldcontextStore != nil {
-		coldDocs := a.mainState().coldcontextStore.FindColdContexts(72*time.Hour, 2)
+	if a.MainState().coldcontextStore != nil {
+		coldDocs := a.MainState().coldcontextStore.FindColdContexts(72*time.Hour, 2)
 		st := archiveStats{}
 		for _, coldDoc := range coldDocs {
 			a.archiveOneColdDoc(coldDoc, &st)
@@ -327,13 +327,13 @@ func (a *Agent) archiveColdDocs() {
 // ──────────────────────────────────────────────
 
 func (a *Agent) detectEntityMerge() {
-	if a.graphDB() == nil {
+	if a.GraphDB() == nil {
 		return
 	}
 
 	log.Printf("[agent] entity merge detection start")
 
-	result, err := a.graphDB().Recall(nil, nil, 1, "")
+	result, err := a.GraphDB().Recall(nil, nil, 1, "")
 	if err != nil || result == nil || len(result.Entities) < 2 {
 		return
 	}
@@ -350,24 +350,24 @@ func (a *Agent) detectEntityMerge() {
 			key := ea + "||" + eb
 
 			// 跳过已标记"不合并"的实体对
-			a.mainState().noMergeMu.Lock()
-			rounds, ok := a.mainState().noMergeMarkers[key]
+			a.MainState().noMergeMu.Lock()
+			rounds, ok := a.MainState().noMergeMarkers[key]
 			if ok {
 				rounds--
 				if rounds <= 0 {
-					delete(a.mainState().noMergeMarkers, key)
+					delete(a.MainState().noMergeMarkers, key)
 				} else {
-					a.mainState().noMergeMarkers[key] = rounds
+					a.MainState().noMergeMarkers[key] = rounds
 				}
 			}
-			a.mainState().noMergeMu.Unlock()
+			a.MainState().noMergeMu.Unlock()
 			if ok {
 				continue
 			}
 
 			// 复合相似度：字符二元组 + 语义向量（仅增强检测，不做自动合并）
 			sim := entitySimilarity(result.Entities[i].Name, result.Entities[j].Name)
-			semSim := entitySemanticSimilarity(result.Entities[i].Name, result.Entities[j].Name, a.mainState().embedder)
+			semSim := entitySemanticSimilarity(result.Entities[i].Name, result.Entities[j].Name, a.MainState().embedder)
 			if semSim > sim {
 				sim = semSim
 			}
@@ -415,10 +415,10 @@ func (a *Agent) detectEntityMerge() {
 // 所以这里只做确定性的同键合并，不做相似度合并：把「chan:qq 与
 // chan:webui 很像」也合并是危险的，那会把不同场面糊成一个。
 func (a *Agent) dedupeScenes() {
-	if a.graphDB() == nil {
+	if a.GraphDB() == nil {
 		return
 	}
-	merged, err := a.graphDB().DedupeScenes()
+	merged, err := a.GraphDB().DedupeScenes()
 	if err != nil {
 		log.Printf("[agent] scene dedup failed (will retry next round): %v", err)
 		return
@@ -433,7 +433,7 @@ func (a *Agent) dedupeScenes() {
 // ──────────────────────────────────────────────
 
 func (a *Agent) reviewRelations() {
-	if a.graphDB() == nil {
+	if a.GraphDB() == nil {
 		return
 	}
 
@@ -441,7 +441,7 @@ func (a *Agent) reviewRelations() {
 
 	reviewCount := 0
 	const maxReviewBatch = 5
-	relResult, err := a.graphDB().Recall(nil, nil, 1, "")
+	relResult, err := a.GraphDB().Recall(nil, nil, 1, "")
 	if err != nil || relResult == nil {
 		return
 	}
@@ -470,7 +470,7 @@ func (a *Agent) reviewRelations() {
 		})
 
 		// 清除句子引用（复审后解除关联）
-		if err := a.graphDB().ClearSentenceID(rel.ID); err != nil {
+		if err := a.GraphDB().ClearSentenceID(rel.ID); err != nil {
 			log.Printf("[agent] clear sentence_id for relation %d: %v", rel.ID, err)
 		}
 		reviewCount++
@@ -478,7 +478,7 @@ func (a *Agent) reviewRelations() {
 
 	if reviewCount > 0 {
 		// 清理无引用的句子
-		if deleted, err := a.graphDB().CleanupOrphanedSentences(); err != nil {
+		if deleted, err := a.GraphDB().CleanupOrphanedSentences(); err != nil {
 			log.Printf("[agent] cleanup orphaned sentences: %v", err)
 		} else if deleted > 0 {
 			log.Printf("[agent] cleanup %d orphaned sentences", deleted)

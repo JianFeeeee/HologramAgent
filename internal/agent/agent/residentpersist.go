@@ -201,7 +201,7 @@ func (a *Agent) RestoreResidents() int {
 		log.Printf("[resident] restored %s (temp+context preserved from previous run)", r.ID)
 	}
 	if restored > 0 {
-		log.Printf("[resident] restored %d/%d resident(s) from registry", restored, len(recs))
+		log.Printf("[resident] restored %d/%d Resident(s) from registry", restored, len(recs))
 	}
 	return restored
 }

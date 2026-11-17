@@ -69,9 +69,9 @@ func (a *Agent) PruneContext(query string, protected int) int {
 	// ★ 这里是**真正执行裁剪**（不是把活再交给钩子）：钩子实现调本方法，
 	//   本方法若回头调钩子就成了无限递归（实测栈溢出）。
 	if protected >= 0 {
-		return a.context.PruneWithProtected(query, a.contextTopKForProtected(protected), a.mainState().coldcontextStore, protected)
+		return a.context.PruneWithProtected(query, a.contextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
 	}
-	return a.context.PruneWithProtected(query, a.contextTopK(), a.mainState().coldcontextStore, a.effectiveProtectedCount())
+	return a.context.PruneWithProtected(query, a.contextTopK(), a.MainState().coldcontextStore, a.effectiveProtectedCount())
 }
 
 // EnforceOverflowStandard 执行标准超页处置（裁剪 + 上报），返回是否已处置。

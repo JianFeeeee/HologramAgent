@@ -81,10 +81,10 @@ func isContinuationPlaceholder(m agentAPI.Message) bool {
 // Cleaner 未注册或 RPC 失败时回退原文（清洗是计算层优化，不能因此丢内容）；
 // 返回空串时也回退——空串会让查询向量退化成零向量，裁剪就失去判据。
 func (a *Agent) toolOutputForQuery(toolName, raw string) string {
-	if a.mainState().stageHost == nil {
+	if a.MainState().stageHost == nil {
 		return raw
 	}
-	cleaner := a.mainState().stageHost.ToolDefCleaner(toolName)
+	cleaner := a.MainState().stageHost.ToolDefCleaner(toolName)
 	if cleaner == nil {
 		// ★ 可见性（2026-10-27）：cleaner 缺失时必须**说出来**。
 		// 此前这里静默回退原文，于是"召回 query 是 tool 原始 map[...] 字符串"
@@ -513,10 +513,10 @@ func convertBackToolCalls(tcs []sdk.ToolCall) []agentAPI.ToolCall {
 }
 
 func (a *Agent) coldcontextStoreSize() int {
-	if a.mainState().coldcontextStore == nil {
+	if a.MainState().coldcontextStore == nil {
 		return 0
 	}
-	s := a.mainState().coldcontextStore.Stats()
+	s := a.MainState().coldcontextStore.Stats()
 	if n, ok := s["doc_count"]; ok {
 		if ni, ok := n.(int); ok {
 			return ni

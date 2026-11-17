@@ -99,8 +99,8 @@ func (a *Agent) kernelSections(memContext string) []kernelSection {
 
 	// 人格卡：同样展开版本占位符（人格里写死版本号会随发版说谎 ——
 	// 实测线上人格卡写 v1.0.3，内核早已 1.3.x）。
-	if a.mainState().personality != nil {
-		if pp := a.mainState().personality.InjectPrompt(); pp != "" {
+	if a.MainState().personality != nil {
+		if pp := a.MainState().personality.InjectPrompt(); pp != "" {
 			out = append(out, kernelSection{
 				order: orderKernelPersona, section: "kernel.persona",
 				content: expandPromptVars(pp),
@@ -163,10 +163,10 @@ func (a *Agent) kernelSections(memContext string) []kernelSection {
 		content: kernelOutputRules(),
 	})
 
-	if a.mainState().indexer != nil {
+	if a.MainState().indexer != nil {
 		out = append(out, kernelSection{
 			order: orderKernelIndexer, section: "kernel.indexer",
-			content: a.mainState().indexer.BuildToolPrompt(),
+			content: a.MainState().indexer.BuildToolPrompt(),
 		})
 	}
 
@@ -183,7 +183,7 @@ func (a *Agent) kernelSections(memContext string) []kernelSection {
 	// 首启人格门禁（跨通道唯一闸口）：人格未确认时要求模型主动询问用户。
 	// 系统提示词每轮重建，因此 WebUI / QQ / CLI / ACP / 邮件等所有通道都会
 	// 带上它；模型调用 persona_set（或用户在向导里选）落地后，标记置位，本段消失。
-	if a.mainState().personaStore != nil && !a.mainState().personaStore.PersonaInitialized() {
+	if a.MainState().personaStore != nil && !a.MainState().personaStore.PersonaInitialized() {
 		out = append(out, kernelSection{
 			order: orderKernelFirstRun, section: "kernel.first_run",
 			content: "[First-run persona setup] Your **persona is not confirmed**. Ask once this turn: default persona, or a custom one? Then **call persona_set**: " +

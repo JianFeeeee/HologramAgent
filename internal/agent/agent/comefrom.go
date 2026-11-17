@@ -85,7 +85,7 @@ func stampComeFrom(extra map[string]interface{}, v string) {
 // 父处理 QQ 消息时来源是 qq（user）；把这条工作转投给驻留子后，
 // 驻留子的来源标签**仍是 qq**（转投刻意保留原事件），但执行者变了。
 // 只看来源必然判错 —— 这正是本缺陷的成因。
-func (a *Agent) comefromForAgent() string {
+func (a *Agent) ComefromForAgent() string {
 	if a == nil {
 		return comeFromUser
 	}

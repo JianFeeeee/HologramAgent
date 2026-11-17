@@ -523,18 +523,18 @@ func New(cfg AgentConfig) *Agent {
 
 	// ★ 授权事实声明给**安全模块**（用户裁定 2026-11-17）。
 	//   agent 只提供事实（谁被委派了什么），判定由安全模块做。
-	if g := a.gate(); g != nil {
+	if g := a.Gate(); g != nil {
 		g.DeclareOutputs(string(a.id), a.allowedOutputs)
 	}
 
 	// 变量库注入：context 的落盘前脱敏要用**本 agent** 的变量库，
-	// 而不是进程级单例（见 RelevanceContext.secretStore 的注释）。
-	if gate := a.gate(); gate != nil {
+	// 而不是进程级单例（见 RelevanceContext.SecretStore 的注释）。
+	if gate := a.Gate(); gate != nil {
 		if st := gate.Store(); st != nil {
 			if a.context != nil {
 				a.context.SetSecretStore(st)
 			}
-			if sh := a.mainState().stageHost; sh != nil {
+			if sh := a.MainState().stageHost; sh != nil {
 				sh.SetSecretStore(st)
 			}
 			// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
@@ -594,7 +594,7 @@ func (a *Agent) Stop() {
 	}
 	a.ReleaseSecurityScope()
 	// 授权事实也一起撤销（防同名重建继承旧授权，与主体策略同纪律）。
-	if g := a.gate(); g != nil {
+	if g := a.Gate(); g != nil {
 		g.ReleaseOutputs(string(a.id))
 	}
 	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse
@@ -616,7 +616,7 @@ func (a *Agent) drainPendingInterrupts(reason string) {
 		return
 	}
 	for _, evt := range pending {
-		a.emitSkippedReply(evt, reason)
+		a.EmitSkippedReply(evt, reason)
 	}
 	a.Logf("%s: shutting down, filled skipped terminal state for %d pending task(s)", a.id, len(pending))
 }
@@ -640,7 +640,7 @@ func graphMemoryOf(cfg AgentConfig) GraphMemory {
 // ★ 唯一事实源：`graph` 槽位。它可以是 GraphDB（主）、LightMemory（驻留/rt），
 //
 //	也可以是 nil（工作式子 / 独立工具）—— 用户原话「图记忆是可选配置」。
-func (a *Agent) graphMem() GraphMemory {
+func (a *Agent) GraphMem() GraphMemory {
 	if a == nil {
 		return nil
 	}
@@ -651,7 +651,7 @@ func (a *Agent) graphMem() GraphMemory {
 //
 // 只有真正的图库满足它（LightMemory 不满足 ⇒ 驻留子的整理面全部不可达，
 // 这是设计意图：轻量内核不该有那些代码路径）。
-func (a *Agent) graphDB() kernelapi.GraphMemory {
+func (a *Agent) GraphDB() kernelapi.GraphMemory {
 	if a == nil {
 		return nil
 	}
@@ -714,7 +714,7 @@ func (a *Agent) IsOutputAllowed(channel string) bool {
 	// ★ 无 ID 的 agent（判据里的匿名构造）无法在安全模块的按-agentID 表里
 	//   定位，因此退回本地事实比较 —— 否则会落到"未声明 ⇒ 放行"，把
 	//   白名单判据变成假绿（实测：`TestOutputAllowlist` 先撞这个）。
-	if g := a.gate(); g != nil && a.id != "" {
+	if g := a.Gate(); g != nil && a.id != "" {
 		return g.CheckOutput(string(a.id), channel).Allowed
 	}
 	// 未装配闸门 / 无身份：退回本地事实，与改造前行为一致。
@@ -774,7 +774,7 @@ func (a *Agent) SelfInputChan() <-chan selfInputMsg {
 
 // injectSelf 向自循环通道发送记忆整理类内部任务（无记忆路径）。
 // 线程安全，不阻塞发送者（通道缓冲 64）。
-func (a *Agent) injectSelf(task string) {
+func (a *Agent) InjectSelf(task string) {
 	a.injectSelfChannel(selfInputMsg{
 		text:    task,
 		channel: channelConsolidation,
@@ -802,7 +802,7 @@ func (a *Agent) injectSelfChannel(msg selfInputMsg) {
 //	    ToolRunner:    kit.SynchronousRunner{},
 //	    RunStage:      kit.StageRunner,
 //	    GraphMemory:   db,                       // 可选记忆
-//	    SecurityGate:  gate,
+//	    SecurityGate:  Gate,
 //	})
 //	if err := base.Validate(); err != nil { … }   // 缺槽位 ⇒ 装配期失败
 //

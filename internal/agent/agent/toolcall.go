@@ -37,10 +37,10 @@ const (
 // 不静默接受：写错单位（如 "130" 少了 s）是最容易犯的错，
 // 让它默默变成 60s 会让人以为"声明没生效"却查不出原因。
 func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{}) time.Duration {
-	if a.mainState().stageHost == nil {
+	if a.MainState().stageHost == nil {
 		return defaultToolTimeout
 	}
-	def := a.mainState().stageHost.ToolDef(toolName)
+	def := a.MainState().stageHost.ToolDef(toolName)
 	if def == nil {
 		// 内置工具（output_send__* 等）不在 StageHost 里 —— 走内置表。
 		def = &sdk.ToolDef{}
@@ -86,10 +86,10 @@ func (a *Agent) resolveToolTimeout(toolName string, args map[string]interface{})
 
 // resolveToolTimeoutDeclared 只取静态声明（保留给需要区分来源的调用方）。
 func (a *Agent) resolveToolTimeoutDeclared(toolName string) time.Duration {
-	if a.mainState().stageHost == nil {
+	if a.MainState().stageHost == nil {
 		return defaultToolTimeout
 	}
-	def := a.mainState().stageHost.ToolDef(toolName)
+	def := a.MainState().stageHost.ToolDef(toolName)
 	if def == nil || strings.TrimSpace(def.Timeout) == "" {
 		return defaultToolTimeout
 	}
@@ -148,7 +148,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 			a.Logf("tool %s panic: %v\n%s", tc.Name, r, stack)
 
 			if pluginName := a.resolveToolPlugin(tc.Name); pluginName != "" {
-				if a.mainState().pluginHealth.RecordCrash(pluginName) {
+				if a.MainState().pluginHealth.RecordCrash(pluginName) {
 					a.Logf("plugin %s exceeded crash threshold, scheduling reload", pluginName)
 				}
 			}
@@ -184,7 +184,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		// 设备授权拒绝、不存在、panic），逐个加必然漏。defer 是唯一
 		// 能覆盖全部分支的位置，且 panic 路径也一起覆盖。
 		if out.Text != "" {
-			if st := a.secretStore(); st != nil {
+			if st := a.SecretStore(); st != nil {
 				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, nil); len(evts) > 0 {
 					out.Text = clean
 					for _, e := range evts {
@@ -207,7 +207,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 			// 放在这个 defer 里而不是某个 return 前面：本函数有多个出口
 			// （插件工具/io 工具/授权拒绝/不存在/panic），defer 是唯一能覆盖
 			// 全部分支的位置（与上面出向脱敏同一理由）。
-			if findings := a.reviewToolResultContent(tc.Name, out.Text); len(findings) > 0 {
+			if findings := a.ReviewToolResultContent(tc.Name, out.Text); len(findings) > 0 {
 				out.Text = toolContentWarning + out.Text
 			}
 		}
@@ -231,8 +231,8 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 	// （实测 browser_start 被夹到 10m）会把整轮堵死，而停止只影响排队消息。
 	// 取消管道本身早已存在（ExecuteToolCtx → proc 桥发 call.cancel），
 	// 缺的只是「谁来调它」。
-	toolCancelID := a.registerToolCancel(cancel)
-	defer a.unregisterToolCancel(toolCancelID)
+	toolCancelID := a.RegisterToolCancel(cancel)
+	defer a.UnregisterToolCancel(toolCancelID)
 
 	done := make(chan toolOutcome, 1)
 	go func() {
@@ -306,7 +306,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	//
 	// 拒绝必须可执行（policy.go 的纪律）：模型据此能改路径或换工具，
 	// 而不是反复重试同一条被拒的调用。
-	if d := a.securityDecisionFor(tc.Name); !d.Allowed {
+	if d := a.SecurityDecisionFor(tc.Name); !d.Allowed {
 		log.Printf("[security] tool %s denied by policy: %s", tc.Name, d.Reason)
 		te := kit.NewToolError(kit.ErrReasonDenied, "", fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
 			"This tool is blocked by security policy. Do not retry it with the same or different arguments; use another tool or report back to the user.")
@@ -341,8 +341,8 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	//
 	// 未挂载 device 时（独立工具、单测、特殊装配）退化为下面的本地 switch，
 	// 行为不变 —— 两条路径的一致性由 device_dispatch_test.go 钉住。
-	if a.mainState().builtinHandlers != nil {
-		if text, handled := toolroute.Dispatch(a.mainState().builtinHandlers, tc, turnScenes); handled {
+	if a.MainState().builtinHandlers != nil {
+		if text, handled := toolroute.Dispatch(a.MainState().builtinHandlers, tc, turnScenes); handled {
 			return toolOutcome{Text: text}
 		}
 	}
@@ -367,29 +367,29 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	case tc.Name == "input_channels":
 		return toolOutcome{Text: a.executeInputChannels(tc)}
 	case tc.Name == "resident_agents":
-		return toolOutcome{Text: a.executeResidentAgents(tc)}
+		return toolOutcome{Text: a.ExecuteResidentAgents(tc)}
 	// ★ rt_transcript：rtchild 上下文交接的**拉取**入口（用户裁定 2026-10-30）。
 	// 交接协议是「推信号 + 拉状态」：回收时只推一条 L4（带条数），
 	// 正文由主 agent 用本工具按需取回并**自行选择**保留哪些。
 	case tc.Name == "rt_transcript":
-		return toolOutcome{Text: a.executeRTTranscript(tc)}
+		return toolOutcome{Text: a.ExecuteRTTranscript(tc)}
 	case tc.Name == "rt_children":
-		return toolOutcome{Text: a.executeRTChildren(tc)}
+		return toolOutcome{Text: a.ExecuteRTChildren(tc)}
 	case tc.Name == "notify_parent":
-		return toolOutcome{Text: a.executeNotifyParent(tc)}
+		return toolOutcome{Text: a.ExecuteNotifyParent(tc)}
 	case tc.Name == "inputch_note":
-		return toolOutcome{Text: a.executeInputchNote(tc)}
+		return toolOutcome{Text: a.ExecuteInputchNote(tc)}
 	case tc.Name == "plgreload":
 		return toolOutcome{Text: a.executePluginReload()}
 	case tc.Name == "get_plugin_tools":
 		pluginName, _ := tc.Arguments["plugin_name"].(string)
 		return toolOutcome{Text: a.executeGetPluginTools(pluginName)}
 	case tc.Name == "spawn_child":
-		return toolOutcome{Text: a.executeSpawnChild(tc, channel)}
+		return toolOutcome{Text: a.ExecuteSpawnChild(tc, channel)}
 	case tc.Name == "child_result":
-		return toolOutcome{Text: a.executeChildResultTool(tc)}
+		return toolOutcome{Text: a.ExecuteChildResultTool(tc)}
 	case strings.HasPrefix(tc.Name, "llm_"):
-		return toolOutcome{Text: a.executeLLMTool(tc)}
+		return toolOutcome{Text: a.ExecuteLLMTool(tc)}
 	case strings.HasPrefix(tc.Name, "secret_"):
 		return toolOutcome{Text: a.executeSecretTool(tc)}
 		// ★★ 2026-10-06：describe_image / transcribe_audio / ocr_image 已移出内核，
@@ -399,8 +399,8 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		//   会落到 stageHost.ExecuteTool，正是插件工具的正常路径。
 	}
 
-	if a.mainState().stageHost != nil {
-		if result, err := a.mainState().stageHost.ExecuteToolCtx(ctx, tc.Name, tc.Arguments); err == nil {
+	if a.MainState().stageHost != nil {
+		if result, err := a.MainState().stageHost.ExecuteToolCtx(ctx, tc.Name, tc.Arguments); err == nil {
 			// Raw 必须带上：否则结构化失败（{"error":…} / ToolError）在这一步被抹平成文本，
 			// Success 又会退回恒真——正是阶段 1b 要修的那个洞。
 			return toolOutcome{Text: kit.RenderToolResult(tc.Name, result), Raw: result}
@@ -423,12 +423,12 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		}
 	}
 
-	if a.mainState().tracker != nil {
-		a.mainState().tracker.PreActionView(tc.Name)
+	if a.MainState().tracker != nil {
+		a.MainState().tracker.PreActionView(tc.Name)
 	}
 	result, err := a.io.ExecuteTool(tc.Name, tc.Arguments)
-	if a.mainState().tracker != nil {
-		if cs := a.mainState().tracker.PostActionView(tc.Name); cs != nil && len(cs.Files) > 0 {
+	if a.MainState().tracker != nil {
+		if cs := a.MainState().tracker.PostActionView(tc.Name); cs != nil && len(cs.Files) > 0 {
 			a.Logf("tool %s changed %d files (changeset: %s)", tc.Name, len(cs.Files), tc.Name)
 		}
 	}
@@ -467,7 +467,7 @@ func toolNotFound(name string) error { return agentIO.ToolNotFound(name) }
 func isToolNotFound(err error) bool { return agentIO.IsToolNotFound(err) }
 
 func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) string {
-	g := a.graphMem()
+	g := a.GraphMem()
 	if g == nil {
 		// ★ 此处曾有 `if tc.Name == "memory_document_query" { return a.executeDocTool(tc) }`
 		// （2026-10-29 删除）。它是改名前的残留：文档类工具早已改叫
@@ -479,7 +479,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 	// 整理类工具需要**完整内核**的记忆整理面（块/媒体/结构操作）。
 	// 轻量内核（驻留子）只有图记忆共同面 ⇒ 这些操作明确不可用，不静默降级。
 	requireFull := func() string {
-		if a.graphDB() == nil {
+		if a.GraphDB() == nil {
 			return "this agent is a lightweight kernel: it can read and write stable memory, but maintenance (merge/delete/purge/edit/stats) is unavailable"
 		}
 		return ""
@@ -537,12 +537,12 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if len(result.Entities) == 0 && len(result.Relations) == 0 {
 			return "no relevant memory found"
 		}
-		if a.mainState().indexer != nil {
+		if a.MainState().indexer != nil {
 			names := make([]string, len(result.Entities))
 			for i, e := range result.Entities {
 				names[i] = e.Name
 			}
-			a.mainState().indexer.MarkRecalled(names...)
+			a.MainState().indexer.MarkRecalled(names...)
 		}
 		var parts []string
 		parts = append(parts, fmt.Sprintf("Found %d related entities (sorted by %s):", len(result.Entities), sortLabel(sortMode)))
@@ -587,9 +587,9 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			entityA, entityB = entityB, entityA
 		}
 		key := entityA + "||" + entityB
-		a.mainState().noMergeMu.Lock()
-		a.mainState().noMergeMarkers[key] = int(rounds)
-		a.mainState().noMergeMu.Unlock()
+		a.MainState().noMergeMu.Lock()
+		a.MainState().noMergeMarkers[key] = int(rounds)
+		a.MainState().noMergeMu.Unlock()
 		return fmt.Sprintf("Marked \"%s\" and \"%s\" as not-mergeable for %d rounds", entityA, entityB, int(rounds))
 
 	case "stablemem_commit":
@@ -652,11 +652,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//
 		// 旧表双写已停 ⇒ Commit 的 ec/rc 恒为 0，
 		// 拿它们判断「有没有写进去」会**永远判成没写进去**。
-		blocksBefore, err := a.graphDB().MemoryBlockCount()
+		blocksBefore, err := a.GraphDB().MemoryBlockCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
-		edgesBefore, err := a.graphDB().MemoryEdgeCount()
+		edgesBefore, err := a.GraphDB().MemoryEdgeCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
@@ -669,11 +669,11 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
-		blocksAfter, err := a.graphDB().MemoryBlockCount()
+		blocksAfter, err := a.GraphDB().MemoryBlockCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
-		edgesAfter, err := a.graphDB().MemoryEdgeCount()
+		edgesAfter, err := a.GraphDB().MemoryEdgeCount()
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
@@ -728,7 +728,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if msg := requireFull(); msg != "" {
 			return msg
 		}
-		stats, err := a.graphDB().Introspect()
+		stats, err := a.GraphDB().Introspect()
 		if err != nil {
 			return fmt.Sprintf("query failed: %v", err)
 		}
@@ -743,7 +743,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if source == "" || target == "" {
 			return "source and target are required"
 		}
-		count, err := a.graphDB().MergeEntities(source, target)
+		count, err := a.GraphDB().MergeEntities(source, target)
 		if err != nil {
 			return fmt.Sprintf("merge failed: %v", err)
 		}
@@ -757,7 +757,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if name == "" {
 			return "name is required"
 		}
-		res, err := a.graphDB().DeleteEntity(name)
+		res, err := a.GraphDB().DeleteEntity(name)
 		if err != nil {
 			return fmt.Sprintf("delete failed: %v", err)
 		}
@@ -790,15 +790,15 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if mode == "" {
 			mode = "soft"
 		}
-		n, err := a.graphDB().Purge(criteria, mode)
+		n, err := a.GraphDB().Purge(criteria, mode)
 		if err != nil {
 			return fmt.Sprintf("stable memory delete failed: %v", err)
 		}
 
 		textRemoved := 0
-		if a.mainState().textMem != nil {
+		if a.MainState().textMem != nil {
 			if subj, ok := criteria["subject_contains"]; ok && subj != "" {
-				textRemoved, _ = a.mainState().textMem.PurgeByFilter(func(evt text.Event) bool {
+				textRemoved, _ = a.MainState().textMem.PurgeByFilter(func(evt text.Event) bool {
 					return strings.Contains(evt.Source, subj) || strings.Contains(evt.Input, subj) || strings.Contains(evt.Response, subj)
 				})
 			}
@@ -840,15 +840,15 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		// 而且没有任何日志——这类「静默降级」比报错难查得多。
 		var carriedConf float64
 		var carriedSentence, carriedScene string
-		if olds, ferr := a.graphDB().FindRelations(oldSubject, oldRelation, oldObject); ferr == nil && len(olds) > 0 {
+		if olds, ferr := a.GraphDB().FindRelations(oldSubject, oldRelation, oldObject); ferr == nil && len(olds) > 0 {
 			carriedConf = olds[0].Confidence
 			carriedSentence = olds[0].SentenceText
-			if keys, serr := a.graphDB().ScenesOfRelation(olds[0].ID); serr == nil && len(keys) > 0 {
+			if keys, serr := a.GraphDB().ScenesOfRelation(olds[0].ID); serr == nil && len(keys) > 0 {
 				carriedScene = keys[0]
 			}
 		}
 
-		n, err := a.graphDB().Purge(map[string]string{
+		n, err := a.GraphDB().Purge(map[string]string{
 			"subject_contains": oldSubject,
 			"relation_type":    oldRelation,
 			"target_contains":  oldObject,
@@ -864,14 +864,14 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 			SentenceText: carriedSentence,
 			Scene:        carriedScene,
 		}}
-		ec, rc, err := a.graphDB().Commit(triples, string(a.id), 0)
+		ec, rc, err := a.GraphDB().Commit(triples, string(a.id), 0)
 		if err != nil {
 			return fmt.Sprintf("stable memory edit failed (writing new record): %v", err)
 		}
 
 		textReplaced := 0
-		if a.mainState().textMem != nil && oldSubject != "" {
-			textReplaced, _ = a.mainState().textMem.ReplaceByFilter(
+		if a.MainState().textMem != nil && oldSubject != "" {
+			textReplaced, _ = a.MainState().textMem.ReplaceByFilter(
 				func(evt text.Event) bool {
 					return strings.Contains(evt.Input, oldSubject) || strings.Contains(evt.Response, oldSubject)
 				},
@@ -894,7 +894,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 }
 
 func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
-	if a.mainState().social == nil {
+	if a.MainState().social == nil {
 		return "social graph is unavailable (social store not initialized)"
 	}
 	switch tc.Name {
@@ -903,7 +903,7 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 		if name == "" {
 			return "person name is required"
 		}
-		profile, err := a.mainState().social.GetPerson(name)
+		profile, err := a.MainState().social.GetPerson(name)
 		if err != nil {
 			return fmt.Sprintf("person lookup failed: %v", err)
 		}
@@ -933,7 +933,7 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 		if name == "" || trait == "" || value == "" {
 			return "name, trait and value are required"
 		}
-		if err := a.mainState().social.SetTrait(name, trait, value); err != nil {
+		if err := a.MainState().social.SetTrait(name, trait, value); err != nil {
 			return fmt.Sprintf("setting trait failed: %v", err)
 		}
 		return fmt.Sprintf("Recorded: %s %s = %s", name, trait, value)
@@ -945,7 +945,7 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 		if personA == "" || relation == "" || personB == "" {
 			return "person_a, relation and person_b are required"
 		}
-		if err := a.mainState().social.AddRelation(personA, relation, personB); err != nil {
+		if err := a.MainState().social.AddRelation(personA, relation, personB); err != nil {
 			return fmt.Sprintf("creating relation failed: %v", err)
 		}
 		return fmt.Sprintf("Recorded: %s —(%s)—→ %s", personA, relation, personB)
@@ -959,7 +959,7 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 		if name == "" {
 			return "person name is required"
 		}
-		profiles, err := a.mainState().social.GetNetwork(name, depth)
+		profiles, err := a.MainState().social.GetNetwork(name, depth)
 		if err != nil {
 			return fmt.Sprintf("social network query failed: %v", err)
 		}
@@ -995,12 +995,12 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 // 模型偶尔会把 ID 记错，不该让整次写入失败。MIME 从块回读，嵌入时需要
 // （EmbedImageDense 靠它判定模态）。字节随条目落盘（writeMediaFiles）。
 func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef {
-	if a.graphDB() == nil || len(refs) == 0 {
+	if a.GraphDB() == nil || len(refs) == 0 {
 		return nil
 	}
 	var out []knowledge.KnowledgeMediaRef
 	for _, r := range refs {
-		b, ok, err := a.graphDB().BlockByIDPrefix(r)
+		b, ok, err := a.GraphDB().BlockByIDPrefix(r)
 		if err != nil || !ok {
 			log.Printf("[knowledge] media block ref %s could not be resolved uniquely, skipping", r)
 			continue
@@ -1016,7 +1016,7 @@ func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef 
 }
 
 func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
-	if a.mainState().knowledge == nil {
+	if a.MainState().knowledge == nil {
 		return "knowledge base is unavailable"
 	}
 	switch tc.Name {
@@ -1032,7 +1032,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 		// 可选分类限定：把召回限制在某棵分类子树内（前缀匹配，见
 		// knowledge.Store.SearchIn）。不传 = 全库。
 		category, _ := tc.Arguments["category"].(string)
-		results := a.mainState().knowledge.SearchIn(query, category, topK)
+		results := a.MainState().knowledge.SearchIn(query, category, topK)
 		if len(results) == 0 {
 			return "no relevant knowledge found"
 		}
@@ -1057,7 +1057,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 		// 这些媒体成为知识条目的一等节点：其向量会与正文向量融合，
 		// 使该条目能按图本身被召回，而不依赖任何生成的描述文本。
 		media := a.knowledgeMediaRefs(getStringSlice(tc.Arguments, "media_digests"))
-		if err := a.mainState().knowledge.AddWithMedia(name, content, media); err != nil {
+		if err := a.MainState().knowledge.AddWithMedia(name, content, media); err != nil {
 			return fmt.Sprintf("knowledge create failed: %v", err)
 		}
 		if len(media) > 0 {
@@ -1066,7 +1066,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 		return fmt.Sprintf("Knowledge \"%s\" created and indexed (%d chars)", name, len(content))
 
 	case "knowledge_list":
-		tree := a.mainState().knowledge.BuildTree()
+		tree := a.MainState().knowledge.BuildTree()
 		return formatTree(tree, 0)
 
 	case "knowledge_import_dir":
@@ -1082,7 +1082,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 		if b, ok := getBool(tc.Arguments, "include_media"); ok {
 			includeMedia = b
 		}
-		st, err := a.mainState().knowledge.ImportDir(knowledge.ImportOptions{
+		st, err := a.MainState().knowledge.ImportDir(knowledge.ImportOptions{
 			Dir:          dir,
 			Category:     category,
 			DryRun:       dryRun,
@@ -1134,7 +1134,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 		if name == "" {
 			return "name is required"
 		}
-		if err := a.mainState().knowledge.Remove(name); err != nil {
+		if err := a.MainState().knowledge.Remove(name); err != nil {
 			return fmt.Sprintf("knowledge delete failed: %v", err)
 		}
 		return fmt.Sprintf("Knowledge \"%s\" deleted", name)
@@ -1145,7 +1145,7 @@ func (a *Agent) executeKnowledgeTool(tc agentAPI.ToolCall) string {
 }
 
 func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
-	if a.mainState().coldcontextStore == nil {
+	if a.MainState().coldcontextStore == nil {
 		return "cold context is unavailable"
 	}
 	switch tc.Name {
@@ -1167,7 +1167,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		//
 		// 现在：Peek → 逐条回灌 → 该条落进 L1 才 Remove 它。
 		// 失败的那条**留着**，下次还能再取（宁可重复回忆，不可静默丢失）。
-		docs := a.mainState().coldcontextStore.Peek(query, topK)
+		docs := a.MainState().coldcontextStore.Peek(query, topK)
 		if len(docs) == 0 {
 			return "no relevant cold context found"
 		}
@@ -1235,7 +1235,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 
 			// ② 确认：只有**真的落进 L1** 才删 L2 副本。
 			if restored {
-				a.mainState().coldcontextStore.Remove(d.ID)
+				a.MainState().coldcontextStore.Remove(d.ID)
 			} else {
 				kept++
 				log.Printf("[coldcontext] doc %s not restored (%d events), keeping L2 copy for retry", d.ID, n)
@@ -1281,12 +1281,12 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		// 不再往正文写 marker——文档向量会融合这些块的媒体向量，
 		// 图片按自己的向量被检索。值是块 ID（或其唯一前缀）。
 		for _, ref := range a.resolveMediaRefs(getStringSlice(tc.Arguments, "media_digests")) {
-			if b, ok, err := a.graphDB().BlockByIDPrefix(ref); err == nil && ok {
+			if b, ok, err := a.GraphDB().BlockByIDPrefix(ref); err == nil && ok {
 				doc.Blocks = append(doc.Blocks, b)
 			}
 		}
 
-		if err := a.mainState().coldcontextStore.Insert(doc); err != nil {
+		if err := a.MainState().coldcontextStore.Insert(doc); err != nil {
 			return fmt.Sprintf("cold context write failed: %v", err)
 		}
 		if n := len(doc.Blocks); n > 0 {
@@ -1312,13 +1312,13 @@ func sortLabel(m memory.SortMode) string {
 // 返回空串让调用方无缝退回符号路 —— 这保证了「向量侧没配好」不会让
 // memory_recall 整体失败（那会让模型完全失去记忆，比召回差得多）。
 func (a *Agent) recallByBlocks(query string) string {
-	if a == nil || a.graphDB() == nil || a.mainState().multimodalSpace == nil {
+	if a == nil || a.GraphDB() == nil || a.MainState().multimodalSpace == nil {
 		return ""
 	}
-	if !a.mainState().multimodalSpace.Loaded() {
+	if !a.MainState().multimodalSpace.Loaded() {
 		return ""
 	}
-	vec, err := a.mainState().multimodalSpace.VectorizeDense(query)
+	vec, err := a.MainState().multimodalSpace.VectorizeDense(query)
 	if err != nil || len(vec) == 0 {
 		// 向量化失败不报错到工具层：符号路仍可用，而这条失败通常意味着
 		// 模型未加载/超时，报给模型只会让它以为"记忆不存在"。
@@ -1359,10 +1359,10 @@ func (a *Agent) recallByBlocks(query string) string {
 	// ⇒ 向量却仍给 0.84+ 的高分（grafana/kafka/容灾演练 三类都是）。
 	// 先召回再判断的话，看到的是一堆高分块 ——
 	// 而「分数高」本身不能证明相关。
-	hits, abstain, arb, err := a.graphDB().RecallBlocksGuarded(
+	hits, abstain, arb, err := a.GraphDB().RecallBlocksGuarded(
 		memory.BlockRecallQuery{
 			Vector:      vec,
-			Fingerprint: a.mainState().multimodalSpace.Fingerprint(),
+			Fingerprint: a.MainState().multimodalSpace.Fingerprint(),
 			TopK:        blockRecallTopK,
 			// ★ MinScore 保留：融合内部按路应用（只约束纯向量那一路，
 			//   精确串/纯符号命中不受它约束）。曾误传 0 让噪声过滤失效，
@@ -1449,13 +1449,13 @@ const (
 //	隔离的语义是「只信任当前空间写入的块」，
 //	判据必须来自**空间对象**而不是库 —— 库只能说明过去，不能说明现在。
 func (a *Agent) currentFingerprint() string {
-	if a == nil || a.mainState().multimodalSpace == nil {
+	if a == nil || a.MainState().multimodalSpace == nil {
 		return ""
 	}
-	if !a.mainState().multimodalSpace.Loaded() {
+	if !a.MainState().multimodalSpace.Loaded() {
 		return ""
 	}
-	return a.mainState().multimodalSpace.Fingerprint()
+	return a.MainState().multimodalSpace.Fingerprint()
 }
 
 // restoreDocEvents 把一篇 L2 文档的原始事件**逐条按原时间戳迁回 L1**。

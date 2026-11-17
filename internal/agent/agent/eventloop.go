@@ -131,7 +131,7 @@ func (a *Agent) cancelCurrentLLM() {
 //
 // 并发：工具执行在 schedulerLoop 的 goroutine（可能多个并发），停止指令在
 // interceptLoop 的 goroutine ⇒ 必须走 toolMu。
-func (a *Agent) registerToolCancel(cancel context.CancelFunc) uint64 {
+func (a *Agent) RegisterToolCancel(cancel context.CancelFunc) uint64 {
 	a.toolMu.Lock()
 	defer a.toolMu.Unlock()
 	a.toolSeq++
@@ -144,7 +144,7 @@ func (a *Agent) registerToolCancel(cancel context.CancelFunc) uint64 {
 }
 
 // unregisterToolCancel 注销一次工具调用（正常返回与超时路径都要调）。
-func (a *Agent) unregisterToolCancel(id uint64) {
+func (a *Agent) UnregisterToolCancel(id uint64) {
 	a.toolMu.Lock()
 	delete(a.cancelTools, id)
 	a.toolMu.Unlock()
@@ -256,7 +256,7 @@ type inputPayload struct {
 //
 // 第 2 种此前无处可去：注入方把块放进 payload，而文本路径不看这个键，
 // 于是插件注入的媒体到 payload 就断了，且不报错。
-func (a *Agent) resolveInput(evt *agentIO.InputEvent) (inputPayload, bool) {
+func (a *Agent) ResolveInput(evt *agentIO.InputEvent) (inputPayload, bool) {
 	switch evt.Type {
 	case "image", "audio":
 		blocks, alt := a.mediaToBlocks(evt.Payload, evt.Type, evt.Source)
@@ -351,7 +351,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 	desc := ""
 	switch mediaType {
 	case "image":
-		desc = a.mainState().inputCfg.Image.DescribePrompt
+		desc = a.MainState().inputCfg.Image.DescribePrompt
 		if desc == "" {
 			// ★★ 2026-10-06：原文写的是「请使用 describe_image 工具查看详情」，
 			// 但下面已经**内联**了 image_url block —— 模型直接能看。
@@ -361,7 +361,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 			desc = fmt.Sprintf("An image arrived from %s (attached to this message; look at it directly).", source)
 		}
 	case "audio":
-		desc = a.mainState().inputCfg.Audio.DescribePrompt
+		desc = a.MainState().inputCfg.Audio.DescribePrompt
 		if desc == "" {
 			// 同上：audio_url block 已内联。不要指示调 transcribe_audio
 			// （它现在需要 path/digest）；若模型本身不处理音频，
@@ -409,7 +409,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 // 现在至少留一条带来源与通道的日志，让“这条消息为什么没回”可被追溯。
 //
 // 非阻塞写：ResponseCh 由同步调用方以 cap=1 创建，调用方超时离开后仍可写入。
-func (a *Agent) emitSkippedReply(evt *agentIO.InputEvent, reason string) {
+func (a *Agent) EmitSkippedReply(evt *agentIO.InputEvent, reason string) {
 	if evt == nil {
 		return
 	}
@@ -455,7 +455,7 @@ func (a *Agent) emitSkippedReply(evt *agentIO.InputEvent, reason string) {
 // 口径：按 OpenAI 语义报**本次请求**（turnUsage），不是会话累计 ——
 // 会话累计在链事件里的 usage_session（见 task.go 的记账处），两者不可互换，
 // 否则第二次请求会报出翻倍的数字。
-func (a *Agent) emitResponse(evt *agentIO.InputEvent, response string, turnUsage agentAPI.TokenUsage) {
+func (a *Agent) EmitResponse(evt *agentIO.InputEvent, response string, turnUsage agentAPI.TokenUsage) {
 	// 通道一律从**输入事件**推导（内核不持有"当前通道"）。
 	ch := outputChannelOf(evt)
 	stageCtx := &sdk.StageContext{
@@ -563,7 +563,7 @@ func (a *Agent) emitResponse(evt *agentIO.InputEvent, response string, turnUsage
 // 原始输入里的 ANSI/base64/JSON 包装会把相关性打分带偏，裁掉本该保留的事件。
 //
 // 实际执行交由 memoryPass（与召回共用入口、query、预算与审计）。
-func (a *Agent) pruneOnInput(evt *agentIO.InputEvent, cleanInput string) int {
+func (a *Agent) PruneOnInput(evt *agentIO.InputEvent, cleanInput string) int {
 	if !a.pruneDeclared(evt) {
 		return 0
 	}
@@ -594,7 +594,7 @@ func (a *Agent) pruneDeclared(evt *agentIO.InputEvent) bool {
 // 默认值与 prune 刻意相反：召回是只读增量、日常对话本就需要，所以**默认 auto**；
 // 只有显式声明 recall_policy=none（如中断通知的 meta 文本）才关闭。
 // 优先级同 prune：注入点（payload）> 通道（ChannelDef）> 默认 auto。
-func (a *Agent) recallDeclared(evt *agentIO.InputEvent) bool {
+func (a *Agent) RecallDeclared(evt *agentIO.InputEvent) bool {
 	if evt == nil {
 		return true
 	}

@@ -88,8 +88,8 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 
 	// ---- 文本路 ----
 	var textHits []CrossModalHit
-	if a.mainState().coldcontextStore != nil {
-		for _, dh := range a.mainState().coldcontextStore.QueryScored(query, per) {
+	if a.MainState().coldcontextStore != nil {
+		for _, dh := range a.MainState().coldcontextStore.QueryScored(query, per) {
 			hit := CrossModalHit{Doc: dh.Doc, DocScore: dh.Score}
 			// 命中文档若持有一等记忆块，把首个媒体块一并带上（用于双命中标记）。
 			for i := range dh.Doc.Blocks {
@@ -105,13 +105,13 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 
 	// ---- 视觉路（多模态文本编码 → 媒体块自己的向量）----
 	var visualHits []CrossModalHit
-	if a.mainState().multimodalSpace != nil && a.mainState().multimodalSpace.Loaded() && a.graphDB() != nil {
-		qv, err := a.mainState().multimodalSpace.VectorizeDense(query)
+	if a.MainState().multimodalSpace != nil && a.MainState().multimodalSpace.Loaded() && a.GraphDB() != nil {
+		qv, err := a.MainState().multimodalSpace.VectorizeDense(query)
 		if err != nil {
 			log.Printf("[crossmodal] multimodal text encoding failed: %v", err)
-		} else if hits, err := a.graphDB().RecallBlocks(memory.BlockRecallQuery{
+		} else if hits, err := a.GraphDB().RecallBlocks(memory.BlockRecallQuery{
 			Vector:      qv,
-			Fingerprint: a.mainState().multimodalSpace.Fingerprint(),
+			Fingerprint: a.MainState().multimodalSpace.Fingerprint(),
 			TopK:        per,
 			// ★ ExcludeText 必须传：视觉路要的是**媒体块**。
 			//

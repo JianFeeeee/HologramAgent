@@ -498,7 +498,7 @@ type SchedulerSnapshot struct {
 }
 
 // schedulerStatus 把快照转成对外的状态 DTO（不暴露帧内容）。
-func (a *Agent) schedulerStatus() sdk.SchedulerStatus {
+func (a *Agent) SchedulerStatus() sdk.SchedulerStatus {
 	if a.sched == nil {
 		return sdk.SchedulerStatus{}
 	}
@@ -1140,7 +1140,7 @@ func (a *Agent) isKernelLevelSource(source string) bool {
 		name = name[:i]
 	}
 	// ① 编译期内置插件（根 agent 的 L4 来源之一）。
-	if a.mainState().pluginReg != nil && a.mainState().pluginReg.IsBuiltinPlugin(name) {
+	if a.MainState().pluginReg != nil && a.MainState().pluginReg.IsBuiltinPlugin(name) {
 		return true
 	}
 	// ② **本 agent 的上级**（驻留子的父）—— 设计 §6.1 的 L4 通则：
@@ -1274,7 +1274,7 @@ func (a *Agent) schedulerLoop() {
 			select {
 			case evt := <-a.io.InputChan():
 				if !a.sched.enqueue(newInputTask(evt)) {
-					a.emitSkippedReply(evt, "queue_full")
+					a.EmitSkippedReply(evt, "queue_full")
 				}
 			case msg := <-a.selfInputCh:
 				_ = a.sched.enqueue(newSelfTask(msg))
@@ -1336,7 +1336,7 @@ func (a *Agent) pumpInbox() {
 			// 返回值必须处理：静默丢弃会让同步调用方永久挂起（回执路径 E）。
 			if !a.sched.enqueue(newInputTask(evt)) {
 				a.sched.noteBackpressure()
-				a.emitSkippedReply(evt, "queue_full")
+				a.EmitSkippedReply(evt, "queue_full")
 			}
 		case msg := <-a.selfInputCh:
 			// 自循环输入没有同步调用方，满时记一次背压即可。
@@ -1407,7 +1407,7 @@ func (a *Agent) raiseKernelInterruptAt(source, channel, text string, level Level
 func (a *Agent) reportTaskPanic(t *Task, r interface{}) {
 	// 递归保护（"L4 panic 不再产生 L4"）已收进向量表的 Guard，
 	// 不再硬编码在这里——新增中断源时不会漏掉这条规则。
-	a.raiseVector(VectorTaskPanic, vectorArgs{Task: t, Panic: r})
+	a.RaiseVector(VectorTaskPanic, vectorArgs{Task: t, Panic: r})
 }
 
 func (a *Agent) executeTask(t *Task) {

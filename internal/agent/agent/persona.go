@@ -27,13 +27,13 @@ type PersonaStore interface {
 // 成功即打一次性标记 → 之后 buildSystemPrompt 不再要求模型询问人格。
 // custom 模式返回「需重启生效」：人格在 homed 启动时载入。
 func (a *Agent) executePersonaTool(tc agentAPI.ToolCall) string {
-	if a.mainState().personaStore == nil {
+	if a.MainState().personaStore == nil {
 		return "人格设定不可用：内核未接入配置"
 	}
 	mode, _ := tc.Arguments["mode"].(string)
 	content, _ := tc.Arguments["content"].(string)
 	mode = strings.TrimSpace(mode)
-	restart, err := a.mainState().personaStore.SetPersona(mode, content)
+	restart, err := a.MainState().personaStore.SetPersona(mode, content)
 	if err != nil {
 		return fmt.Sprintf("人格设定失败：%v", err)
 	}

@@ -48,7 +48,7 @@ import (
 // 基座不认识安全模块的实现类型，只经 kernelapi 的接口调用。
 // 语义上"未启用"不是 nil —— 装配点会装 Disabled Runtime（判定零成本透传）。
 // nil 只在单测/独立工具里出现（它们不跑整机装配）。
-func (a *Agent) gate() kernelapi.SecurityGate {
+func (a *Agent) Gate() kernelapi.SecurityGate {
 	if a == nil {
 		return nil
 	}
@@ -64,8 +64,8 @@ func (a *Agent) gate() kernelapi.SecurityGate {
 // ★ 为什么由 agent 调而不是 io 层调：轮次的生命周期由 agent 的
 // `prepareInputTask` 界定（那里才知道一条输入何时真正开始/结束）。
 // security 不依赖 agent，所以只能由 agent 主动把边界告诉它。
-func (a *Agent) beginSecurityRound(payload map[string]interface{}, source string) kernelapi.SecurityRound {
-	g := a.gate()
+func (a *Agent) BeginSecurityRound(payload map[string]interface{}, source string) kernelapi.SecurityRound {
+	g := a.Gate()
 	if g == nil {
 		return nil
 	}
@@ -109,8 +109,8 @@ func (a *Agent) securityRoundDegraded(err error) {
 // 而那里只持有 `*Agent`、不持有轮次句柄。走 security 的**默认轮次**
 // （按 `AgentID` + 有无父自动分类）等价于原来“父/子分流”的行为，
 // 但语义只写在 security 一处。
-func (a *Agent) securityDecisionFor(tool string) model.Decision {
-	if a.gate() == nil {
+func (a *Agent) SecurityDecisionFor(tool string) model.Decision {
+	if a.Gate() == nil {
 		// 未装配（单测/独立工具）：放行。生产装配由 Validate 拦住缺闸门的情形。
 		return model.Decision{Allowed: true}
 	}
@@ -126,7 +126,7 @@ func (a *Agent) securityDecisionFor(tool string) model.Decision {
 // 为什么要缓存：`ForAgent` 是幂等的，但每条输入/每次工具调用都取一次会
 // 反复加锁；而视图本身在整个 agent 生命周期内不变。
 func (a *Agent) securityScope() kernelapi.SecurityScope {
-	g := a.gate()
+	g := a.Gate()
 	if g == nil {
 		return nil
 	}
@@ -142,7 +142,7 @@ func (a *Agent) securityScope() kernelapi.SecurityScope {
 // agent/子 agent 回收后同名重建是常规操作，残留的 long-time 档会让
 // 新一代继承上一代父留的约束 —— 与 `RevokePrincipalPolicy` 同一纪律。
 func (a *Agent) ReleaseSecurityScope() {
-	if g := a.gate(); g != nil {
+	if g := a.Gate(); g != nil {
 		g.ReleaseAgent(string(a.id))
 	}
 }
@@ -152,7 +152,7 @@ func (a *Agent) ReleaseSecurityScope() {
 // 这里只做转发：策略结构的组装与作用域落点由 security 负责
 // （`security.DeclareChildPolicy`）。
 func (a *Agent) declareChildPolicy(childID string, allow, deny []string) error {
-	g := a.gate()
+	g := a.Gate()
 	if g == nil {
 		return nil
 	}
@@ -161,7 +161,7 @@ func (a *Agent) declareChildPolicy(childID string, allow, deny []string) error {
 
 // revokeChildPolicy 在子执行体销毁时撤销父为它声明的策略。
 func (a *Agent) revokeChildPolicy(childID string) {
-	if g := a.gate(); g != nil {
+	if g := a.Gate(); g != nil {
 		g.RevokeChildPolicy(childID)
 	}
 }
@@ -205,14 +205,14 @@ func (a *Agent) SetSecurity(g kernelapi.SecurityGate) {
 
 // ProbeSecurityRuntime 返回本 agent 持有的安全运行时（判据用）。
 func (a *Agent) ProbeSecurityRuntime() kernelapi.SecurityGate {
-	return a.gate()
+	return a.Gate()
 }
 
 // ProbeSecurityDecision 判定工具可用性（判据用）。
 //
 // 它走的就是生产路径（securityDecisionFor），不是另写一份逻辑。
 func (a *Agent) ProbeSecurityDecision(tool string) model.Decision {
-	return a.securityDecisionFor(tool)
+	return a.SecurityDecisionFor(tool)
 }
 
 // ProbeSecurityRound 按真实输入路径开一轮，返回句柄（判据用）。
@@ -220,7 +220,7 @@ func (a *Agent) ProbeSecurityDecision(tool string) model.Decision {
 // 判据用它验证「档位由 security 自己从 payload 解析」这条链真的通了，
 // 而不需要直接调 security 的内部方法。
 func (a *Agent) ProbeSecurityRound(payload map[string]interface{}, source string) kernelapi.SecurityRound {
-	return a.beginSecurityRound(payload, source)
+	return a.BeginSecurityRound(payload, source)
 }
 
 // ProbeDeclareChildPolicy 是 declareChildPolicy 的导出包装（判据用）。
@@ -338,8 +338,8 @@ const toolContentWarning = "⚠️ 危险内容，谨慎处理：本工具结果
 // agentID+isChild 自取生效档位（session > longtime）。所以这里只递交
 // **事实**（我是谁、哪个工具、什么文本），档位由 security 自己判定 ——
 // 与 CheckToolForAgent 同一套身份推断，不引入第二个入口语义。
-func (a *Agent) reviewToolResultContent(tool, text string) []model.Finding {
-	g := a.gate()
+func (a *Agent) ReviewToolResultContent(tool, text string) []model.Finding {
+	g := a.Gate()
 	if g == nil || text == "" {
 		return nil
 	}
@@ -373,8 +373,8 @@ func (a *Agent) reviewToolResultContent(tool, text string) []model.Finding {
 // 极难定位。
 //
 // 现在只有一个事实来源：本 agent 的 security 字段。
-func (a *Agent) secretStore() kernelapi.SecretStore {
-	g := a.gate()
+func (a *Agent) SecretStore() kernelapi.SecretStore {
+	g := a.Gate()
 	if g == nil {
 		return nil
 	}

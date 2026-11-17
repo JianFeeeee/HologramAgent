@@ -206,7 +206,7 @@ func (a *Agent) mkArchive() *rtArchiveState {
 }
 
 // resident 取驻留子状态（不是驻留子时返回 nil）。
-func (a *Agent) resident() *residentState {
+func (a *Agent) Resident() *residentState {
 	if a == nil || a.sub == nil {
 		return nil
 	}
@@ -245,7 +245,7 @@ func (a *Agent) mkWorker() *workerState {
 // 逐个判 nil 会把"这不是主 agent"这个装配事实变成 300 个分支。
 // 语义边界改由**谁填了这些字段**表达（只有主 agent 的装配点会填），
 // 而基座一行代码都不认识"主 agent"。
-func (a *Agent) mainState() *mainState {
+func (a *Agent) MainState() *mainState {
 	if a == nil {
 		return nil
 	}

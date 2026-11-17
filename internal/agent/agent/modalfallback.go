@@ -63,9 +63,9 @@ func (a *Agent) resolveModalFallback(kind string) (agentAPI.Provider, string) {
 	var configured string
 	switch kind {
 	case "image":
-		configured = strings.TrimSpace(a.mainState().inputCfg.Image.FallbackProvider)
+		configured = strings.TrimSpace(a.MainState().inputCfg.Image.FallbackProvider)
 	case "audio":
-		configured = strings.TrimSpace(a.mainState().inputCfg.Audio.FallbackProvider)
+		configured = strings.TrimSpace(a.MainState().inputCfg.Audio.FallbackProvider)
 	}
 
 	supports := func(p agentAPI.Provider) bool {
@@ -110,9 +110,9 @@ func (a *Agent) resolveModalFallback(kind string) (agentAPI.Provider, string) {
 func (a *Agent) modalFallbackModel(kind string) string {
 	switch kind {
 	case "image":
-		return strings.TrimSpace(a.mainState().inputCfg.Image.FallbackModel)
+		return strings.TrimSpace(a.MainState().inputCfg.Image.FallbackModel)
 	case "audio":
-		return strings.TrimSpace(a.mainState().inputCfg.Audio.FallbackModel)
+		return strings.TrimSpace(a.MainState().inputCfg.Audio.FallbackModel)
 	}
 	return ""
 }
@@ -121,12 +121,12 @@ func (a *Agent) modalFallbackModel(kind string) string {
 func (a *Agent) modalFallbackPrompt(kind string) string {
 	switch kind {
 	case "image":
-		if s := strings.TrimSpace(a.mainState().inputCfg.Image.DescribePrompt); s != "" {
+		if s := strings.TrimSpace(a.MainState().inputCfg.Image.DescribePrompt); s != "" {
 			return s
 		}
 		return "Describe this image in detail: text, objects, people and scene."
 	case "audio":
-		if s := strings.TrimSpace(a.mainState().inputCfg.Audio.DescribePrompt); s != "" {
+		if s := strings.TrimSpace(a.MainState().inputCfg.Audio.DescribePrompt); s != "" {
 			return s
 		}
 		return "请转写这段音频的内容。"

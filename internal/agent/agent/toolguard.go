@@ -53,10 +53,10 @@ import (
 // 拒绝必须**可执行**（与 CheckTool 同一纪律）：把具体路径与允许根回给模型，
 // 它才能改路径或换工具，而不是反复重试同一条被拒的调用。
 func (a *Agent) guardToolPaths(tc agentAPI.ToolCall) (toolOutcome, bool) {
-	if a == nil || a.mainState().stageHost == nil {
+	if a == nil || a.MainState().stageHost == nil {
 		return toolOutcome{}, false
 	}
-	def := a.mainState().stageHost.ToolDef(tc.Name)
+	def := a.MainState().stageHost.ToolDef(tc.Name)
 	if def == nil {
 		return toolOutcome{}, false
 	}
@@ -140,7 +140,7 @@ func pathDirection(toolName string) string {
 //
 // 未装配安全运行时（独立工具 / 单测）时一律放行 —— 与 checkSandboxPath 同语义。
 func (a *Agent) checkNetworkAllowed() model.Decision {
-	g := a.gate()
+	g := a.Gate()
 	if g == nil {
 		return model.Decision{}
 	}
@@ -151,7 +151,7 @@ func (a *Agent) checkNetworkAllowed() model.Decision {
 //
 // 未装配安全运行时（独立工具 / 单测）时一律放行 —— 与 CheckTool 同语义。
 func (a *Agent) checkSandboxPath(direction, path string) model.Decision {
-	g := a.gate()
+	g := a.Gate()
 	if g == nil {
 		return model.Decision{}
 	}

@@ -18,7 +18,7 @@ package agent
 //
 // 于是**基座知道了"这个 agent 要做蒸馏/归档/合并/复审/转投"** —— 那是主 agent
 // 的职责，而驻留子与 rtchild 跑起来也会白白起五个 goroutine（它们各自的
-// 循环体第一行就是 `if a.graphDB() == nil { return }`，也就是"起来了但立刻退出"）。
+// 循环体第一行就是 `if a.GraphDB() == nil { return }`，也就是"起来了但立刻退出"）。
 // 这正是"层层嵌合"在时间维度上的形态：新增一种 agent 类型就要回来给这些
 // 启动点加条件。
 //
@@ -120,7 +120,7 @@ func (a *Agent) startPeriodic() {}
 
 // DistillTask 返回"上下文裁剪（L1→L2）+ 插件自动重载"这个定时任务的描述。
 func (a *Agent) DistillTask() PeriodicTask {
-	return PeriodicTask{Name: "distill", Interval: a.mainState().distillInterval, Run: func(x *Agent) {
+	return PeriodicTask{Name: "distill", Interval: a.MainState().distillInterval, Run: func(x *Agent) {
 		x.distillContext()
 		x.autoReloadPlugins()
 	}}
@@ -128,12 +128,12 @@ func (a *Agent) DistillTask() PeriodicTask {
 
 // ArchiveTask 返回"冷文档归档（L2→L3）"。
 func (a *Agent) ArchiveTask() PeriodicTask {
-	return PeriodicTask{Name: "archive", Interval: a.mainState().archiveInterval, Run: func(x *Agent) { x.archiveColdDocs() }}
+	return PeriodicTask{Name: "archive", Interval: a.MainState().archiveInterval, Run: func(x *Agent) { x.archiveColdDocs() }}
 }
 
 // MergeTask 返回"实体合并检测 + 场景去重"。
 func (a *Agent) MergeTask() PeriodicTask {
-	return PeriodicTask{Name: "merge", Interval: a.mainState().mergeInterval, Run: func(x *Agent) {
+	return PeriodicTask{Name: "merge", Interval: a.MainState().mergeInterval, Run: func(x *Agent) {
 		x.detectEntityMerge()
 		x.dedupeScenes()
 	}}
@@ -141,19 +141,19 @@ func (a *Agent) MergeTask() PeriodicTask {
 
 // ReviewTask 返回"关系复审"。
 func (a *Agent) ReviewTask() PeriodicTask {
-	return PeriodicTask{Name: "review", Interval: a.mainState().reviewInterval, Run: func(x *Agent) { x.reviewRelations() }}
+	return PeriodicTask{Name: "review", Interval: a.MainState().reviewInterval, Run: func(x *Agent) { x.reviewRelations() }}
 }
 
 // OffloadTask 返回"积压任务转投"（未启用或本类型不转投时返回零值，注册被拒）。
 func (a *Agent) OffloadTask() PeriodicTask {
-	if !a.mainState().offload.Enabled || !a.hooks.MayOffload {
+	if !a.MainState().offload.Enabled || !a.hooks.MayOffload {
 		return PeriodicTask{}
 	}
-	interval := a.mainState().offload.BusyAfter / 5
+	interval := a.MainState().offload.BusyAfter / 5
 	if interval < time.Second {
 		interval = time.Second
 	}
-	return PeriodicTask{Name: "offload", Interval: interval, Run: func(x *Agent) { x.offloadPendingTasks(x.mainState().offload) }}
+	return PeriodicTask{Name: "offload", Interval: interval, Run: func(x *Agent) { x.offloadPendingTasks(x.MainState().offload) }}
 }
 
 // RegisterMaintenanceTasks 注册**主 agent 的后台维护任务全集**。

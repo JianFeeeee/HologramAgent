@@ -236,7 +236,7 @@ func (a *Agent) residentOf(id string) *residentChild {
 }
 
 // mainGraph 返回父自己的完整图记忆库（驻留子的受限句柄由它派生）。
-func (a *Agent) mainGraph() kernelapi.GraphMemory { return a.graphDB() }
+func (a *Agent) mainGraph() kernelapi.GraphMemory { return a.GraphDB() }
 
 // SpawnResident 创建一个驻留子（父的"创建"动作）。
 func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
@@ -315,7 +315,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		// 驻留子可以有自己的优先源；留空则继承父的（父再留空 ⇒ 总默认源）。
 		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
-		StageHost:         a.mainState().stageHost,
+		StageHost:         a.MainState().stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
 		// ★ 普通上下文也要落盘（2026-11-17）：与 temp 图记忆同一目录。
 		//
@@ -333,7 +333,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、
 		// 长时间不被人工审阅。它是本仓**最需要闸门**的一类 agent，
 		// 而原先它是唯一**完全没有闸门**的（子从 New 起 a.security 就是 nil）。
-		Security: a.gate(),
+		Security: a.Gate(),
 	})
 
 	rc := &residentChild{
@@ -650,7 +650,7 @@ func (a *Agent) applyResidualEvents(id string, events []*agentIO.InputEvent, pol
 			// 不记日志的话“这条消息为什么没人回”永远查不出来。
 			log.Printf("[resident] %s residual task discarded per parent decision: source=%s channel=%s request=%s content=%s",
 				id, evt.Source, evt.OutputChannel, evt.RequestID, truncateStr(inputTextOf(evt), 80))
-			a.emitSkippedReply(evt, "residual_dropped_by_parent")
+			a.EmitSkippedReply(evt, "residual_dropped_by_parent")
 		}
 		return len(events), fmt.Sprintf("已按父的决定丢弃 %d 条残余任务（逐条已记日志）", len(events)), nil
 	}
@@ -679,7 +679,7 @@ func (a *Agent) applyResidualEvents(id string, events []*agentIO.InputEvent, pol
 				failed++
 				log.Printf("[resident] %s residual task could NOT be stashed (channel %q gone): source=%s request=%s content=%s",
 					id, ch, evt.Source, evt.RequestID, truncateStr(inputTextOf(evt), 80))
-				a.emitSkippedReply(evt, "residual_stash_channel_gone")
+				a.EmitSkippedReply(evt, "residual_stash_channel_gone")
 				continue
 			}
 			stashed++
@@ -1038,7 +1038,7 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 	rc.mu.Lock()
 	rc.state = "contextfull"
 	rc.mu.Unlock()
-	a.raiseVector(VectorChildContextFull, vectorArgs{ChildID: rc.ID})
+	a.RaiseVector(VectorChildContextFull, vectorArgs{ChildID: rc.ID})
 }
 
 // checkContextFull 判断本 agent 的**积累上下文是否已经装不下窗口**，是则触发一次 contextfull。
@@ -1052,8 +1052,8 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 // 它超过窗口阈值就说明下一轮必须丢事件 ⇒ 这就是 contextfull。
 //
 // 只对**驻留子**生效（只有它们设了 onContextFull）。
-func (a *Agent) checkContextFull() {
-	r := a.resident()
+func (a *Agent) CheckContextFull() {
+	r := a.Resident()
 	if r == nil || r.onContextFull == nil {
 		return
 	}
@@ -1088,7 +1088,7 @@ func (a *Agent) checkContextFull() {
 // 加锁理由见 Agent.ctxFullMu：本函数**通常由父的 goroutine 调用**
 // （CompressResident），而子的调度器 goroutine 正在读同一个字段。
 func (a *Agent) resetContextFull() {
-	r := a.resident()
+	r := a.Resident()
 	if r == nil {
 		return
 	}
@@ -1101,7 +1101,7 @@ func (a *Agent) resetContextFull() {
 
 // recordInputchNote 是子**主动写入**本轮 inputch 的处理信息（工具 inputch_note）。
 func (a *Agent) recordInputchNote(text string) {
-	r := a.resident()
+	r := a.Resident()
 	if r == nil {
 		return
 	}
@@ -1114,11 +1114,11 @@ func (a *Agent) recordInputchNote(text string) {
 
 // autoRecordInputch 是**系统自动写**兜底：本轮未主动写时，把该轮 inputch 的处理信息写入。
 // 保证每一轮必有记录，父不会看到空洞。
-func (a *Agent) autoRecordInputch(f *TaskFrame) {
+func (a *Agent) AutoRecordInputch(f *TaskFrame) {
 	if f == nil {
 		return
 	}
-	r := a.resident()
+	r := a.Resident()
 	if r == nil {
 		return
 	}
@@ -1141,7 +1141,7 @@ func (a *Agent) autoRecordInputch(f *TaskFrame) {
 }
 
 func (a *Agent) inputchTableSnapshot() []InputchRecord {
-	r := a.resident()
+	r := a.Resident()
 	if r == nil {
 		return nil
 	}
@@ -1151,7 +1151,7 @@ func (a *Agent) inputchTableSnapshot() []InputchRecord {
 }
 
 func (a *Agent) clearInputchTable() {
-	r := a.resident()
+	r := a.Resident()
 	if r == nil {
 		return
 	}
@@ -1164,7 +1164,7 @@ func (a *Agent) clearInputchTable() {
 // ---- 子侧：主动向父发消息（L3） ----
 
 func (a *Agent) notifyParentFrom(text string) string {
-	r := a.resident()
+	r := a.Resident()
 	if r == nil || r.notifyParent == nil {
 		return "本 agent 没有上级，无法发送消息"
 	}
@@ -1200,7 +1200,7 @@ func (rc *residentChild) info() ResidentInfo {
 	table := rc.agent.inputchTableSnapshot()
 	// 子自己的调度器积压（per-agent 负载展示用）。schedulerStatus 只读快照，
 	// 每次状态轮询为每个子算一次，成本可忽略（驻留子数量是个位数）。
-	sc := rc.agent.schedulerStatus()
+	sc := rc.agent.SchedulerStatus()
 	info := ResidentInfo{
 		ID: rc.ID, State: state, InputChs: append([]string(nil), rc.inputChs...),
 		AllowedOutputs: append([]string(nil), rc.allowed...),

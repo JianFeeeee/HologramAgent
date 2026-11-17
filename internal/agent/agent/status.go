@@ -244,35 +244,35 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 		providerName = a.provider.Name()
 	}
 
-	textMem := a.mainState().textMem
-	socialStore := a.mainState().social
-	trk := a.mainState().tracker
+	textMem := a.MainState().textMem
+	socialStore := a.MainState().social
+	trk := a.MainState().tracker
 
 	// 注意：knowledge 在 collectKernelStatus 里是**接口**参数，
 	// 而 (*knowledge.Store)(nil) 塞进接口后 `ks != nil` 仍为真 → 调 List() 直接 panic。
 	// 所以这里必须先判具体指针再进行接口赋值（healthcheck_kernel 会走到这条路径）。
 	var knowledgeLister interface{ List() []string }
-	if a.mainState().knowledge != nil {
-		knowledgeLister = a.mainState().knowledge
+	if a.MainState().knowledge != nil {
+		knowledgeLister = a.MainState().knowledge
 	}
 
 	ks := collectKernelStatus(
-		a.mainState().startTime,
+		a.MainState().startTime,
 		string(a.id),
 		providerName,
 		sourceCount,
-		a.mainState().stageHost,
+		a.MainState().stageHost,
 		a.io,
-		a.mainState().pluginReg,
-		a.graphDB(),
+		a.MainState().pluginReg,
+		a.GraphDB(),
 		knowledgeLister,
-		a.mainState().coldcontextStore,
+		a.MainState().coldcontextStore,
 		textMem,
 		socialStore,
 		trk,
 	)
 	ks.ONNX = a.onnxStatus()
-	ks.Scheduler = a.schedulerStatus()
+	ks.Scheduler = a.SchedulerStatus()
 	ks.Residents = residentStatuses(a.Residents())
 	ks.Usage = a.usageStatus()
 
@@ -308,21 +308,21 @@ func (a *Agent) usageStatus() sdk.UsageStatus {
 // 判据是 Loaded()（provider 真正打开且元数据合法），**不是**「配置里写了 provider」——
 // 后者在模型缺失 / 运行时缺失时也为真，拿它当判据就是假绿。
 func (a *Agent) onnxStatus() sdk.ONNXStatus {
-	st := sdk.ONNXStatus{Provider: a.mainState().embeddingProvider, DepParser: depParserStatus()}
-	if a.mainState().multimodalSpace != nil && a.mainState().multimodalSpace.Loaded() {
+	st := sdk.ONNXStatus{Provider: a.MainState().embeddingProvider, DepParser: depParserStatus()}
+	if a.MainState().multimodalSpace != nil && a.MainState().multimodalSpace.Loaded() {
 		st.Enabled = true
-		st.Dim = a.mainState().multimodalSpace.Dim()
-		st.Fingerprint = a.mainState().multimodalSpace.Fingerprint()
+		st.Dim = a.MainState().multimodalSpace.Dim()
+		st.Fingerprint = a.MainState().multimodalSpace.Fingerprint()
 		// 模态是可选能力：只有底层 provider 报出来时才带出。
-		if mr, ok := a.mainState().multimodalSpace.(interface{ Modalities() []string }); ok {
+		if mr, ok := a.MainState().multimodalSpace.(interface{ Modalities() []string }); ok {
 			st.Modalities = mr.Modalities()
 		}
 		return st
 	}
 	switch {
-	case a.mainState().embeddingError != "":
-		st.Reason = "打开失败: " + a.mainState().embeddingError
-	case a.mainState().embeddingProvider == "":
+	case a.MainState().embeddingError != "":
+		st.Reason = "打开失败: " + a.MainState().embeddingError
+	case a.MainState().embeddingProvider == "":
 		st.Reason = "未配置统一向量空间 provider（走词嵌入/TF-IDF 回退路径）"
 	default:
 		st.Reason = "provider 未加载"
