@@ -2,8 +2,10 @@ package security
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -89,6 +91,16 @@ func ArchiveBeforeWrite(baseDir, path string) (archived bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	// ★ 记下原文件的**权限位**（写成 <file>.mode 侧车）。
+	//
+	// 为什么不能省：还原时用固定 0644 会把原本 0600 的凭据文件**放宽** ——
+	// 那不是"恢复原状"，是"恢复内容但顺手改了权限"。实测生产留档里就有一条
+	// `gzu-rss.service`（systemd 单元，原本 0644）与两条 llmsproxy lua。
+	// 权限漂移在 /etc 下后果不对称：放宽了没人发现，收紧了服务起不来。
+	mode := uint32(info.Mode().Perm())
+	if err := os.WriteFile(dst+".mode", []byte(strconv.FormatUint(uint64(mode), 8)), 0600); err != nil {
+		return false, err
+	}
 	if err := os.WriteFile(dst, data, 0600); err != nil {
 		return false, err
 	}
@@ -122,10 +134,62 @@ func RestoreFileFromBaseline(dataDir, path string) (bool, error) {
 	dst := filepath.Join(FileBaselineDir(dataDir), rel)
 	data, err := os.ReadFile(dst)
 	if err != nil {
-		return false, nil
+		return false, nil // 没有留档 ≠ 错误：该文件从未被写过
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// 权限位：有侧车就按它还原；没有（老留档）退回 0644 并留痕。
+	perm := os.FileMode(0o644)
+	if raw, err := os.ReadFile(dst + ".mode"); err == nil {
+		if v, perr := strconv.ParseUint(strings.TrimSpace(string(raw)), 8, 32); perr == nil {
+			perm = os.FileMode(v)
+		}
+	} else {
+		log.Printf("[guard] %s: no recorded mode, restoring with 0644", path)
+	}
+	// 先建父目录：目标可能已经被删（那是更彻底的损坏形态）。
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("recreate parent for %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, data, perm); err != nil {
 		return false, fmt.Errorf("restore from baseline %s: %w", dst, err)
 	}
+	// ★ WriteFile 的 perm **只在新建时生效** —— 目标已存在（正是被改坏那种）
+	// 时它沿用旧 mode，所以必须显式 chmod。实测：不加这一行，
+	// 原本 0600 的文件还原后仍是 644（TestRestorePreservesFileMode 抓到）。
+	if err := os.Chmod(path, perm); err != nil {
+		return false, fmt.Errorf("restore mode for %s: %w", path, err)
+	}
 	return true, nil
+}
+
+// ArchivedFiles 返回留档目录里**全部**已存档文件的原路径（绝对路径）。
+//
+// 用途：L1 还原时不必事先知道"哪些文件被改过" —— 留档目录本身就是那份清单
+// （只有真的被覆盖过的受保护文件才会出现在里面）。按路径排序，便于日志比对。
+//
+// 跳过 `<file>.mode` 侧车：它是权限元数据，不是被存档的内容。
+func ArchivedFiles(dataDir string) ([]string, error) {
+	root := FileBaselineDir(dataDir)
+	var out []string
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // 从未留过档
+			}
+			return err
+		}
+		if info.IsDir() || strings.HasSuffix(p, ".mode") {
+			return nil
+		}
+		// file_baseline/<去掉前导 / 的原路径> ⇒ 还原成 /...
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return nil
+		}
+		out = append(out, string(filepath.Separator)+rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

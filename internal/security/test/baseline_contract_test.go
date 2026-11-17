@@ -162,3 +162,119 @@ func TestSandboxDisabledAllowsEverything(t *testing.T) {
 		t.Fatalf("★ 未启用沙箱却拦了写: %s", d.Reason)
 	}
 }
+
+// TestRestorePreservesFileMode：还原必须按**原权限位**写回，不许固定 0644。
+//
+// ★ 为什么这条是硬契约：/etc 下的权限漂移后果**不对称** ——
+// 放宽了没人发现（0600 的凭据变成人人可读），收紧了服务起不来。
+// 所以留档时记 mode（`.mode` 侧车），还原时按它写回。
+func TestRestorePreservesFileMode(t *testing.T) {
+	base := t.TempDir()
+	protected := filepath.Join(base, "etc")
+	security.SetProtectedPaths([]string{protected + string(os.PathSeparator)})
+	t.Cleanup(func() { security.SetProtectedPaths(nil) })
+	if err := os.MkdirAll(protected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(protected, "secret.conf")
+	if err := os.WriteFile(target, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := security.ArchiveBeforeWrite(base, target); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	// 模拟被改坏：内容变 + 权限被放宽
+	if err := os.WriteFile(target, []byte("broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := security.RestoreFileFromBaseline(base, target); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("★ 还原后权限位 = %o，期望 600（原本是 0600，被放宽了）", got)
+	}
+}
+
+// TestRestoreRecreatesDeletedTarget：目标被整份删掉时，还原要能重建（含父目录）。
+func TestRestoreRecreatesDeletedTarget(t *testing.T) {
+	base := t.TempDir()
+	protected := filepath.Join(base, "etc")
+	security.SetProtectedPaths([]string{protected + string(os.PathSeparator)})
+	t.Cleanup(func() { security.SetProtectedPaths(nil) })
+	deep := filepath.Join(protected, "systemd", "system")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(deep, "svc.service")
+	if err := os.WriteFile(target, []byte("unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := security.ArchiveBeforeWrite(base, target); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	// 更彻底的损坏：整份删掉，连父目录一起
+	if err := os.RemoveAll(protected); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := security.RestoreFileFromBaseline(base, target)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !restored {
+		t.Fatal("★ 删掉的目标没有被还原")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("★ 父目录没有被重建: %v", err)
+	}
+	if string(got) != "unit" {
+		t.Fatalf("内容 = %q", got)
+	}
+}
+
+// TestArchivedFilesIsTheRestore清单：留档目录就是"哪些文件被改过"的清单。
+//
+// ★ 为什么需要它：L1 还原不能事先知道要还原哪些文件 —— 清单只能从留档目录读。
+// `<file>.mode` 侧车是权限元数据，**不是**被存档的内容，必须跳过。
+func TestArchivedFilesListsRestoreTargets(t *testing.T) {
+	base := t.TempDir()
+	protected := filepath.Join(base, "etc")
+	security.SetProtectedPaths([]string{protected + string(os.PathSeparator)})
+	t.Cleanup(func() { security.SetProtectedPaths(nil) })
+	if err := os.MkdirAll(filepath.Join(protected, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(protected, "a.conf")
+	b := filepath.Join(protected, "sub", "b.conf")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := security.ArchiveBeforeWrite(base, p); err != nil {
+			t.Fatalf("archive %s: %v", p, err)
+		}
+	}
+
+	got, err := security.ArchivedFiles(base)
+	if err != nil {
+		t.Fatalf("ArchivedFiles: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("★ 清单 = %v，期望 2 项（.mode 侧车必须跳过）", got)
+	}
+	seen := map[string]bool{got[0]: true, got[1]: true}
+	if !seen[a] || !seen[b] {
+		t.Fatalf("★ 清单不含被存档的原路径: %v", got)
+	}
+}

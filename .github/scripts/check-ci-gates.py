@@ -563,6 +563,106 @@ check(not _bad_dir,
       "测试目录结构不合规（必须恰好是 <module>/test/）:\n    " +
       "\n    ".join(_bad_dir[:10]))
 
+# ── 4.12 死代码：导出的**包级函数**零引用（2026-11-16 新增）──
+#
+# ## 为什么只查「导出的包级函数」
+#
+# 全仓扫「零引用」的尝试有两个高误报来源，都实测过：
+#
+#   ① 导出的**方法**：接口方法通过接口值调用时，文本搜索看不到具体接收者
+#      （`s.bus.AllReady` 是 `kstate.SyncState.AllReady`，grep 命中不了）。
+#   ② cgo / build tag 文件：`deadcode` 工具扫全仓报了 **297 条**，其中
+#      `codec_cgo.go` 里 20 多条 C 侧回调在 Go 侧「不可达」是**正常的**。
+#      直接拿它当硬门禁会一上来就 297 条假红。
+#
+# 所以门禁只查**最高置信度的子集**：
+#
+#   · 顶层 `func Name(...)`（不是方法 —— 避开接口实现）
+#   · 去掉注释后，全仓（含测试）零引用
+#   · build tag 文件**不作为候选定义**，但**算进引用语料**
+#     （实测第一版把这类文件整份跳过 ⇒ 报了 12 条假红：cmd/homed/guard.go
+#      是 `//go:build linux`，它对 recovery.LoadResult 有真调用）
+#
+# ## 白名单每项必须写理由
+#
+# 否则这条门禁会退化成"谁嫌它烦就把谁拉白"。
+import os as _os7
+import re as _re7
+
+_DEAD_WHITELIST = {
+    # 平台专用（Windows build tag，Linux CI 上根本不参与编译）
+    "ConPtyEnv":     "ptywin/conpty.go 有 //go:build windows —— Linux CI 看不到它的调用方",
+    "ConPtyWorkDir": "同上",
+    # 公开 SDK 的对外 API（文档站收录，第三方插件可能调用）
+    "ValidScenePolicy": "third_party/hologramagentsdk/sdk —— 公开 SDK 面，仓库外有调用方",
+    # 给 CI 门禁自己的诊断出口：本仓 CI 脚本要求它们存在
+    "CapabilityOf":         "proc/capability.go —— check-ci-gates.py 对账用的诊断出口",
+    "MethodNames":          "同上",
+    "WithheldCapabilities": "同上",
+    # 判据的输入生成器 / 配对的可调用形态
+    "BuildCentroid": "memory/centroid.go —— 判据用它造输入",
+    "BlockSubject":  "memory/distill/blocks.go —— block 文本格式的解析 API（唯一可调形态）",
+    "FuncModule":    "kernelboot/funcmodule.go —— 判据用它造装配输入",
+    "BaseResult":    "devicebridge/client/cmdrouter.go —— 判据用它构造期望值",
+    "NewTestCodec":  "config/secret.go —— 名字即用途：判据构造 codec",
+    "NewHost":       "plugin/proc/host.go —— NewHostWithArenaSize 的便捷形态（生产走带容量那个）；判据用它作唯一入口，避免复制容量常量",
+    "ApplyDeltaFile": "update/delta.go —— MakeDeltaFile 的读取侧配对（前者活在 MakeDeltaForRelease → cmd/homed-upgrade）。生产还原用内存版 ApplyDelta",
+    "NewCodec":       "security/codec.go —— 生产走 NewCodecWithOldKeys（支持轮换），NewCodec 是它的单密钥形态",
+}
+
+_dead_prod = {}
+_dead_test = {}
+_dead_buildtag = set()
+for _root in ("internal", "cmd", "pkg", "providers", "third_party/hologramagentsdk/sdk"):
+    for _dir, _dirs, _files in _os7.walk(_root):
+        # ⚠️ 不能排除 "test" 目录 —— 测试就在 <module>/test/ 里，
+        # 排除它会让 _dead_test 永远是空的，「只有测试引用」的符号会全被判成零引用。
+        _dirs[:] = [d for d in _dirs if d not in ("node_modules", "testdata")]
+        for _f in _files:
+            if not _f.endswith(".go"):
+                continue
+            _path = _os7.path.join(_dir, _f)
+            try:
+                _raw = open(_path, encoding="utf-8").read()
+            except Exception:
+                continue
+            _has_tag = "go:build" in "\n".join(_raw.splitlines()[:3])
+            _txt = _re7.sub(r"/\*.*?\*/", " ", _raw, flags=_re7.S)
+            _txt = _re7.sub(r"//[^\n]*", " ", _txt)
+            if _f.endswith("_test.go"):
+                _dead_test[_path] = _txt
+            else:
+                _dead_prod[_path] = _txt
+                if _has_tag:
+                    _dead_buildtag.add(_path)
+
+_dead_candidates = []
+for _path, _txt in _dead_prod.items():
+    if _path in _dead_buildtag:
+        continue  # 平台专用文件里的导出函数不作候选
+    for _m in _re7.finditer(r"^func ([A-Z][A-Za-z0-9_]*)\s*[\[(]", _txt, _re7.M):
+        _dead_candidates.append((_path, _m.group(1)))
+
+_dead = []
+for _path, _name in _dead_candidates:
+    if _name in _DEAD_WHITELIST:
+        continue
+    _pat = _re7.compile(r"\b" + _re7.escape(_name) + r"\b")
+    _prod_refs = sum(len(_pat.findall(t)) for t in _dead_prod.values())
+    _test_refs = sum(len(_pat.findall(t)) for t in _dead_test.values())
+    # 定义处自身算 1 次命中。
+    # ⚠️ **只有测试引用也算死**：§0 第 5 条明令「不得为测试导出符号」。
+    # 本仓已因此栽过一次（agent.SavePersonality 生产零调用、4 处判据在用）。
+    if _prod_refs <= 1:
+        _dead.append("%s: %s%s" % (
+            _path, _name,
+            "" if _test_refs == 0 else "（仅测试引用 %d 处 —— 不得为测试导出符号）" % _test_refs))
+
+check(not _dead,
+      "以下导出的包级函数**全仓零引用**（含测试）—— 死代码应当删掉，"
+      "而不是留着一个无人调用的导出面。若确需保留（平台专用/公开 API/判据输入），"
+      "把理由写进 check-ci-gates.py 的 _DEAD_WHITELIST：\n    " + "\n    ".join(sorted(_dead)[:12]))
+
 # ── 4.13 插件不得直接 import 内核策略包（2026-11-16 新增）──
 #
 # ## 这条守的是一条**架构边界**，不是风格

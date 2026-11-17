@@ -225,8 +225,9 @@ func runGuard(dataDir string) {
 		boot := "normal"
 		if cfg.FailbackEnabled && !failbackDone && failures >= cfg.MaxRestarts {
 			log.Printf("[guard] %d failures >= max %d, entering failback (Safe-Mode)", failures, cfg.MaxRestarts)
-			// L1 前置：恢复 LLM 基线 + 还原 DNS/proxy + 写恢复任务
+			// L1 前置：恢复 LLM 基线 + 还原被改坏的 /etc 文件 + 还原 DNS/proxy + 写恢复任务
 			restoreLLMBaseline(dataDir, cfg.LLMSnapshot)
+			restoreProtectedFiles(dataDir)
 			restoreNetworkBaseline(dataDir)
 			failbackRound = 1
 			failbackDone = true
@@ -478,6 +479,54 @@ func captureNetworkBaseline(dataDir string) {
 		return
 	}
 	log.Printf("[guard] network baseline captured: %s", base.Summary())
+}
+
+// restoreProtectedFiles L1：把 agent 改坏的受保护系统文件还原到写前留档。
+//
+// ## 为什么这一步必须存在（2026-11-16 接的最后一米）
+//
+// 写前留档（`ArchiveBeforeWrite`）从 L0 起就在做 —— 生产 `file_baseline`
+// 里实测已有 `/etc/systemd/system/gzu-rss.service` 与两条 llmsproxy lua。
+// 但**没有任何代码读那份归档**：`RestoreFileFromBaseline` 零调用。
+// 于是留档在磁盘上越攒越多，agent 把 /etc 改坏之后却没有任何东西会还原它 ——
+// "留了档、没人翻"比不留更糟，因为它让人以为有保险。
+//
+// ## 为什么清单从留档目录读，而不是事先列举要还原哪些文件
+//
+// 只有**真的被覆盖过**的受保护文件才会出现在留档目录里 —— 那本身
+// 就是"哪些文件被改过"的准确清单。事先列举要么漏（新插件写了个没预料到的
+// 路径），要么多（把一个从未被改的文件也"还原"，等于用旧内容覆盖用户的合法修改）。
+//
+// ## 失败策略
+//
+// 逐个还原、单个失败不中断：一个文件还不了（磁盘满、权限、父目录不可写）
+// 不该阻止其余文件还原。每一条都打日志 —— 静默跳过会让"没还原"伪装成
+// "本来就一致"。
+func restoreProtectedFiles(dataDir string) {
+	files, err := security.ArchivedFiles(dataDir)
+	if err != nil {
+		log.Printf("[guard] list archived protected files: %v", err)
+		return
+	}
+	if len(files) == 0 {
+		log.Printf("[guard] no archived protected files, skip restore")
+		return
+	}
+	restored := 0
+	for _, p := range files {
+		ok, err := security.RestoreFileFromBaseline(dataDir, p)
+		switch {
+		case err != nil:
+			log.Printf("[guard] restore protected file %s: %v", p, err)
+		case ok:
+			log.Printf("[guard] restored protected file: %s", p)
+			restored++
+		default:
+			// 没留档 / 非受保护路径：两种都不算故障，但要留痕便于排查
+			log.Printf("[guard] protected file %s has no baseline, skipped", p)
+		}
+	}
+	log.Printf("[guard] protected files restored: %d/%d", restored, len(files))
 }
 
 // restoreNetworkBaseline L1：把 resolv.conf/hosts 还原到基线（DNS/proxy 小修命中即停）。
