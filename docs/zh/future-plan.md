@@ -170,7 +170,15 @@ a.security.ScanContentFor(ins, text, a.effectiveSecurityProfile())
 > 教训：**判据必须至少有一条走生产调用点**。测辅助函数证明"函数能用"，
 > 不证明"生产路径上有人调它"。
 
-### 1.3 🔴 沙箱约束从未运行
+### 1.3 ✅ 已接通（2026-11-16）
+
+> 原描述保留在下方作为历史。**现状**：`CheckPath` / `CheckNetwork` 由
+> `agent/core/toolguard.go` 在工具执行前按 `ToolDef.PathArgs` / `ToolDef.NetworkArgs`
+> 调用（插件只声明参数名，判定全在内核）。`ArchiveBeforeWrite` 也在同一处
+> 接通（写方向通过后立刻留档）。判据：`internal/agent/core/test/tool_path_guard_contract_test.go`（7 条）。
+> 唯一仍未接的是 `RestoreFileFromBaseline`（在 `cmd/homed/guard.go` 的 L1 梯子里）。
+
+#### 原文（历史）
 
 **现状**：
 

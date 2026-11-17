@@ -22,7 +22,7 @@ import (
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/ipc"
 	"github.com/JianFeeeee/HologramAgent/internal/recovery"
-	"github.com/JianFeeeee/HologramAgent/internal/system"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"gopkg.in/yaml.v3"
 )
@@ -74,10 +74,10 @@ type systemConfig struct {
 // applySystemConfig 应用发行版路径适配，供 guard 与 failback worker 共用。
 func applySystemConfig(cfg *guardConfig) {
 	if len(cfg.System.ProtectedPaths) > 0 {
-		system.SetProtectedPaths(cfg.System.ProtectedPaths)
+		security.SetProtectedPaths(cfg.System.ProtectedPaths)
 	}
 	if len(cfg.System.NetworkPaths) > 0 {
-		system.SetNetworkPaths(cfg.System.NetworkPaths)
+		security.SetNetworkPaths(cfg.System.NetworkPaths)
 	}
 }
 
@@ -239,7 +239,7 @@ func runGuard(dataDir string) {
 		}
 
 		// 恢复 agent 环境（代理变量）在 worker 拉起前注入
-		if b, err := system.LoadNetworkBaseline(dataDir); err == nil {
+		if b, err := security.LoadNetworkBaseline(dataDir); err == nil {
 			b.ApplyProxyEnv()
 		}
 
@@ -468,12 +468,12 @@ func restoreLLMBaseline(dataDir, snapPath string) {
 
 // captureNetworkBaseline L0：启动即捕获网络基线（DNS/hosts/代理），供 failback 还原。
 func captureNetworkBaseline(dataDir string) {
-	base, err := system.CaptureNetwork()
+	base, err := security.CaptureNetwork()
 	if err != nil {
 		log.Printf("[guard] capture network baseline: %v", err)
 		return
 	}
-	if err := system.SaveNetworkBaseline(dataDir, base); err != nil {
+	if err := security.SaveNetworkBaseline(dataDir, base); err != nil {
 		log.Printf("[guard] save network baseline: %v", err)
 		return
 	}
@@ -482,7 +482,7 @@ func captureNetworkBaseline(dataDir string) {
 
 // restoreNetworkBaseline L1：把 resolv.conf/hosts 还原到基线（DNS/proxy 小修命中即停）。
 func restoreNetworkBaseline(dataDir string) {
-	base, err := system.LoadNetworkBaseline(dataDir)
+	base, err := security.LoadNetworkBaseline(dataDir)
 	if err != nil {
 		log.Printf("[guard] no network baseline, skip DNS/proxy restore: %v", err)
 		return

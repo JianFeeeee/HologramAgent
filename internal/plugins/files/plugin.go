@@ -13,7 +13,6 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/system"
 )
 
 func init() {
@@ -28,7 +27,9 @@ type Plugin struct {
 	sdk      *sdk.PluginSDK
 	mu       sync.RWMutex
 	filesDir string
-	baseDir  string // L0 写前留档根目录（<data>/file_baseline 的父目录），空则禁用
+	// baseDir 曾是 L0 写前留档根目录。2026-11-16 收归内核：
+	// 留档改由内核按 ToolDef.PathArgs 统一处理（见 security.ArchiveBeforeWrite
+	// 与 agent/core/toolcall.go 的执行前闸），插件不再自己判、也不再 import 内核包。
 }
 
 var isWindowsBuild = runtime.GOOS == "windows"
@@ -62,33 +63,20 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	}
 	p.filesDir = abs
 
-	// L0 写前留档：主 agent 写 /etc 等受保护路径前自动存档原文（homed 注入 <data>）
-	if cfg := s.Config().Get(); cfg != nil {
-		if dd := cfg.Daemon.DataDir; dd != "" {
-			p.baseDir = dd
-		}
-	}
-	s.Settings().RegisterDef(sdk.ConfigDef{
-		Key:         "baseline_dir",
-		Default:     p.baseDir,
-		Type:        "string",
-		DisplayName: "写前留档目录",
-		Description: "写受保护系统路径前自动存档原文的目录（空禁用）",
-		Category:    "files",
-	})
-	if v, err := s.Settings().Get("baseline_dir"); err == nil && v != nil {
-		if s, ok := v.(string); ok && s != "" {
-			p.baseDir = s
-		}
-	}
-	if p.baseDir != "" {
-		log.Printf("[%s] write-ahead baseline dir: %s", p.name, system.FileBaselineDir(p.baseDir))
-	}
-
+	// ★ L0 写前留档已**收归内核**（2026-11-16）。
+	//
+	// 本插件不再持有留档目录、也不再调内核函数：它在注册工具时声明
+	// `PathArgs: []string{"path"}`，内核据此在**执行前**做沙箱判定与留档
+	// （见 security.ArchiveBeforeWrite 与 agent/core/toolcall.go 的执行前闸）。
+	//
+	// 为什么搬走：留档是**策略**，不该由被约束者自己执行 —— 而且外部插件
+	// （独立 plugin.bin 子进程）根本拿不到内核的文件系统策略与目录。
 	tp := p.name + "_"
 
 	s.RegisterTool(tp+"read", sdk.ToolDef{
-		Name:        tp + "read",
+		Name: tp + "read",
+		// ★ 声明「path 参数是文件系统路径」⇒ 内核据此做沙箱判定 + 写前留档。
+		PathArgs:    []string{"path"},
 		Description: fmt.Sprintf("读取文件内容。支持 offset/limit 分段读取大文件。沙箱路径: %s", p.filesDir),
 		NoMemory:    false,
 		Cleaner: func(output string) string {
@@ -110,7 +98,9 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	}, p.handleRead)
 
 	s.RegisterTool(tp+"write", sdk.ToolDef{
-		Name:        tp + "write",
+		Name: tp + "write",
+		// ★ 声明「path 参数是文件系统路径」⇒ 内核据此做沙箱判定 + 写前留档。
+		PathArgs:    []string{"path"},
 		Description: fmt.Sprintf("写入文件（原子替换：先写临时副本再 rename，不会留下半截文件；覆盖受保护系统路径前自动留档原文）。自动创建父目录。生成多行内容直接传全文，不要用 echo 拼接。沙箱路径: %s", p.filesDir),
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -125,7 +115,9 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	}, p.handleWrite)
 
 	s.RegisterTool(tp+"edit", sdk.ToolDef{
-		Name:        tp + "edit",
+		Name: tp + "edit",
+		// ★ 声明「path 参数是文件系统路径」⇒ 内核据此做沙箱判定 + 写前留档。
+		PathArgs:    []string{"path"},
 		Description: fmt.Sprintf("对文件执行精确字符串替换。每个 old 必须在原文中唯一匹配。沙箱路径: %s", p.filesDir),
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -149,7 +141,9 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	}, p.handleEdit)
 
 	s.RegisterTool(tp+"ls", sdk.ToolDef{
-		Name:        tp + "ls",
+		Name: tp + "ls",
+		// ★ 声明「path 参数是文件系统路径」⇒ 内核据此做沙箱判定 + 写前留档。
+		PathArgs:    []string{"path"},
 		Description: fmt.Sprintf("列出目录内容。目录以 / 后缀标记。沙箱路径: %s", p.filesDir),
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -314,15 +308,6 @@ func (p *Plugin) handleWrite(args map[string]interface{}) (interface{}, error) {
 		return errorResult(err.Error()), nil
 	}
 
-	// L0 写前留档：覆盖已有受保护文件前，原文存档供 guard 还原。
-	if mode != "create" {
-		if archived, aerr := p.archiveBeforeWrite(absPath); aerr != nil {
-			log.Printf("[%s] write-ahead archive %s: %v", p.name, absPath, aerr)
-		} else if archived {
-			log.Printf("[%s] write-ahead archived %s", p.name, absPath)
-		}
-	}
-
 	switch mode {
 	case "create":
 		if _, err := os.Stat(absPath); err == nil {
@@ -410,12 +395,6 @@ func (p *Plugin) handleEdit(args map[string]interface{}) (interface{}, error) {
 	}
 
 	// L0 写前留档（edit 可能覆盖已存在文件）
-	if archived, aerr := p.archiveBeforeWrite(absPath); aerr != nil {
-		log.Printf("[%s] write-ahead archive %s: %v", p.name, absPath, aerr)
-	} else if archived {
-		log.Printf("[%s] write-ahead archived %s", p.name, absPath)
-	}
-
 	rawEdits, ok := args["edits"].([]interface{})
 	if !ok || len(rawEdits) == 0 {
 		return errorResult("edits must be a non-empty array"), nil
@@ -558,14 +537,6 @@ func errorResult(msg string) map[string]interface{} {
 		"isError": true,
 		"content": msg,
 	}
-}
-
-// archiveBeforeWrite L0 写前留档：若目标为受保护系统路径且已存在，则存档原文。
-func (p *Plugin) archiveBeforeWrite(absPath string) (bool, error) {
-	if p.baseDir == "" {
-		return false, nil
-	}
-	return system.ArchiveBeforeWrite(p.baseDir, absPath)
 }
 
 func getSetting[T any](s sdk.SettingsAPI, key string, def T) T {

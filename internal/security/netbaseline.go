@@ -1,7 +1,7 @@
 // Package system 提供 L0/L1 层的系统级网络配置基线：捕获与还原本机的
 // DNS（resolv.conf）/ hosts / 代理环境，供 failback 在救援源恢复前还原被主 agent
 // 改坏的网络配置。
-package system
+package security
 
 import (
 	"encoding/json"

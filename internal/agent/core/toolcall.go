@@ -313,6 +313,26 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		return toolOutcome{Text: te.Error(), Raw: te}
 	}
 
+	// ★ 路径闸：按工具**声明**的 PathArgs 判沙箱 + 做 L0 写前留档（2026-11-16 新增）。
+	//
+	// 为什么放在这里（与 CheckTool 同一个前置闸口）：
+	//
+	//	① 这是**唯一**的工具执行入口（内置族、插件工具、设备工具全经过它）
+	//	② 判定必须在**插件之外**：外部插件（子进程）拿不到内核的沙箱策略，
+	//	   而"插件各写一套"正是本仓批判过的形态（被约束者决定约束）
+	//
+	// 为什么需要工具**声明** PathArgs 而不是猜参数名：
+	//
+	//	`command` / `text` 里的路径要按命令语法解析才知道，瞎猜会误拒
+	//	（future-plan §1.3 已明确否决那种做法）。所以契约是显式的：
+	//	插件写 `PathArgs: []string{"path"}`，内核照办；不声明 ⇒ 不判（存量零改动）。
+	//
+	// 留档与判定放同一处：**判定通过才执行**，而留档必须发生在执行**之前**
+	//	（否则原文已经被覆盖，留档就来不及了）。
+	if out, denied := a.guardToolPaths(tc); denied {
+		return out
+	}
+
 	// ★ 内置工具的路由交给 device 模块（`kernelmod/device.Dispatch`）。
 	//
 	// 为什么要搬：这张"前缀 → 族处理器"的表曾是工具面的**第二份事实来源**

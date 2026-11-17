@@ -563,6 +563,46 @@ check(not _bad_dir,
       "测试目录结构不合规（必须恰好是 <module>/test/）:\n    " +
       "\n    ".join(_bad_dir[:10]))
 
+# ── 4.13 插件不得直接 import 内核策略包（2026-11-16 新增）──
+#
+# ## 这条守的是一条**架构边界**，不是风格
+#
+# 插件的职责是"提供事实 + 调 SDK"，策略判定必须在内核（security 模块）。
+# 一旦某插件自己 import 内核策略包，它就能：
+#
+#	· 自己判沙箱（被约束者决定约束）—— 本仓实测栽过：QQ 的 beforeToolcall
+#	  自己判身份/白名单/硬私有，结果拒绝语义散落、插件崩了策略就没了
+#	· 绕过 SDK 的声明面直接读写策略对象
+#
+# 而且**外部插件根本 import 不到**（独立 module / 独立进程）—— 所以这类
+# import 只在内置插件里出现，会造成"内置版能做到、外部版做不到"的语义分裂，
+# 正是 `files` 插件上一代 `archiveBeforeWrite` 的形态。
+#
+# 2026-11-16 实测发现：`internal/plugins/files` 直接 import `internal/system`
+# 调 `ArchiveBeforeWrite` —— 而生产跑的是外部 plugin.bin，仓里那份是
+# 「已迁出但源码未删」的残留。处置：留档收归内核（ToolDef.PathArgs +
+# agent/core/toolguard.go），插件改为只声明参数名。
+_policy_pkgs = ("internal/security", "internal/system")
+_bad_plugin_imports = []
+for _root in ("internal/plugins",):
+    for _dir, _dirs, _files in _os5.walk(_root):
+        _dirs[:] = [x for x in _dirs if x != "test"]
+        for _f in _files:
+            if not _f.endswith(".go") or _f.endswith("_test.go"):
+                continue
+            _path = _os5.path.join(_dir, _f)
+            try:
+                _src = open(_path, encoding="utf-8").read()
+            except Exception:
+                continue
+            for _pkg in _policy_pkgs:
+                if '"github.com/JianFeeeee/HologramAgent/%s"' % _pkg in _src:
+                    _bad_plugin_imports.append("%s → %s" % (_path, _pkg))
+
+check(not _bad_plugin_imports,
+      "以下插件直接 import 了内核策略包（策略必须在内核、插件只调 SDK）：\n    " +
+      "\n    ".join(sorted(_bad_plugin_imports)[:10]))
+
 # ── 5.5 code_lines 自测：这是「注释顶包」的唯一防线，必须自己也被验 ──
 #
 # ★ 为什么需要这段自测（M7 的教训）：

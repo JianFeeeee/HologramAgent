@@ -30,8 +30,16 @@
 > | 插件命名档位 `DeclareProfile` | 完整 | `sdk/security_impl.go`、`proc/corehandler_security.go` | ✅ 声明侧通 |
 > | 插件命名档位 `ActivateProfile` | 完整 | `security/agentscope.go` 的 `setSession` + `BeginRound` | ✅ **2026-10-31 接通**（每 agent 独立实例） |
 > | 敏感词/注入 `Round.CheckContent` → `ScanContentFor` | 完整 | `task.go`（插件输入）、`toolcall.go` defer（工具结果） | ✅ **2026-11-02 接通**（B 档：标记+警示，不阻断） |
-> | 路径沙箱 `CheckPath` | 完整 | **无**（只被 Runtime 自己调 Policy） | 🔴 见 future-plan §1.3 |
-> | 网络闸 `CheckNetwork` | 完整 | **无**（同上） | 🔴 见 future-plan §1.3 |
+> | 路径沙箱 `CheckPath` | 完整 | `agent/core/toolguard.go`（按 `ToolDef.PathArgs` 判） | ✅ **2026-11-16 接通** |
+> | 网络闸 `CheckNetwork` | 完整 | 同上（按 `ToolDef.NetworkArgs` 判） | ✅ **2026-11-16 接通** |
+> | 写前留档 `ArchiveBeforeWrite` | 完整 | 同上（写方向判定通过后立刻留档） | ✅ **2026-11-16 收归内核** |
+> | L0 还原 `RestoreFileFromBaseline` | 完整 | `cmd/homed/guard.go`（L1 梯子） | 🟡 待接（见下） |
+>
+> ★ **2026-11-16 的结构收缩**：`internal/system` 整个包（guard.go + network.go）
+> 并入 `internal/security`（`baseline.go` / `netbaseline.go`）。理由：这三段
+> （能写吗 / 写了留档 / 坏了还原）是**同一条策略**，分散在两个包正是
+> 「留档做了、还原没接」的结构原因。插件不再直接 import 策略包
+> （CI 门禁 4.13 守着），改为 `ToolDef.PathArgs` 声明 —— 策略判定全在内核。
 > | 事件总线授权 + 载荷过闸 | 完整 | `security/mod.go`（唯一装配点） | ✅ 生效 |
 >
 > ★ **历史的教训（两轮都错）**：

@@ -18,7 +18,7 @@ import (
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/recovery"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/system"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // runFailbackRecovery 在 failback worker 内执行 L1 恢复梯子：
@@ -76,7 +76,7 @@ func runFailbackRecovery(dataDir string, cfgReg *internalConfig.ConfigRegistry, 
 	}
 
 	restoreNet := func() ([]string, error) {
-		base, err := system.LoadNetworkBaseline(dataDir)
+		base, err := security.LoadNetworkBaseline(dataDir)
 		if err != nil {
 			return nil, fmt.Errorf("load network baseline: %w", err)
 		}

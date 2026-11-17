@@ -427,6 +427,40 @@ type ToolDef struct {
 	//   · 不与同批其它工具争抢同一资源（SQLite 写、设备、同一输出通道）
 	//   · 执行顺序无关（顺序敏感的工具应留 false，由内核保序）
 	ParallelSafe bool `json:"parallel_safe,omitempty"`
+	// NetworkArgs 声明本工具的参数里**哪些是网络地址**（参数名列表）。
+	//
+	// 内核据此在**执行前**判 `core.security.sandbox.allow_network`：
+	// 被禁时拒绝执行并把理由回给模型。与 PathArgs 同一套声明式边界
+	// （插件只写"哪个参数是地址"，判定规则全在内核一处）。
+	//
+	// ★ 为什么必须声明而不是"扫所有像 URL 的字符串"：
+	// `command` 里可能内嵌 curl、`text` 里可能贴了个链接 —— 按模式扫描会
+	// 把"描述一个 URL"误判成"访问这个 URL"，直接拒掉正常对话。
+	//
+	// ★ 不声明 = 不判（存量插件零改动）。
+	NetworkArgs []string `json:"network_args,omitempty"`
+
+	// PathArgs 声明本工具的参数里**哪些是文件系统路径**（参数名列表）。
+	//
+	// 内核据此在**执行前**做两件事（插件完全无感知，不需要自己判断）：
+	//
+	//	① 沙箱判定（core.security.sandbox.read_roots / write_roots）
+	//	   —— 路径落在允许根之外 ⇒ 拒绝执行，理由回给模型
+	//	② L0 写前留档（受保护路径如 /etc/ 被覆盖前，原文存档供 guard 还原）
+	//
+	// ★ 为什么由**内核**做而不是插件自己判：
+	//
+	//	· 插件各写一套 = 被约束者决定约束（本仓已有实测教训：QQ 的
+	//	  beforeToolcall 自己判身份/白名单，结果拒绝语义散落、插件崩了策略就没了）
+	//	· 外部插件（独立 plugin.bin 子进程）根本拿不到内核的文件系统策略
+	//	· 声明式：插件只写「哪个参数是路径」，判定规则全在内核一处
+	//
+	// ★ 不声明 = 不做路径判定（存量插件不改一行，行为与升级前逐字一致）。
+	//
+	// ⚠️ 别把它写成"所有字符串参数"：`command` / `text` 里的路径要按
+	// 命令语法解析才知道，**瞎猜会误拒**（future-plan §1.3 明确否决了那种做法）。
+	PathArgs []string `json:"path_args,omitempty"`
+
 	// Serial 声明本工具**必须**串行 —— ParallelSafe 的反向标记。
 	//
 	// 为什么需要它：ParallelSafe 的零值 false 已经表达"安全/串行"，
