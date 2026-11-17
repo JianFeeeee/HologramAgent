@@ -4,6 +4,7 @@ import (
 	"log"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 )
 
 // routeInputByOwner 实现**输入路由**：inputch 是最基本的输入路由单位，
@@ -100,6 +101,41 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 		log.Printf("[route] inputch %s owner %s has no matching agent, input handled by fallback %s", evt.OutputChannel, entry.Owner, a.id)
 		return false
 	}
+	// ★ 投递的**推动者**是内核循环：按 agentID 查它登记的投递口。
+	//   本函数只做归属判定（读通道登记表），不做"谁该收到"的裁定。
+	//   循环没装（单测/独立工具）时退回直投，与改造前行为一致。
+	if delivered(entry.Owner, evt, isInterrupt) {
+		return true
+	}
 	rc.agent.io.DeliverRouted(evt, isInterrupt)
 	return true
+}
+
+// delivered 经内核循环把事件交给 owner 登记的投递口。
+//
+// 返回 false 表示循环未装配（单测/独立工具），调用方退回直投。
+func delivered(owner string, evt *agentIO.InputEvent, isInterrupt bool) bool {
+	l := kernelloop.Current()
+	if l == nil {
+		return false
+	}
+	return l.RouteInput(owner, evt, isInterrupt)
+}
+
+// inputSink 是本 agent 在内核循环里登记的投递口。
+//
+// ★ 它是 agent 侧**唯一**暴露给循环的东西：一个"把输入交给我"的动作。
+// 循环不认识 *Agent，也不知道 rt 的单槽覆盖、驻留子的四级队列 ——
+// 那些是各类型 agentloop 自己的语义。
+type inputSink struct{ a *Agent }
+
+func (s inputSink) Deliver(evt any, isInterrupt bool) {
+	if s.a == nil || s.a.io == nil {
+		return
+	}
+	e, ok := evt.(*agentIO.InputEvent)
+	if !ok || e == nil {
+		return
+	}
+	s.a.io.DeliverRouted(e, isInterrupt)
 }

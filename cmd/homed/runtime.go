@@ -69,6 +69,8 @@ func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
 		loop.RegisterPeriodic(t)
 	}
 
+	// 登记为进程级推动者：运行期消费方经它找到"谁在推动"。
+	kernelloop.SetCurrent(loop)
 	loop.Start()
 
 	// ④ 主 agent 的 agentloop 从这一刻开始转（它与本循环天然并行）。
@@ -82,6 +84,7 @@ func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
 		len(loop.PeriodicTasks()))
 
 	return func() {
+		kernelloop.SetCurrent(nil)
 		loop.Stop()
 	}, nil
 }

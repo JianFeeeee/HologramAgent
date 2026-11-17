@@ -12,6 +12,7 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -650,6 +651,12 @@ func New(cfg AgentConfig) *Agent {
 }
 
 func (a *Agent) Start() {
+	// ★ 向**内核事件循环**登记本 agent 的输入投递口：此后按 inputch 归属
+	//   路由的输入由循环推动到它这里（用户裁定「处理输入事件路由」归 eventloop）。
+	//   循环未装配（单测/独立工具）时这一步是 no-op，行为与改造前一致。
+	if l := kernelloop.Current(); l != nil {
+		l.RegisterInputSink(string(a.id), &inputSink{a: a})
+	}
 	go a.schedulerLoop()
 	go a.interceptLoop()
 	// ★ 后台维护任务由**类型注册**（ticker.go），基座不硬编码任何一条。
@@ -670,6 +677,11 @@ func (a *Agent) Stop() {
 	// 同名 agent 重建会继承上一代的 long-time 档 —— 那时可能是
 	// "上一个任务留下的访客权限"被新一代默默沿用。
 	// 与主体策略撤销（revokeChildPolicy）同一纪律。
+	// ★ 从内核循环撤销投递口登记：同名重建是常规操作，残留会让输入
+	//   投到一个已销毁的 agent 上（悬空引用）。
+	if l := kernelloop.Current(); l != nil {
+		l.UnregisterInputSink(string(a.id))
+	}
 	a.ReleaseSecurityScope()
 	// 授权事实也一起撤销（防同名重建继承旧授权，与主体策略同纪律）。
 	if g := a.gate(); g != nil {

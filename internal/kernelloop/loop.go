@@ -530,3 +530,29 @@ func (l *Loop) taskStopCh(t PeriodicTask) <-chan struct{} {
 	l.taskStops[t.Owner] = ch
 	return ch
 }
+
+// ───────────────────────── 全局可达的循环实例 ─────────────────────────
+
+var (
+	currentMu sync.RWMutex
+	current   *Loop
+)
+
+// SetCurrent 登记本进程正在跑的循环（装配完成后由 startRuntime 调用一次）。
+//
+// ★ 为什么需要全局可达：内核内部的消费方（agent 的输入路由、待投递的
+// 常驻消费者）要在运行期找到"推动者是谁"，但它们不该持有它 ——
+// 那是把运行期结构塞进模块字段（本设计一直在消除的形态）。
+// 与 `kstate.Get()` 同一手法：装配后登记，未装配返回 nil（零成本跳过）。
+func SetCurrent(l *Loop) {
+	currentMu.Lock()
+	current = l
+	currentMu.Unlock()
+}
+
+// Current 取本进程正在跑的循环（未装配/已停机时返回 nil）。
+func Current() *Loop {
+	currentMu.RLock()
+	defer currentMu.RUnlock()
+	return current
+}
