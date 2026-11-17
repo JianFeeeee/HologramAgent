@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -39,7 +40,7 @@ func validateToolArgs(args map[string]interface{}, schema map[string]interface{}
 		}
 		v, present := args[name]
 		if !present || isBlankArg(v) {
-			return newToolError(ErrReasonRequired, name,
+			return standard.NewToolError(standard.ErrReasonRequired, name,
 				fmt.Sprintf("缺少必填参数 %s", name),
 				requiredHint(name, props[name]))
 		}
@@ -145,7 +146,7 @@ func checkArgType(v interface{}, want string) *sdk.ToolError {
 		// 只在**明显是容器/标量错配**时报错。
 		switch v.(type) {
 		case []interface{}, []string, map[string]interface{}:
-			return newToolError(ErrReasonType, "", "", "")
+			return standard.NewToolError(standard.ErrReasonType, "", "", "")
 		}
 		return nil
 
@@ -171,14 +172,14 @@ func checkArgType(v interface{}, want string) *sdk.ToolError {
 			if _, err := strconv.ParseFloat(trimmed, 64); err == nil {
 				return nil
 			}
-			return newToolError(ErrReasonType, "",
+			return standard.NewToolError(standard.ErrReasonType, "",
 				fmt.Sprintf("参数需要整数，收到 %q", x),
 				"请改传数字（如 20 或 20.0），或把该参数改用 string 并带单位（如 \"20s\"）。")
 		case bool:
-			return newToolError(ErrReasonType, "",
+			return standard.NewToolError(standard.ErrReasonType, "",
 				"参数需要整数，收到布尔值", "请改传数字。")
 		default:
-			return newToolError(ErrReasonType, "",
+			return standard.NewToolError(standard.ErrReasonType, "",
 				fmt.Sprintf("参数需要整数，收到 %T", v), "请改传数字。")
 		}
 
@@ -191,7 +192,7 @@ func checkArgType(v interface{}, want string) *sdk.ToolError {
 			if _, err := strconv.ParseFloat(strings.TrimSpace(x), 64); err == nil {
 				return nil
 			}
-			return newToolError(ErrReasonType, "",
+			return standard.NewToolError(standard.ErrReasonType, "",
 				fmt.Sprintf("参数需要数字，收到 %q", x),
 				"请改传数字，或把该参数改用 string。")
 		}
@@ -206,7 +207,7 @@ func checkArgType(v interface{}, want string) *sdk.ToolError {
 		case []interface{}, []string:
 			return nil
 		}
-		return newToolError(ErrReasonType, "",
+		return standard.NewToolError(standard.ErrReasonType, "",
 			fmt.Sprintf("参数需要数组，收到 %T", v), "请改传数组，如 [\"a\", \"b\"]。")
 
 	case "object":
@@ -214,7 +215,7 @@ func checkArgType(v interface{}, want string) *sdk.ToolError {
 		case map[string]interface{}:
 			return nil
 		}
-		return newToolError(ErrReasonType, "",
+		return standard.NewToolError(standard.ErrReasonType, "",
 			fmt.Sprintf("参数需要对象，收到 %T", v), "请改传对象，如 {\"k\": \"v\"}。")
 	}
 	return nil

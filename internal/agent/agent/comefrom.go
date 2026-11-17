@@ -95,10 +95,14 @@ func (a *Agent) comefromForAgent() string {
 	return comeFromUser
 }
 
-// comeFromFor 由**层级事实**推导来源标签（基座不再按 parentID 分支）。
+// comeFromFor 由**层级事实**推导来源标签。
 //
 // 子在父的上下文里执行（转投保留原事件来源，但执行者变了），
 // 所以子一律是 internal；根是 user。
+//
+// ★ 参数名是 `parentID` 而不是读某个字段：这是**构造期的数据事实**
+// （"我有没有父"），不是类型身份。类型模块把它作为 Hooks.ComeFrom 的值
+// 传进基座，基座不因此产生任何按类型的判断。
 func comeFromFor(parentID string) string {
 	if parentID != "" {
 		return comeFromInternal

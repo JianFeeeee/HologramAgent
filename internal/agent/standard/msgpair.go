@@ -1,4 +1,4 @@
-package agent
+package standard
 
 // 发送前的消息配对自检（2026-11-04）。
 //
@@ -43,7 +43,7 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
-// dropUnpairedToolCalls 剔掉没有配对结果的 tool_calls。
+// DropUnpairedToolCalls 剔掉没有配对结果的 tool_calls。
 //
 // 规则（与协议严格对齐）：
 //   - 一条 assistant 消息声明的每个 call，必须在**紧随其后的连续 tool 消息**
@@ -52,13 +52,13 @@ import (
 //   - 对应的孤立 tool 消息（找不到 call 的）一并删除。
 //
 // 只在**真的有问题**时才改动切片，正常路径零开销（一次线性扫描）。
-func dropUnpairedToolCalls(msgs []agentAPI.Message) []agentAPI.Message {
+func DropUnpairedToolCalls(msgs []agentAPI.Message) []agentAPI.Message {
 	if len(msgs) == 0 {
 		return msgs
 	}
 
 	// 先扫一遍判断有没有问题：绝大多数请求是干净的，不做任何分配。
-	if !hasUnpairedToolCalls(msgs) {
+	if !HasUnpairedToolCalls(msgs) {
 		return msgs
 	}
 
@@ -132,12 +132,12 @@ func dropUnpairedToolCalls(msgs []agentAPI.Message) []agentAPI.Message {
 	return final
 }
 
-// hasUnpairedToolCalls 是 dropUnpairedToolCalls 的**只读探测**版本。
+// HasUnpairedToolCalls 是 DropUnpairedToolCalls 的**只读探测**版本。
 //
 // 单独写一份的理由：正常路径（绝大多数请求）应当零分配返回，
-// 而 dropUnpairedToolCalls 需要建 map/slice。两份逻辑必须同源，
+// 而 DropUnpairedToolCalls 需要建 map/slice。两份逻辑必须同源，
 // 所以这里只判"是否合法"，不为修正做准备。
-func hasUnpairedToolCalls(msgs []agentAPI.Message) bool {
+func HasUnpairedToolCalls(msgs []agentAPI.Message) bool {
 	// 先收集所有声明过的 call ID（含后面出现的），用于判断孤立 tool。
 	allDeclared := make(map[string]bool)
 	for _, m := range msgs {

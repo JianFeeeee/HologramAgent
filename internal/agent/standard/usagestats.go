@@ -1,4 +1,4 @@
-package agent
+package standard
 
 import (
 	"sync"
@@ -43,8 +43,8 @@ type UsageTotals struct {
 	CacheReportedCalls int64 `json:"cache_reported_calls"`
 }
 
-// add 并入一次调用的用量。
-func (t *UsageTotals) add(u agentAPI.TokenUsage) {
+// Add 并入一次调用的用量。
+func (t *UsageTotals) Add(u agentAPI.TokenUsage) {
 	t.Calls++
 	t.Prompt += int64(u.Prompt)
 	t.Completion += int64(u.Completion)
@@ -76,7 +76,7 @@ func (t UsageTotals) CacheHitRate() (float64, bool) {
 	return float64(t.CacheRead) / float64(denom), true
 }
 
-// usageLedger 是 UsageTotals 的并发安全容器。
+// Ledger 是 UsageTotals 的并发安全容器。
 //
 // 为何要锁：LLM 调用可能来自多个 goroutine ——
 // · 主 agent 与驻留子 agent 各自的任务循环；
@@ -85,26 +85,26 @@ func (t UsageTotals) CacheHitRate() (float64, bool) {
 //	（子调用/摘要），与主循环并发。
 //
 // 计数丢失是**静默**的（少算一点没人看得出来），所以宁可用锁。
-type usageLedger struct {
+type Ledger struct {
 	mu     sync.Mutex
 	totals UsageTotals
 }
 
-// record 并入一次调用。
-func (l *usageLedger) record(u agentAPI.TokenUsage) {
+// Record 并入一次调用。
+func (l *Ledger) Record(u agentAPI.TokenUsage) {
 	l.mu.Lock()
-	l.totals.add(u)
+	l.totals.Add(u)
 	l.mu.Unlock()
 }
 
-// usageMapFromInts 把 SDK 插件的 TokenUsage(map[string]int) 归一成
+// UsageMapFromInts 把 SDK 插件的 TokenUsage(map[string]int) 归一成
 // 回包用的 map[string]interface{}。
 //
 // 为何必须转而不能直接透传：Go 的类型断言对 map 是精确匹配，
 // 消费方 handler_openai.go 写的是 .(map[string]interface{})，
 // 直接塞 map[string]int 会断言失败 ⇒ usage 静默变 nil，两边都不报错。
 // 注意这里**不**过滤零值：插件既然显式设了这份 map，就尊重它的全部内容。
-func usageMapFromInts(in map[string]int) map[string]interface{} {
+func UsageMapFromInts(in map[string]int) map[string]interface{} {
 	m := make(map[string]interface{}, len(in))
 	for k, v := range in {
 		m[k] = v
@@ -112,12 +112,12 @@ func usageMapFromInts(in map[string]int) map[string]interface{} {
 	return m
 }
 
-// turnUsageMap 把**本次请求**的用量转成对外回包用的键值形式。
+// TurnUsageMap 把**本次请求**的用量转成对外回包用的键值形式。
 //
 // 键名用 OpenAI 的 snake_case（prompt_tokens/…），且值类型为
 // map[string]interface{} —— 消费方（handler_openai.go）用精确类型断言取值，
 // 给 map[string]int 会静默变 nil（见 eventloop.go:emitResponse 的说明）。
-func turnUsageMap(u agentAPI.TokenUsage) map[string]interface{} {
+func TurnUsageMap(u agentAPI.TokenUsage) map[string]interface{} {
 	m := map[string]interface{}{
 		"prompt_tokens":     u.Prompt,
 		"completion_tokens": u.Completion,
@@ -140,15 +140,15 @@ func turnUsageMap(u agentAPI.TokenUsage) map[string]interface{} {
 	return m
 }
 
-// snapshot 取当前累计值的副本。
-func (l *usageLedger) snapshot() UsageTotals {
+// Snapshot 取当前累计值的副本。
+func (l *Ledger) Snapshot() UsageTotals {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.totals
 }
 
-// reset 清零（供测试与「重置统计」入口使用）。
-func (l *usageLedger) reset() {
+// Reset 清零（供测试与「重置统计」入口使用）。
+func (l *Ledger) Reset() {
 	l.mu.Lock()
 	l.totals = UsageTotals{}
 	l.mu.Unlock()

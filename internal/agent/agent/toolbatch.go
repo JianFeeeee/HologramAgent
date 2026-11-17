@@ -37,6 +37,7 @@ import (
 	"sync"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -161,7 +162,7 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 
 		// ③ 插件崩溃态：不执行（与主 agent 一致）。
 		if pluginName := a.resolveToolPlugin(tc.Name); pluginName != "" {
-			if !a.pluginHealth.isHealthy(pluginName) {
+			if !a.pluginHealth.IsHealthy(pluginName) {
 				res.Text = pluginNameCrashedText(pluginName)
 				res.Denied = true
 				results[i] = res
@@ -175,7 +176,7 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 		res.Raw = out.Raw
 		tctx.ToolResults = []sdk.ToolResult{{
 			CallID: tc.ID, Name: tc.Name,
-			Success: !isToolError(out.Raw), Result: out.Raw,
+			Success: !standard.IsToolError(out.Raw), Result: out.Raw,
 		}}
 
 		// ⑤ after_toolcall —— 插件可脱敏/改写结果。
@@ -188,8 +189,8 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 				// 插件清空：保持原样，不覆盖。
 			default:
 				res.Raw = r
-				res.Text = toolErrorText(tc.Name, r)
-				if !isToolError(r) {
+				res.Text = standard.ToolErrorText(tc.Name, r)
+				if !standard.IsToolError(r) {
 					res.Text = fmt.Sprintf("%v", r)
 				}
 			}

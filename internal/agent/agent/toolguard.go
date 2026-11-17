@@ -42,6 +42,7 @@ import (
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
@@ -71,7 +72,7 @@ func (a *Agent) guardToolPaths(tc agentAPI.ToolCall) (toolOutcome, bool) {
 				if s, _ := v.(string); s != "" {
 					if d := a.checkNetworkAllowed(); !d.Allowed {
 						log.Printf("[security] tool %s denied by network policy (%s)", tc.Name, argName)
-						te := newToolError(ErrReasonDenied, "",
+						te := standard.NewToolError(standard.ErrReasonDenied, "",
 							fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
 							"Network access is disabled by policy on this machine. Do not retry; report back to the user.")
 						return toolOutcome{Text: te.Error(), Raw: te}, true
@@ -99,7 +100,7 @@ func (a *Agent) guardToolPaths(tc agentAPI.ToolCall) (toolOutcome, bool) {
 		direction := pathDirection(tc.Name)
 		if d := a.checkSandboxPath(direction, path); !d.Allowed {
 			log.Printf("[security] tool %s denied by sandbox (%s): %s", tc.Name, argName, d.Reason)
-			te := newToolError(ErrReasonDenied, "",
+			te := standard.NewToolError(standard.ErrReasonDenied, "",
 				fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
 				"The path is outside the sandbox. Use a path inside the allowed roots, or report back to the user.")
 			return toolOutcome{Text: te.Error(), Raw: te}, true

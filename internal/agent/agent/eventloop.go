@@ -9,6 +9,7 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
@@ -513,9 +514,9 @@ func (a *Agent) emitResponse(evt *agentIO.InputEvent, response string, turnUsage
 	// 转换只发生在这一个出口。
 	switch {
 	case stageCtx.TokenUsage != nil:
-		payload["usage"] = usageMapFromInts(stageCtx.TokenUsage)
+		payload["usage"] = standard.UsageMapFromInts(stageCtx.TokenUsage)
 	case !turnUsage.IsZero():
-		payload["usage"] = turnUsageMap(turnUsage)
+		payload["usage"] = standard.TurnUsageMap(turnUsage)
 	}
 	if evt.ResponseCh != nil {
 		// 非阻塞写：ResponseCh 由同步调用方以 cap=1 创建。按不变量 I5（每任务恰一次

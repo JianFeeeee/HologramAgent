@@ -280,10 +280,10 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 
 // usageStatus 把 agent 的累计用量账目转成对外状态视图。
 //
-// 数据源就是 usageLedger（每次 LLM 调用后记账的那份），所以这里**不重算**：
+// 数据源就是 standard.Ledger（每次 LLM 调用后记账的那份），所以这里**不重算**：
 // 重算等于给同一个事实造第二个来源，两边迟早会不一致。
 func (a *Agent) usageStatus() sdk.UsageStatus {
-	snap := a.usageLedger.snapshot()
+	snap := a.usageLedger.Snapshot()
 	out := sdk.UsageStatus{
 		Calls:              snap.Calls,
 		Prompt:             snap.Prompt,

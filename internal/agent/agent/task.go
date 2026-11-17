@@ -30,6 +30,7 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -206,7 +207,7 @@ type TaskFrame struct {
 
 	// turnUsage 是本轮任务（一个 TaskFrame）内全部 LLM 调用的用量合计。
 	//
-	// 为何要单独存：usageLedger 是**会话级**累计（跨用户请求），
+	// 为何要单独存：standard.Ledger 是**会话级**累计（跨用户请求），
 	// 而对外回包的 usage 按 OpenAI 语义应是**本次请求**。
 	// 两者口径不同，不能互相顶替：把会话累计当本次报了，
 	// 第二次请求就会报出翻倍的数字。
@@ -808,7 +809,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	// 这里做的是**止损 + 定位**：把没有配对结果的 tool_calls 剔掉（连同
 	// 该 assistant 消息里其余仍有效的 call 一起重排），并记录被剔的是谁。
 	// 不静默——日志里能看出是哪一轮、哪个工具。
-	f.Msgs = dropUnpairedToolCalls(f.Msgs)
+	f.Msgs = standard.DropUnpairedToolCalls(f.Msgs)
 
 	req := &agentAPI.CompletionRequest{
 		Messages:        f.Msgs,
@@ -875,7 +876,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 
 	f.StageCtx.LLMText = resp.Content
 	f.StageCtx.ReasoningContent = resp.ReasoningContent
-	// 用量同时给插件看（StageCtx）与记账（usageLedger）。
+	// 用量同时给插件看（StageCtx）与记账（standard.Ledger）。
 	//
 	// StageCtx.TokenUsage 是 map[string]int，放不了布尔，
 	// 所以「上游是否报了缓存」只在事件里给（见下面的 cache_reported）。
@@ -911,9 +912,9 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	//
 	// 为何把累计也带上：要回答的是「这个会话花了多少、缓存省了多少」，
 	// 只有单次数字就得消费方自己一条条加。放在同一事件里，消费方无需另建状态。
-	a.usageLedger.record(resp.TokenUsage)
+	a.usageLedger.Record(resp.TokenUsage)
 	// 本轮任务内的合计（一个 TaskFrame 可能多轮 LLM：工具回环）。
-	// 它与 usageLedger 的口径不同（本次请求 vs 会话累计），两者都要留。
+	// 它与 standard.Ledger 的口径不同（本次请求 vs 会话累计），两者都要留。
 	f.turnUsage.Add(resp.TokenUsage)
 
 	if resp.TokenUsage.Total > 0 {
@@ -934,7 +935,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	}
 	// 会话累计。命中率**不可算时不带该字段** ——
 	// 让消费方显示「—」而不是把「不知道」画成 0% 命中率。
-	if sess := a.usageLedger.snapshot(); sess.Calls > 0 {
+	if sess := a.usageLedger.Snapshot(); sess.Calls > 0 {
 		sessPayload := map[string]interface{}{
 			"prompt":               sess.Prompt,
 			"completion":           sess.Completion,
@@ -1116,7 +1117,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
 	// 插件崩溃态：不执行
-	if pluginName != "" && !a.pluginHealth.isHealthy(pluginName) {
+	if pluginName != "" && !a.pluginHealth.IsHealthy(pluginName) {
 		res.text = fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		res.denied = true
 		return res
@@ -1133,7 +1134,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	res.raw = outcome.Raw
 	tctx.ToolResults = []sdk.ToolResult{{
 		CallID: tc.ID, Name: tc.Name, Plugin: pluginName,
-		Success: !isToolError(outcome.Raw), Result: outcome.Raw,
+		Success: !standard.IsToolError(outcome.Raw), Result: outcome.Raw,
 	}}
 	return res
 }
@@ -1186,7 +1187,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	}
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
-	if pluginName != "" && !a.pluginHealth.isHealthy(pluginName) {
+	if pluginName != "" && !a.pluginHealth.IsHealthy(pluginName) {
 		result := fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		a.Logf("skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
 		f.ensureBatchAssistant()
@@ -1304,11 +1305,11 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 
 	// Success 此前是**唯一**赋值点且硬编码 true ⇒ 该字段恒真、结构上不可能为
 	// false。工具失败是以 nil error + 错误**值**返回的，所以判据必须看返回值。
-	// ⚠️ isToolError 必须同时覆盖存量插件的两种失败约定与「成功不误判」，
+	// ⚠️ standard.IsToolError 必须同时覆盖存量插件的两种失败约定与「成功不误判」，
 	// 否则升级会把存量插件的成功判成失败（见 toolerror_test.go）。
 	f.toolCtxFor(f.ToolIdx).ToolResults = []sdk.ToolResult{{
 		CallID: f.CurTool.ID, Name: f.CurTool.Name, Plugin: f.CurToolPlugin,
-		Success: !isToolError(outcome.Raw), Result: outcome.Raw,
+		Success: !standard.IsToolError(outcome.Raw), Result: outcome.Raw,
 	}}
 	f.Step = StepToolAfter
 	return outcomeContinue
@@ -1333,8 +1334,8 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 			// 插件清空结果：保持原样，不覆盖。
 		default:
 			f.CurRaw = r
-			result = toolErrorText(f.CurTool.Name, r)
-			if !isToolError(r) {
+			result = standard.ToolErrorText(f.CurTool.Name, r)
+			if !standard.IsToolError(r) {
 				result = fmt.Sprintf("%v", r)
 			}
 		}
@@ -1641,7 +1642,7 @@ func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers [
 			}
 
 			// opt-in 提示词抓包（HOMED_PROMPT_DUMP）：见 promptdump.go。
-			dumpPrompt(channel, req)
+			standard.DumpPrompt(channel, req)
 
 			fCtx, fCancel := context.WithCancel(a.ctx)
 			a.llmMu.Lock()

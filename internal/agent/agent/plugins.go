@@ -22,7 +22,7 @@ func (a *Agent) autoReloadPlugins() {
 	if a.pluginReg == nil {
 		return
 	}
-	for _, name := range a.pluginHealth.pendingReloads() {
+	for _, name := range a.pluginHealth.PendingReloads() {
 		if !a.pluginReg.AutoRestartEnabled(name) {
 			log.Printf("[agent] skip auto-reload plugin %s: auto-restart disabled by plugin", name)
 			continue
@@ -34,7 +34,7 @@ func (a *Agent) autoReloadPlugins() {
 		if err := a.pluginReg.ReloadOne(name); err != nil {
 			log.Printf("[agent] auto-reload plugin %s failed: %v", name, err)
 		} else {
-			a.pluginHealth.markReloaded(name)
+			a.pluginHealth.MarkReloaded(name)
 			log.Printf("[agent] plugin %s reloaded successfully", name)
 		}
 	}

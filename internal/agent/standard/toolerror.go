@@ -1,4 +1,4 @@
-package agent
+package standard
 
 import (
 	"encoding/json"
@@ -27,12 +27,12 @@ const (
 	ErrReasonDenied = "denied"
 )
 
-// newToolError 构造一个结构化失败。
-func newToolError(reason, field, detail, hint string) *sdk.ToolError {
+// NewToolError 构造一个结构化失败。
+func NewToolError(reason, field, detail, hint string) *sdk.ToolError {
 	return &sdk.ToolError{Reason: reason, Field: field, Detail: detail, Hint: hint}
 }
 
-// isToolError 报告一个工具返回值是否表示**失败**。
+// IsToolError 报告一个工具返回值是否表示**失败**。
 //
 // 存在的理由：工具失败是以 `nil` error + 错误**值**返回的，而
 // ToolResult.Success 此前被硬编码为 true（唯一赋值点），该字段恒真、
@@ -50,7 +50,7 @@ func newToolError(reason, field, detail, hint string) *sdk.ToolError {
 //     整条判失败会误伤「命令可用但结果非零」这类正常场景。
 //   - stderr 非空：cmd 成功路径常带 stderr（如 warn: deprecated）。
 //   - 字符串 / 数字 / bool / 数组 / nil：均视为成功（output_send 成功即返回 "ok"）。
-func isToolError(v interface{}) bool {
+func IsToolError(v interface{}) bool {
 	switch x := v.(type) {
 	case nil:
 		return false
@@ -88,14 +88,14 @@ func isToolError(v interface{}) bool {
 	}
 }
 
-// toolErrorText renders a failed tool result for the model.
+// ToolErrorText renders a failed tool result for the model.
 // A structured ToolError includes its Hint so the model can act on the real cause.
-func toolErrorText(toolName string, v interface{}) string {
+func ToolErrorText(toolName string, v interface{}) string {
 	switch x := v.(type) {
 	case *sdk.ToolError:
-		return renderToolError(toolName, x)
+		return RenderToolError(toolName, x)
 	case sdk.ToolError:
-		return renderToolError(toolName, &x)
+		return RenderToolError(toolName, &x)
 	case map[string]interface{}:
 		if b, ok := x["isError"].(bool); ok && b {
 			msg, _ := x["content"].(string)
@@ -115,9 +115,9 @@ func toolErrorText(toolName string, v interface{}) string {
 	return fmt.Sprintf("Tool %s failed: %v", toolName, v)
 }
 
-// renderToolError renders a structured failure with field/reason/hint,
+// RenderToolError renders a structured failure with field/reason/hint,
 // so the model knows what to change instead of seeing only "failed".
-func renderToolError(toolName string, e *sdk.ToolError) string {
+func RenderToolError(toolName string, e *sdk.ToolError) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Tool %s failed", toolName)
 	if e.Field != "" {
@@ -138,15 +138,15 @@ func renderToolError(toolName string, e *sdk.ToolError) string {
 	return sb.String()
 }
 
-// renderToolResult renders tool output for the model.
+// RenderToolResult renders tool output for the model.
 // Structured failures take priority and include actionable information;
 // successful non-string values use compact JSON instead of Go map syntax.
-func renderToolResult(toolName string, raw interface{}) string {
+func RenderToolResult(toolName string, raw interface{}) string {
 	if raw == nil {
 		return ""
 	}
-	if isToolError(raw) {
-		return toolErrorText(toolName, raw)
+	if IsToolError(raw) {
+		return ToolErrorText(toolName, raw)
 	}
 	switch x := raw.(type) {
 	case string:

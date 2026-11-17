@@ -1,4 +1,4 @@
-package agent
+package standard
 
 import (
 	"encoding/json"
@@ -43,12 +43,12 @@ import (
 //	# 看几轮就停，看完立刻删。
 //
 // 不要写进 drop-in —— 那会让"临时"变成"永久"，且没有任何人记得删。
-const promptDumpEnv = "HOMED_PROMPT_DUMP"
+const PromptDumpEnv = "HOMED_PROMPT_DUMP"
 
-var promptDumpMu sync.Mutex
+var PromptDumpMu sync.Mutex
 
-func dumpPrompt(channel string, req *agentAPI.CompletionRequest) {
-	path := os.Getenv(promptDumpEnv)
+func DumpPrompt(channel string, req *agentAPI.CompletionRequest) {
+	path := os.Getenv(PromptDumpEnv)
 	if path == "" || req == nil {
 		return
 	}
@@ -77,8 +77,8 @@ func dumpPrompt(channel string, req *agentAPI.CompletionRequest) {
 	}
 	line = append(line, '\n')
 
-	promptDumpMu.Lock()
-	defer promptDumpMu.Unlock()
+	PromptDumpMu.Lock()
+	defer PromptDumpMu.Unlock()
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {

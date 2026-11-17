@@ -1,4 +1,4 @@
-package agent
+package standard
 
 // outputpump.go 是输出通道的**异步壳**。
 //
@@ -43,21 +43,20 @@ package agent
 import (
 	"log"
 	"sync"
-	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
-// outputPumpQueueSize 是每个 rtchild 输出队列的上限。
+// OutputPumpQueueSize 是每个 rtchild 输出队列的上限。
 //
 // 取值依据：rt 的 chunk 通常是几个到几十字节，64 片 ≈ 数百字节到数 KB，
 // 足以吸收一次网络抖动；再大就只是在缓存"用户已经听不到"的过期内容。
-const outputPumpQueueSize = 64
+const OutputPumpQueueSize = 64
 
-// outputPump 是一个输出通道的异步壳。
+// OutputPump 是一个输出通道的异步壳。
 //
 // ★ 生命周期：SpawnRTChild 时创建，StopRTChild 时 Close（排空后退出）。
-type outputPump struct {
+type OutputPump struct {
 	// resolve 每次**重新**解析设备。
 	//
 	// ★ 必须是闭包而不是缓存的 dev 指针：插件崩溃时 releasePluginChannels
@@ -77,19 +76,19 @@ type outputPump struct {
 	name      string // 输出通道名（日志用）
 }
 
-func newOutputPump(name string, resolve func() agentIO.Device) *outputPump {
-	p := &outputPump{
+func NewOutputPump(name string, resolve func() agentIO.Device) *OutputPump {
+	p := &OutputPump{
 		name:    name,
 		resolve: resolve,
 		notify:  make(chan struct{}, 1),
 	}
 	p.wg.Add(1)
-	go p.loop()
+	go p.Loop()
 	return p
 }
 
 // Push 投递一段增量文本，**立即返回**，不等待插件。
-func (p *outputPump) Push(text string) {
+func (p *OutputPump) Push(text string) {
 	if p == nil || text == "" {
 		return
 	}
@@ -100,13 +99,13 @@ func (p *outputPump) Push(text string) {
 	}
 	p.q = append(p.q, text)
 	// 满了：丢最旧（rt 的语义是"最新者胜"，过期内容不该再播）。
-	if len(p.q) > outputPumpQueueSize {
+	if len(p.q) > OutputPumpQueueSize {
 		p.q = p.q[1:]
 		p.dropped++
 		p.mu.Unlock()
 		p.firstDrop.Do(func() {
 			log.Printf("[rtchild] output pump %q queue full (%d), dropping oldest chunks — "+
-				"插件消费慢于模型生成，用户可能听不到最早的一段", p.name, outputPumpQueueSize)
+				"插件消费慢于模型生成，用户可能听不到最早的一段", p.name, OutputPumpQueueSize)
 		})
 		return
 	}
@@ -119,7 +118,7 @@ func (p *outputPump) Push(text string) {
 }
 
 // Close 关闭壳：**排空队列后**退出，避免把最后半句吞掉。
-func (p *outputPump) Close() {
+func (p *OutputPump) Close() {
 	if p == nil {
 		return
 	}
@@ -138,7 +137,7 @@ func (p *outputPump) Close() {
 }
 
 // Stats 返回（剩余队列深度，丢弃片数）—— 诊断与判据用。
-func (p *outputPump) Stats() (depth int, dropped uint64) {
+func (p *OutputPump) Stats() (depth int, dropped uint64) {
 	if p == nil {
 		return 0, 0
 	}
@@ -147,8 +146,8 @@ func (p *outputPump) Stats() (depth int, dropped uint64) {
 	return len(p.q), p.dropped
 }
 
-// loop 是唯一的消费者。
-func (p *outputPump) loop() {
+// Loop 是唯一的消费者。
+func (p *OutputPump) Loop() {
 	defer p.wg.Done()
 	for {
 		<-p.notify
@@ -167,13 +166,13 @@ func (p *outputPump) loop() {
 			p.q = p.q[1:]
 			p.mu.Unlock()
 
-			p.emit(text)
+			p.Emit(text)
 		}
 	}
 }
 
-// emit 真正把一片交给设备。★ 每次重新解析设备（见 resolve 的注释）。
-func (p *outputPump) emit(text string) {
+// Emit 真正把一片交给设备。★ 每次重新解析设备（见 resolve 的注释）。
+func (p *OutputPump) Emit(text string) {
 	dev := p.resolve()
 	if dev == nil {
 		// ★ 设备缺失必须留痕（一次性）：插件崩溃期间会走到这里，
@@ -185,21 +184,6 @@ func (p *outputPump) emit(text string) {
 		return
 	}
 	if _, err := dev.Execute(p.name, map[string]interface{}{"text": text}); err != nil {
-		log.Printf("[rtchild] output pump %q emit failed: %v", p.name, err)
+		log.Printf("[rtchild] output pump %q Emit failed: %v", p.name, err)
 	}
-}
-
-// pumpWaitDrain 等一个 pump 排空（判据用，避免用 sleep）。
-func pumpWaitDrain(p *outputPump, within time.Duration) bool {
-	if p == nil {
-		return true
-	}
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if depth, _ := p.Stats(); depth == 0 {
-			return true
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	return false
 }
