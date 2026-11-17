@@ -49,6 +49,8 @@ const (
 	FacIO = "kernel-io"
 	// FacEventBus 是事件总线的**代理面**（安全模块注册；消费方唯一的取用入口）。
 	FacEventBus = "eventbus"
+	// FacGraphOpener 是图记忆的**装配面**（memory 模块提供，类型模块用它开子视图）。
+	FacGraphOpener = "memory.opener"
 	// FacEventDispatch 是**投递驱动者的注入点**（安全模块提供，
 	// 供运行期事件循环把 Dispatcher 挂上裸总线）。
 	FacEventDispatch = "eventbus.dispatch"
@@ -375,6 +377,30 @@ type EventDispatcher interface {
 // 只有运行期的事件循环会调它一次；消费方拿不到（也拿不到裸总线）。
 type EventDispatchSink interface {
 	SetDispatcher(d EventDispatcher)
+}
+
+// GraphMemoryOpener 是**图记忆的装配面**：打开只读视图与轻量实例。
+//
+// ★ 为什么需要它（2026-11-17 拆包）：驻留子与 rtchild 要 `OpenGraphDBReadOnly`
+//   - `NewLightMemory` 来装配自己的记忆面。那两个是**实现构造**，agent 不该
+//     直接调 —— 但也不能没有。于是由 memory 模块把这两个构造挂到设施表，
+//     类型模块经 `Require` 取（这样"谁来构造"是装配的事，不是基座的事）。
+//
+// ★ 返回的是 `GraphMemory`/`any` 而不是具体类型：消费方只需要"能 Recall/Commit
+//
+//	的图记忆面"与"可关闭句柄"，不需要知道它是 LightMemory 还是 GraphDB。
+type GraphMemoryOpener interface {
+	// OpenReadOnly 按已存在的主库路径开一个**结构上写不进**的只读视图。
+	OpenReadOnly(mainPath string) (GraphMemory, error)
+	// OpenLight 用只读主库 + temp 路径构造轻量实例（读 temp∪main、只写 temp）。
+	//
+	// 返回值是 `any` 而不是 GraphMemory：LightMemory 的方法集与全量 GraphDB
+	// 不同（它只实现 Recall/Commit 那一面），强行统一成同一接口就得给
+	// GraphMemory 加它没有的方法 —— 那是把实现的形状泄漏成契约。
+	// 消费方（驻留子/rt 的装配点）自己断言成它需要的窄面。
+	OpenLight(mainRO GraphMemory, tempPath string, allowWrite bool) (any, error)
+	// Close 关闭一个由本接口打开的句柄（幂等）。
+	Close(m GraphMemory) error
 }
 
 // ───────────────────────── 安全闸门 ─────────────────────────

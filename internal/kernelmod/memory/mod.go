@@ -33,7 +33,11 @@ type Module struct{}
 
 func (Module) Name() string       { return "memory" }
 func (Module) Requires() []string { return []string{kernelmod.FacKernelIO} }
-func (Module) Provides() []string { return []string{kernelmod.FacMemory} }
+func (Module) Provides() []string {
+	// FacGraphOpener 是**装配面**：类型模块（驻留子/rtchild）用它开自己的
+	// 只读主库视图与 temp 轻量实例，而不必 import memory 实现包。
+	return []string{kernelmod.FacMemory, kernelapi.FacGraphOpener}
+}
 
 func (Module) Init(ks *kstate.State) error {
 	// ★ 读取前检查（用户指定的做法："结构体成员初始置 nil 加读取前检查"）。
@@ -85,6 +89,7 @@ func (Module) Init(ks *kstate.State) error {
 	// 每个名字要么装着、要么缺失（Require 返回 ok=false，消费方响亮报错）。
 	if memDB != nil {
 		ks.Provide(kernelapi.FacMemory, memDB)
+		ks.Provide(kernelapi.FacGraphOpener, memory.NewGraphOpener())
 	}
 	ks.Provide(kernelapi.FacMemoryIndexer, memIdx)
 	ks.Provide(kernelapi.FacMemorySocial, socialStore)
