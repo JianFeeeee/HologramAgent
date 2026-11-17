@@ -1140,7 +1140,7 @@ func (a *Agent) isKernelLevelSource(source string) bool {
 		name = name[:i]
 	}
 	// ① 编译期内置插件（根 agent 的 L4 来源之一）。
-	if a.pluginReg != nil && a.pluginReg.IsBuiltinPlugin(name) {
+	if a.mainState().pluginReg != nil && a.mainState().pluginReg.IsBuiltinPlugin(name) {
 		return true
 	}
 	// ② **本 agent 的上级**（驻留子的父）—— 设计 §6.1 的 L4 通则：

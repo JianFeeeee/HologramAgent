@@ -33,8 +33,14 @@ package agent
 
 import (
 	"sync"
+	"time"
 
+	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // rtState 是 rtchild 专属状态。
@@ -80,12 +86,80 @@ type workerState struct {
 	tasks  map[string]*childTaskState
 }
 
+// mainState 是**主 agent 专属状态**（记忆整理面 / 媒体 / 插件 / 预算统计）。
+//
+// ★ 为什么连记忆与插件的句柄都放这里：它们不是"内核设施"，而是**主 agent
+// 用它做记忆整理**的那一份装配（蒸馏/归档/合并/复审/记忆块/媒体桥）。
+// 驻留子与 rtchild 是轻量内核，它们的记忆面只有 Recall/Commit（见 memoryface）。
+//
+// 把这些放基座，等于让每个 agent 实例都挂着一整套它用不到的实现句柄。
+type mainState struct {
+	// 记忆整理面（主图库 + 索引器 + 文档/知识/人物/文本记忆）
+	indexer          kernelapi.MemoryIndexer
+	tracker          kernelapi.Tracker
+	coldcontextStore kernelapi.DocStore
+	knowledge        kernelapi.Knowledge
+	social           kernelapi.SocialStore
+	textMem          kernelapi.TextMemory
+	// 嵌入与多模态空间
+	embedder          Embedder
+	multimodalSpace   kernelapi.MultimodalSpace
+	embeddingProvider string
+	embeddingError    string
+	fusionCfg         CrossModalFusionConfig
+	// 插件面
+	pluginReg    kernelapi.PluginHost
+	pluginDir    string
+	stageHost    *kit.StageHostType
+	pluginHealth *kit.PluginHealthTracker
+	// 上下文调优与维护节奏
+	distillInterval time.Duration
+	archiveInterval time.Duration
+	reviewInterval  time.Duration
+	mergeInterval   time.Duration
+	maxContextSize  int
+	ctxTuning       kit.ContextTuning
+	offload         OffloadOptions
+	inputCfg        types.InputProcessingConfig
+	// 媒体与人格
+	personality        *agentPkg.Personality
+	personaStore       PersonaStore
+	pendingMedia       map[string]interface{}
+	pendingMediaBlocks []memory.MemoryBlock
+	pendingToolBlocks  []interface{}
+	noMergeMarkers     map[string]int
+	noMergeMu          sync.Mutex
+	// 工具结果预算的记账（方案 B：只统计不裁剪）
+	toolResultWarnTokens int
+	toolResultReporter   toolResultReporter
+	// 超页处置统计
+	overflowStat struct {
+		sync.Mutex
+		Checked    int
+		Triggered  int
+		Aborted    int
+		Upstream   int
+		LastPruned int
+		LastRatio  float64
+		LastEvents int
+	}
+	// 设备数据面（device 模块挂载的那一份）
+	device   agentAPI.DeviceSurface
+	deviceMu sync.RWMutex
+	// 内置工具处理器（路由交给 device，这里只是族实现）
+	builtinHandlers agentAPI.BuiltinToolHandlers
+	// 开始时间与思考开关
+	startTime       time.Time
+	thinkingEnabled bool
+}
+
 // subStates 是**类型分区表**（见文件头）。
 type subStates struct {
 	rt       *rtState
 	archive  *rtArchiveState
 	resident *residentState
 	worker   *workerState
+	main     *mainState
 }
 
 // ensure 返回分区表（`New` 里已建好；这里只是 nil 安全的兜底）。
@@ -162,4 +236,33 @@ func (a *Agent) mkWorker() *workerState {
 		s.worker = &workerState{tasks: map[string]*childTaskState{}}
 	}
 	return s.worker
+}
+
+// mainState 取主 agent 状态（**惰性创建**，零值可用）。
+//
+// ★ 为什么惰性而不是 nil：这些字段的读写散在 15 个文件的 300 处，
+// 逐个判 nil 会把"这不是主 agent"这个装配事实变成 300 个分支。
+// 语义边界改由**谁填了这些字段**表达（只有主 agent 的装配点会填），
+// 而基座一行代码都不认识"主 agent"。
+func (a *Agent) mainState() *mainState {
+	if a == nil {
+		return nil
+	}
+	s := a.ensureSub()
+	if s == nil {
+		return nil
+	}
+	if s.main == nil {
+		s.main = &mainState{}
+	}
+	return s.main
+}
+
+// mkMain 创建主 agent状态（主 agent 构造时调）。
+func (a *Agent) mkMain() *mainState {
+	s := a.ensureSub()
+	if s.main == nil {
+		s.main = &mainState{}
+	}
+	return s.main
 }

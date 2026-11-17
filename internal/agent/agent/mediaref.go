@@ -90,40 +90,40 @@ func (a *Agent) captureBlockMedia(blocks []agentAPI.ContentBlock, tool string) [
 // embedBlockOnIngest 给刚捕获的块立即计算多模态坐标。
 // 只在多模态空间可用且为图像时执行；音频/未配置时静默跳过（保持既有行为）。
 func (a *Agent) embedBlockOnIngest(b *memory.MemoryBlock) {
-	if b == nil || a.multimodalSpace == nil || !a.multimodalSpace.Loaded() {
+	if b == nil || a.mainState().multimodalSpace == nil || !a.mainState().multimodalSpace.Loaded() {
 		return
 	}
 	if !strings.HasPrefix(b.MIME, "image/") {
 		return
 	}
-	vec, err := a.multimodalSpace.EmbedImageDense(b.Data, b.MIME)
+	vec, err := a.mainState().multimodalSpace.EmbedImageDense(b.Data, b.MIME)
 	if err != nil {
 		log.Printf("[media] ingest embedding failed %s: %v", shortID(b.ID), err)
 		return
 	}
 	b.Vector = vec
-	b.Fingerprint = a.multimodalSpace.Fingerprint()
+	b.Fingerprint = a.mainState().multimodalSpace.Fingerprint()
 }
 
 // stageMediaBlocks 累积本轮捕获的块，等 ContextEvent 建好后一起挂上。
 //
 // 为何要缓存而不是当场挂：块在 process() 执行期间被捕获，而承载它的
 // ContextEvent 要等 process() 返回后才 Append——此刻还没有 owner。
-// 与既有的 a.pendingMedia 同一手法（均由 schedulerLoop goroutine 独占读写）。
+// 与既有的 a.mainState().pendingMedia 同一手法（均由 schedulerLoop goroutine 独占读写）。
 func (a *Agent) stageMediaBlocks(blocks ...memory.MemoryBlock) {
 	if len(blocks) == 0 {
 		return
 	}
-	a.pendingMediaBlocks = append(a.pendingMediaBlocks, blocks...)
+	a.mainState().pendingMediaBlocks = append(a.mainState().pendingMediaBlocks, blocks...)
 }
 
 // drainMediaBlocks 取出并清空本轮累积的块。
 func (a *Agent) drainMediaBlocks() []memory.MemoryBlock {
-	if len(a.pendingMediaBlocks) == 0 {
+	if len(a.mainState().pendingMediaBlocks) == 0 {
 		return nil
 	}
-	out := a.pendingMediaBlocks
-	a.pendingMediaBlocks = nil
+	out := a.mainState().pendingMediaBlocks
+	a.mainState().pendingMediaBlocks = nil
 	return out
 }
 

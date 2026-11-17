@@ -186,7 +186,7 @@ func (a *Agent) pruneForResume(query string, protected int) int {
 	// 这里按**本帧保护条数**重新推导：先算 token 预算能装几条，
 	// 再保证下限是 protected+1（否则 Prune 会把 protected 之外的裁光）。
 	topK := a.contextTopKForProtected(protected)
-	return a.context.PruneWithProtected(query, topK, a.coldcontextStore, protected)
+	return a.context.PruneWithProtected(query, topK, a.mainState().coldcontextStore, protected)
 }
 
 // contextTopKForProtected 是按**指定保护条数**推导保留条数的版本。
@@ -197,7 +197,7 @@ func (a *Agent) contextTopKForProtected(protected int) int {
 	if protected < 0 {
 		protected = 0
 	}
-	hardCap := a.maxContextSize - 1
+	hardCap := a.mainState().maxContextSize - 1
 	if hardCap < protected+1 {
 		hardCap = protected + 1 // 保护范围本身超过运维上限时，保护优先
 	}
@@ -245,7 +245,7 @@ func (a *Agent) contextTopKForProtected(protected int) int {
 // max_context_size 仍作为**上限**保留：它是运维给的「活跃条数」硬约束，
 // 预算算出来的条数超过它时以它为准（否则改了配置不生效会让人困惑）。
 func (a *Agent) contextTopK() int {
-	hardCap := a.maxContextSize - 1 // 运维配置的上限（历史语义：-1 因为要留 protected）
+	hardCap := a.mainState().maxContextSize - 1 // 运维配置的上限（历史语义：-1 因为要留 protected）
 	if hardCap < 1 {
 		hardCap = 1
 	}

@@ -53,10 +53,10 @@ import (
 // 拒绝必须**可执行**（与 CheckTool 同一纪律）：把具体路径与允许根回给模型，
 // 它才能改路径或换工具，而不是反复重试同一条被拒的调用。
 func (a *Agent) guardToolPaths(tc agentAPI.ToolCall) (toolOutcome, bool) {
-	if a == nil || a.stageHost == nil {
+	if a == nil || a.mainState().stageHost == nil {
 		return toolOutcome{}, false
 	}
-	def := a.stageHost.ToolDef(tc.Name)
+	def := a.mainState().stageHost.ToolDef(tc.Name)
 	if def == nil {
 		return toolOutcome{}, false
 	}

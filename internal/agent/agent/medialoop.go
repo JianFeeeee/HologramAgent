@@ -37,10 +37,10 @@ import (
 // 并发数在 ONNX 内嵌路径下不超 CPU 核心数（避免 ONNX 并发限流），
 // 外部 API 路径下不超 8（避免打爆外部服务）。
 func (a *Agent) reembedStaleMedia() {
-	if a.multimodalSpace == nil || !a.multimodalSpace.Loaded() || a.graphDB() == nil {
+	if a.mainState().multimodalSpace == nil || !a.mainState().multimodalSpace.Loaded() || a.graphDB() == nil {
 		return
 	}
-	fp := a.multimodalSpace.Fingerprint()
+	fp := a.mainState().multimodalSpace.Fingerprint()
 	stale, err := a.graphDB().StaleBlockVectors(fp)
 	if err != nil {
 		log.Printf("[media] querying blocks needing re-embedding failed: %v", err)
@@ -65,7 +65,7 @@ func (a *Agent) reembedStaleMedia() {
 		workers = 8
 	}
 	log.Printf("[media] starting vector migration: %d image blocks -> fp=%s dim=%d workers=%d",
-		len(targets), shortFP(fp), a.multimodalSpace.Dim(), workers)
+		len(targets), shortFP(fp), a.mainState().multimodalSpace.Dim(), workers)
 
 	var jobsOnce sync.Once
 	jobs := make(chan memory.MemoryBlock, workers*2)
@@ -151,7 +151,7 @@ func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("block %s has no payload", b.ID)
 	}
-	vec, err := a.multimodalSpace.EmbedImageDense(data, mime)
+	vec, err := a.mainState().multimodalSpace.EmbedImageDense(data, mime)
 	if err != nil {
 		return err
 	}

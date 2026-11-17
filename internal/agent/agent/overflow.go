@@ -192,10 +192,10 @@ func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bo
 		ratio = a.overflowRatioNow()
 	}
 	if a != nil {
-		a.overflowStat.Lock()
-		checked := a.overflowStat.Checked
-		a.overflowStat.Checked++
-		a.overflowStat.Unlock()
+		a.mainState().overflowStat.Lock()
+		checked := a.mainState().overflowStat.Checked
+		a.mainState().overflowStat.Checked++
+		a.mainState().overflowStat.Unlock()
 		// 诊断留痕：这条判据在每个注入点都会走，而生产上很少触发。
 		// 没有这行日志时，「没触发」和「没执行」无法区分（2026-10-01 T10
 		// 排查花了 10 轮工具调用才卡在这里）。只记比值与判定，不记内容。
@@ -227,9 +227,9 @@ func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bo
 	if force {
 		// 上游报错是一次**独立的上报**（与本地水位分开计数），
 		// 计数放在这里而不是调用方：它是判据的一部分，不是调用方的副作用。
-		a.overflowStat.Lock()
-		a.overflowStat.Upstream++
-		a.overflowStat.Unlock()
+		a.mainState().overflowStat.Lock()
+		a.mainState().overflowStat.Upstream++
+		a.mainState().overflowStat.Unlock()
 	}
 	// 恢复预算：同一帧内裁完仍超 ⇒ 说明 topK 与窗口脱钩（见 pruneByQuery），
 	// 再裁一次也是同样结果。超预算后**明确终止**，不静默重试。
@@ -463,11 +463,11 @@ func (a *Agent) evictPagesToBudget(query string) (evicted int, reduced bool) {
 
 // markOverflowAborted 记录一次「超页但裁不出东西」的终止，供状态面观测。
 func (a *Agent) markOverflowAborted(ratio float64, events int) {
-	a.overflowStat.Lock()
-	a.overflowStat.Aborted++
-	a.overflowStat.LastRatio = ratio
-	a.overflowStat.LastEvents = events
-	a.overflowStat.Unlock()
+	a.mainState().overflowStat.Lock()
+	a.mainState().overflowStat.Aborted++
+	a.mainState().overflowStat.LastRatio = ratio
+	a.mainState().overflowStat.LastEvents = events
+	a.mainState().overflowStat.Unlock()
 }
 
 // raiseContextOverflow 通过 **L4 唯一入口**发起一次上下文超页中断。
@@ -493,10 +493,10 @@ func (a *Agent) markOverflowAborted(ratio float64, events int) {
 // （见 pruneForAirInterrupt）。模型不需要知道"有内容被移走"这件事本身，
 // 它需要的是**保留下来的内容与当前问题相关**——那由裁剪质量保证。
 func (a *Agent) raiseContextOverflow(pruned int) {
-	a.overflowStat.Lock()
-	a.overflowStat.Triggered++
-	a.overflowStat.LastPruned = pruned
-	a.overflowStat.Unlock()
+	a.mainState().overflowStat.Lock()
+	a.mainState().overflowStat.Triggered++
+	a.mainState().overflowStat.LastPruned = pruned
+	a.mainState().overflowStat.Unlock()
 
 	// 空中断：vectorArgs 不带 Pruned —— 中断不需要知道裁了多少，
 	// 那是裁剪侧自己的统计（overflowStat），不是中断的输入。
@@ -554,19 +554,19 @@ func (a *Agent) pruneForAirInterrupt() {
 	if after >= before && afterTokens >= beforeTokens {
 		// 裁不动：记录下来即可。空中断不承担"必须裁成功"的职责——
 		// 真正的超限判定仍在 enforceContextBudget，那里有终止语义。
-		a.overflowStat.Lock()
-		a.overflowStat.Aborted++
-		a.overflowStat.LastRatio = a.overflowRatioNow()
-		a.overflowStat.LastEvents = before
-		a.overflowStat.Unlock()
+		a.mainState().overflowStat.Lock()
+		a.mainState().overflowStat.Aborted++
+		a.mainState().overflowStat.LastRatio = a.overflowRatioNow()
+		a.mainState().overflowStat.LastEvents = before
+		a.mainState().overflowStat.Unlock()
 		log.Printf("[agent] air-interrupt prune: no reduction (%d→%d events, %d→%d tokens)",
 			before, after, beforeTokens, afterTokens)
 		return
 	}
-	a.overflowStat.Lock()
-	a.overflowStat.Triggered++
-	a.overflowStat.LastPruned = before - after
-	a.overflowStat.Unlock()
+	a.mainState().overflowStat.Lock()
+	a.mainState().overflowStat.Triggered++
+	a.mainState().overflowStat.LastPruned = before - after
+	a.mainState().overflowStat.Unlock()
 	log.Printf("[agent] air-interrupt prune: %d→%d events (%d→%d tokens), ratio=%.2f",
 		before, after, beforeTokens, afterTokens, a.overflowRatioNow())
 }

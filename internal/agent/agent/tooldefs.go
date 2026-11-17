@@ -14,11 +14,11 @@ import (
 )
 
 func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string) string {
-	if a.indexer == nil {
+	if a.mainState().indexer == nil {
 		return ""
 	}
-	injected := a.indexer.BuildContextInScene(input, scenes)
-	s := a.indexer.FormatContext(injected)
+	injected := a.mainState().indexer.BuildContextInScene(input, scenes)
+	s := a.mainState().indexer.FormatContext(injected)
 
 	// 图库召回命中的实体若关联着带媒体的句子，把媒体说明一并注入。
 	//
@@ -47,8 +47,8 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 	//（2026-10-27 现场：头天晚上讲的冷笑话第二天早上完全唤不回）。
 	//
 	// 放进本函数后：输入路用输入文本、工具路用工具正文，两条路都能召回 L2 摘要。
-	if a.coldcontextStore != nil {
-		if md := a.crossModalMarkdown(a.retrieveCrossModal(input, 3, a.fusionCfg)); md != "" {
+	if a.mainState().coldcontextStore != nil {
+		if md := a.crossModalMarkdown(a.retrieveCrossModal(input, 3, a.mainState().fusionCfg)); md != "" {
 			if s != "" {
 				s += "\n"
 			}
@@ -117,7 +117,7 @@ func (a *Agent) recallTextFor(query, trigger string, scenes []string) string {
 // 输入侧的 buildTaskMemoryContext 与工具侧的 recallTextFor 都收敛到这里，
 // 使“同一份 query、同一次预算、同一条审计日志”只写一遍。
 func (a *Agent) recallText(query, trigger string, maxTokens int, scenes []string) string {
-	if a == nil || query == "" || a.indexer == nil {
+	if a == nil || query == "" || a.mainState().indexer == nil {
 		return ""
 	}
 	text := a.buildMemoryContext(query, maxTokens, scenes)
@@ -331,7 +331,7 @@ type toolDefOptions struct {
 	// 原文仍留在上下文可读。语义与 ToolDef.NoMemory 一致。
 	//
 	// ★ 注意：coldcontext_query 的 noMemory **不写在这里**，而是由 init() 里的
-	//   显式名单登记。原因：工具表是按需构造的（受 `if a.coldcontextStore != nil`
+	//   显式名单登记。原因：工具表是按需构造的（受 `if a.mainState().coldcontextStore != nil`
 	//   之类条件控制），而 textForVector 可能在构造之前被调用 ——
 	//   靠构造时登记会让声明"时有时无"。声明是静态事实，init 期定死。
 	//
@@ -377,7 +377,7 @@ func toolDefWith(name, description string, properties map[string]interface{}, re
 	//
 	// ⚠️ 不在 declare*Tool 里做、而在这里做，是因为有先例的教训：
 	//   让 toolDefWith 自己登记 parallel 曾导致"聚合表是空的"——
-	//   那些工具都在 `if a.knowledge != nil` 之类的条件分支里。
+	//   那些工具都在 `if a.mainState().knowledge != nil` 之类的条件分支里。
 	//   但 noMemory 的情况不同：它必须在**工具真被构造出来时**才成立
 	//   （工具不在表里，也就没有输出要抑制）。两者语义一致：
 	//   登记的是"这个工具的声明"，构造时登记最准确。
@@ -418,7 +418,7 @@ func init() {
 	//
 	// ★ 必须在这里显式登记，不能只靠 toolDefWith 构造时登记：
 	//   工具表是**按需构造**的（buildToolDefs 每轮重建，且受
-	//   `if a.coldcontextStore != nil` 之类的条件分支控制），而 textForVector
+	//   `if a.mainState().coldcontextStore != nil` 之类的条件分支控制），而 textForVector
 	//   在工具被构造之前也可能被调用 ⇒ 声明会"时有时无"。
 	//   声明是静态事实，就该在 init 期定死（与上面 parallel 同一理由）。
 	//
@@ -447,8 +447,8 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}
 	}
 
-	if a.stageHost != nil {
-		for _, td := range a.stageHost.GetToolDefs() {
+	if a.mainState().stageHost != nil {
+		for _, td := range a.mainState().stageHost.GetToolDefs() {
 			tools = append(tools, map[string]interface{}{
 				"type": "function",
 				"function": map[string]interface{}{
@@ -460,8 +460,8 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}
 	}
 
-	if a.indexer != nil {
-		for _, td := range a.indexer.GetToolDefinitions() {
+	if a.mainState().indexer != nil {
+		for _, td := range a.mainState().indexer.GetToolDefinitions() {
 			tools = append(tools, td)
 		}
 	}
@@ -485,7 +485,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 			}, "event_id"))
 	}
 
-	if a.personaStore != nil {
+	if a.mainState().personaStore != nil {
 		tools = append(tools, toolDef("persona_set", "【首启人格】落地用户的人格选择并记录「已经问过」。仅在用户明确答复后调用：默认用 mode=default；自定义用 mode=custom 并把人格内容放进 content；用户说以后再说用 mode=later。", map[string]interface{}{
 			"mode":    map[string]interface{}{"type": "string", "description": "default | custom | later"},
 			"content": map[string]interface{}{"type": "string", "description": "Custom persona text (required when mode=custom)"},
@@ -529,7 +529,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}, "old_subject", "old_relation", "old_object"))
 	}
 
-	if a.knowledge != nil {
+	if a.mainState().knowledge != nil {
 		tools = append(tools, toolDefWith("knowledge_search", "搜索知识库。输入查询关键词，返回相关知识内容。可用 category 把搜索限定在某个分类子树内。", map[string]interface{}{
 			"query":    map[string]interface{}{"type": "string", "description": "查询关键词"},
 			"top_k":    map[string]interface{}{"type": "integer", "description": "返回数量", "default": 5},
@@ -538,7 +538,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 		tools = append(tools, toolDefWith("knowledge_list", "列出知识库中所有知识分类。", map[string]interface{}{}, nil, parallelOpts()))
 	}
 
-	if a.knowledge != nil {
+	if a.mainState().knowledge != nil {
 		tools = append(tools, toolDef("knowledge_create", "创建新知识。将知识写入知识库（knowledge/目录），自动向量化索引。可关联已入库媒体（附图/音视频）使该知识能被图本身检索到。", map[string]interface{}{
 			"name":    map[string]interface{}{"type": "string", "description": "知识名称（用作目录名）"},
 			"content": map[string]interface{}{"type": "string", "description": "知识内容，支持 Markdown"},
@@ -572,7 +572,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}, "name"))
 	}
 
-	if a.coldcontextStore != nil {
+	if a.mainState().coldcontextStore != nil {
 		// The public tool name remains coldcontext_query for compatibility. Its description
 		// uses "cold context" so the model does not mistake replayable conversation
 		// history for a user-authored document.
@@ -598,7 +598,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 			}, "content"))
 	}
 
-	if a.social != nil {
+	if a.mainState().social != nil {
 		tools = append(tools, toolDefWith("person_query", "查询指定人物的完整档案（特质+社交关系）。用于了解一个人的性格、喜好、背景和社交圈。", map[string]interface{}{
 			"name": map[string]interface{}{"type": "string", "description": "人物名称"},
 		}, []string{"name"}, parallelOpts()))
@@ -618,7 +618,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 		}, []string{"name"}, parallelOpts()))
 	}
 
-	if a.pluginReg != nil && a.pluginDir != "" {
+	if a.mainState().pluginReg != nil && a.mainState().pluginDir != "" {
 		tools = append(tools, toolDef("plgreload", "重载 plugins/ 目录的所有插件。扫描目录变更，原子化替换 IO 设备。", map[string]interface{}{}))
 	}
 
@@ -880,7 +880,7 @@ var builtinDefs = &builtinDefRegistry{byName: map[string]sdk.BuiltinToolDef{}}
 // 不依赖运行时路径。
 //
 // ⚠️ 曾经让 toolDefWith 在**被调用时**顺带登记，结果聚合表是空的：
-// 那些工具都在 `if a.knowledge != nil` 之类的条件分支里，测试环境根本不
+// 那些工具都在 `if a.mainState().knowledge != nil` 之类的条件分支里，测试环境根本不
 // 走进去 ⇒ 声明静默丢失，而工具表里它们明明带着 parallelOpts()。
 // 症状是"判据全绿但并发能力为零"—— 判据查的是同一张空表，自证。
 // declareNoMemoryTool 在**工具定义处**登记"输出不进记忆计算"声明。

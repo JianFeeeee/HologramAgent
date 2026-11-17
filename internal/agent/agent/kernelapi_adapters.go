@@ -58,7 +58,7 @@ func (v vectorizerFace) Vectorize(text string) vector.Vector {
 //
 // Go 的接口值 = (类型, 数据指针)。把一个 nil 的 `*plugin.Registry` 赋给
 // `kernelapi.PluginHost` 之后，接口值**不是 nil**（类型信息非空）。
-// 于是 `if a.pluginReg != nil` 会放行，随后 `a.pluginReg.List()` 解引用
+// 于是 `if a.mainState().pluginReg != nil` 会放行，随后 `a.mainState().pluginReg.List()` 解引用
 // 空指针 —— 实测 `TestGetKernelStatusNeverNil` 就是这样 panic 的。
 //
 // 装配期（`kernelmod/*`）传入的字段大多允许"这一项没装配"，所以这种
@@ -67,32 +67,32 @@ func (a *Agent) normalizeNilServices() {
 	if a == nil {
 		return
 	}
-	if a.indexer != nil && isNilValue(a.indexer) {
-		a.indexer = nil
+	if a.mainState().indexer != nil && isNilValue(a.mainState().indexer) {
+		a.mainState().indexer = nil
 	}
-	if a.coldcontextStore != nil && isNilValue(a.coldcontextStore) {
-		a.coldcontextStore = nil
+	if a.mainState().coldcontextStore != nil && isNilValue(a.mainState().coldcontextStore) {
+		a.mainState().coldcontextStore = nil
 	}
-	if a.knowledge != nil && isNilValue(a.knowledge) {
-		a.knowledge = nil
+	if a.mainState().knowledge != nil && isNilValue(a.mainState().knowledge) {
+		a.mainState().knowledge = nil
 	}
-	if a.social != nil && isNilValue(a.social) {
-		a.social = nil
+	if a.mainState().social != nil && isNilValue(a.mainState().social) {
+		a.mainState().social = nil
 	}
-	if a.textMem != nil && isNilValue(a.textMem) {
-		a.textMem = nil
+	if a.mainState().textMem != nil && isNilValue(a.mainState().textMem) {
+		a.mainState().textMem = nil
 	}
-	if a.tracker != nil && isNilValue(a.tracker) {
-		a.tracker = nil
+	if a.mainState().tracker != nil && isNilValue(a.mainState().tracker) {
+		a.mainState().tracker = nil
 	}
-	if a.pluginReg != nil && isNilValue(a.pluginReg) {
-		a.pluginReg = nil
+	if a.mainState().pluginReg != nil && isNilValue(a.mainState().pluginReg) {
+		a.mainState().pluginReg = nil
 	}
-	if a.multimodalSpace != nil && isNilValue(a.multimodalSpace) {
-		a.multimodalSpace = nil
+	if a.mainState().multimodalSpace != nil && isNilValue(a.mainState().multimodalSpace) {
+		a.mainState().multimodalSpace = nil
 	}
-	if a.embedder != nil && isNilValue(a.embedder) {
-		a.embedder = nil
+	if a.mainState().embedder != nil && isNilValue(a.mainState().embedder) {
+		a.mainState().embedder = nil
 	}
 	if a.graph != nil && isNilValue(a.graph) {
 		a.graph = nil

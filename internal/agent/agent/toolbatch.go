@@ -136,7 +136,7 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 
 		// ③ 插件崩溃态：不执行（与主 agent 一致）。
 		if pluginName := a.resolveToolPlugin(tc.Name); pluginName != "" {
-			if !a.pluginHealth.IsHealthy(pluginName) {
+			if !a.mainState().pluginHealth.IsHealthy(pluginName) {
 				res.Text = pluginNameCrashedText(pluginName)
 				res.Denied = true
 				results[i] = res

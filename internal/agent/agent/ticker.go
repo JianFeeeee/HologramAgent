@@ -120,7 +120,7 @@ func (a *Agent) startPeriodic() {}
 
 // DistillTask 返回"上下文裁剪（L1→L2）+ 插件自动重载"这个定时任务的描述。
 func (a *Agent) DistillTask() PeriodicTask {
-	return PeriodicTask{Name: "distill", Interval: a.distillInterval, Run: func(x *Agent) {
+	return PeriodicTask{Name: "distill", Interval: a.mainState().distillInterval, Run: func(x *Agent) {
 		x.distillContext()
 		x.autoReloadPlugins()
 	}}
@@ -128,12 +128,12 @@ func (a *Agent) DistillTask() PeriodicTask {
 
 // ArchiveTask 返回"冷文档归档（L2→L3）"。
 func (a *Agent) ArchiveTask() PeriodicTask {
-	return PeriodicTask{Name: "archive", Interval: a.archiveInterval, Run: func(x *Agent) { x.archiveColdDocs() }}
+	return PeriodicTask{Name: "archive", Interval: a.mainState().archiveInterval, Run: func(x *Agent) { x.archiveColdDocs() }}
 }
 
 // MergeTask 返回"实体合并检测 + 场景去重"。
 func (a *Agent) MergeTask() PeriodicTask {
-	return PeriodicTask{Name: "merge", Interval: a.mergeInterval, Run: func(x *Agent) {
+	return PeriodicTask{Name: "merge", Interval: a.mainState().mergeInterval, Run: func(x *Agent) {
 		x.detectEntityMerge()
 		x.dedupeScenes()
 	}}
@@ -141,19 +141,19 @@ func (a *Agent) MergeTask() PeriodicTask {
 
 // ReviewTask 返回"关系复审"。
 func (a *Agent) ReviewTask() PeriodicTask {
-	return PeriodicTask{Name: "review", Interval: a.reviewInterval, Run: func(x *Agent) { x.reviewRelations() }}
+	return PeriodicTask{Name: "review", Interval: a.mainState().reviewInterval, Run: func(x *Agent) { x.reviewRelations() }}
 }
 
 // OffloadTask 返回"积压任务转投"（未启用或本类型不转投时返回零值，注册被拒）。
 func (a *Agent) OffloadTask() PeriodicTask {
-	if !a.offload.Enabled || !a.hooks.MayOffload {
+	if !a.mainState().offload.Enabled || !a.hooks.MayOffload {
 		return PeriodicTask{}
 	}
-	interval := a.offload.BusyAfter / 5
+	interval := a.mainState().offload.BusyAfter / 5
 	if interval < time.Second {
 		interval = time.Second
 	}
-	return PeriodicTask{Name: "offload", Interval: interval, Run: func(x *Agent) { x.offloadPendingTasks(x.offload) }}
+	return PeriodicTask{Name: "offload", Interval: interval, Run: func(x *Agent) { x.offloadPendingTasks(x.mainState().offload) }}
 }
 
 // RegisterMaintenanceTasks 注册**主 agent 的后台维护任务全集**。

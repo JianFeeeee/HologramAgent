@@ -56,9 +56,6 @@ type Agent struct {
 	// （用户裁定：类型身份走注册的钩子，不走字段 + 类型分支）。
 	//
 	// 与通道侧的 CapRT 仍是两个不同结构：
-	//   · CapRT        —— “这个**通道**能承载 rt 流”（插件声明）
-	//   · hooks.IsRealtime —— “这个 **agent** 是 rtchild”（rt 模块注册）
-	// rt 通道的划拨要两侧都满足（见 Agent.AssignRealtime）。
 
 	// children 是**全部类型**的子 agent 的唯一登记表（重构 R1 起）。
 	//
@@ -84,98 +81,60 @@ type Agent struct {
 	// 各自的运行状态按格存放，基座只留这一个字段。
 	sub *subStates
 
-	indexer        kernelapi.MemoryIndexer
-	tracker        kernelapi.Tracker
-	context        *RelevanceContext
-	systemPrompt   string
-	ctx            context.Context
-	cancel         context.CancelFunc
+	context      *RelevanceContext
+	systemPrompt string
+	ctx          context.Context
+	cancel       context.CancelFunc
 
 	// 文档记忆（第二层）
-	coldcontextStore kernelapi.DocStore
 
 	// 知识库
-	knowledge kernelapi.Knowledge
 
 	// 人物特质与关系网
-	social kernelapi.SocialStore
 
 	// 文本记忆（原始对话日志）
-	textMem kernelapi.TextMemory
 
 	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
 
 	// 人格设定（内容来自启动时载入的人格文件/配置项）
-	personality *agentPkg.Personality
 
 	// 人格落库面：首启门禁与 persona_set 工具使用（见 persona.go）。
 	// 为 nil 时门禁与工具都静默关闭（例如单测里不接配置的场景）。
-	personaStore PersonaStore
 
 	// 被授权的输出通道集合（空 = 完整授权，见 AgentConfig.AllowedOutputs）。
 	allowedOutputs []string
 
-	// toolResultWarnTokens 是「单条工具结果过大」的告警阈值（0 = 用默认）。
-	// ⚠️ 方案 B 只**统计与报告**，绝不裁剪（见 toolresult_budget.go 的理由）。
-	toolResultWarnTokens int
-	// toolResultReporter 报告超限；nil 时用 logReporter。
-	toolResultReporter toolResultReporter
-
 	// 插件注册表（用于 plgreload）
-	pluginReg kernelapi.PluginHost
-	pluginDir string
 
 	// 定期心跳蒸馏
-	distillInterval time.Duration
 
 	// 三个独立心跳任务间隔
-	archiveInterval time.Duration // 冷文档归档
-	reviewInterval  time.Duration // 关系复审
-	mergeInterval   time.Duration // 实体合并检测
 
 	// 上下文裁剪：活跃上下文最大条数，超出按相关性裁剪
-	maxContextSize int
 
 	// overflowStat 统计上下文超页处理（触发次数、裁剪条数、终止次数）。
 	// 放 Agent 上而非全局：多实例并存时各自独立（跑分台就要实例隔离）。
-	overflowStat struct {
-		sync.Mutex
-		Checked    int // 判据执行次数（诊断：区分「没触发」与「没执行」）
-		Triggered  int // L4 上报次数
-		Aborted    int // 裁不出东西的终止次数
-		Upstream   int // 上游 ErrContextFull 次数
-		LastPruned int // 上次裁剪条数
-		LastRatio  float64
-		LastEvents int
-	}
 
 	// ctxTuning 是上下文预算的可调参数（零值 = 历史默认）。
 	//
 	// 从配置读入（core.agent.context.*），使不同窗口的实例可以各自调优，
 	// 而不是所有实例共用一套写死的 0.8 / 600000 / 1:3。
-	ctxTuning kit.ContextTuning
 
 	// 当前请求的输出通道（mutex 保护，process() 内独占）
 
 	// 阶段管道：插件消息流编辑
-	stageHost *kit.StageHostType
 	// ★ 原先这里是 `eventBus *events.Bus`（裸总线）。
 	//
 	// 用户裁定（2026-11-17）：「事件总线是被安全模块代理的吧，原始总线只被
 	// 安全模块持有」。⇒ Agent 不再持有裸总线，只持有一个**发布代理**
 	// （见 agent_eventbus.go）：带本 agent 身份、过安全闸门、只能 Publish。
-	publisher    agentEventBus
-	pluginHealth *kit.PluginHealthTracker
+	publisher agentEventBus
 
 	// 自循环输入通道：核心内部任务（记忆消歧、系统维护、子 Agent 通知），
 	// 不经过 IO 层。每条消息携带目标输出通道：
 	//   "_consolidation_" = 记忆整理（无记忆路径，不写入上下文、不 emit 响应）
 	//   其他 = 正常处理（写入上下文、emit 响应到该通道）
 	selfInputCh chan selfInputMsg
-
-	// 子任务状态在 sub.worker 里（见 agentstate.go）：
-	// 保留结果而不是"读到即删"——完成通知会进持久上下文，模型之后还会再查，
-	// 读到即删会让第二次查询得到永久失败信号（实测单轮 35 次重试、514 秒）。
 
 	// 输入调度器：就绪队列、任务抽象与快照（见 scheduler.go）。
 	// M2 起取代 eventLoop 的隐式 channel 排队。
@@ -184,7 +143,6 @@ type Agent struct {
 	// 工具轮次硬上限（0 = 不限）；见 AgentConfig.MaxToolTurns。
 	maxToolTurns int
 	// offload 是积压任务自动转投的参数（见 offload.go）。
-	offload OffloadOptions
 
 	// 进行中的 LLM 请求取消函数，interceptLoop 可调用以在请求中打断
 	cancelLLM context.CancelFunc
@@ -211,33 +169,21 @@ type Agent struct {
 	toolMu      sync.Mutex
 
 	// 模型思考模式（thinking/reasoning）
-	thinkingEnabled bool
-
-	pendingToolBlocks []interface{} // 插件工具通过 SetToolBlocks 注入的多模态块（type agentAPI.ContentBlock），process.go 消费后追加到 tool message
 
 	// 启动时间
-	startTime time.Time
 
 	// 当前轮次的非文本媒体数据（图片/音频），供 describe_image 等工具访问
-	pendingMedia map[string]interface{}
 
 	// pendingMediaBlocks 累积本轮已捕获的媒体块。
 	//
-	// 需要缓存而不是当场挂到事件上：媒体在 process() 执行期间被捕获，
-	// 而承载它的 ContextEvent 要等 process() 返回后才 Append——此刻还没有 owner。
-	// 由 schedulerLoop goroutine 独占读写。
-	pendingMediaBlocks []memory.MemoryBlock
 
 	// 当前输入是否为工具提醒/中断（以 system 角色注入，避免被当成用户消息）
 	interruptInput bool
 
 	// 非文本输入处理配置
-	inputCfg types.InputProcessingConfig
 
 	// noMergeMarkets 记录被标记"禁止合并"的实体对，key="entityA||entityB"（字典序），
 	// 每次 reorgGraph 扫描到对应实体对时计数减一，归零后自动移除。
-	noMergeMarkers map[string]int
-	noMergeMu      sync.Mutex
 
 	// 输入去重：防 webui/GUI 断线重连导致的消息重放
 	// key=source+"|"+content, value=上次接收时间；短窗口内同内容丢弃
@@ -245,31 +191,19 @@ type Agent struct {
 	lastInputMu sync.Mutex
 
 	// 词嵌入模型，用于实体语义相似度计算
-	embedder Embedder
 
 	// multimodalSpace 是统一多模态向量空间（可选）。实现可以是内嵌 ONNX，
 	// 也可以是外部 API 客户端；两者共享同一套 L0/L2/L3 向量缓存与检索基础设施。
-	multimodalSpace kernelapi.MultimodalSpace
-
-	// embeddingProvider 是配置里指定的统一向量空间 provider 名；
-	// embeddingError 是打开/适配失败的原因（成功时为空）。
-	// 二者只用于状态报告：区分「没配」「配了但打不开」「已启用」。
-	embeddingProvider string
-	embeddingError    string
 
 	// fusionCfg 控制文本路与视觉路的跨模态融合权重，可按模型实测结果配置。
-	fusionCfg CrossModalFusionConfig
 
 	// device 是挂载上来的工具/通道数据面（kernelmod/device 产出）。
 	// 类型是低层接口：core 不认识具体模块，避免 core ↔ kernelboot 成环。
-	device agentAPI.DeviceSurface
 	// deviceMu 只保护 device 字段（挂载是装配期动作，读取可能来自状态面）。
 	// ★ 刻意不复用整轮执行的锁：Agent 按设计**没有**保护整轮的互斥量
 	//（挂起不能持锁，见 input-scheduler-design §8.1 I3）。
-	deviceMu sync.RWMutex
 
 	// builtinHandlers 是交给 device 路由层的族处理器适配器（装配期构造一次）。
-	builtinHandlers agentAPI.BuiltinToolHandlers
 
 	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
 	// （由 gate 按 agentID 持有，见 security_profile.go 的 securityScope）。
@@ -283,9 +217,6 @@ type Agent struct {
 	// ★ 原先这里有 `security *security.Runtime` 字段，已删除。
 	//
 	// 用户裁定（2026-11-17）：「安全模块是**强制的透明层**」。
-	// ⇒ 它既不该被 agent 看到类型，也不该被当成可选开关：
-	//   判定一律走 `a.gate()`（= hooks.SecurityGate），由类型模块在装配点
-	//   从 `kernelapi.FacSecurity` 取并挂上。未挂 = 装配错误（Validate 拦住）。
 
 	// kit.Ledger 累计**跨调用**的 token 用量与缓存命中。
 	//
@@ -517,7 +448,6 @@ func New(cfg AgentConfig) *Agent {
 
 	a := &Agent{
 		id:                cfg.ID,
-		startTime:         time.Now(),
 		provider:          cfg.Provider,
 		preferredProvider: cfg.PreferredProvider,
 		providerManager:   cfg.ProviderManager,
@@ -528,43 +458,17 @@ func New(cfg AgentConfig) *Agent {
 		taskPrompt:        cfg.TaskPrompt,
 		dataDir:           cfg.DataDir,
 		logIdentity:       agentLogIdentity(cfg),
-		indexer:           cfg.Indexer,
-		tracker:           cfg.Tracker,
 		context:           rc,
 		systemPrompt:      cfg.SystemPrompt,
 		ctx:               ctx,
 		cancel:            cancel,
-		coldcontextStore:  cfg.DocStore,
-		knowledge:         cfg.Knowledge,
-		social:            cfg.SocialStore,
-		textMem:           cfg.TextMemory,
 		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
 		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
-		personality:       cfg.Personality,
-		personaStore:      cfg.PersonaStore,
-		allowedOutputs:    cfg.AllowedOutputs,
-		pluginReg:         cfg.PluginReg,
-		pluginDir:         cfg.PluginDir,
-		distillInterval:   cfg.DistillInterval,
-		archiveInterval:   cfg.ArchiveInterval,
-		reviewInterval:    cfg.ReviewInterval,
-		mergeInterval:     cfg.MergeInterval,
-		maxContextSize:    cfg.MaxContextSize,
-		ctxTuning:         cfg.CtxTuning,
-		stageHost:         cfg.StageHost,
-		selfInputCh:       make(chan selfInputMsg, 64),
-		sub:               &subStates{},
-		sched:             newScheduler(256),
-		maxToolTurns:      cfg.MaxToolTurns,
-		offload:           cfg.Offload,
-		pluginHealth:      kit.NewPluginHealthTracker(),
-		thinkingEnabled:   cfg.ThinkingEnabled,
-		inputCfg:          cfg.InputProcessing,
-		embedder:          embedder,
-		multimodalSpace:   cfg.MultimodalSpace,
-		embeddingProvider: cfg.EmbeddingProvider,
-		embeddingError:    cfg.EmbeddingError,
-		fusionCfg:         cfg.FusionCfg,
+		allowedOutputs: cfg.AllowedOutputs,
+		selfInputCh:    make(chan selfInputMsg, 64),
+		sub:            &subStates{},
+		sched:          newScheduler(256),
+		maxToolTurns:   cfg.MaxToolTurns,
 		// ★ IsRealtime 现在是**钩子**（装配期由 rt 模块注册），不是字段。
 		//   这里只把 cfg 的意图带过去，保持构造点签名不变。
 		hooks: Hooks{
@@ -577,9 +481,44 @@ func New(cfg AgentConfig) *Agent {
 			//   断言成 SecurityGate 传进来，基座只经接口调用，不认识实现类型。
 			SecurityGate: cfg.Security,
 		},
-		publisher:      agentEventBus{bus: cfg.EventBus, who: string(cfg.ID)},
-		noMergeMarkers: make(map[string]int),
-		lastInput:      make(map[string]time.Time),
+		publisher: agentEventBus{bus: cfg.EventBus, who: string(cfg.ID)},
+		lastInput: make(map[string]time.Time),
+	}
+
+	// ★ 主 agent 的装配面进分区表（见 agentstate.go）：记忆整理/媒体/插件/
+	//   预算统计都在 `sub.main` 里，基座只留一个分区指针。
+	//   非主 agent（驻留子/rt/工作式子）不填它 —— 它们用不到那些实现句柄。
+	if cfg.Memory != nil || cfg.Indexer != nil || cfg.DocStore != nil || cfg.Knowledge != nil ||
+		cfg.PluginReg != nil || cfg.StageHost != nil {
+		m := a.mkMain()
+		m.indexer = cfg.Indexer
+		m.tracker = cfg.Tracker
+		m.coldcontextStore = cfg.DocStore
+		m.knowledge = cfg.Knowledge
+		m.social = cfg.SocialStore
+		m.textMem = cfg.TextMemory
+		m.pluginReg = cfg.PluginReg
+		m.pluginDir = cfg.PluginDir
+		m.stageHost = cfg.StageHost
+		m.embedder = embedder
+		m.multimodalSpace = cfg.MultimodalSpace
+		m.embeddingProvider = cfg.EmbeddingProvider
+		m.embeddingError = cfg.EmbeddingError
+		m.fusionCfg = cfg.FusionCfg
+		m.personality = cfg.Personality
+		m.personaStore = cfg.PersonaStore
+		m.distillInterval = cfg.DistillInterval
+		m.archiveInterval = cfg.ArchiveInterval
+		m.reviewInterval = cfg.ReviewInterval
+		m.mergeInterval = cfg.MergeInterval
+		m.maxContextSize = cfg.MaxContextSize
+		m.ctxTuning = cfg.CtxTuning
+		m.offload = cfg.Offload
+		m.inputCfg = cfg.InputProcessing
+		m.thinkingEnabled = cfg.ThinkingEnabled
+		m.startTime = time.Now()
+		m.pluginHealth = kit.NewPluginHealthTracker()
+		m.noMergeMarkers = make(map[string]int)
 	}
 
 	// ★ 授权事实声明给**安全模块**（用户裁定 2026-11-17）。
@@ -595,8 +534,8 @@ func New(cfg AgentConfig) *Agent {
 			if a.context != nil {
 				a.context.SetSecretStore(st)
 			}
-			if a.stageHost != nil {
-				a.stageHost.SetSecretStore(st)
+			if sh := a.mainState().stageHost; sh != nil {
+				sh.SetSecretStore(st)
 			}
 			// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
 			// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。

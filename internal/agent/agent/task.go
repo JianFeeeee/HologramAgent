@@ -341,7 +341,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 原始 data/url，也是这三个工具是否出现在工具表里的开关。仅对用户直接上传成立
 	//（payload 里才有 data/url）；插件注入的是成品 block，取不到原始数据。
 	if evt.Type == "image" || evt.Type == "audio" {
-		a.pendingMedia = evt.Payload
+		a.mainState().pendingMedia = evt.Payload
 	}
 
 	// 媒体先变成一等块（字节进块的 Data）。不存的后果是 ContextEvent.Input
@@ -455,7 +455,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 
 	// pendingMedia 是「本轮」语义：任务结束即清（挂起时保留，见 runInputTask）。
 	if evt != nil && (evt.Type == "image" || evt.Type == "audio") {
-		a.pendingMedia = nil
+		a.mainState().pendingMedia = nil
 	}
 
 	if out == outcomeFailed {
@@ -580,7 +580,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	a.Logf("tool call loop start, max_ctx=%d target=%d fixed=%d mem=%d ctx=%d %d tools, %d events, personality=%t, docs=%d",
 		budget.MaxContext, budget.TargetUsage, budget.FixedTokens, budget.MemoryTokens, budget.ContextTokens,
 		len(f.Tools), a.context.Len(),
-		a.personality != nil && a.personality.Content != "",
+		a.mainState().personality != nil && a.mainState().personality.Content != "",
 		a.coldcontextStoreSize())
 
 	if a.runStage(sdk.StagePreAction, f.StageCtx) {
@@ -664,7 +664,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		MaxTokens:       4096,
 		Tools:           f.Tools,
 		ToolChoice:      "auto",
-		DisableThinking: !a.thinkingEnabled,
+		DisableThinking: !a.mainState().thinkingEnabled,
 	}
 
 	providers := a.resolveProviders(req)
@@ -965,7 +965,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
 	// 插件崩溃态：不执行
-	if pluginName != "" && !a.pluginHealth.IsHealthy(pluginName) {
+	if pluginName != "" && !a.mainState().pluginHealth.IsHealthy(pluginName) {
 		res.text = fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		res.denied = true
 		return res
@@ -1035,7 +1035,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	}
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
-	if pluginName != "" && !a.pluginHealth.IsHealthy(pluginName) {
+	if pluginName != "" && !a.mainState().pluginHealth.IsHealthy(pluginName) {
 		result := fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		a.Logf("skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
 		ensureBatchAssistant(f)
@@ -1195,7 +1195,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	// 同一次预算与审计）。查询向量取清洗后的有效内容，否则噪声
 	// （ANSI/base64/JSON 包装）会把相关性打分带偏，裁错事件、召回错记忆。
 	var recallText string
-	if def := a.stageHost.ToolDef(tc.Name); def != nil {
+	if def := a.mainState().stageHost.ToolDef(tc.Name); def != nil {
 		needPrune := def.ContextPolicy == sdk.ContextPolicyPrune
 		needRecall := def.RecallPolicy == sdk.RecallPolicyAuto
 		if needPrune || needRecall {

@@ -265,7 +265,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			MaxTokens:       4096,
 			Tools:           childTools,
 			ToolChoice:      "auto",
-			DisableThinking: !a.thinkingEnabled,
+			DisableThinking: !a.mainState().thinkingEnabled,
 		}
 
 		// ★ 走与主 agent 同一套 provider 选择（而不是直接 a.provider.Chat）。
@@ -432,7 +432,7 @@ func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) strin
 		Messages:        salvageMsgs,
 		MaxTokens:       4096,
 		ToolChoice:      "none", // 不给工具，强制走文本产出
-		DisableThinking: !a.thinkingEnabled,
+		DisableThinking: !a.mainState().thinkingEnabled,
 	})
 	if err != nil {
 		log.Printf("[child] wrap-up distillation failed (falling back to factual summary): %v", err)

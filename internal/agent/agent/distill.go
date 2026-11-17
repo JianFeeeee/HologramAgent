@@ -46,12 +46,12 @@ func (a *Agent) enqueueConsolidationTask(task ConsolidationTask) {
 // ──────────────────────────────────────────────
 
 func (a *Agent) distillContext() {
-	if a.coldcontextStore == nil {
+	if a.mainState().coldcontextStore == nil {
 		return
 	}
 	n := a.context.Len()
-	if n > a.maxContextSize*2 {
-		archived := a.context.Prune("", a.maxContextSize, a.coldcontextStore)
+	if n > a.mainState().maxContextSize*2 {
+		archived := a.context.Prune("", a.mainState().maxContextSize, a.mainState().coldcontextStore)
 		if archived > 0 {
 			log.Printf("[agent] distill: pruned %d low-relevance events to document memory (total=%d)", archived, n)
 		}
@@ -110,8 +110,8 @@ type archiveStats struct {
 // 两处都必须查：只查一处会让另一半工具在蒸馏侧享受不到自己的声明，
 // 而那正是「机制 ≠ 接线」的经典形态（生产里两条路径各查各的，漂移了没人发现）。
 func (a *Agent) toolDeclaresNoMemory(name string) bool {
-	if a.stageHost != nil {
-		if v, found := a.stageHost.NoMemoryOf(name); found {
+	if a.mainState().stageHost != nil {
+		if v, found := a.mainState().stageHost.NoMemoryOf(name); found {
 			return v
 		}
 	}
@@ -125,7 +125,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	st.Scanned++
 
 	// ── 第一步：三元组（关系层，派生加工）──
-	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.embedder}, a.toolDeclaresNoMemory)
+	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.mainState().embedder}, a.toolDeclaresNoMemory)
 	written := 0
 	if len(triples) > 0 {
 		w, _, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
@@ -150,7 +150,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	// 这不是失败：删掉它不丢任何东西。此前它会走「全部被拒」那条失败路径，
 	// 白白重试 5 次才进 STUCK，日志里还会被当成「关系层建不起来」。
 	if len(triples) == 0 && len(coldDoc.Blocks) == 0 {
-		a.coldcontextStore.Remove(coldDoc.ID)
+		a.mainState().coldcontextStore.Remove(coldDoc.ID)
 		st.Empty++
 		return
 	}
@@ -211,7 +211,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 		st.Blocks += bound
 	}
 
-	a.coldcontextStore.Remove(coldDoc.ID)
+	a.mainState().coldcontextStore.Remove(coldDoc.ID)
 	st.Archived++
 	log.Printf("[agent] coldcontext->graph: %s archived (%d blocks migrated, %d/%d triples written)",
 		coldDoc.ID, len(coldDoc.Blocks), written, len(triples))
@@ -233,7 +233,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 // 「静默卡住」与「每小时重试一次、永远失败」都不可观测，两者都不是答案：
 // 前者丢数据，后者把问题推给日志量。所以到上限一律响亮记录，分层处置。
 func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archiveStats, reason string, contentLanded bool) {
-	attempts := a.coldcontextStore.NoteArchiveFailure(coldDoc.ID, reason)
+	attempts := a.mainState().coldcontextStore.NoteArchiveFailure(coldDoc.ID, reason)
 	if attempts < maxArchiveAttempts {
 		st.Retried++
 		log.Printf("[agent] coldcontext->graph: %s kept for retry (attempt %d/%d): %s",
@@ -255,7 +255,7 @@ func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archive
 	//
 	// ★ 为什么不静默删：这批文档的关系层永远建不起来，是可观测的能力缺口。
 	//   「每小时重试一次、永远失败」也一样不可观测 —— 只是把问题推给日志量。
-	a.coldcontextStore.Remove(coldDoc.ID)
+	a.mainState().coldcontextStore.Remove(coldDoc.ID)
 	st.Quarantin++
 	log.Printf("[agent] coldcontext->graph: %s gave up after %d attempts, blocks stay in L3, "+
 		"no relation edges for this document (last error: %s). "+
@@ -275,8 +275,8 @@ func (a *Agent) archiveColdDocs() {
 
 	log.Printf("[agent] coldcontext archival start")
 
-	if a.indexer != nil {
-		if err := a.indexer.Sync(); err != nil {
+	if a.mainState().indexer != nil {
+		if err := a.mainState().indexer.Sync(); err != nil {
 			log.Printf("[agent] indexer sync error: %v", err)
 		}
 	}
@@ -294,19 +294,19 @@ func (a *Agent) archiveColdDocs() {
 		}
 	}
 
-	if a.coldcontextStore != nil {
+	if a.mainState().coldcontextStore != nil {
 		// 文档有变化才重建 TF-IDF 索引。
 		//
 		// 此前每轮无条件 Reindex：它重置 sync.Once、重建 8.3MB 训练文本、
 		// 全量 Train 一次并持写锁 —— 每小时一次的 O(全库) 停顿，
 		// 与「这轮到底有没有新文档」无关。721 个文档时那是纯浪费。
-		if a.coldcontextStore.Dirty() {
-			a.coldcontextStore.Reindex()
+		if a.mainState().coldcontextStore.Dirty() {
+			a.mainState().coldcontextStore.Reindex()
 		}
 	}
 
-	if a.coldcontextStore != nil {
-		coldDocs := a.coldcontextStore.FindColdContexts(72*time.Hour, 2)
+	if a.mainState().coldcontextStore != nil {
+		coldDocs := a.mainState().coldcontextStore.FindColdContexts(72*time.Hour, 2)
 		st := archiveStats{}
 		for _, coldDoc := range coldDocs {
 			a.archiveOneColdDoc(coldDoc, &st)
@@ -350,24 +350,24 @@ func (a *Agent) detectEntityMerge() {
 			key := ea + "||" + eb
 
 			// 跳过已标记"不合并"的实体对
-			a.noMergeMu.Lock()
-			rounds, ok := a.noMergeMarkers[key]
+			a.mainState().noMergeMu.Lock()
+			rounds, ok := a.mainState().noMergeMarkers[key]
 			if ok {
 				rounds--
 				if rounds <= 0 {
-					delete(a.noMergeMarkers, key)
+					delete(a.mainState().noMergeMarkers, key)
 				} else {
-					a.noMergeMarkers[key] = rounds
+					a.mainState().noMergeMarkers[key] = rounds
 				}
 			}
-			a.noMergeMu.Unlock()
+			a.mainState().noMergeMu.Unlock()
 			if ok {
 				continue
 			}
 
 			// 复合相似度：字符二元组 + 语义向量（仅增强检测，不做自动合并）
 			sim := entitySimilarity(result.Entities[i].Name, result.Entities[j].Name)
-			semSim := entitySemanticSimilarity(result.Entities[i].Name, result.Entities[j].Name, a.embedder)
+			semSim := entitySemanticSimilarity(result.Entities[i].Name, result.Entities[j].Name, a.mainState().embedder)
 			if semSim > sim {
 				sim = semSim
 			}

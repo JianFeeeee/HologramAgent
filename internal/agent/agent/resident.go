@@ -315,7 +315,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		// 驻留子可以有自己的优先源；留空则继承父的（父再留空 ⇒ 总默认源）。
 		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
-		StageHost:         a.stageHost,
+		StageHost:         a.mainState().stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
 		// ★ 普通上下文也要落盘（2026-11-17）：与 temp 图记忆同一目录。
 		//

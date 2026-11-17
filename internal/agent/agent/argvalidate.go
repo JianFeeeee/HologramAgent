@@ -230,8 +230,8 @@ func (a *Agent) validateArgsAgainstSchema(tc agentAPI.ToolCall) *sdk.ToolError {
 	if a == nil {
 		return nil
 	}
-	if a.stageHost != nil {
-		if def := a.stageHost.ToolDef(tc.Name); def != nil {
+	if a.mainState().stageHost != nil {
+		if def := a.mainState().stageHost.ToolDef(tc.Name); def != nil {
 			return validateToolArgs(tc.Arguments, def.Parameters)
 		}
 	}
@@ -263,8 +263,8 @@ func (a *Agent) toolParallelSafe(name string) bool {
 	// 后者每次调用**拷贝整个 ToolDef**（含 2 个 map 与 Cleaner 函数指针），
 	// 而本函数在每批并发判据里对每个工具各调一次 —— 1000 并发就是 1000 次
 	// 拷贝。语义完全等价（两者都算 ParallelSafe && !Serial），只是不拷贝。
-	if a.stageHost != nil {
-		if safe, ok := a.stageHost.ConcurrencySafeOf(name); ok {
+	if a.mainState().stageHost != nil {
+		if safe, ok := a.mainState().stageHost.ConcurrencySafeOf(name); ok {
 			return safe
 		}
 	}

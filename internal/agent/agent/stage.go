@@ -33,7 +33,7 @@ func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 		payload["tool"] = ctx.ToolCalls[0].Name
 	}
 	a.publishEvent(events.EventStage, payload)
-	if a.stageHost == nil {
+	if a.mainState().stageHost == nil {
 		return false
 	}
 	ctx.Phase = stage
@@ -43,7 +43,7 @@ func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 				log.Printf("[agent] stage %q plugin panic: %v\n%s", stage, r, debug.Stack())
 			}
 		}()
-		a.stageHost.RunStage(stage, ctx)
+		a.mainState().stageHost.RunStage(stage, ctx)
 	}()
 	return ctx.Response != nil
 }

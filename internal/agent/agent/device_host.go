@@ -83,10 +83,10 @@ func (a *Agent) MountDevice(d api.DeviceSurface) {
 		return
 	}
 	// 挂载同时接上路由适配器：device 由此拿到"选族后调谁"。
-	a.builtinHandlers = builtinHandlers{a: a}
-	a.deviceMu.Lock()
-	a.device = d
-	a.deviceMu.Unlock()
+	a.mainState().builtinHandlers = builtinHandlers{a: a}
+	a.mainState().deviceMu.Lock()
+	a.mainState().device = d
+	a.mainState().deviceMu.Unlock()
 }
 
 // Device 返回已挂载的数据面（未挂载时为 nil）。
@@ -94,9 +94,9 @@ func (a *Agent) Device() api.DeviceSurface {
 	if a == nil {
 		return nil
 	}
-	a.deviceMu.RLock()
-	defer a.deviceMu.RUnlock()
-	return a.device
+	a.mainState().deviceMu.RLock()
+	defer a.mainState().deviceMu.RUnlock()
+	return a.mainState().device
 }
 
 // errNoAgentForDevice 表示 device 调用时 Agent 未装配（装配顺序错误）。

@@ -8,10 +8,10 @@ import (
 )
 
 func (a *Agent) executePluginReload() string {
-	if a.pluginReg == nil {
+	if a.mainState().pluginReg == nil {
 		return "插件系统未启用"
 	}
-	msg, err := a.pluginReg.Reload(a.pluginDir)
+	msg, err := a.mainState().pluginReg.Reload(a.mainState().pluginDir)
 	if err != nil {
 		return fmt.Sprintf("插件重载失败: %v", err)
 	}
@@ -19,22 +19,22 @@ func (a *Agent) executePluginReload() string {
 }
 
 func (a *Agent) autoReloadPlugins() {
-	if a.pluginReg == nil {
+	if a.mainState().pluginReg == nil {
 		return
 	}
-	for _, name := range a.pluginHealth.PendingReloads() {
-		if !a.pluginReg.AutoRestartEnabled(name) {
+	for _, name := range a.mainState().pluginHealth.PendingReloads() {
+		if !a.mainState().pluginReg.AutoRestartEnabled(name) {
 			log.Printf("[agent] skip auto-reload plugin %s: auto-restart disabled by plugin", name)
 			continue
 		}
 		log.Printf("[agent] auto-reloading unhealthy plugin: %s", name)
-		if a.stageHost != nil {
-			a.stageHost.UnregisterPluginTools(name)
+		if a.mainState().stageHost != nil {
+			a.mainState().stageHost.UnregisterPluginTools(name)
 		}
-		if err := a.pluginReg.ReloadOne(name); err != nil {
+		if err := a.mainState().pluginReg.ReloadOne(name); err != nil {
 			log.Printf("[agent] auto-reload plugin %s failed: %v", name, err)
 		} else {
-			a.pluginHealth.MarkReloaded(name)
+			a.mainState().pluginHealth.MarkReloaded(name)
 			log.Printf("[agent] plugin %s reloaded successfully", name)
 		}
 	}
@@ -89,8 +89,8 @@ var builtinToolOwner = map[string]string{
 }
 
 func (a *Agent) resolveToolPlugin(name string) string {
-	if a.stageHost != nil {
-		if plugin := a.stageHost.ToolPlugin(name); plugin != "" {
+	if a.mainState().stageHost != nil {
+		if plugin := a.mainState().stageHost.ToolPlugin(name); plugin != "" {
 			return plugin
 		}
 	}
@@ -116,15 +116,15 @@ func (a *Agent) isRegisteredPlugin(name string) bool {
 	if name == "" {
 		return false
 	}
-	if a.pluginReg != nil {
-		for _, n := range a.pluginReg.List() {
+	if a.mainState().pluginReg != nil {
+		for _, n := range a.mainState().pluginReg.List() {
 			if n == name {
 				return true
 			}
 		}
 	}
-	if a.stageHost != nil {
-		for _, d := range a.stageHost.GetToolDefs() {
+	if a.mainState().stageHost != nil {
+		for _, d := range a.mainState().stageHost.GetToolDefs() {
 			p := d.Plugin
 			if p == "" {
 				p = a.resolveToolPlugin(d.Name)
@@ -147,8 +147,8 @@ func (a *Agent) executeGetPluginTools(pluginName string) string {
 	var items []toolItem
 
 	// 收集 StageHost(SDK 插件)工具
-	if a.stageHost != nil {
-		for _, d := range a.stageHost.GetToolDefs() {
+	if a.mainState().stageHost != nil {
+		for _, d := range a.mainState().stageHost.GetToolDefs() {
 			plg := d.Plugin
 			if plg == "" {
 				plg = a.resolveToolPlugin(d.Name)

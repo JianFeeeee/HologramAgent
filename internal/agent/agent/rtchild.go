@@ -671,7 +671,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// 硬锁定会让"首选源抖动"直接变成"通话中断"。
 		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
-		StageHost:         a.stageHost,
+		StageHost:         a.mainState().stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
 		AllowedOutputs: []string{opts.Output},
 		KernelSource:   string(a.id),

@@ -87,7 +87,7 @@ func (a *Agent) checkToolResultSize(tool, result string) bool {
 	msg := fmt.Sprintf("工具 %s 的结果约 %d token，超出单条上限 %d（占预算 %.0f%%）。"+
 		"建议：收窄查询条件、分页取、或把大结果转存后只取摘要。**结果未被裁剪**，模型看到的是完整内容。",
 		tool, tokens, limit, percentOf(tokens, limit))
-	r := a.toolResultReporter
+	r := a.mainState().toolResultReporter
 	if r == nil {
 		r = logReporter{id: &a.logIdentity}
 	}
@@ -97,8 +97,8 @@ func (a *Agent) checkToolResultSize(tool, result string) bool {
 
 // toolResultWarnLimit 返回本 agent 的单条工具结果告警阈值。
 func (a *Agent) toolResultWarnLimit() int {
-	if a.toolResultWarnTokens > 0 {
-		return a.toolResultWarnTokens
+	if a.mainState().toolResultWarnTokens > 0 {
+		return a.mainState().toolResultWarnTokens
 	}
 	budget := a.computeTokenBudget()
 	base := budget.ContextTokens
@@ -115,7 +115,7 @@ func (a *Agent) toolResultWarnLimit() int {
 //
 // 供部署方按模型窗口调整：窗口大的源（1M）用默认阈值，窗口小的源
 // （32K）可能需要更小的单条上限。
-func (a *Agent) SetToolResultWarnTokens(n int) { a.toolResultWarnTokens = n }
+func (a *Agent) SetToolResultWarnTokens(n int) { a.mainState().toolResultWarnTokens = n }
 
 // noteOversizeTool 记账一次「过大工具结果」（只统计，不裁剪）。
 func noteOversizeTool(f *TaskFrame, name string) {
