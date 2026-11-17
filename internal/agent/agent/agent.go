@@ -81,6 +81,12 @@ type Agent struct {
 	// 各自的运行状态按格存放，基座只留这一个字段。
 	sub *subStates
 
+	// impl 是**类型实现体的回指**（用户裁定 2026-11-17：完整模块化）。
+	//
+	// 基座只存 any，不认识它是谁 —— 于是主 agent 的全部实现（记忆整理/媒体/
+	// 插件/工具族）都可以搬出基座包，基座也就不再 import 那 16 个实现包。
+	impl any
+
 	context      *RelevanceContext
 	systemPrompt string
 	ctx          context.Context
