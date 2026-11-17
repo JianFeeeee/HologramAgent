@@ -305,7 +305,7 @@ func (a *Agent) builtinToolParallelSafe(name string) bool {
 //
 // 保序为什么不用 ParallelSafe 表达：那属于**批内**约束而非工具属性，
 // 且同一工具在不同批里的通道可能不同（output_send__qq 两次、一次 qq 一次 cli）。
-func (f *TaskFrame) batchRunnable(a *Agent) bool {
+func batchRunnable(f *TaskFrame, a *Agent) bool {
 	if f == nil || len(f.PendingTools) <= 1 {
 		return false
 	}

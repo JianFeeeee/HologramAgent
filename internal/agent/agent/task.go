@@ -66,167 +66,24 @@ const (
 )
 
 // taskTerminal 是任务的终态种类（设计文档 §7：每个任务恰有一个终态）。
-type taskTerminal int
+type taskTerminal = agenttypes.Terminal
 
 const (
-	// terminalNone 任务尚未结束，需进入 run 段。
-	terminalNone taskTerminal = iota
-	// terminalOK 正常完成（已提交上下文并回执）。
-	terminalOK
-	// terminalError 执行出错（已提交错误响应）。
-	terminalError
-	// terminalStageShortCircuit 被 on_input 阶段短路（响应已发出）。
-	terminalStageShortCircuit
-	// terminalSkipped 未进入执行：解析失败或被去重。
-	terminalSkipped
-	// terminalConsolidation 走记忆整理专用路径，已处理完毕。
-	terminalConsolidation
-	// terminalSuspended 被抢占挂起，等待恢复（M3b 起使用）。
-	terminalSuspended
+	// 终态的声明点在 agenttypes（拆包后各类型模块要用）。
+	terminalNone              = agenttypes.TerminalNone
+	terminalOK                = agenttypes.TerminalOK
+	terminalError             = agenttypes.TerminalError
+	terminalStageShortCircuit = agenttypes.TerminalStageShortCircuit
+	terminalSkipped           = agenttypes.TerminalSkipped
+	terminalConsolidation     = agenttypes.TerminalConsolidation
+	terminalSuspended         = agenttypes.TerminalSuspended
 )
 
 // TaskFrame 承载一个任务在安全点之间必须存活的所有状态。
 //
 // 不变量（设计文档 §8.1 I3）：帧是**纯数据**；不得持有任何锁或资源跨越安全点。
-type TaskFrame struct {
-	Input    string
-	StageCtx *sdk.StageContext
-
-	// 跨轮次状态
-	Msgs        []agentAPI.Message
-	Tools       []interface{}
-	ToolsUsed   []string
-	ToolResults []ToolResultItem
-	// ToolCalls 是每一次工具调用的完整记录（含参数）。与 ToolResults 通过
-	// CallID 配对；两者都由 appendToolCallRecord 同步追加，不各写一份。
-	ToolCalls          []ToolCallItem
-	Turn               int
-	LastBatchReplyOnly bool
-
-	// OverflowRecover 是本帧内的超页恢复次数。
-	//
-	// 为什么按**帧**而不是按 agent 计：恢复预算要防的是「一次裁剪没搞定 ⇒
-	// 裁剪→复原→又超页→再裁剪」这个**单帧内**的循环；跨帧累计会让一个长会话
-	// 在若干帧后突然失去超页处理能力（而那时恰恰最需要它）。
-	OverflowRecover int
-
-	// EventID 是本帧工具结果落盘时使用的**事件标识**。
-	//
-	// 为什么要挂在帧上：同一帧内可能有多条超长结果，它们都属于同一个
-	// 上下文事件，应当落在同一个事件目录里（tool_0.txt / tool_1.txt）。
-	// 惰性生成（首次落盘时分配），因为绝大多数帧没有任何超长结果——
-	// 全量生成会给每条事件多加一个字段，与 ContextEvent.ID 的取舍一致。
-	EventID string
-
-	// 当前工具批
-	PendingTools  []agentAPI.ToolCall
-	ToolIdx       int
-	ReplyOnly     bool
-	ContentOnce   bool
-	CurTool       agentAPI.ToolCall
-	CurToolPlugin string
-	CurResult     string
-	// toolCtxs 是**每个工具各一份**的 StageContext（阶段 2c）。
-	//
-	// 为何必须拆：f.StageCtx 原本是单槽，批内每个工具都覆写
-	// （ToolCalls=[单元素]、ToolResults 覆写、Results[0] 回读）。
-	// 并行下 N 个 goroutine 同写一个 ctx = 数据竞争，且 after_toolcall
-	// 插件可能读到**别的工具**的结果。
-	// 拆分后每个工具只写自己那份，Extra 在构造时逐份复制
-	//（output_channel / input_source / media_* —— stage.go:18 依赖前者）。
-	toolCtxs []sdk.StageContext
-
-	// oversizeTools / oversizeToolNames 记录本任务中「过大工具结果」的次数与工具名。
-	// ⚠️ 结果**未被裁剪**（方案 B），这里只是记账，供调度器/状态面判断
-	// 是否有工具在稳定地产出超大结果。
-	oversizeTools     int
-	oversizeToolNames []string
-
-	// assistantMsgIdx 是本批 assistant(tool_calls) 消息在 Msgs 中的下标，
-	// -1 表示尚未写入。阶段 2a：批内只写**一条** assistant 承载全部
-	// tool_calls，工具结果各自作为 tool 消息追加在它之后。
-	assistantMsgIdx int
-
-	// batchAttachments / batchRecall 是本批**积压的附加消息**，
-	// 只在整批 tool 消息全部落完之后才由 flushBatchAttachments 追加。
-	//
-	// ★ 为何必须积压而不是当场追加（2026-10-13 生产 400 事故）：
-	//   OpenAI 协议要求 assistant(tool_calls=[c1..cn]) 之后**紧接** n 条
-	//   role=tool，中间不得插入任何其他角色。而 stepToolAfter 在批内循环里
-	//   对**每个工具各调一次** —— 若它当场就把 mediaMsg（user）/召回（system）
-	//   追加进去，第一条 tool 之后就被塞进一条其他角色的消息，于是第二条
-	//   tool 不再与 assistant 相邻。上游实测报：
-	//     api error 400: An assistant message with 'tool_calls' must be followed
-	//     by tool messages responding to each 'tool_call_id'.
-	//     (insufficient tool messages following tool_calls message)
-	//
-	//   用户明确的设计约束：「多模态注入点应该在当前轮工具调用后」。
-	batchAttachments []agentAPI.Message
-	batchRecall      string
-
-	// CurRaw 是本次执行的**未降级**返回值（interface{}）。
-	// 存在理由：CurResult 是 string，结构化信息在此被抹平，导致 Success
-	// 无法诚实化、after_toolcall 的改写静默失效。
-	CurRaw interface{}
-	Resp   *agentAPI.CompletionResponse
-
-	// TurnReasoning 是**本次任务里最后一次** LLM 响应的思考内容。
-	//
-	// ★ 为何不能靠 f.Resp.ReasoningContent：
-	//
-	//	f.Resp 只在“本批有工具调用”时才赋值（stepLLM 里 len(resp.ToolCalls)==0
-	//	就 return 了）。纯文本收尾的那一轮 f.Resp 要么是 nil，要么还指着
-	//	**上一次工具轮**的旧响应 —— 拿它写进 L1 会把上一批的思维链
-	//	冒名顶替成本轮的（比缺失更坏：模型会看到张冠李戴的推理）。
-	//
-	// 因此单独一个字段，由 stepLLM **无条件**写入（在分支之前）。
-	TurnReasoning string
-
-	// Scene 是本轮**涌现**出来的场景键（由场面指纹聚类得到，无人声明），
-	// sceneDone 标记是否已解析过——一轮只解析一次：多解析一次就多给场景
-	// 加一次强度，「工具调得多」会被误当成「这个场面更常出现」。
-	Scene     string
-	turnScene memory.TurnScene
-	sceneDone bool
-
-	// 游标与终态
-	Step     Step
-	Response string
-	Err      error
-
-	// turnUsage 是本轮任务（一个 TaskFrame）内全部 LLM 调用的用量合计。
-	//
-	// 为何要单独存：kit.Ledger 是**会话级**累计（跨用户请求），
-	// 而对外回包的 usage 按 OpenAI 语义应是**本次请求**。
-	// 两者口径不同，不能互相顶替：把会话累计当本次报了，
-	// 第二次请求就会报出翻倍的数字。
-	turnUsage agentAPI.TokenUsage
-
-	// ---- 任务层现场（原 processInput 的局部变量）----
-	//
-	// 这些字段让帧覆盖 prepare → step… → finish 全生命周期：挂起发生在 run 段的
-	// 安全点，恢复后由 finish 段统一提交（context.Append + emitResponse +
-	// emitMemoryCandidate），因此挂起不会重复提交。
-	Evt         *agentIO.InputEvent
-	CleanInput  string
-	IsInterrupt bool
-	StartedAt   time.Time
-	Terminal    taskTerminal
-	// OutputChannel 是本任务的输出通道（来源通道的稳定副本）。
-	//
-	// 这是本任务通道的**唯一**来源：内核不持有"当前通道"可变状态（N0 已删除
-	// Agent.currentOutputChannel）。那类字段会被后来的任务覆盖，而被打断任务
-	// 恢复时不重新 prepare（resumeTask 只 rebase 前缀），于是两任务串台——
-	// 被打断任务的回复发到中断任务的通道上（见
-	// TestPreempt_ResumeKeepsOwnOutputChannel）。
-	OutputChannel string
-
-	// PrefixLen 是 stepPrepare 构建的**基础前缀**长度（system + timeline + 用户输入）。
-	// 恢复时用它把「本任务自己的现场」接回重建后的前缀之上（见 rebaseFramePrefix）。
-	PrefixLen int
-	// InputBlocks 是本轮输入携带的多模态块；重建前缀时要重新挂回。
-	InputBlocks []agentAPI.ContentBlock
-}
+// TaskFrame 是 agenttypes.Frame 的别名（声明点在值类型层，拆包后各类型模块要用）。
+type TaskFrame = agenttypes.Frame
 
 // outputChannelOf 从**输入事件**推导本次输出应走的通道。
 //
@@ -602,7 +459,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 	if out == outcomeFailed {
 		log.Printf("[agent] process %s error: %v", evt.Type, f.Err)
 		resp := fmt.Sprintf("处理错误: %v", f.Err)
-		a.emitResponse(evt, resp, f.turnUsage)
+		a.emitResponse(evt, resp, f.TurnUsage)
 		a.context.Append(ContextEvent{Timestamp: time.Now(), Source: "agent", Input: f.Input, Response: resp})
 		f.Terminal = terminalError
 		return
@@ -649,7 +506,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 	// 不是在每个调用点 —— 写 context 的地方有 5 处，逐个补必漏。
 	a.context.Append(turnEvt)
 
-	a.emitResponse(evt, f.Response, f.turnUsage)
+	a.emitResponse(evt, f.Response, f.TurnUsage)
 
 	if !f.StageCtx.NoMemory {
 		a.emitMemoryCandidate(evt.Source, f.CleanInput, f.Response, f.TurnReasoning, f.ToolResults, f.ToolsUsed)
@@ -904,7 +761,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	a.usageLedger.Record(resp.TokenUsage)
 	// 本轮任务内的合计（一个 TaskFrame 可能多轮 LLM：工具回环）。
 	// 它与 kit.Ledger 的口径不同（本次请求 vs 会话累计），两者都要留。
-	f.turnUsage.Add(resp.TokenUsage)
+	f.TurnUsage.Add(resp.TokenUsage)
 
 	if resp.TokenUsage.Total > 0 {
 		// ⚠️ 必须是 map[string]interface{}：WebUI 的 handler_openai.go
@@ -972,7 +829,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	f.ContentOnce = true
 	f.PendingTools = resp.ToolCalls
 	// 阶段 2c：为批内每个工具预建独立的 StageContext（Extra 逐份复制）。
-	f.buildToolContexts()
+	buildToolContexts(f)
 	// 阶段 2a：批内消息**预置**为「一个 assistant 带全部 tool_calls」。
 	//
 	// 为何预置而不是逐步 append：并行执行下多个工具的**完成顺序不确定**，
@@ -982,10 +839,10 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	//
 	// ⚠️ 前提：before_toolcall 阶段不得改写工具参数（已核实全仓无此用法）。
 	// 若某插件将来要改写 args，需在这里改为「回填后重写该条 assistant」。
-	f.assistantMsgIdx = -1
+	f.AssistantMsgIdx = -1
 	f.ToolIdx = 0
 	// 阶段 2d：全批可并发（且无需保序）⇒ 走并发 step。
-	if f.batchRunnable(a) {
+	if batchRunnable(f, a) {
 		f.Step = StepToolBatch
 	} else {
 		f.Step = StepToolBegin
@@ -1012,10 +869,10 @@ func (a *Agent) stepToolBatch(f *TaskFrame) stepOutcome {
 	results := make([]batchItemResult, n)
 
 	// 保证 assistant 消息**先于**任何 tool 消息存在（协议要求）。
-	f.ensureBatchAssistant()
+	ensureBatchAssistant(f)
 
 	// ⚠️ 场景必须**在 fan-out 之前**解析一次：resolveTurnScenes 会把结果
-	// 记进共享的 f.sceneDone / f.turnScene（memorypass.go:289），
+	// 记进共享的 f.SceneDone / f.TurnScene（memorypass.go:289），
 	// 在 N 个 goroutine 里各调一次既是数据竞争，也会各自触发一次
 	// EnterSceneWithHint（重复计入场景强度——正是 task.go 里
 	// sceneDone 注释警告的「多解析一次就多给场景加一次强度」）。
@@ -1060,7 +917,7 @@ func (a *Agent) stepToolBatch(f *TaskFrame) stepOutcome {
 		// 为什么放在这里而不是 fan-out 里：注释已说明 f.Msgs / f.ToolResults
 		// 在 goroutine 期间一律不碰。这里是 join 之后的顺序收尾段，
 		// 按索引串行，与单步路径的语义一致。
-		f.appendToolCallRecord(f.CurTool)
+		appendToolCallRecord(f, f.CurTool)
 		f.ToolResults = append(f.ToolResults, ToolResultItem{CallID: f.CurTool.ID, Name: r.name, Output: r.text})
 		if out := a.stepToolAfter(f); out != outcomeContinue {
 			return out
@@ -1068,7 +925,7 @@ func (a *Agent) stepToolBatch(f *TaskFrame) stepOutcome {
 	}
 	// ★ 整批 tool 消息已全部落完，此刻才能追加多模态/召回附加消息
 	//（否则会切断 assistant(tool_calls) 与其结果的相邻性，见 batchAttachments）。
-	f.flushBatchAttachments()
+	flushBatchAttachments(f)
 	f.ToolIdx = n
 	f.Step = StepTurnEnd
 	return outcomeContinue
@@ -1093,7 +950,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	pluginName := a.resolveToolPlugin(tc.Name)
 	res := batchItemResult{name: tc.Name, plugin: pluginName}
 
-	tctx := f.toolCtxFor(idx)
+	tctx := toolCtxFor(f, idx)
 	tctx.ToolCalls = []sdk.ToolCall{{ID: tc.ID, Name: tc.Name, Plugin: pluginName, Arguments: tc.Arguments}}
 	tctx.ToolResults = nil
 
@@ -1115,8 +972,8 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	// 场景已在 stepToolBatch 的 fan-out **之前**解析完毕（避免竞争与重复计强度），
 	// 这里只读取结果。
 	var turn memory.TurnScene
-	if f != nil && f.sceneDone {
-		turn = f.turnScene
+	if f != nil && f.SceneDone {
+		turn = f.TurnScene
 	}
 	outcome := a.executeToolCallOutcome(tc, f.OutputChannel, turn.Keys...)
 	res.text = outcome.Text
@@ -1133,13 +990,13 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	if f.ToolIdx >= len(f.PendingTools) {
 		// ★ 批已耗尽（本批全部走串行路径）：同样只能在**这里**追加附加消息，
 		// 理由与并行路径一致（见 batchAttachments）。
-		f.flushBatchAttachments()
+		flushBatchAttachments(f)
 		f.Step = StepTurnEnd
 		return outcomeContinue
 	}
 	tc := f.PendingTools[f.ToolIdx]
 
-	f.appendToolCallRecord(tc)
+	appendToolCallRecord(f, tc)
 	pluginName := a.resolveToolPlugin(tc.Name)
 	a.Logf("executing tool: %s (plugin=%s, id=%s)", tc.Name, pluginName, tc.ID)
 	if tc.RawArguments != "" {
@@ -1152,17 +1009,17 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 
 	sdkTC := sdk.ToolCall{ID: tc.ID, Name: tc.Name, Plugin: pluginName, Arguments: tc.Arguments}
 	// 阶段 2c：写**本工具自己的** ctx，不再覆写共享的 f.StageCtx。
-	tctx := f.toolCtxFor(f.ToolIdx)
+	tctx := toolCtxFor(f, f.ToolIdx)
 	tctx.ToolCalls = []sdk.ToolCall{sdkTC}
 	tctx.ToolResults = nil
 	if a.runStage(sdk.StageBeforeToolcall, tctx) {
 		result := denialResultText(tctx, tc.Name)
-		f.ensureBatchAssistant()
+		ensureBatchAssistant(f)
 		f.Msgs = append(f.Msgs, agentAPI.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
 		// ★ 必须与 f.Msgs 同步落 context（见 appendToolResultRecord 的说明）。
 		// 漏掉这行的实测后果：qq_call_state 被权限策略拒绝后，ContextEvent 里
 		// 有 call 没有 result，每一轮都触发上游 400，直到发送前自检把它剔掉。
-		f.appendToolResultRecord(tc.ID, tc.Name, result)
+		appendToolResultRecord(f, tc.ID, tc.Name, result)
 		a.publishEvent(events.EventToolCall, map[string]interface{}{
 			"tool":    tc.Name,
 			"plugin":  pluginName,
@@ -1179,10 +1036,10 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	if pluginName != "" && !a.pluginHealth.IsHealthy(pluginName) {
 		result := fmt.Sprintf("插件 %s 处于崩溃状态，已跳过执行，等待自动恢复重载", pluginName)
 		a.Logf("skip tool %s: plugin %s unhealthy", tc.Name, pluginName)
-		f.ensureBatchAssistant()
+		ensureBatchAssistant(f)
 		f.Msgs = append(f.Msgs, agentAPI.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
 		// 同上：跳过执行也要落 result，否则 call/result 失配。
-		f.appendToolResultRecord(tc.ID, tc.Name, result)
+		appendToolResultRecord(f, tc.ID, tc.Name, result)
 		f.ToolIdx++
 		return outcomeContinue
 	}
@@ -1223,7 +1080,7 @@ func denialResultText(ctx *sdk.StageContext, toolName string) string {
 // 且每轮被召回，所以必须过与 Input/Response 同一条闸。
 // 脱敏在 Append 内还会再走一次（scrubEventSecrets），这里是落 ToolCalls
 // 之前的第一道（因为 ToolCalls 是结构化的，Append 的文本闸看不到字段内部）。
-func (f *TaskFrame) appendToolCallRecord(tc agentAPI.ToolCall) {
+func appendToolCallRecord(f *TaskFrame, tc agentAPI.ToolCall) {
 	if f == nil {
 		return
 	}
@@ -1266,7 +1123,7 @@ func (f *TaskFrame) appendToolCallRecord(tc agentAPI.ToolCall) {
 //
 // 判定"被拒绝/被跳过"≠"没有结果"：拒绝原因本身就是结果，而且模型
 // 确实看到了它（f.Msgs 里那条 tool 消息）。落 context 的必须与发给模型的一致。
-func (f *TaskFrame) appendToolResultRecord(callID, name, output string) {
+func appendToolResultRecord(f *TaskFrame, callID, name, output string) {
 	if f == nil {
 		return
 	}
@@ -1296,7 +1153,7 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	// false。工具失败是以 nil error + 错误**值**返回的，所以判据必须看返回值。
 	// ⚠️ kit.IsToolError 必须同时覆盖存量插件的两种失败约定与「成功不误判」，
 	// 否则升级会把存量插件的成功判成失败（见 toolerror_test.go）。
-	f.toolCtxFor(f.ToolIdx).ToolResults = []sdk.ToolResult{{
+	toolCtxFor(f, f.ToolIdx).ToolResults = []sdk.ToolResult{{
 		CallID: f.CurTool.ID, Name: f.CurTool.Name, Plugin: f.CurToolPlugin,
 		Success: !kit.IsToolError(outcome.Raw), Result: outcome.Raw,
 	}}
@@ -1310,7 +1167,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	pluginName := f.CurToolPlugin
 	result := f.CurResult
 
-	tctx := f.toolCtxFor(f.ToolIdx)
+	tctx := toolCtxFor(f, f.ToolIdx)
 	a.runStage(sdk.StageAfterToolcall, tctx)
 	if len(tctx.ToolResults) > 0 {
 		// 此前是 `Result.(string)` 类型断言，而插件返回的多是 map ⇒ 断言几乎
@@ -1352,7 +1209,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 		}
 	}
 
-	f.ensureBatchAssistant()
+	ensureBatchAssistant(f)
 
 	// 多模态工具结果：插件通过 SDK.SetToolBlocks 注入 image_url/audio_url block。
 	//
@@ -1419,7 +1276,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	// 「预览 + 句柄 + 总量」+ toolresult_read 工具按需取区间。
 	// 取哪一段由模型决定，信息不丢（判据要求分段拼回逐字节相同）。
 	if a.checkToolResultSize(tc.Name, toolMsg.Content) {
-		f.noteOversizeTool(tc.Name)
+		noteOversizeTool(f, tc.Name)
 		if replaced, ok := a.offloadToolResult(f, tc.Name, toolMsg.Content); ok {
 			toolMsg.Content = replaced
 			result = replaced
@@ -1431,13 +1288,13 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	if mediaMsg != nil {
 		// 延迟到批末（见 batchAttachments 的注释）：当场追加会把后续 tool 消息
 		// 与 assistant 挤开，上游判 insufficient tool messages。
-		f.batchAttachments = append(f.batchAttachments, *mediaMsg)
+		f.BatchAttachments = append(f.BatchAttachments, *mediaMsg)
 	}
 	// 召回同样延迟到批末：它是 system 消息，同样会断开 tool 配对。
 	// （语义与原先一致：同一批内多条召回仍是最后一条生效，因为
 	//  appendOrReplaceRecall 本就是替换而非累加。）
 	if recallText != "" {
-		f.batchRecall = recallText
+		f.BatchRecall = recallText
 	}
 
 	a.publishEvent(events.EventToolCall, map[string]interface{}{
@@ -1460,17 +1317,17 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 // assistant(tool_calls) 与 tool 结果消息的相邻性（见 batchAttachments 注释）。
 // 两个调用点：并行路径 stepToolBatch 的收尾循环之后；串行路径 stepToolBegin
 // 发现批已耗尽时。
-func (f *TaskFrame) flushBatchAttachments() {
-	if len(f.batchAttachments) == 0 && f.batchRecall == "" {
+func flushBatchAttachments(f *TaskFrame) {
+	if len(f.BatchAttachments) == 0 && f.BatchRecall == "" {
 		return
 	}
-	for _, m := range f.batchAttachments {
+	for _, m := range f.BatchAttachments {
 		f.Msgs = append(f.Msgs, m)
 	}
-	f.batchAttachments = nil
-	if f.batchRecall != "" {
-		f.Msgs = appendOrReplaceRecall(f.Msgs, f.batchRecall)
-		f.batchRecall = ""
+	f.BatchAttachments = nil
+	if f.BatchRecall != "" {
+		f.Msgs = appendOrReplaceRecall(f.Msgs, f.BatchRecall)
+		f.BatchRecall = ""
 	}
 }
 
@@ -1485,8 +1342,8 @@ func (f *TaskFrame) flushBatchAttachments() {
 //
 // 并行下完成顺序不确定，因此 assistant 必须**先于**任何 tool 消息存在；
 // 惰性写入天然满足：第一个完成的工具触发写入，后续只补 tool 消息。
-func (f *TaskFrame) ensureBatchAssistant() {
-	if f.assistantMsgIdx >= 0 {
+func ensureBatchAssistant(f *TaskFrame) {
+	if f.AssistantMsgIdx >= 0 {
 		return
 	}
 	msgContent := ""
@@ -1494,7 +1351,7 @@ func (f *TaskFrame) ensureBatchAssistant() {
 		msgContent = f.Resp.Content
 		f.ContentOnce = false
 	}
-	f.assistantMsgIdx = len(f.Msgs)
+	f.AssistantMsgIdx = len(f.Msgs)
 	f.Msgs = append(f.Msgs, agentAPI.Message{
 		Role:             "assistant",
 		Content:          msgContent,
@@ -1699,11 +1556,11 @@ func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers [
 // Extra 必须**逐份复制**而不是共享同一个 map：Extra 会被 stage handler 写
 // （例如插件注入 media_blocks），共享即竞争。逐份浅拷贝即可——里面的值
 // （string / []agentAPI.ContentBlock）本身是只读的。
-func (f *TaskFrame) buildToolContexts() {
+func buildToolContexts(f *TaskFrame) {
 	base := f.StageCtx
-	f.toolCtxs = make([]sdk.StageContext, len(f.PendingTools))
+	f.ToolCtxs = make([]sdk.StageContext, len(f.PendingTools))
 	for i := range f.PendingTools {
-		f.toolCtxs[i] = sdk.StageContext{
+		f.ToolCtxs[i] = sdk.StageContext{
 			Extra:    copyExtraMap(base.Extra),
 			NoMemory: base.NoMemory,
 		}
@@ -1715,16 +1572,16 @@ func (f *TaskFrame) buildToolContexts() {
 		// 从 base 继承（StageCtx 已由 stageCtxFromInput 标过）；copyExtraMap
 		// 会把该键一并复制，这里只在因某种路径缺失时补一个**保守值**
 		// （保守 = 按旧语义当作用户请求，宁可多查一次也不再出现"静默越权"）。
-		stampComeFrom(f.toolCtxs[i].Extra, comeFromUser)
+		stampComeFrom(f.ToolCtxs[i].Extra, comeFromUser)
 		// Phase 由 runStage 每次调用时设置，此处不预置。
 	}
 }
 
 // toolCtxFor 返回第 i 个工具的 StageContext；越界或未建时回落到 f.StageCtx，
 // 保证调用方不必判空（测试替身等未走 buildToolContexts 的路径）。
-func (f *TaskFrame) toolCtxFor(i int) *sdk.StageContext {
-	if i >= 0 && i < len(f.toolCtxs) {
-		return &f.toolCtxs[i]
+func toolCtxFor(f *TaskFrame, i int) *sdk.StageContext {
+	if i >= 0 && i < len(f.ToolCtxs) {
+		return &f.ToolCtxs[i]
 	}
 	return f.StageCtx
 }

@@ -117,50 +117,36 @@ func (a *Agent) toolResultWarnLimit() int {
 // （32K）可能需要更小的单条上限。
 func (a *Agent) SetToolResultWarnTokens(n int) { a.toolResultWarnTokens = n }
 
-// OversizeToolReports 返回本任务中「过大工具结果」的累计计数。
-//
-// 供调度器/状态面查询：连续出现说明某个工具在稳定地产出超大结果，
-// 值得换用更窄的查询方式。
-func (f *TaskFrame) OversizeToolReports() int {
-	if f == nil {
-		return 0
-	}
-	return f.oversizeTools
-}
-
-// noteOversizeTool 记一次过大结果。
-func (f *TaskFrame) noteOversizeTool(name string) {
+// noteOversizeTool 记账一次「过大工具结果」（只统计，不裁剪）。
+func noteOversizeTool(f *TaskFrame, name string) {
 	if f == nil {
 		return
 	}
-	f.oversizeTools++
-	if f.oversizeToolNames == nil {
-		f.oversizeToolNames = make([]string, 0, 4)
-	}
-	for _, n := range f.oversizeToolNames {
+	f.OversizeTools++
+	for _, n := range f.OversizeToolNames {
 		if n == name {
 			return
 		}
 	}
-	f.oversizeToolNames = append(f.oversizeToolNames, name)
+	f.OversizeToolNames = append(f.OversizeToolNames, name)
 }
 
 // OversizeToolNames 返回出现过超大结果的工具名（去重、保序）。
-func (f *TaskFrame) OversizeToolNames() []string {
-	if f == nil || len(f.oversizeToolNames) == 0 {
+func OversizeToolNames(f *TaskFrame) []string {
+	if f == nil || len(f.OversizeToolNames) == 0 {
 		return nil
 	}
-	out := make([]string, len(f.oversizeToolNames))
-	copy(out, f.oversizeToolNames)
+	out := make([]string, len(f.OversizeToolNames))
+	copy(out, f.OversizeToolNames)
 	return out
 }
 
 // oversizeHintFor 供状态面渲染用的一行摘要。
-func (f *TaskFrame) oversizeHintFor() string {
-	if f == nil || f.oversizeTools == 0 {
+func oversizeHintFor(f *TaskFrame) string {
+	if f == nil || f.OversizeTools == 0 {
 		return ""
 	}
-	names := f.OversizeToolNames()
+	names := OversizeToolNames(f)
 	return fmt.Sprintf("本任务有 %d 次超大工具结果（%s）——未被裁剪，但已占用大量上下文预算",
-		f.oversizeTools, strings.Join(names, ", "))
+		f.OversizeTools, strings.Join(names, ", "))
 }

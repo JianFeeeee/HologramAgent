@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
@@ -30,14 +31,7 @@ import (
 //
 // 生产数据实证（改动前）：tool_results 的键只有 ["name","output"]，
 // 参数完全没有留存 —— 这意味着回灌后无法重建"当时到底调了什么"。
-type ToolResultItem struct {
-	// CallID 回指 ToolCall.ID，是 tool_call 与 tool_result 的配对键。
-	//
-	// 空值表示旧数据（未记录 CallID），渲染时按位置配对（既有行为）。
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name"`
-	Output string `json:"output"`
-}
+type ToolResultItem = agenttypes.ToolResultItem
 
 // ToolCallItem 是一次工具调用的**完整记录**（含参数）。
 //
@@ -52,16 +46,7 @@ type ToolResultItem struct {
 //
 // 参数本身是模型给出的，正常是别名（sec_xxx），但仍可能被直接传明文
 // （插件工具），所以落盘前必须过 scrubEventSecrets（与 Input/Response 同一条闸）。
-type ToolCallItem struct {
-	// CallID 是本次调用的唯一标识（来自 provider，缺失时内核补一个）。
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name"`
-	// Arguments 是解析后的参数。
-	Arguments map[string]interface{} `json:"arguments,omitempty"`
-	// RawArguments 是模型给出的原始 JSON 字符串，保留它是为了诊断
-	// "参数解析失败/被截断"这类问题（Arguments 无法表达残缺）。
-	RawArguments string `json:"raw_arguments,omitempty"`
-}
+type ToolCallItem = agenttypes.ToolCallItem
 
 type ContextEvent struct {
 	// ID 是事件的稳定标识。惰性生成：只有真的要挂媒体块时才赋值。

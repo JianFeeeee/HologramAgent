@@ -439,8 +439,8 @@ func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 	if a == nil || a.graphDB() == nil {
 		return out
 	}
-	if f != nil && f.sceneDone {
-		return f.turnScene
+	if f != nil && f.SceneDone {
+		return f.TurnScene
 	}
 
 	declared := a.sceneKeysFor(evtOf(f), tool)
@@ -462,9 +462,9 @@ func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 		log.Printf("[agent] declared scene confirmed: %v (fingerprint %v)", turn.DeclaredCreated, memory.SituationKeys(sig))
 	}
 	if f != nil {
-		f.turnScene = turn
+		f.TurnScene = turn
 		f.Scene = turn.Primary
-		f.sceneDone = true
+		f.SceneDone = true
 	}
 	return turn
 }
