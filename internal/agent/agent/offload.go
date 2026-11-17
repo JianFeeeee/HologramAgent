@@ -242,7 +242,7 @@ func (a *Agent) ensureOffloadResident(opts OffloadOptions) (string, error) {
 	// 复用候选从统一登记表里挑"内核为转投而建"且仍 running 的。
 	var reusable []string
 	for _, e := range a.children.ByKind(childpkg.KindResident) {
-		rc, ok := e.(*residentChild)
+		rc, ok := e.Agent().(*residentChild)
 		if !ok || !rc.offloadOwned {
 			continue
 		}
@@ -263,7 +263,7 @@ func (a *Agent) ensureOffloadResident(opts OffloadOptions) (string, error) {
 	// 计数：只为转投而建的子是否已达上限（人工建的子不计入）。
 	owned := 0
 	for _, e := range a.children.ByKind(childpkg.KindResident) {
-		if rc, ok := e.(*residentChild); ok && rc.offloadOwned {
+		if rc, ok := e.Agent().(*residentChild); ok && rc.offloadOwned {
 			owned++
 		}
 	}

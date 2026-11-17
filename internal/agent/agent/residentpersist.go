@@ -136,7 +136,7 @@ func (a *Agent) persistResidents() {
 	}
 	var recs []residentRecord
 	for _, e := range a.children.ByKind(childpkg.KindResident) {
-		rc, ok := e.(*residentChild)
+		rc, ok := e.Agent().(*residentChild)
 		if !ok {
 			continue
 		}

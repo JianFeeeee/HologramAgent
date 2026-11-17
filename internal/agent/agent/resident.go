@@ -219,8 +219,14 @@ func (a *Agent) residentEntryOf(id string) (*residentChild, bool) {
 	if !ok {
 		return nil, false
 	}
-	rc, ok := e.(*residentChild)
-	return rc, ok
+	// ★ 经 Entry 的回答取载体，不按具体类型断言：
+	//   `Agent()` 由各类型实现，骨架不需要认识 *residentChild / *rtChild。
+	//   （用户裁定：类型差异走注册，不走类型分支。）
+	if e.Kind() != childpkg.KindResident {
+		return nil, false
+	}
+	rc, _ := e.Agent().(*residentChild)
+	return rc, true
 }
 
 // residentOf 按 id 取驻留子（不存在返回 nil）。
@@ -467,7 +473,7 @@ func (a *Agent) DestroyResidentWithTarget(id string, disp ChannelDisposition, ha
 	if e == nil {
 		return fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	rc, _ := e.(*residentChild)
+	rc, _ := e.Agent().(*residentChild)
 	if rc != nil {
 		a.teardownResidentWith(rc, disp, handoverTarget, false, nil)
 		// 显式销毁 ⇒ 从登记表里去掉（否则重启会把它又建回来）。
@@ -870,7 +876,7 @@ func (a *Agent) StopResidents() int {
 	all := a.children.ByKind(childpkg.KindResident)
 	for _, e := range all {
 		a.children.Remove(e.Base().ID)
-		if rc, ok := e.(*residentChild); ok {
+		if rc, ok := e.Agent().(*residentChild); ok {
 			// ★ 进程停机 ⇒ 保留 temp（供重启后重建复用）。
 			// 显式 Destroy/Reclaim 走另一条路径，那里才删。
 			a.teardownResidentWith(rc, ChannelOrphan, "", true, nil)
@@ -884,7 +890,7 @@ func (a *Agent) Residents() []ResidentInfo {
 	entries := a.children.ByKind(childpkg.KindResident)
 	out := make([]ResidentInfo, 0, len(entries))
 	for _, e := range entries {
-		if rc, ok := e.(*residentChild); ok {
+		if rc, ok := e.Agent().(*residentChild); ok {
 			out = append(out, rc.info())
 		}
 	}

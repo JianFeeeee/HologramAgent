@@ -445,7 +445,7 @@ func (a *Agent) rtChildOf(id string) *rtChild {
 	if !ok {
 		return nil
 	}
-	rc, _ := e.(*rtChild)
+	rc, _ := e.Agent().(*rtChild)
 	return rc
 }
 
