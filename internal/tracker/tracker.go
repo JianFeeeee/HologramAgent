@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -422,3 +423,34 @@ func (t *Tracker) Stats() map[string]interface{} {
 
 // Tracker 直接满足内置 SDK 的 TrackerAPI（复用优先，无需独立适配器）。
 var _ sdk.TrackerAPI = (*Tracker)(nil)
+
+// PreActionView / PostActionView 是**窄视图**：只给出"这次动作改了哪几个文件"。
+//
+// 用途：消费方（agent 等）只经 kernelapi.Tracker 调它，不必 import 本包。
+// 完整变更记录（Type/Size/Hash/Content）留在实现侧 —— 那是回滚用的。
+func (t *Tracker) PreActionView(action string) *model.TrackedChange {
+	cs := t.PreAction(action)
+	if cs == nil {
+		return nil
+	}
+	return trackedChangeOf(cs)
+}
+
+func (t *Tracker) PostActionView(action string) *model.TrackedChange {
+	cs := t.PostAction(action)
+	if cs == nil {
+		return nil
+	}
+	return trackedChangeOf(cs)
+}
+
+func trackedChangeOf(cs *ChangeSet) *model.TrackedChange {
+	if cs == nil {
+		return nil
+	}
+	out := &model.TrackedChange{Action: cs.Action, Files: make([]string, 0, len(cs.Files))}
+	for _, f := range cs.Files {
+		out.Files = append(out.Files, f.Path)
+	}
+	return out
+}

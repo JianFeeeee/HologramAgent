@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"regexp"
 	"strings"
 	"time"
@@ -40,9 +41,11 @@ func LegacyMediaEntityDigest(name string) string {
 	return m[1]
 }
 
-// LegacyMediaResolver 把一个短 digest 解析成可用于 L3 的一等记忆块。
-// 解析失败（内容已不存在）返回 false，该实体将被直接删除而不建块。
-type LegacyMediaResolver func(shortDigest string) (MemoryBlock, bool)
+// LegacyMediaResolver 把一个短 digest 解析成可用于 L3 的一等记忆块
+// （解析失败 = 内容已不存在，返回 false，该实体直接删除而不建块）。
+//
+// 类型别名：声明点在 internal/kernelapi（消费方经接口传它，不必 import 本包）。
+type LegacyMediaResolver = kernelapi.LegacyMediaResolver
 
 // MigrateLegacyMediaEntities 把 marker 反解出来的旧媒体实体迁移成原生块。
 //

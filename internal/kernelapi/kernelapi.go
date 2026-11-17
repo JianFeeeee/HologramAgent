@@ -157,7 +157,7 @@ type GraphMemory interface {
 	// MergeEntities 合并两个实体。
 	MergeEntities(sourceName, targetName string) (int, error)
 	// MigrateLegacyMediaEntities 把旧媒体实体迁移成原生块。
-	MigrateLegacyMediaEntities(resolve func(shortDigest string) (model.MemoryBlock, bool)) (blocks, entities int, err error)
+	MigrateLegacyMediaEntities(resolve LegacyMediaResolver) (blocks, entities int, err error)
 
 	// EnterSceneWithHint 走「主动声明 + 被动涌现」两条路得到本轮场景。
 	EnterSceneWithHint(sig model.Situation, declaredKeys []string) (model.TurnScene, error)
@@ -188,6 +188,9 @@ type GraphMemory interface {
 	Path() string
 }
 
+// LegacyMediaResolver 把"旧媒体实体的短 digest"解析成块（迁移用）。
+type LegacyMediaResolver func(shortDigest string) (model.MemoryBlock, bool)
+
 // ───────────────────────── 记忆索引 / 文本记忆 / 社交 ─────────────────────────
 
 // MemoryIndexer 是记忆索引器（构建注入上下文与工具提示）。
@@ -210,10 +213,10 @@ type TextMemory interface {
 
 // SocialStore 是人物特质与关系网。
 type SocialStore interface {
-	GetPerson(name string) (model.PersonProfile, error)
+	GetPerson(name string) (*model.PersonProfile, error)
 	SetTrait(name, trait, value string) error
 	AddRelation(personA, relation, personB string) error
-	GetNetwork(name string, depth int) ([]model.SocialRelation, error)
+	GetNetwork(name string, depth int) ([]*model.PersonProfile, error)
 }
 
 // Distiller 是记忆蒸馏流水线（可暂停/恢复，供伪关机）。
@@ -246,7 +249,7 @@ type Knowledge interface {
 	Remove(name string) error
 	BuildTree() *model.TreeIndex
 	List() []string
-	Start()
+	Start() error
 	Stop()
 }
 
@@ -271,6 +274,18 @@ type LLMManager interface {
 	SupportsVision(name string) bool
 	SupportsAudio(name string) bool
 	QuickChat(ctx context.Context, prompt string) (*agentAPI.CompletionResponse, error)
+}
+
+// MultimodalSpace 是统一多模态向量空间（内嵌 ONNX 或外部 HTTP 服务均可）。
+//
+// 消费方只经本接口调：具体是哪种后端属于实现细节。
+type MultimodalSpace interface {
+	VectorizeDense(text string) ([]float64, error)
+	EmbedImageDense(img []byte, mime string) ([]float64, error)
+	Fingerprint() string
+	Dim() int
+	Loaded() bool
+	Close()
 }
 
 // ───────────────────────── 事件总线 ─────────────────────────
@@ -366,9 +381,8 @@ type PluginHost interface {
 	ReloadOne(name string) error
 	ListLoadedPlugins() []string
 	LoadOneDir(dir, name string) error
-	LoadSkipping(dir, name string) error
+	LoadSkipping(dir string, skip map[string]bool) error
 	SetLoadAllowlist(names []string)
-	SetStatusProvider(p interface{})
 }
 
 // ───────────────────────── 工具 / 阶段 ─────────────────────────
@@ -397,8 +411,8 @@ type StageHost interface {
 
 // Tracker 是工具执行前后的文件变更追踪。
 type Tracker interface {
-	PreAction(action string) interface{}
-	PostAction(action string) interface{}
+	PreActionView(action string) *model.TrackedChange
+	PostActionView(action string) *model.TrackedChange
 }
 
 // ───────────────────────── 守护 / Lua / 同步总线 ─────────────────────────
