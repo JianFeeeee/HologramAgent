@@ -27,33 +27,12 @@ import (
 )
 
 // FindingKind 是内容审查命中的类别。
-type FindingKind string
-
-const (
-	// FindingSecret 是凭据（由 Store.Replace 处理：换成 @{别名}）。
-	FindingSecret FindingKind = "secret"
-	// FindingSensitiveWord 是敏感词命中（由配置/插件声明）。
-	FindingSensitiveWord FindingKind = "sensitive_word"
-	// FindingInjection 是提示词注入迹象。
-	//
-	// ★ 语义是**预警**，不是"一定恶意"：正常对话也可能引用
-	// "ignore previous instructions"。所以它默认只**标记**并记事件，
-	// 是否阻断由策略决定（BlockInjection）。
-	FindingInjection FindingKind = "prompt_injection"
-)
 
 // Finding 是一次审查命中。
 //
 // ★ 绝不携带命中原文：它会被写进日志/事件/状态面，
 // 而"把敏感词原文记进日志"本身就是泄漏（与 S1 同一纪律）。
-type Finding struct {
-	Kind   FindingKind `json:"kind"`
-	Where  string      `json:"where"`
-	Rule   string      `json:"rule,omitempty"` // 命中的规则/词条标识（不是原文）
-	Offset int         `json:"offset,omitempty"`
-	Length int         `json:"length,omitempty"`
-	At     string      `json:"at,omitempty"`
-}
+
 
 // ContentPolicy 是内容审查配置。
 type ContentPolicy struct {

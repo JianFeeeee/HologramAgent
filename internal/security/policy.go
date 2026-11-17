@@ -61,10 +61,7 @@ type SandboxPolicy struct {
 // Decision 是一次策略判定的结果。
 //
 // ★ 带 Reason：拒绝必须能回答"为什么"，否则模型只会反复重试同一调用。
-type Decision struct {
-	Allowed bool
-	Reason  string
-}
+
 
 // Allow 表示放行。
 func allowed() Decision { return Decision{Allowed: true} }

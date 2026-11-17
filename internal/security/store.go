@@ -136,14 +136,7 @@ type keyGen struct {
 }
 
 // Evt 是一次拦截事件（不含明文）。
-type Evt struct {
-	Alias  string `json:"alias"`
-	Kind   string `json:"kind"`  // 模式名
-	Where  string `json:"where"` // input | tool_result:<tool>
-	Len    int    `json:"len"`
-	Merged bool   `json:"merged"` // true = 复用已有别名（同变量合并）
-	At     string `json:"at"`
-}
+
 
 // Options 构造参数。
 type Options struct {

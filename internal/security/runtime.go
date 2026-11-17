@@ -512,7 +512,7 @@ func (r *Runtime) ScanContentForTool(ins Inspection, text, profileName, toolName
 		return nil, false, ""
 	}
 	p := r.effectiveContentForTool(profileName, toolName)
-	findings := p.Scan(text, ins.where())
+	findings := p.Scan(text, where(ins))
 	blocked, reason := p.BlockedBy(findings)
 	return findings, blocked, reason
 }

@@ -33,32 +33,17 @@ import (
 )
 
 // Direction 是数据流方向。
-type Direction string
-
-const (
-	// DirectionOutbound 是 Core → 外部（工具参数、载荷、设备命令、插件调用）。
-	DirectionOutbound Direction = "outbound"
-	// DirectionInbound 是外部 → Core（工具结果、设备回执、事件载荷）。
-	DirectionInbound Direction = "inbound"
-)
 
 // Inspection 描述一次过境的数据属于谁、往哪去。
 //
 // ★ 只放**定位信息**，不放内容：内容走参数，避免这里成为明文副本。
-type Inspection struct {
-	Direction Direction
-	// Stage 是过境点的短名（"tool_args" / "tool_result" / "plugin_result" …），
-	// 用于审计与日志定位（不是给模型的文案）。
-	Stage string
-	// Tool / Channel / AgentID / Source 是定位信息，缺省时为空。
-	Tool    string
-	Channel string
-	AgentID string
-	Source  string
-}
+
 
 // where 返回审计用的位置串（形如 "tool_args:coldcontext_query"）。
-func (i Inspection) where() string {
+//
+// ★ 它原先挂在 Inspection 上；DTO 搬到 internal/kernelapi/model 后
+// Go 不允许跨包定义方法，因此降为本包的包级函数（行为逐字不变）。
+func where(i Inspection) string {
 	w := i.Stage
 	if i.Tool != "" {
 		w += ":" + i.Tool
@@ -101,10 +86,10 @@ func (g *Gate) PrepareOutbound(ins Inspection, text string) (string, int) {
 	if !g.Enabled() || text == "" {
 		return text, 0
 	}
-	out, evts := g.store.Replace(text, ins.where(), Patterns)
+	out, evts := g.store.Replace(text, where(ins), Patterns)
 	for _, e := range evts {
 		log.Printf("[security] %s blocked %s (pattern %s, %d bytes, merged=%v)",
-			ins.where(), e.Alias, e.Kind, e.Len, e.Merged)
+			where(ins), e.Alias, e.Kind, e.Len, e.Merged)
 	}
 	return out, len(evts)
 }
@@ -120,10 +105,10 @@ func (g *Gate) ScrubInbound(ins Inspection, text string) (string, int) {
 	if !g.Enabled() || text == "" {
 		return text, 0
 	}
-	out, evts := g.store.Replace(text, ins.where(), Patterns)
+	out, evts := g.store.Replace(text, where(ins), Patterns)
 	for _, e := range evts {
 		log.Printf("[security] %s scrubbed %s (pattern %s, %d bytes, merged=%v)",
-			ins.where(), e.Alias, e.Kind, e.Len, e.Merged)
+			where(ins), e.Alias, e.Kind, e.Len, e.Merged)
 	}
 	return out, len(evts)
 }
@@ -138,7 +123,7 @@ func (g *Gate) FillForExecution(ins Inspection, text string) (string, int) {
 	}
 	out, n, used := g.store.Fill(text)
 	if n > 0 {
-		log.Printf("[security] %s backfilled %d place(s) (aliases %v)", ins.where(), n, used)
+		log.Printf("[security] %s backfilled %d place(s) (aliases %v)", where(ins), n, used)
 	}
 	return out, n
 }

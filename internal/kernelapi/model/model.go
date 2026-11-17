@@ -683,7 +683,15 @@ type Decision struct {
 }
 
 // FindingKind 是内容审查命中的类别。
+//
+// ★ 取值定义在本包，实现包（internal/security）以常量转发，既有写法不变。
 type FindingKind string
+
+const (
+	FindingSecret        FindingKind = "secret"
+	FindingSensitiveWord FindingKind = "sensitive_word"
+	FindingInjection     FindingKind = "prompt_injection"
+)
 
 // Finding 是一条内容审查命中（不含原文，只记规则与位置）。
 type Finding struct {
@@ -697,13 +705,19 @@ type Finding struct {
 
 // RoundInput 是一轮输入的策略声明（通道/说话人/档位）。
 type RoundInput struct {
+	AgentID string
+	IsChild bool
+	// Payload 是**原始输入载荷**（InputEvent.Payload）。
+	// security 自己从中解析档位（那是它的协议，不该让每个消费方各写一遍）。
+	Payload map[string]interface{}
+	// Channel / UserID / GroupID 是通道侧事实（诊断与审计用）。
 	Channel string
 	UserID  string
 	GroupID string
+	// Profile 是调用方显式声明的档位名（可空 = 由 security 自己判定）。
 	Profile string
-	AgentID string
-	IsChild bool
-	Source  string
+	// Source 是来源通道名（诊断与审计用，不参与判定）。
+	Source string
 }
 
 // Evt 是一次明文→别名的替换记录（变量库）。

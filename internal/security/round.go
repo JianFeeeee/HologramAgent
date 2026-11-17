@@ -51,25 +51,7 @@ import (
 //
 // ★ 这里刻意**不含 Kind**：类别由 security 自己从 AgentID/IsChild 推。
 // 调用方给不出“我是内部主体”这种结论 —— 它只能说自己是谁。
-type RoundInput struct {
-	// AgentID 是执行本次输入的执行体标识（主 agent = "main"，子 = 子的 id）。
-	AgentID string
 
-	// IsChild 表示本次输入由**某个父 agent 派出的子执行体**处理。
-	//
-	// 这是调用方能提供的事实（驻留子/rtchild 自己知道有父），
-	// 而“子属于哪一类主体、该不该豁免 HardPrivate”由 security 决定。
-	IsChild bool
-
-	// Payload 是**原始输入载荷**（`InputEvent.Payload`）。
-	//
-	// ★ security 自己从中解析 `security_profile` —— 那是 security 的协议，
-	// 不该让每个消费方各写一遍解析。字段名定义见 `profileKey`。
-	Payload map[string]interface{}
-
-	// Source 是来源通道名（诊断与审计用，不参与判定）。
-	Source string
-}
 
 // profileKey 是输入载荷里携带命名档位的键名。
 //
