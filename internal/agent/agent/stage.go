@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
-	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
@@ -41,15 +40,7 @@ func (a *Agent) runStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
 }
 
 func (a *Agent) publishEvent(evtType events.EventType, payload map[string]interface{}) {
-	if a.eventBus == nil {
-		return
-	}
-	a.eventBus.Publish(&events.Event{
-		Type:      evtType,
-		Source:    string(a.id),
-		Payload:   payload,
-		Timestamp: time.Now().Unix(),
-	})
+	a.publish(evtType, payload)
 }
 
 func (a *Agent) stageCtxFromInput(input, userID, groupID string) *sdk.StageContext {

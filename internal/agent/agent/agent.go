@@ -186,8 +186,13 @@ type Agent struct {
 	// 当前请求的输出通道（mutex 保护，process() 内独占）
 
 	// 阶段管道：插件消息流编辑
-	stageHost    *StageHost
-	eventBus     *events.Bus
+	stageHost *StageHost
+	// ★ 原先这里是 `eventBus *events.Bus`（裸总线）。
+	//
+	// 用户裁定（2026-11-17）：「事件总线是被安全模块代理的吧，原始总线只被
+	// 安全模块持有」。⇒ Agent 不再持有裸总线，只持有一个**发布代理**
+	// （见 agent_eventbus.go）：带本 agent 身份、过安全闸门、只能 Publish。
+	publisher    agentEventBus
 	pluginHealth *pluginHealthTracker
 
 	// 自循环输入通道：核心内部任务（记忆消歧、系统维护、子 Agent 通知），
@@ -444,8 +449,12 @@ type AgentConfig struct {
 	EmbeddingModelPath string                 // 预训练词嵌入模型路径（word2vec 文本格式），空则不使用
 	Embedder           *memory.StaticEmbedder // 共享词嵌入实例；nil 时按 EmbeddingModelPath 自建
 	StageHost          *StageHost
-	EventBus           *events.Bus
-	ThinkingEnabled    bool
+	// EventBus 是**发布代理的注入源**（见 agent_eventbus.go）。
+	//
+	// ★ 用户裁定：原始总线只被安全模块持有 ⇒ agent 不存裸总线，
+	//   构造期把它包成带身份的发布代理（`publisher`）。
+	EventBus        *events.Bus
+	ThinkingEnabled bool
 
 	InputProcessing types.InputProcessingConfig // 非文本输入处理配置
 
@@ -570,7 +579,6 @@ func New(cfg AgentConfig) *Agent {
 		maxContextSize:    cfg.MaxContextSize,
 		ctxTuning:         cfg.CtxTuning,
 		stageHost:         cfg.StageHost,
-		eventBus:          cfg.EventBus,
 		selfInputCh:       make(chan selfInputMsg, 64),
 		childTasks:        make(map[string]*childTaskState),
 		sched:             newScheduler(256),
@@ -596,6 +604,7 @@ func New(cfg AgentConfig) *Agent {
 			//   断言成 SecurityGate 传进来，基座只经接口调用，不认识实现类型。
 			SecurityGate: cfg.Security,
 		},
+		publisher:      agentEventBus{bus: cfg.EventBus, who: string(cfg.ID)},
 		noMergeMarkers: make(map[string]int),
 		lastInput:      make(map[string]time.Time),
 	}
