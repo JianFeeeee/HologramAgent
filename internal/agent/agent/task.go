@@ -423,9 +423,11 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	a.pruneOnInput(evt, cleanInput)
 
 	// 本轮 inputch（处理表按它记账）+ contextfull 检测（只有驻留子设了钩子）。
-	a.tableMu.Lock()
-	a.currentInputch = outputChannelOf(evt)
-	a.tableMu.Unlock()
+	if r := a.resident(); r != nil {
+		r.tableMu.Lock()
+		r.currentInputch = outputChannelOf(evt)
+		r.tableMu.Unlock()
+	}
 
 	if !isInterrupt {
 		a.context.Append(ContextEvent{

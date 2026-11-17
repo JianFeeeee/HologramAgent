@@ -80,31 +80,10 @@ type Agent struct {
 	// ★ 键是调用方（模型）给的 id，所以同名复用会撞键。串线的真因在**读侧**
 	// （RTTranscript 曾"先查留档、命中即返回"），现在按"在跑实例优先"。
 	// 刻意**不**在 Spawn 时删留档：提前删掉等于让"推了信号却拉不到正文"。
-	rtArchiveMu         sync.Mutex
-	rtClosedTranscripts map[string][]agentAPI.Message
+	// sub 是**类型分区表**（见 agentstate.go）：rt / 驻留子 / 工作式子
+	// 各自的运行状态按格存放，基座只留这一个字段。
+	sub *subStates
 
-	// rtSlot 是**本 agent 作为 rtchild 时**的输入槽（作为父时无用）。
-	rtSlot *rtSlot
-	// rtMaxTools 是本 agent 作为 rtchild 时的工具批数上限（0 = 不限）。
-	rtMaxTools int
-
-	// 子侧：向父发消息（L3）与 contextfull 上报（父侧内核级事件）的钩子。
-	notifyParent  func(text string)
-	onContextFull func()
-	// ctxFullSignaled / ctxFullMu：contextfull 只上报一次的去重标记。
-	//
-	// ★ 必须加锁（2026-10-30，-race 实测抓到真实竞争）：
-	// 读它的是**子自己的调度器 goroutine**（checkContextFull，stepPrepare 里），
-	// 而写它的是**父的 goroutine**（CompressResident → resetContextFull）。
-	// 这两个 goroutine 并发读写同一 bool，是无锁数据竞争。
-	ctxFullMu       sync.Mutex
-	ctxFullSignaled bool
-
-	// 子侧：inputch 处理表（子持有，父 pull）。
-	tableMu        sync.Mutex
-	inputchTable   []InputchRecord
-	inputchPending *InputchRecord
-	currentInputch string
 	indexer        kernelapi.MemoryIndexer
 	tracker        kernelapi.Tracker
 	context        *RelevanceContext
@@ -194,18 +173,9 @@ type Agent struct {
 	//   其他 = 正常处理（写入上下文、emit 响应到该通道）
 	selfInputCh chan selfInputMsg
 
-	// 子任务异步执行
-	childMu     sync.Mutex
-	childNextID int64
-	// childTasks 记录子任务状态：运行中 / 结果 / 是否已交付。
-	//
-	// 为什么保留结果而不是“读到即删”：完成通知会写进持久上下文
-	// （formatMergedTimeline 每轮都重新注入），模型之后还会再查。若读到即删，
-	// 第二次查询就得到“不存在或已过期”这个**永久失败信号**——模型据此认为
-	// 任务未完成，会无限重试/汇报（实测单轮 35 次工具调用、持续 514 秒）。
-	childTasks map[string]*childTaskState
-	// childSeq 给完成的任务排个序，用于有界淘汰。
-	childSeq int64
+	// 子任务状态在 sub.worker 里（见 agentstate.go）：
+	// 保留结果而不是"读到即删"——完成通知会进持久上下文，模型之后还会再查，
+	// 读到即删会让第二次查询得到永久失败信号（实测单轮 35 次重试、514 秒）。
 
 	// 输入调度器：就绪队列、任务抽象与快照（见 scheduler.go）。
 	// M2 起取代 eventLoop 的隐式 channel 排队。
@@ -583,7 +553,7 @@ func New(cfg AgentConfig) *Agent {
 		ctxTuning:         cfg.CtxTuning,
 		stageHost:         cfg.StageHost,
 		selfInputCh:       make(chan selfInputMsg, 64),
-		childTasks:        make(map[string]*childTaskState),
+		sub:               &subStates{},
 		sched:             newScheduler(256),
 		maxToolTurns:      cfg.MaxToolTurns,
 		offload:           cfg.Offload,

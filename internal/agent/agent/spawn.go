@@ -28,11 +28,11 @@ type childTaskState struct {
 const maxRetainedChildTasks = 20
 
 // evictChildTasksLocked 淘汰最旧的已完成子任务。调用方必须持有 childMu。
-func (a *Agent) evictChildTasksLocked() {
-	for len(a.childTasks) > maxRetainedChildTasks {
+func (w *workerState) evictLocked() {
+	for len(w.tasks) > maxRetainedChildTasks {
 		oldestID := ""
 		var oldestSeq int64
-		for id, st := range a.childTasks {
+		for id, st := range w.tasks {
 			if st.running {
 				continue
 			}
@@ -43,7 +43,7 @@ func (a *Agent) evictChildTasksLocked() {
 		if oldestID == "" {
 			return // 剩下全是运行中的，不淘汰
 		}
-		delete(a.childTasks, oldestID)
+		delete(w.tasks, oldestID)
 	}
 }
 
@@ -150,10 +150,11 @@ func (a *Agent) executeSpawnChild(tc agentAPI.ToolCall, parentChannel string) st
 		maxTurns = 30
 	}
 
-	a.childMu.Lock()
-	a.childNextID++
-	taskID := fmt.Sprintf("child_%d", a.childNextID)
-	a.childMu.Unlock()
+	w := a.mkWorker()
+	w.mu.Lock()
+	w.nextID++
+	taskID := fmt.Sprintf("child_%d", w.nextID)
+	w.mu.Unlock()
 
 	// parentChannel 由调用方（任务帧）传入：子任务完成通知要回到**发起这次
 	// spawn 的那个任务**的通道，而不是"内核当前通道"（那个概念已删除）。
@@ -161,9 +162,9 @@ func (a *Agent) executeSpawnChild(tc agentAPI.ToolCall, parentChannel string) st
 		parentChannel = "cli"
 	}
 
-	a.childMu.Lock()
-	a.childTasks[taskID] = &childTaskState{running: true}
-	a.childMu.Unlock()
+	w.mu.Lock()
+	w.tasks[taskID] = &childTaskState{running: true}
+	w.mu.Unlock()
 	go a.runChildTask(taskID, task, parentChannel, maxTurns)
 
 	return fmt.Sprintf("子任务已启动（ID: %s，最多 %d 轮）。完成后会自动通知你，届时用 child_result 查看输出即可（**只需查询一次**）", taskID, maxTurns)
@@ -342,15 +343,18 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		}
 	}
 
-	a.childMu.Lock()
-	if st := a.childTasks[taskID]; st != nil {
-		st.running = false
-		st.result = finalResult
-		a.childSeq++
-		st.seq = a.childSeq
+	w := a.workerState()
+	if w != nil {
+		w.mu.Lock()
+		if st := w.tasks[taskID]; st != nil {
+			st.running = false
+			st.result = finalResult
+			w.seq++
+			st.seq = w.seq
+		}
+		w.evictLocked()
+		w.mu.Unlock()
 	}
-	a.evictChildTasksLocked()
-	a.childMu.Unlock()
 
 	log.Printf("[child] %s done: %s", taskID, truncateStr(finalResult, 100))
 
@@ -373,20 +377,24 @@ func (a *Agent) executeChildResultTool(tc agentAPI.ToolCall) string {
 		return "请提供 task_id 参数"
 	}
 
-	a.childMu.Lock()
-	st, ok := a.childTasks[taskID]
+	w := a.workerState()
+	if w == nil {
+		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
+	}
+	w.mu.Lock()
+	st, ok := w.tasks[taskID]
 	if !ok {
-		a.childMu.Unlock()
+		w.mu.Unlock()
 		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
 	}
 	if st.running {
-		a.childMu.Unlock()
+		w.mu.Unlock()
 		return fmt.Sprintf("子任务 %s 仍在运行中，尚未完成。请等待完成通知后再查询。", taskID)
 	}
 	first := !st.delivered
 	st.delivered = true
 	result := st.result
-	a.childMu.Unlock()
+	w.mu.Unlock()
 
 	if first {
 		return fmt.Sprintf("【子任务 %s 结果】\n%s", taskID, result)

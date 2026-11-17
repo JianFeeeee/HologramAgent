@@ -693,8 +693,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//   整理循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。
 	//   只保留一个 rtLoop。
 	carrier.ctx, carrier.cancel = ctx, cancel
-	carrier.rtSlot = newRTSlot()
-	carrier.rtMaxTools = opts.MaxTools
+	carrier.mkRT(newRTSlot(), opts.MaxTools)
 
 	// ★ 接线 notify_parent —— 这就是计划 §2.4 的 `askparent` 在内核里的形态。
 	//
@@ -723,10 +722,10 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//   初版在回调里调 residentInboundChannel（它内部会 Register）⇒ 每发一次
 	//   就重复登记一次，而该表按 name 全局唯一 —— 是纯粹的写放大 + 脏登记。
 	rtInboundCh := a.residentInboundChannel("rt/" + opts.ID)
-	carrier.notifyParent = func(text string) {
+	_ = carrier.mkResident(func(text string) {
 		a.io.InjectInterruptTextOpts("rt/"+opts.ID, rtInboundCh, text,
 			agentIO.InjectOptions{Priority: "L4"})
-	}
+	}, nil)
 
 	rc := &rtChild{
 		Child: &child.Child{
@@ -739,7 +738,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 			InboundCh: rtInboundCh,
 			ParentID:  string(a.id),
 		},
-		agent: carrier, slot: carrier.rtSlot,
+		agent: carrier, slot: carrier.rt().slot,
 		light: rtLight, mainRO: rtMainRO,
 		input: opts.Input, output: opts.Output,
 	}
@@ -1107,8 +1106,8 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		}
 		// 工具批数上限（0 = 不限）。rt 是常驻对话，默认不限；
 		// 给了上限是为了让调用方能约束"一次插话最多查几步"。
-		if a.rtMaxTools > 0 && turns >= a.rtMaxTools {
-			rc.Logf("round %d reached max tool turns %d", round, a.rtMaxTools)
+		if rtst := a.rt(); rtst != nil && rtst.maxTools > 0 && turns >= rtst.maxTools {
+			rc.Logf("round %d reached max tool turns %d", round, rtst.maxTools)
 			return
 		}
 		turns++
@@ -1644,12 +1643,13 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 	// ★★ 同名键在这里**自然覆写**（2026-10-30）：留档以 id 为键，同名回收
 	//   会替换掉上一次的留档。串线问题不在写侧而在**读侧**（见 RTTranscript
 	//   的"在跑实例优先"），所以这里不需要额外清理动作。
-	a.rtArchiveMu.Lock()
-	if a.rtClosedTranscripts == nil {
-		a.rtClosedTranscripts = map[string][]agentAPI.Message{}
+	ar := a.mkArchive()
+	ar.mu.Lock()
+	if ar.closed == nil {
+		ar.closed = map[string][]agentAPI.Message{}
 	}
-	a.rtClosedTranscripts[id] = transcript
-	a.rtArchiveMu.Unlock()
+	ar.closed[id] = transcript
+	ar.mu.Unlock()
 
 	a.raiseVector(VectorRTChildClosed, vectorArgs{RTID: id, RTCount: n, RTChars: chars})
 	log.Printf("[rtchild] %s closed: %d messages (%d chars) kept for on-demand transcript", id, n, chars)
@@ -1671,9 +1671,13 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 // "实例还在不在" 决定，而不是由"留档里有没有" 决定。
 func (a *Agent) RTTranscript(id string) ([]agentAPI.Message, bool) {
 	rc := a.rtChildOf(id)
-	a.rtArchiveMu.Lock()
-	archived := a.rtClosedTranscripts[id]
-	a.rtArchiveMu.Unlock()
+	ar := a.archive()
+	if ar == nil {
+		return nil, false
+	}
+	ar.mu.Lock()
+	archived := ar.closed[id]
+	ar.mu.Unlock()
 
 	if rc != nil {
 		rc.mu.Lock()

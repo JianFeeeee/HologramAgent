@@ -394,12 +394,10 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 			reg.Unregister(inboundChannelName(opts.ID))
 		}
 	}()
-	child.notifyParent = func(text string) {
+	child.mkResident(func(text string) {
 		a.io.InjectInterruptTextOpts(opts.ID, parentInCh, text,
 			agentIO.InjectOptions{Priority: "L3"})
-	}
-	// ⑤ 子的 contextfull → 父侧的**内核级事件**（L4，带子标识）。
-	child.onContextFull = func() { a.handleChildContextFull(rc) }
+	}, func() { a.handleChildContextFull(rc) })
 
 	if err := a.children.Add(rc); err != nil {
 		child.Stop()
@@ -1055,13 +1053,14 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 //
 // 只对**驻留子**生效（只有它们设了 onContextFull）。
 func (a *Agent) checkContextFull() {
-	if a.onContextFull == nil {
+	r := a.resident()
+	if r == nil || r.onContextFull == nil {
 		return
 	}
 	// 读标记要加锁：它可能被**父的 goroutine**（CompressResident）并发清零。
-	a.ctxFullMu.Lock()
-	signaled := a.ctxFullSignaled
-	a.ctxFullMu.Unlock()
+	r.ctxFullMu.Lock()
+	signaled := r.ctxFullSignaled
+	r.ctxFullMu.Unlock()
 	if signaled {
 		return
 	}
@@ -1078,10 +1077,10 @@ func (a *Agent) checkContextFull() {
 	if a.overflowRatioNow() < contextFullRatio {
 		return
 	}
-	a.ctxFullMu.Lock()
-	a.ctxFullSignaled = true
-	a.ctxFullMu.Unlock()
-	a.onContextFull()
+	r.ctxFullMu.Lock()
+	r.ctxFullSignaled = true
+	r.ctxFullMu.Unlock()
+	r.onContextFull()
 }
 
 // resetContextFull 清零上报标记（压缩后允许再次上报）。
@@ -1089,19 +1088,27 @@ func (a *Agent) checkContextFull() {
 // 加锁理由见 Agent.ctxFullMu：本函数**通常由父的 goroutine 调用**
 // （CompressResident），而子的调度器 goroutine 正在读同一个字段。
 func (a *Agent) resetContextFull() {
-	a.ctxFullMu.Lock()
-	a.ctxFullSignaled = false
-	a.ctxFullMu.Unlock()
+	r := a.resident()
+	if r == nil {
+		return
+	}
+	r.ctxFullMu.Lock()
+	r.ctxFullSignaled = false
+	r.ctxFullMu.Unlock()
 }
 
 // ---- 子侧：inputch 处理表（子持有，父 pull） ----
 
 // recordInputchNote 是子**主动写入**本轮 inputch 的处理信息（工具 inputch_note）。
 func (a *Agent) recordInputchNote(text string) {
-	a.tableMu.Lock()
-	defer a.tableMu.Unlock()
-	a.inputchPending = &InputchRecord{
-		InputCh: a.currentInputch, At: time.Now(), Proactive: true, Text: text,
+	r := a.resident()
+	if r == nil {
+		return
+	}
+	r.tableMu.Lock()
+	defer r.tableMu.Unlock()
+	r.pending = &InputchRecord{
+		InputCh: r.currentInputch, At: time.Now(), Proactive: true, Text: text,
 	}
 }
 
@@ -1111,47 +1118,60 @@ func (a *Agent) autoRecordInputch(f *TaskFrame) {
 	if f == nil {
 		return
 	}
-	a.tableMu.Lock()
-	defer a.tableMu.Unlock()
-	if a.inputchPending != nil {
-		rec := *a.inputchPending
-		a.inputchPending = nil
-		rec.InputCh = firstNonEmpty(rec.InputCh, a.currentInputch)
-		a.inputchTable = append(a.inputchTable, rec)
+	r := a.resident()
+	if r == nil {
+		return
+	}
+	r.tableMu.Lock()
+	defer r.tableMu.Unlock()
+	if r.pending != nil {
+		rec := *r.pending
+		r.pending = nil
+		rec.InputCh = firstNonEmpty(rec.InputCh, r.currentInputch)
+		r.table = append(r.table, rec)
 		return
 	}
 	text := fmt.Sprintf("轮次完成：输入=%s", truncateStr(f.Input, 80))
 	if f.Response != "" {
 		text += "；产出=" + truncateStr(f.Response, 120)
 	}
-	a.inputchTable = append(a.inputchTable, InputchRecord{
-		InputCh: a.currentInputch, At: time.Now(), Proactive: false, Text: text,
+	r.table = append(r.table, InputchRecord{
+		InputCh: r.currentInputch, At: time.Now(), Proactive: false, Text: text,
 	})
 }
 
 func (a *Agent) inputchTableSnapshot() []InputchRecord {
-	a.tableMu.Lock()
-	defer a.tableMu.Unlock()
-	return append([]InputchRecord(nil), a.inputchTable...)
+	r := a.resident()
+	if r == nil {
+		return nil
+	}
+	r.tableMu.Lock()
+	defer r.tableMu.Unlock()
+	return append([]InputchRecord(nil), r.table...)
 }
 
 func (a *Agent) clearInputchTable() {
-	a.tableMu.Lock()
-	defer a.tableMu.Unlock()
-	a.inputchTable = nil
-	a.inputchPending = nil
+	r := a.resident()
+	if r == nil {
+		return
+	}
+	r.tableMu.Lock()
+	defer r.tableMu.Unlock()
+	r.table = nil
+	r.pending = nil
 }
 
 // ---- 子侧：主动向父发消息（L3） ----
 
 func (a *Agent) notifyParentFrom(text string) string {
-	if a.notifyParent == nil {
+	r := a.resident()
+	if r == nil || r.notifyParent == nil {
 		return "本 agent 没有上级，无法发送消息"
 	}
 	if strings.TrimSpace(text) == "" {
 		return "消息内容不能为空"
 	}
-	a.notifyParent(text)
+	r.notifyParent(text)
 	return "已发送给主 agent"
 }
 
