@@ -36,10 +36,10 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 )
 
 // BatchOpts 是批执行的可变部分（导出：类型模块经 Hooks.ToolRunner 传入）。

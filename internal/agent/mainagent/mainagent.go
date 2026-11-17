@@ -29,8 +29,7 @@ package mainagent
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 )
 
 // TypeName 是主 agent 的类型名（与基座注册表里的名字一致）。
@@ -48,29 +47,29 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	a := agent.New(cfg)
 	h := a.Hooks()
 
-	// ── 槽位 5：上下文管理（主 agent = 相关性裁剪 + 动态预算）──
+	// ── 槽位 5：上下文管理（主 agent = **策略裁剪型**，来自 standard）──
 	if h.ContextBudget == nil {
-		h.ContextBudget = ContextBudgetRelevance
+		h.ContextBudget = standard.ContextBudgetRelevance
 	}
 	if h.OverBudget == nil {
-		h.OverBudget = OverBudgetRatio
+		h.OverBudget = standard.OverBudgetRatio
 	}
 	if h.Prune == nil {
-		h.Prune = PruneByQuery
-		h.EnforceOverflow = EnforceOverflowStandard
+		h.Prune = standard.PruneByQuery
+		h.EnforceOverflow = standard.EnforceOverflowStandard
 	}
 
-	// ── 槽位 6：agent loop（主 agent 用标准同步实现）──
-	h.Loop = Loop
+	// ── 槽位 6：agent loop（主 agent 用**标准同步**实现）──
+	h.Loop = standard.Loop
 
-	// ── 槽位 1：toolcall（同步提交，执行由内核推进）──
+	// ── 槽位 1：toolcall（同步提交；执行由内核事件循环推进）──
 	if h.ToolRunner == nil {
-		h.ToolRunner = SynchronousRunner{}
+		h.ToolRunner = standard.SynchronousRunner{}
 	}
 
 	// ── 槽位 7：stage（标准阶段执行）──
 	if h.RunStage == nil {
-		h.RunStage = RunStageStandard
+		h.RunStage = standard.RunStageStandard
 	}
 
 	// ── 类型身份（数据事实，不是行为）──
@@ -88,53 +87,9 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	return a, nil
 }
 
-// ContextBudgetRelevance 是**策略裁剪型**的预算（主 agent）。
-func ContextBudgetRelevance(a *agent.Agent, b kit.TokenBudget) int {
-	return b.ContextTokens
-}
+// ── 主 agent 的回调全部来自 standard（组合，不重复实现）──
 
-// OverBudgetRatio 判定"是否已超出窗口预算"。
-func OverBudgetRatio(a *agent.Agent) bool { return a.OverBudgetRatio() }
+// 说明：这里不再各写一份实现，直接取 standard 的函数值 —— 那是
+// 「类型模块**组合**标准实现」的落点（用户裁定：组合而非继承）。
 
-// PruneByQuery 按相关度裁剪上下文。
-//
-// ★ 走**基座的裁剪原语**（`a.PruneContext`），不是 `a.PruneByQuery`：
-// 后者是"把裁剪交给注册的钩子"这个入口，再调它就成了
-// PruneByQuery → pruneWithHook → PruneByQuery 的无限递归（实测栈溢出）。
-// 入口与实现必须是两个不同的东西。
-func PruneByQuery(a *agent.Agent, query string, protected int) int {
-	return a.PruneContext(query, protected)
-}
-
-// EnforceOverflowStandard 是标准超页处置。
-func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, query string, force bool) (bool, int) {
-	return a.EnforceOverflowStandard(f, query, force)
-}
-
-// RunStageStandard 执行插件阶段。
-func RunStageStandard(a *agent.Agent, stage string, ctx any) bool {
-	return a.RunStageStandard(stage, ctx)
-}
-
-// Loop 是主 agent 的标准同步 loop。
-//
-// ★ 它注册的是基座的 `LoopStandard`（**逐 step 推进的状态机**），
-// 而不是 `a.RunTaskSteps` —— 后者是"把帧交给注册的 loop"这个**入口**，
-// 再调它就成了 runTaskSteps → Loop → runTaskSteps 的无限递归（实测）。
-//
-// 入口（`runTaskSteps`）与实现（`LoopStandard`）必须是两个不同的东西：
-// 这正是"基座只转发、类型提供实现"的分工。
-func Loop(a *agent.Agent, f *agenttypes.Frame) agenttypes.Outcome {
-	return agent.LoopStandard(a, f)
-}
-
-// SynchronousRunner 是标准同步 toolcall（提交一批、按索引拿回结果）。
-type SynchronousRunner struct{}
-
-// RunBatch 执行一批工具并按索引顺序返回（协议要求配对完整）。
-func (SynchronousRunner) RunBatch(a *agent.Agent, calls []agenttypes.ToolCall, opts agenttypes.BatchOpts) []agenttypes.BatchResult {
-	return a.RunToolBatch(calls, opts)
-}
-
-// ComeFrom 给出主 agent 发起工具调用时的来源标签（根 = user）。
 const ComeFrom = "user"
