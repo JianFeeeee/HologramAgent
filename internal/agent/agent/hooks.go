@@ -1,6 +1,9 @@
 package agent
 
-import agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+import (
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+)
 
 // hooks.go —— **类型行为注册表**（用户裁定的核心机制）。
 //
@@ -164,17 +167,7 @@ func (e *MissingHookError) Error() string {
 
 // SecurityGate 是安全防火墙的**数据面闸门**（槽位 3）。
 //
-// 类型模块从 `kernelapi.FacSecurity` 取到实现后断言成本接口再挂上来；
-// 基座只依赖这个窄面，不 import security 实现包。
-type SecurityGate interface {
-	// Enabled 报告闸门是否真的生效（配置关闭时为 false 但仍是透传）。
-	Enabled() bool
-	// ForAgent 取某 agent 的策略执行视图。
-	ForAgent(agentID string, isChild bool) any
-	// ReleaseAgent 释放某 agent 的视图。
-	ReleaseAgent(agentID string)
-	// DeclareChildPolicy 由父为子声明工具白/黑名单。
-	DeclareChildPolicy(childID string, allow, deny []string) error
-	// RevokeChildPolicy 撤销子策略。
-	RevokeChildPolicy(childID string)
-}
+// ★ 它直接复用 `kernelapi.SecurityGate`：安全模块是**强制的透明层**
+// （用户裁定），接口只有一份定义（在叶子包里），这里不再自造一份
+// （两份会让"哪份才是契约"变成不可判定）。
+type SecurityGate = kernelapi.SecurityGate

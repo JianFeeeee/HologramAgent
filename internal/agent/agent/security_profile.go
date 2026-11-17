@@ -38,8 +38,22 @@ package agent
 import (
 	"log"
 
-	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
+
+// gate 返回安全闸（**强制的透明层**，用户裁定 2026-11-17）。
+//
+// ★ 它是 hooks.SecurityGate，不是 security.Runtime 字段：
+// 基座不认识安全模块的实现类型，只经 kernelapi 的接口调用。
+// 语义上"未启用"不是 nil —— 装配点会装 Disabled Runtime（判定零成本透传）。
+// nil 只在单测/独立工具里出现（它们不跑整机装配）。
+func (a *Agent) gate() kernelapi.SecurityGate {
+	if a == nil {
+		return nil
+	}
+	return a.hooks.SecurityGate
+}
 
 // beginSecurityRound 在一条输入开始处理时调用：
 // 把**原始事实**交给 security，拿回本轮句柄。
@@ -50,11 +64,12 @@ import (
 // ★ 为什么由 agent 调而不是 io 层调：轮次的生命周期由 agent 的
 // `prepareInputTask` 界定（那里才知道一条输入何时真正开始/结束）。
 // security 不依赖 agent，所以只能由 agent 主动把边界告诉它。
-func (a *Agent) beginSecurityRound(payload map[string]interface{}, source string) *security.Round {
-	if a == nil || a.security == nil {
+func (a *Agent) beginSecurityRound(payload map[string]interface{}, source string) kernelapi.SecurityRound {
+	g := a.gate()
+	if g == nil {
 		return nil
 	}
-	rc, err := a.security.BeginRound(security.RoundInput{
+	rc, err := g.BeginRound(model.RoundInput{
 		AgentID: string(a.id),
 		// IsChild 是**事实**（有父就是子），不是类别结论。
 		IsChild: a.hooks.IsChild,
@@ -94,9 +109,10 @@ func (a *Agent) securityRoundDegraded(err error) {
 // 而那里只持有 `*Agent`、不持有轮次句柄。走 security 的**默认轮次**
 // （按 `AgentID` + 有无父自动分类）等价于原来“父/子分流”的行为，
 // 但语义只写在 security 一处。
-func (a *Agent) securityDecisionFor(tool string) security.Decision {
-	if a == nil || a.security == nil {
-		return security.Decision{Allowed: true}
+func (a *Agent) securityDecisionFor(tool string) model.Decision {
+	if a.gate() == nil {
+		// 未装配（单测/独立工具）：放行。生产装配由 Validate 拦住缺闸门的情形。
+		return model.Decision{Allowed: true}
 	}
 	// ★ 走本 agent 的**执行视图**（session 档 > longtime 档 > 全局基线）。
 	//
@@ -109,12 +125,13 @@ func (a *Agent) securityDecisionFor(tool string) security.Decision {
 //
 // 为什么要缓存：`ForAgent` 是幂等的，但每条输入/每次工具调用都取一次会
 // 反复加锁；而视图本身在整个 agent 生命周期内不变。
-func (a *Agent) securityScope() *security.AgentScope {
-	if a == nil || a.security == nil {
+func (a *Agent) securityScope() kernelapi.SecurityScope {
+	g := a.gate()
+	if g == nil {
 		return nil
 	}
 	a.securityScopeOnce.Do(func() {
-		a.securityScopeView = a.security.ForAgent(string(a.id), a.hooks.IsChild)
+		a.securityScopeView = g.ForAgent(string(a.id), a.hooks.IsChild)
 	})
 	return a.securityScopeView
 }
@@ -125,10 +142,9 @@ func (a *Agent) securityScope() *security.AgentScope {
 // agent/子 agent 回收后同名重建是常规操作，残留的 long-time 档会让
 // 新一代继承上一代父留的约束 —— 与 `RevokePrincipalPolicy` 同一纪律。
 func (a *Agent) ReleaseSecurityScope() {
-	if a == nil || a.security == nil {
-		return
+	if g := a.gate(); g != nil {
+		g.ReleaseAgent(string(a.id))
 	}
-	a.security.ReleaseAgent(string(a.id))
 }
 
 // declareChildPolicy 让父为刚创建的子执行体声明主体策略。
@@ -136,18 +152,18 @@ func (a *Agent) ReleaseSecurityScope() {
 // 这里只做转发：策略结构的组装与作用域落点由 security 负责
 // （`security.DeclareChildPolicy`）。
 func (a *Agent) declareChildPolicy(childID string, allow, deny []string) error {
-	if a == nil || a.security == nil {
+	g := a.gate()
+	if g == nil {
 		return nil
 	}
-	return a.security.DeclareChildPolicy(childID, allow, deny)
+	return g.DeclareChildPolicy(childID, allow, deny)
 }
 
 // revokeChildPolicy 在子执行体销毁时撤销父为它声明的策略。
 func (a *Agent) revokeChildPolicy(childID string) {
-	if a == nil || a.security == nil {
-		return
+	if g := a.gate(); g != nil {
+		g.RevokeChildPolicy(childID)
 	}
-	a.security.RevokeChildPolicy(childID)
 }
 
 // SetSecurity 注入安全运行时（**仅限测试与独立工具**）。
@@ -165,11 +181,11 @@ func (a *Agent) revokeChildPolicy(childID string) {
 // ## 为什么允许 nil
 //
 // 测试与独立工具（memgc 等）不需要安全模块；传 nil 表示显式不启用。
-func (a *Agent) SetSecurity(rt *security.Runtime) {
+func (a *Agent) SetSecurity(g kernelapi.SecurityGate) {
 	if a == nil {
 		return
 	}
-	a.security = rt
+	a.hooks.SecurityGate = g
 }
 
 // ───────────────────── 判据专用探针（非生产接口） ─────────────────────
@@ -188,17 +204,14 @@ func (a *Agent) SetSecurity(rt *security.Runtime) {
 // "有人在生产里调了它"在 code review 时一眼可见。
 
 // ProbeSecurityRuntime 返回本 agent 持有的安全运行时（判据用）。
-func (a *Agent) ProbeSecurityRuntime() *security.Runtime {
-	if a == nil {
-		return nil
-	}
-	return a.security
+func (a *Agent) ProbeSecurityRuntime() kernelapi.SecurityGate {
+	return a.gate()
 }
 
 // ProbeSecurityDecision 判定工具可用性（判据用）。
 //
 // 它走的就是生产路径（securityDecisionFor），不是另写一份逻辑。
-func (a *Agent) ProbeSecurityDecision(tool string) security.Decision {
+func (a *Agent) ProbeSecurityDecision(tool string) model.Decision {
 	return a.securityDecisionFor(tool)
 }
 
@@ -206,7 +219,7 @@ func (a *Agent) ProbeSecurityDecision(tool string) security.Decision {
 //
 // 判据用它验证「档位由 security 自己从 payload 解析」这条链真的通了，
 // 而不需要直接调 security 的内部方法。
-func (a *Agent) ProbeSecurityRound(payload map[string]interface{}, source string) *security.Round {
+func (a *Agent) ProbeSecurityRound(payload map[string]interface{}, source string) kernelapi.SecurityRound {
 	return a.beginSecurityRound(payload, source)
 }
 
@@ -253,12 +266,12 @@ const dangerousPrefix = "⚠️ 危险消息，谨慎处理：本条输入命中
 // agent 只提供**事实**（一段文本、它从哪来）。
 //
 // 返回 nil 表示无命中或本轮无 security（零成本）。
-func contentReview(round *security.Round, text, source string) []security.Finding {
+func contentReview(round kernelapi.SecurityRound, text, source string) []model.Finding {
 	if round == nil || text == "" {
 		return nil
 	}
-	ins := security.Inspection{
-		Direction: security.DirectionInbound,
+	ins := model.Inspection{
+		Direction: model.DirectionInbound,
 		Stage:     "user_input",
 		Source:    source,
 	}
@@ -288,7 +301,7 @@ func contentReview(round *security.Round, text, source string) []security.Findin
 //
 // 敏感词由插件按自己通道声明，词表难免偏宽；直接阻断会误杀正常消息。
 // 所以保留原文、只在前面加一句警示 —— 模型据此谨慎，用户的话不丢。
-func ReviewInputContent(round *security.Round, payload map[string]interface{}, source, text string) bool {
+func ReviewInputContent(round kernelapi.SecurityRound, payload map[string]interface{}, source, text string) bool {
 	if len(contentReview(round, text, source)) == 0 {
 		return false
 	}
@@ -325,17 +338,18 @@ const toolContentWarning = "⚠️ 危险内容，谨慎处理：本工具结果
 // agentID+isChild 自取生效档位（session > longtime）。所以这里只递交
 // **事实**（我是谁、哪个工具、什么文本），档位由 security 自己判定 ——
 // 与 CheckToolForAgent 同一套身份推断，不引入第二个入口语义。
-func (a *Agent) reviewToolResultContent(tool, text string) []security.Finding {
-	if a == nil || a.security == nil || text == "" {
+func (a *Agent) reviewToolResultContent(tool, text string) []model.Finding {
+	g := a.gate()
+	if g == nil || text == "" {
 		return nil
 	}
-	ins := security.Inspection{
-		Direction: security.DirectionInbound,
+	ins := model.Inspection{
+		Direction: model.DirectionInbound,
 		Stage:     "tool_result",
 		Tool:      tool,
 		AgentID:   string(a.id),
 	}
-	findings, _, _ := a.security.ScanContentForAgent(string(a.id), a.hooks.IsChild, ins, text)
+	findings, _, _ := g.ScanContentForAgent(string(a.id), a.hooks.IsChild, ins, text)
 	if len(findings) > 0 {
 		var kinds []string
 		for _, f := range findings {
@@ -359,9 +373,10 @@ func (a *Agent) reviewToolResultContent(tool, text string) []security.Finding {
 // 极难定位。
 //
 // 现在只有一个事实来源：本 agent 的 security 字段。
-func (a *Agent) secretStore() *security.Store {
-	if a == nil || a.security == nil {
+func (a *Agent) secretStore() kernelapi.SecretStore {
+	g := a.gate()
+	if g == nil {
 		return nil
 	}
-	return a.security.Store()
+	return g.Store()
 }

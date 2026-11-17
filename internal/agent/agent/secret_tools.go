@@ -35,11 +35,11 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"sort"
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 func (a *Agent) executeSecretTool(tc agentAPI.ToolCall) string {
@@ -62,7 +62,7 @@ func (a *Agent) executeSecretTool(tc agentAPI.ToolCall) string {
 //
 // 用途：agent 知道后面要用某个凭据（如刚读到的 token），
 // 先登记它，后续在工具参数里用 @{别名} 引用。
-func (a *Agent) execSecretSubmit(s *security.Store, tc agentAPI.ToolCall) string {
+func (a *Agent) execSecretSubmit(s kernelapi.SecretStore, tc agentAPI.ToolCall) string {
 	value, _ := tc.Arguments["value"].(string)
 	if strings.TrimSpace(value) == "" {
 		return "value 不能为空"
@@ -78,7 +78,7 @@ func (a *Agent) execSecretSubmit(s *security.Store, tc agentAPI.ToolCall) string
 }
 
 // execSecretList 列出变量元信息（**不含明文**）。
-func (a *Agent) execSecretList(s *security.Store, tc agentAPI.ToolCall) string {
+func (a *Agent) execSecretList(s kernelapi.SecretStore, tc agentAPI.ToolCall) string {
 	infos := s.List()
 	if len(infos) == 0 {
 		return "变量库为空。用 secret_submit 登记凭据。"
@@ -104,7 +104,7 @@ func (a *Agent) execSecretList(s *security.Store, tc agentAPI.ToolCall) string {
 }
 
 // execSecretForget 按别名删除一个变量。
-func (a *Agent) execSecretForget(s *security.Store, tc agentAPI.ToolCall) string {
+func (a *Agent) execSecretForget(s kernelapi.SecretStore, tc agentAPI.ToolCall) string {
 	alias, _ := tc.Arguments["alias"].(string)
 	alias = strings.TrimSpace(alias)
 	// 宽容一点：模型可能把 @{sec_xxx} 整个传进来
@@ -114,7 +114,7 @@ func (a *Agent) execSecretForget(s *security.Store, tc agentAPI.ToolCall) string
 		return "alias 不能为空"
 	}
 	if err := s.Forget(alias); err != nil {
-		if err == security.ErrUnknownAlias {
+		if err == s.ErrUnknownAlias() {
 			return fmt.Sprintf("未找到变量 %s（用 secret_list 查看现有变量）", alias)
 		}
 		return fmt.Sprintf("删除失败: %v", err)

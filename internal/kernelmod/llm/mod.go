@@ -68,7 +68,7 @@ func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string
 	providerMgr := agentProvider.NewProviderManager()
 	// 先注入变量库，再注册 —— 顺序反了会静默漏装饰（见 Init 的注释）。
 	if secRT != nil {
-		providerMgr.SetSecretStore(secRT.Store())
+		providerMgr.SetSecretStore(secRT.AsGate().Store())
 	}
 	adapterConcurrency := map[string]int{}
 	for _, src := range cfg.LLM.Sources {

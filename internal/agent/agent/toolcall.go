@@ -15,7 +15,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/toolroute"
 )
 
@@ -185,7 +184,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		// 能覆盖全部分支的位置，且 panic 路径也一起覆盖。
 		if out.Text != "" {
 			if st := a.secretStore(); st != nil {
-				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, security.Patterns); len(evts) > 0 {
+				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, nil); len(evts) > 0 {
 					out.Text = clean
 					for _, e := range evts {
 						log.Printf("[security] tool output %s blocked %s (pattern %s, %d bytes)",

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"runtime/debug"
 	"sync"
@@ -10,7 +11,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 type StageHost struct {
@@ -27,7 +27,7 @@ type StageHost struct {
 	//
 	// nil 合法：未启用安全模块时回填零成本跳过。
 	secretStoreMu sync.RWMutex
-	secretStoreV  *security.Store
+	secretStoreV  kernelapi.SecretStore
 	mu            sync.RWMutex
 	toolDefs      []sdk.ToolDef
 	tools         map[string]sdk.ToolHandler
@@ -71,7 +71,7 @@ func NewStageHost() *StageHost {
 }
 
 // SetSecretStore 注入变量库（装配期由 Agent 调用）。
-func (h *StageHost) SetSecretStore(s *security.Store) {
+func (h *StageHost) SetSecretStore(s kernelapi.SecretStore) {
 	if h == nil {
 		return
 	}
@@ -81,7 +81,7 @@ func (h *StageHost) SetSecretStore(s *security.Store) {
 }
 
 // secretStore 返回注入的变量库（未注入为 nil）。
-func (h *StageHost) secretStore() *security.Store {
+func (h *StageHost) secretStore() kernelapi.SecretStore {
 	if h == nil {
 		return nil
 	}

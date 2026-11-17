@@ -732,10 +732,12 @@ type Evt struct {
 
 // SecretInfo 是变量库里一条别名的元信息（不含明文）。
 type SecretInfo struct {
-	Alias  string `json:"alias"`
-	Source string `json:"source"`
-	Note   string `json:"note"`
-	At     string `json:"at"`
+	Alias     string `json:"alias"`
+	Source    string `json:"source"`
+	Note      string `json:"note,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	Hits      int    `json:"hits,omitempty"`
 }
 
 // ───────────────────────── 变更追踪口径 ─────────────────────────
@@ -770,4 +772,12 @@ type Knowledge struct {
 	// Media 是本条目携带的媒体块（媒体是**一等节点**：由自己的向量参与
 	// 召回，不依赖任何生成的描述文本）。与 Dense 一同内存持有。
 	Media []KnowledgeMediaRef `json:"-"`
+}
+
+// SecretPattern 是一条凭据识别规则（由实现侧提供，消费方只传不造）。
+//
+// ★ 刻意只暴露"名字 + 是否可能命中"两个只读面：模式的真正匹配逻辑
+// （正则 + 前缀预筛）留在实现包里，消费方不需要知道它怎么实现。
+type SecretPattern struct {
+	Name string
 }

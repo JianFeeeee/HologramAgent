@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"strings"
 	"sync"
@@ -20,7 +21,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -304,19 +304,20 @@ type Agent struct {
 	builtinHandlers agentAPI.BuiltinToolHandlers
 
 	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
-	// （security 按 agentID 持有，见 security_profile.go 的 securityScope）。
+	// （由 gate 按 agentID 持有，见 security_profile.go 的 securityScope）。
 	//
 	// ★ 为什么是 per-agent 而不是全局：轮次档位（sessionProfile）是该 agent
 	// 独有的状态。放在共享单例上，主 agent 的 guest 会被驻留子的 owner 覆盖
 	// —— 实测可复现（两者同进程并发）。
-	securityScopeView *security.AgentScope
+	securityScopeView kernelapi.SecurityScope
 	securityScopeOnce sync.Once
 
-	// security 是安全防火墙运行时（security 模块产出，可 nil）。
+	// ★ 原先这里有 `security *security.Runtime` 字段，已删除。
 	//
-	// ★ 可 nil：测试与独立工具（memgc 等）不需要安全模块。
-	// 所有使用点写法统一为 `if a.security != nil`（零成本跳过）。
-	security *security.Runtime
+	// 用户裁定（2026-11-17）：「安全模块是**强制的透明层**」。
+	// ⇒ 它既不该被 agent 看到类型，也不该被当成可选开关：
+	//   判定一律走 `a.gate()`（= hooks.SecurityGate），由类型模块在装配点
+	//   从 `kernelapi.FacSecurity` 取并挂上。未挂 = 装配错误（Validate 拦住）。
 
 	// usageLedger 累计**跨调用**的 token 用量与缓存命中。
 	//
@@ -398,30 +399,25 @@ type AgentConfig struct {
 	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
 	// 父 agent 创建驻留子时用它收窄子的输出能力。
 	AllowedOutputs []string
-	// Security 是安全防火墙运行时（security 模块产出，可 nil）。
+	// Security 是安全防火墙的**数据面闸门**（`kernelapi.SecurityGate`）。
 	//
-	// ## 为什么它是**装配期字段**而不是事后 Set
+	// ## 用户裁定（2026-11-17）：「安全模块是强制的透明层」
+	//
+	// 强制 ⇒ 装配点必须给（给不出来就别构造 agent）；透明 ⇒ 它的类型不进
+	// agent 的结构体，只经接口调用。
+	//
+	// ## 为什么装配期字段而不是事后 Set
 	//
 	// 这个字段曾经只能靠 `SetSecurity()` 注入，而生产装配链里**没有任何
-	// 地方调用它** —— 唯一的调用方是 4 条测试。于是 `securityDecisionFor`
-	// 在生产中恒走 nil 分支、恒放行，而策略表本身完全正确：这是
-	// 「机制 ≠ 接线」的教科书样本（GUI 无拒绝记录，看起来像"没人违规"）。
-	//
-	// ★ 根因在**依赖图**，不在这行赋值：`agent.Requires()` 没声明
-	//   `FacSecurity`，图就没有理由把 security 的产物交给 agent（只有声明了
-	//   的 device 拿到了）。所以修复必须同时改三处：
-	//     ① kernelmod/agent 的 Requires() 加 FacSecurity
-	//     ② 这里加字段 + New() 赋值 + buildAgent 传 k.Security
-	//     ③ 装配级判据（删 ① 或 ② 必须红）
-	//   只做 ②不做 ① 会让代码读 `k.Security` 而图不保证它已就绪 ——
-	//   今天恰好对（security 在第 1 层）是运气，不是设计。
+	// 地方调用它** —— 唯一调用方是 4 条测试。于是安全判定在生产中恒走
+	// nil 分支、恒放行，而策略表本身完全正确：这是「机制 ≠ 接线」的教科书
+	// 样本。修复必须同时改三处：图里声明依赖、构造期传入、装配级判据。
 	//
 	// ## 子 agent 必须继承
 	//
 	// 驻留子 / rtchild 各自 `New(AgentConfig{...})`，不继承就等于子 agent
 	// 完全没有闸门（而它们恰是"能指挥设备、能写记忆"的高风险执行体）。
-	// 见 resident.go / rtchild.go 里 `Security: a.security`。
-	Security *security.Runtime
+	Security kernelapi.SecurityGate
 
 	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，见 rtchild.go）。
 	//
@@ -596,27 +592,29 @@ func New(cfg AgentConfig) *Agent {
 			IsRealtime: cfg.IsRealtime,
 			IsChild:    cfg.ParentID != "",
 			ComeFrom:   comeFromFor(cfg.ParentID),
+			// ★ 安全闸→钩子（强制的透明层）：类型模块经 kernelapi 取到实现后
+			//   断言成 SecurityGate 传进来，基座只经接口调用，不认识实现类型。
+			SecurityGate: cfg.Security,
 		},
-		// ★ 安全运行时在**构造期**落位（不再依赖事后 SetSecurity）。
-		//   为 nil 表示调用方显式不启用（独立工具/单测），不是"忘了接线"。
-		security:       cfg.Security,
 		noMergeMarkers: make(map[string]int),
 		lastInput:      make(map[string]time.Time),
 	}
 
 	// 变量库注入：context 的落盘前脱敏要用**本 agent** 的变量库，
 	// 而不是进程级单例（见 RelevanceContext.secretStore 的注释）。
-	if a.security != nil {
-		if a.context != nil {
-			a.context.SetSecretStore(a.security.Store())
-		}
-		if a.stageHost != nil {
-			a.stageHost.SetSecretStore(a.security.Store())
-		}
-		// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
-		// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。
-		if a.providerManager != nil {
-			a.providerManager.SetSecretStore(a.security.Store())
+	if gate := a.gate(); gate != nil {
+		if st := gate.Store(); st != nil {
+			if a.context != nil {
+				a.context.SetSecretStore(st)
+			}
+			if a.stageHost != nil {
+				a.stageHost.SetSecretStore(st)
+			}
+			// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
+			// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。
+			if a.providerManager != nil {
+				a.providerManager.SetSecretStore(st)
+			}
 		}
 	}
 

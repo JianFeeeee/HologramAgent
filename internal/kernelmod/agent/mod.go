@@ -228,7 +228,7 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 		//
 		// 判据 TestAgentAssemblyWiresSecurity 走真实登记表装配 + 真工具执行，
 		// 删掉本行或 Requires 里的 FacSecurity 都会红。
-		Security:        secRT,
+		Security:        secRT.AsGate(),
 		ThinkingEnabled: cfg.LLM.ThinkingEnabled,
 		InputProcessing: cfg.InputProcessing,
 	})

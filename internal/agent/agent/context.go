@@ -3,7 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"io"
 	"log"
 	"math"
@@ -196,7 +196,7 @@ type RelevanceContext struct {
 	// （或反之），极难定位。
 	//
 	// nil 合法：未启用安全模块时脱敏零成本跳过。
-	secretStore      *security.Store
+	secretStore      kernelapi.SecretStore
 	channelDefLookup func(name string) (sdk.ChannelDef, bool)
 
 	// protectedCount 是裁剪时**无条件保留**的最近事件条数。
@@ -759,7 +759,7 @@ func (c *RelevanceContext) ProtectedCount() int {
 }
 
 // SetSecretStore 注入变量库（装配期由 Agent 调用）。
-func (c *RelevanceContext) SetSecretStore(s *security.Store) {
+func (c *RelevanceContext) SetSecretStore(s kernelapi.SecretStore) {
 	if c == nil {
 		return
 	}

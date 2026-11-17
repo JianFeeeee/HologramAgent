@@ -326,7 +326,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、
 		// 长时间不被人工审阅。它是本仓**最需要闸门**的一类 agent，
 		// 而原先它是唯一**完全没有闸门**的（子从 New 起 a.security 就是 nil）。
-		Security: a.security,
+		Security: a.gate(),
 	})
 
 	rc := &residentChild{

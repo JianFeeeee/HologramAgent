@@ -347,7 +347,11 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 	// （跳过 / 短路 / 挂起 / 正常），逐个加必然漏一个 —— 与
 	// `executeToolCallOutcome` 的入向脱敏用 defer 同一理由。
 	round := a.beginSecurityRound(evt.Payload, evt.Source)
-	defer round.End()
+	// ★ nil 安全（未装配闸门的单测/独立工具）：接口是**非 nil 接口值**才可调，
+	// 所以必须显式判 nil —— typed-nil 陷阱的同类（见 Hooks 的注释）。
+	if round != nil {
+		defer round.End()
+	}
 
 	// ★ 内容审查（敏感词 / 注入迹象）接线（2026-11-02，用户裁定 B 档）。
 	//

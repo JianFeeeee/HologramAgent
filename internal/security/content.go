@@ -33,7 +33,6 @@ import (
 // ★ 绝不携带命中原文：它会被写进日志/事件/状态面，
 // 而"把敏感词原文记进日志"本身就是泄漏（与 S1 同一纪律）。
 
-
 // ContentPolicy 是内容审查配置。
 type ContentPolicy struct {
 	// SensitiveWords 是敏感词表（空 = 不审查）。

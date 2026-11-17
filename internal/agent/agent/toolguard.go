@@ -37,6 +37,7 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"strings"
 
@@ -137,21 +138,23 @@ func pathDirection(toolName string) string {
 // checkNetworkAllowed 判本机是否允许网络访问。
 //
 // 未装配安全运行时（独立工具 / 单测）时一律放行 —— 与 checkSandboxPath 同语义。
-func (a *Agent) checkNetworkAllowed() security.Decision {
-	if a.security == nil {
-		return security.Decision{}
+func (a *Agent) checkNetworkAllowed() model.Decision {
+	g := a.gate()
+	if g == nil {
+		return model.Decision{}
 	}
-	return a.security.CheckNetwork()
+	return g.CheckNetwork()
 }
 
 // checkSandboxPath 判路径是否在沙箱允许根内。
 //
 // 未装配安全运行时（独立工具 / 单测）时一律放行 —— 与 CheckTool 同语义。
-func (a *Agent) checkSandboxPath(direction, path string) security.Decision {
-	if a.security == nil {
-		return security.Decision{}
+func (a *Agent) checkSandboxPath(direction, path string) model.Decision {
+	g := a.gate()
+	if g == nil {
+		return model.Decision{}
 	}
-	return a.security.CheckPath(direction, path)
+	return g.CheckPath(direction, path)
 }
 
 // archiveProtectedPath 对受保护路径做 L0 写前留档。

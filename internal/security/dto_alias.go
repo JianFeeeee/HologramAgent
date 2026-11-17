@@ -44,3 +44,9 @@ type RoundInput = model.RoundInput
 
 // Evt 是一次明文→别名的替换记录。
 type Evt = model.Evt
+
+// Info 是变量库里一条别名的元信息（不含明文）。
+//
+// ★ 声明点已搬到 model（消费方不该为"列一下别名"import 实现包）；
+// 实现侧以别名转发，既有 `security.Info` 写法不变。
+type Info = model.SecretInfo

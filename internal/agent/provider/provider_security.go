@@ -12,7 +12,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
 // secureProviderDecorator 在**发往 LLM 之前**把消息里的明文换成别名。
@@ -28,13 +29,13 @@ import (
 // 图片 URL 之类的载荷。这里两者都过一遍。
 type secureProviderDecorator struct {
 	inner Provider
-	store *security.Store
+	store kernelapi.SecretStore
 }
 
 // WrapProviderForSecurity 给 provider 套上出向改写。
 //
 // store 为 nil 时原样返回（安全模块未启用 ⇒ **零成本**）。
-func WrapProviderForSecurity(p Provider, store *security.Store) Provider {
+func WrapProviderForSecurity(p Provider, store kernelapi.SecretStore) Provider {
 	if p == nil || store == nil {
 		return p
 	}
@@ -92,7 +93,7 @@ func (d *secureProviderDecorator) scrubRequest(req *CompletionRequest) {
 		m := &req.Messages[i]
 
 		if m.Content != "" {
-			out, evts := d.store.Replace(m.Content, "llm_out:"+m.Role, security.Patterns)
+			out, evts := d.store.Replace(m.Content, "llm_out:"+m.Role, nil)
 			if len(evts) > 0 {
 				m.Content = out
 				d.logEvts(evts)
@@ -104,13 +105,13 @@ func (d *secureProviderDecorator) scrubRequest(req *CompletionRequest) {
 		for j := range m.Blocks {
 			b := &m.Blocks[j]
 			if b.Text != "" {
-				if out, evts := d.store.Replace(b.Text, "llm_out:"+m.Role+":block", security.Patterns); len(evts) > 0 {
+				if out, evts := d.store.Replace(b.Text, "llm_out:"+m.Role+":block", nil); len(evts) > 0 {
 					b.Text = out
 					d.logEvts(evts)
 				}
 			}
 			if b.ImageURL != nil && b.ImageURL.URL != "" {
-				if out, evts := d.store.Replace(b.ImageURL.URL, "llm_out:"+m.Role+":image", security.Patterns); len(evts) > 0 {
+				if out, evts := d.store.Replace(b.ImageURL.URL, "llm_out:"+m.Role+":image", nil); len(evts) > 0 {
 					b.ImageURL.URL = out
 					d.logEvts(evts)
 				}
@@ -120,7 +121,7 @@ func (d *secureProviderDecorator) scrubRequest(req *CompletionRequest) {
 }
 
 // logEvts 记录拦截（**只记别名，绝不记明文**）。
-func (d *secureProviderDecorator) logEvts(evts []security.Evt) {
+func (d *secureProviderDecorator) logEvts(evts []model.Evt) {
 	for _, e := range evts {
 		log.Printf("[security] outbound block %s <- pattern %s, %d bytes, merged=%v, at %s",
 			e.Alias, e.Kind, e.Len, e.Merged, e.Where)

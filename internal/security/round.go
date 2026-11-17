@@ -52,7 +52,6 @@ import (
 // ★ 这里刻意**不含 Kind**：类别由 security 自己从 AgentID/IsChild 推。
 // 调用方给不出“我是内部主体”这种结论 —— 它只能说自己是谁。
 
-
 // profileKey 是输入载荷里携带命名档位的键名。
 //
 // 与公开 SDK 的 `InjectOptions.SecurityProfile`（JSON 名 `security_profile`）

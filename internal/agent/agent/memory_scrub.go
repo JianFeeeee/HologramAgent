@@ -45,11 +45,11 @@ func (c *RelevanceContext) scrubEventSecrets(evt *ContextEvent) {
 	if s == nil {
 		return
 	}
-	if out, evts := s.Replace(evt.Input, "ctx_input", security.Patterns); len(evts) > 0 {
+	if out, evts := s.Replace(evt.Input, "ctx_input", nil); len(evts) > 0 {
 		evt.Input = out
 		logEvtHits("上下文输入", evts)
 	}
-	if out, evts := s.Replace(evt.Response, "ctx_response", security.Patterns); len(evts) > 0 {
+	if out, evts := s.Replace(evt.Response, "ctx_response", nil); len(evts) > 0 {
 		evt.Response = out
 		logEvtHits("上下文回复", evts)
 	}
@@ -58,7 +58,7 @@ func (c *RelevanceContext) scrubEventSecrets(evt *ContextEvent) {
 			continue
 		}
 		if out, evts := s.Replace(evt.ToolResults[i].Output,
-			"ctx_tool:"+evt.ToolResults[i].Name, security.Patterns); len(evts) > 0 {
+			"ctx_tool:"+evt.ToolResults[i].Name, nil); len(evts) > 0 {
 			evt.ToolResults[i].Output = out
 			logEvtHits("上下文工具结果 "+evt.ToolResults[i].Name, evts)
 		}
@@ -75,13 +75,13 @@ func (c *RelevanceContext) scrubEventSecrets(evt *ContextEvent) {
 			if !ok || str == "" {
 				continue
 			}
-			if out, evts := s.Replace(str, "ctx_toolargs:"+tc.Name+"."+k, security.Patterns); len(evts) > 0 {
+			if out, evts := s.Replace(str, "ctx_toolargs:"+tc.Name+"."+k, nil); len(evts) > 0 {
 				tc.Arguments[k] = out
 				logEvtHits("上下文工具参数 "+tc.Name+"."+k, evts)
 			}
 		}
 		if tc.RawArguments != "" {
-			if out, evts := s.Replace(tc.RawArguments, "ctx_toolargs_raw:"+tc.Name, security.Patterns); len(evts) > 0 {
+			if out, evts := s.Replace(tc.RawArguments, "ctx_toolargs_raw:"+tc.Name, nil); len(evts) > 0 {
 				tc.RawArguments = out
 				logEvtHits("上下文工具原始参数 "+tc.Name, evts)
 			}
@@ -95,7 +95,7 @@ func (c *RelevanceContext) scrubEventSecrets(evt *ContextEvent) {
 		if evt.Blocks[i].Text == "" {
 			continue
 		}
-		if out, evts := s.Replace(evt.Blocks[i].Text, "ctx_block", security.Patterns); len(evts) > 0 {
+		if out, evts := s.Replace(evt.Blocks[i].Text, "ctx_block", nil); len(evts) > 0 {
 			evt.Blocks[i].Text = out
 			logEvtHits("上下文记忆块", evts)
 		}
@@ -119,7 +119,7 @@ func (a *Agent) scrubMemoryCandidate(payload map[string]interface{}) {
 		if !ok || str == "" {
 			continue
 		}
-		if out, evts := s.Replace(str, "memory:"+key, security.Patterns); len(evts) > 0 {
+		if out, evts := s.Replace(str, "memory:"+key, nil); len(evts) > 0 {
 			payload[key] = out
 			logEvtHits("记忆候选 "+key, evts)
 		}
@@ -131,7 +131,7 @@ func (a *Agent) scrubMemoryCandidate(payload map[string]interface{}) {
 				continue
 			}
 			if out, evts := s.Replace(trs[i].Output,
-				"memory:tool:"+trs[i].Name, security.Patterns); len(evts) > 0 {
+				"memory:tool:"+trs[i].Name, nil); len(evts) > 0 {
 				trs[i].Output = out
 				logEvtHits("记忆候选工具结果 "+trs[i].Name, evts)
 			}
@@ -148,7 +148,7 @@ func (a *Agent) scrubMemoryCandidate(payload map[string]interface{}) {
 			if !ok || out == "" {
 				continue
 			}
-			if scrubbed, evts := s.Replace(out, "memory:tool", security.Patterns); len(evts) > 0 {
+			if scrubbed, evts := s.Replace(out, "memory:tool", nil); len(evts) > 0 {
 				m["output"] = scrubbed
 				logEvtHits("记忆候选工具结果", evts)
 			}

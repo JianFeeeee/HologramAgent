@@ -58,7 +58,7 @@ func pathGuardHarnessDef(t *testing.T, dataDir string, sandbox security.SandboxP
 		t.Fatalf("RegisterTool: %v", err)
 	}
 	a := agent.New(agent.AgentConfig{
-		ID: "pathguard", StageHost: sh, Security: rt, DataDir: dataDir,
+		ID: "pathguard", StageHost: sh, Security: rt.AsGate(), DataDir: dataDir,
 	})
 	t.Cleanup(a.Stop)
 	return a

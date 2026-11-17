@@ -36,9 +36,9 @@ import (
 	"time"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // 类型别名：本包内沿用 api 的类型名，使实现代码与搬包前逐字一致。
@@ -815,7 +815,7 @@ type ProviderManager struct {
 	// 现在由内核装配时调 SetSecretStore 注入；未注入时装饰器零成本跳过。
 	//
 	// nil 合法：未启用安全模块、或测试未注入。
-	secretStore *security.Store
+	secretStore kernelapi.SecretStore
 	providers   map[string]Provider
 	order       []string
 	default_    string
@@ -920,7 +920,7 @@ func (m *ProviderManager) Reset() {
 //
 // 注入后**已注册的 provider 不会补装饰**：装饰发生在 Register 时。
 // 因此内核必须在注册任何 provider 之前调用本方法（llm 模块的 Init 顺序保证）。
-func (m *ProviderManager) SetSecretStore(s *security.Store) {
+func (m *ProviderManager) SetSecretStore(s kernelapi.SecretStore) {
 	if m == nil {
 		return
 	}
@@ -930,7 +930,7 @@ func (m *ProviderManager) SetSecretStore(s *security.Store) {
 }
 
 // secretStoreOf 读注入的变量库（无锁快照，Register 内部用）。
-func (m *ProviderManager) secretStoreOf() *security.Store {
+func (m *ProviderManager) secretStoreOf() kernelapi.SecretStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.secretStore

@@ -38,7 +38,6 @@ import (
 //
 // ★ 只放**定位信息**，不放内容：内容走参数，避免这里成为明文副本。
 
-
 // where 返回审计用的位置串（形如 "tool_args:coldcontext_query"）。
 //
 // ★ 它原先挂在 Inspection 上；DTO 搬到 internal/kernelapi/model 后

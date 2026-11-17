@@ -30,8 +30,6 @@ package agent
 
 import (
 	"log"
-
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // scrubForLog 清洗要写进日志的文本。
@@ -48,7 +46,7 @@ func (a *Agent) scrubForLog(text, where string) string {
 	if st == nil {
 		return text
 	}
-	out, evts := st.Replace(text, "log:"+where, security.Patterns)
+	out, evts := st.Replace(text, "log:"+where, nil)
 	if len(evts) == 0 {
 		return text
 	}

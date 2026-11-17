@@ -286,13 +286,19 @@ type EventBus interface {
 //
 // 它不是"某个能力"，而是边界：出向（Core → 外部）与入向（外部 → Core）
 // 都要经它审查。消费方只依赖本接口，不 import security 实现包。
+//
+// ★ 方法集按**消费方实际用到**的（agent 侧的 security_profile.go / toolcall.go /
+//
+//	toolguard.go / memory_scrub.go / log_scrub.go）定义，不是生产方的导出面。
 type SecurityGate interface {
-	// Enabled 报告闸门是否真的生效（配置关闭时为 false 但透传）。
+	// Enabled 报告闸门是否真的生效（配置关闭时为 false 但仍是透传）。
 	Enabled() bool
-	// ForAgent 取某 agent 的策略执行视图。
+	// ForAgent 取某 agent 的策略执行视图（幂等）。
 	ForAgent(agentID string, isChild bool) SecurityScope
 	// ReleaseAgent 释放某 agent 的视图（停机/重建时）。
 	ReleaseAgent(agentID string)
+	// BeginRound 按事实开一轮（AgentID + 有无父 + 载荷），由 security 自己分类。
+	BeginRound(in model.RoundInput) (SecurityRound, error)
 	// DeclareChildPolicy 由父为子声明工具白/黑名单。
 	DeclareChildPolicy(childID string, allow, deny []string) error
 	// RevokeChildPolicy 撤销子策略。
@@ -300,12 +306,10 @@ type SecurityGate interface {
 	// CheckPath / CheckNetwork 是路径与网络策略判定。
 	CheckPath(direction, path string) model.Decision
 	CheckNetwork() model.Decision
-	// ScanContentForAgent 做内容审查（敏感词/注入），返回命中、是否阻断、替换文本。
+	// ScanContentForAgent 做内容审查，返回命中、是否阻断、替换文本。
 	ScanContentForAgent(agentID string, isChild bool, ins model.Inspection, text string) ([]model.Finding, bool, string)
 	// Store 返回变量库（明文 ↔ 别名）。
 	Store() SecretStore
-	// Codec 是变量库的加密编解码器（可为 nil）。
-	Codec() interface{}
 }
 
 // SecurityScope 是单个 agent 的策略执行视图。
@@ -315,28 +319,38 @@ type SecurityScope interface {
 	LongtimeProfile() string
 	SessionProfile() string
 	EffectiveProfile() string
+	CheckTool(tool string) model.Decision
 }
 
-// SecurityRound 是一轮策略上下文。
+// SecurityRound 是一轮策略句柄。
 type SecurityRound interface {
 	Principal() string
 	Profile() string
 	EffectiveProfile() string
 	CheckTool(name string) model.Decision
-	CheckContent(ins model.Inspection, text string) ([]model.Finding, bool)
 	End()
+	CheckContent(ins model.Inspection, text string) ([]model.Finding, bool)
 }
 
 // SecretStore 是变量库（明文的唯一落盘处）。
 type SecretStore interface {
-	// Replace 把明文换成别名，返回替换次数与逐条记录。
-	Replace(text, where string, detect interface{}) (string, []model.Evt)
+	// Replace 把明文换成别名，返回替换后的文本与逐条记录。
+	//
+	// detect nil 表示用实现侧的内置模式库 —— 消费方**不该**为"用哪些模式"
+	// import security 实现包（规则是实现细节，不是调用方的选择项）。
+	Replace(text, where string, detect []model.SecretPattern) (string, []model.Evt)
 	// Fill 把别名回填成明文。
 	Fill(text string) (string, int, []string)
 	// FillMap 对参数表做别名回填。
 	FillMap(args map[string]interface{}) (int, []string)
 	// Put 登记一条别名。
 	Put(alias, plain, source, note string) (merged bool, err error)
+	// Submit 由 agent 主动登记一条凭据，返回别名。
+	Submit(plain, note string) (alias string, err error)
+	// Forget 按别名删除。
+	Forget(alias string) error
+	// ErrUnknownAlias 报告"别名不存在"（哨兵，调用方用于给模型可执行提示）。
+	ErrUnknownAlias() error
 	// List 列出别名元信息（不含明文）。
 	List() []model.SecretInfo
 }

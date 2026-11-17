@@ -137,7 +137,6 @@ type keyGen struct {
 
 // Evt 是一次拦截事件（不含明文）。
 
-
 // Options 构造参数。
 type Options struct {
 	// Path 是变量库落盘路径（注意：**落盘**，不是内存）。
@@ -716,14 +715,6 @@ func (s *Store) FillMap(args map[string]interface{}) (int, []string) {
 // ---------------- 查询（★ 永不返回明文） ----------------
 
 // Info 是变量的元信息（不含明文）。
-type Info struct {
-	Alias     string `json:"alias"`
-	Source    string `json:"source"`
-	Note      string `json:"note,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-	Hits      int    `json:"hits,omitempty"`
-}
 
 // List 列出全部变量元信息。
 //

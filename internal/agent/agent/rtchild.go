@@ -685,7 +685,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.memory 保持 nil
 		// ⇒ 记忆整理面（块/媒体/流水线）全部不可达，只有 Recall/Commit 可用。
 		LightMemory: rtLight,
-		Security:    a.security,
+		Security:    a.gate(),
 		IsRealtime:  true, // ★ 类型标签：只有它可被划 rt 通道
 	})
 	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 3 个记忆
