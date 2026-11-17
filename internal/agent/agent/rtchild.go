@@ -1129,7 +1129,10 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 临界区改为**覆盖整批**：语义不变（副作用仍不可被打断），
 		// 但不再需要"每个工具进一次"的计数抖动。
 		a.rtEnterCritical(rc)
-		results := a.runToolBatch(roundCtx, resp.ToolCalls, BatchOpts{
+		// ★ 经**类型注册的** toolcall 槽位（用户裁定：「rt agent 的一切接口都需要
+		//   是异步的」）。rt 注册自己的异步实现；这里只提供"这一批属于哪一轮"。
+		results := a.hooks.ToolRunner.RunBatch(a, resp.ToolCalls, BatchOpts{
+			Ctx:     roundCtx,
 			Channel: rc.output,
 			// rt 无场景（它不吃 RelevanceContext）。
 			Scenes: nil,

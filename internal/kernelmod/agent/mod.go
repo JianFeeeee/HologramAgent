@@ -322,13 +322,12 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	// （memory/knowledge 是否就绪），而 provider 持有的是 agent。
 	agent.InstallBuiltinToolProvider()
 
-	// ★ 主 agent 的**标准实现**在这里显式注册（用户裁定 2026-11-17）：
-	// 「基座不假设任何 agentloop 样式」⇒ 用哪个 loop / 哪些定时任务，
-	// 是装配点的显式决定，不是基座的默认行为。
-	agent.SetHooks(agentCore.Hooks{
-		// 主 agent：标准同步 loop（异步样式由 rt 类型模块注册自己的实现）。
-		Loop: agentCore.LoopStandard,
-	})
+	// ★ 主 agent 的标准实现由**它自己的类型工厂**挂齐（`agent/type_main.go`，
+	//   经 `Instantiate(main)` 一步到位）。装配点**不许**再 `SetHooks` ——
+	//   那会把工厂装满的槽位整表覆盖掉（实测：安全闸/上下文策略/stage 瞬间归零）。
+	//
+	//   用户裁定：「基座不假设任何 agentloop 样式」⇒ 用哪个 loop、注册哪些
+	//   定时任务，是**该类型**的决定，不是装配点的追加，也不是基座的默认值。
 
 	// ★ 主 agent 的**后台维护任务**在这里注册（用户裁定 2026-11-17：
 	// 「agent 基类应该暴露一个定时器回调接口用于触发定时任务，而不是现在

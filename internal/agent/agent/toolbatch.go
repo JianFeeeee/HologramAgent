@@ -43,6 +43,13 @@ import (
 // BatchOpts 是批执行的可变部分（导出：类型模块经 Hooks.ToolRunner 传入）。
 // 其余全部共享。
 type BatchOpts struct {
+	// Ctx 是本次批量的执行作用域（rt 传整轮的 roundCtx，其余传 agent 的 ctx）。
+	//
+	// ★ 为什么放进 opts 而不是 runner 的形参：ToolRunner 是**槽位**，
+	// 各类型注册的实现必须能接受"这一批属于哪个作用域"——
+	// rt 的取消域是整轮，主 agent 是自身 ctx，工作式子同主 agent。
+	// 让 runner 自己猜（读 a.ctx）会让 rt 的取消域失效（实测会退化成"打断不了"）。
+	Ctx context.Context
 	// Channel 是本次批量要回的通道（进 StageContext.Extra，插件据此判权限）。
 	Channel string
 	// Scenes 是本轮的场景键（rt / 工作式子传 nil）。

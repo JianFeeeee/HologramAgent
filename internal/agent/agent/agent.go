@@ -884,6 +884,13 @@ func (a *Agent) injectSelfChannel(msg selfInputMsg) {
 //	    SecurityGate:  gate,
 //	})
 //	if err := base.Validate(); err != nil { … }   // 缺槽位 ⇒ 装配期失败
+//
+// ★ 它是**覆盖**（不是合并）：类型工厂一次挂齐自己的整套回调。装配点若在
+// 工厂之后再调一次 `SetHooks`，会把工厂已挂的槽位（含安全闸、上下文策略、
+// stage）**全部清空** —— 实测 `kernelmod/agent` 就犯过这个错：工厂填满后
+// 又 `SetHooks(Hooks{Loop: LoopStandard})`，其余槽位全归零。
+//
+// 正确用法只有一个：**类型工厂里**挂齐，装配点不再碰它。
 func (a *Agent) SetHooks(h Hooks) {
 	if a == nil {
 		return

@@ -11,5 +11,9 @@ type SynchronousToolRunner struct{}
 // RunBatch 执行一批工具并按**索引顺序**返回结果（协议要求：assistant 的
 // tool_calls 与其后的 tool 结果消息必须相邻且一一对应）。
 func (SynchronousToolRunner) RunBatch(a *Agent, calls []agentAPI.ToolCall, opts BatchOpts) []BatchResult {
-	return a.runToolBatch(a.ctx, calls, opts)
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = a.ctx
+	}
+	return a.runToolBatch(ctx, calls, opts)
 }
