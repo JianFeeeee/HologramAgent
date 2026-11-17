@@ -1,4 +1,4 @@
-package standard
+package kit
 
 // 发送前的消息配对自检（2026-11-04）。
 //

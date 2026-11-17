@@ -48,7 +48,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -299,7 +299,7 @@ type rtChild struct {
 	//
 	// 它把"调用 outputch 设备"从 rtStream 的流式循环里摘出去：
 	// Push 立即返回，插件侧延迟不再节流模型生成。
-	pump *standard.OutputPump
+	pump *kit.OutputPump
 	// light / mainRO 是本实例的图记忆句柄（参照驻留子）。
 	//
 	// ★ 必须在 Dispose 里关闭：它们是 SQLite 句柄，不关就随每次
@@ -751,7 +751,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	// ★ 此处置 pump **不需要加锁**：rc 还没被任何 goroutine 看到
 	//（rtLoop 在 SpawnRTChild 之后才启动）。之后的读/清一律走 rc.mu ——
 	// 见 Dispose 与 rtEmit 里的说明。
-	rc.pump = standard.NewOutputPump(opts.Output, func() agentIO.Device {
+	rc.pump = kit.NewOutputPump(opts.Output, func() agentIO.Device {
 		if a.io == nil {
 			return nil
 		}

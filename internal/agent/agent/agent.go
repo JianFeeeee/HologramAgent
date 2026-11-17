@@ -11,8 +11,8 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
@@ -186,7 +186,7 @@ type Agent struct {
 	// 安全模块持有」。⇒ Agent 不再持有裸总线，只持有一个**发布代理**
 	// （见 agent_eventbus.go）：带本 agent 身份、过安全闸门、只能 Publish。
 	publisher    agentEventBus
-	pluginHealth *standard.PluginHealthTracker
+	pluginHealth *kit.PluginHealthTracker
 
 	// 自循环输入通道：核心内部任务（记忆消歧、系统维护、子 Agent 通知），
 	// 不经过 IO 层。每条消息携带目标输出通道：
@@ -317,12 +317,12 @@ type Agent struct {
 	//   判定一律走 `a.gate()`（= hooks.SecurityGate），由类型模块在装配点
 	//   从 `kernelapi.FacSecurity` 取并挂上。未挂 = 装配错误（Validate 拦住）。
 
-	// standard.Ledger 累计**跨调用**的 token 用量与缓存命中。
+	// kit.Ledger 累计**跨调用**的 token 用量与缓存命中。
 	//
 	// 为何是 Agent 级而不是 TaskFrame 级：「这个会话花了多少、缓存省了多少」
 	// 不是单次调用的属性，必须跨轮次、跨任务累积才有意义。
 	// 单次用量一直在 StageCtx 与 LLM chain 事件里，缺的正是这个落点。
-	usageLedger standard.Ledger
+	usageLedger kit.Ledger
 
 	// hooks 是**类型行为注册表**（用户裁定：各类型通过回调注册自己的行为）。
 	//
@@ -587,7 +587,7 @@ func New(cfg AgentConfig) *Agent {
 		sched:             newScheduler(256),
 		maxToolTurns:      cfg.MaxToolTurns,
 		offload:           cfg.Offload,
-		pluginHealth:      standard.NewPluginHealthTracker(),
+		pluginHealth:      kit.NewPluginHealthTracker(),
 		thinkingEnabled:   cfg.ThinkingEnabled,
 		inputCfg:          cfg.InputProcessing,
 		embedder:          embedder,
@@ -889,9 +889,9 @@ func (a *Agent) injectSelfChannel(msg selfInputMsg) {
 //	base := agent.NewBase(cfg)
 //	base.SetHooks(agent.Hooks{
 //	    ContextBudget: main.ContextBudget,       // 上下文管理
-//	    Loop:          standard.Loop,            // agent loop
-//	    ToolRunner:    standard.SynchronousRunner{},
-//	    RunStage:      standard.StageRunner,
+//	    Loop:          kit.Loop,            // agent loop
+//	    ToolRunner:    kit.SynchronousRunner{},
+//	    RunStage:      kit.StageRunner,
 //	    GraphMemory:   db,                       // 可选记忆
 //	    SecurityGate:  gate,
 //	})

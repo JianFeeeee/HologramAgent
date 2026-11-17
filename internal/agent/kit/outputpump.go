@@ -1,4 +1,4 @@
-package standard
+package kit
 
 // outputpump.go 是输出通道的**异步壳**。
 //

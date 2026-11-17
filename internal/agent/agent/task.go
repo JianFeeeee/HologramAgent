@@ -28,52 +28,41 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
-// Step 是任务状态机的游标。
-type Step int
+// Step 是任务状态机的游标（声明点在 internal/agent/agenttypes）。
+type Step = agenttypes.Step
 
 const (
 	// StepPrepare 构建消息与工具表、应用中断标记、跑 pre_action 阶段。
-	StepPrepare Step = iota
-	// StepLLM 轮次顶部（中断/占位）+ LLM 调用（含 provider 回退与重试）+ post_action。
-	StepLLM
-	// StepToolBatch 并发执行整批工具（阶段 2d）。仅当全批可并发时使用；
-	// 否则走 StepToolBegin/Exec/After 的串行路径。
-	//
-	// 为何要有独立 step：runTaskSteps 是**单线程**驱动状态机的，
-	// 并发必须在一个 step 内 fan-out 并 join，否则"每步一个工具"的游标
-	// 推进模型无法表达"一批同时跑"。
-	StepToolBatch
-	// StepToolBegin 取本批下一个工具，跑 before_toolcall；被拒/插件不健康则跳过。
-	StepToolBegin
-	// StepToolExec 执行工具。**临界区**：副作用不可回滚，执行中不是安全点。
-	StepToolExec
-	// StepToolAfter after_toolcall 阶段、上下文裁剪、消息与事件组装、批后中断检查。
-	StepToolAfter
-	// StepTurnEnd 收尾本批并进入下一轮。
-	StepTurnEnd
+	// ★ Step 的**声明点**在 internal/agent/agenttypes（拆包后各类型模块
+	//   都要命名它）；这里做别名，调用点逐字不变。
+	StepPrepare   = agenttypes.StepPrepare
+	StepLLM       = agenttypes.StepLLM
+	StepToolBatch = agenttypes.StepToolBatch
+	StepToolBegin = agenttypes.StepToolBegin
+	StepToolExec  = agenttypes.StepToolExec
+	StepToolAfter = agenttypes.StepToolAfter
+	StepTurnEnd   = agenttypes.StepTurnEnd
 )
 
 // stepOutcome 是一次 step 执行的结果。
-type stepOutcome int
+type stepOutcome = agenttypes.Outcome
 
 const (
-	// outcomeContinue 继续执行下一个 step（游标可能停在原地以表达"重跑本 step"）。
-	outcomeContinue stepOutcome = iota
-	// outcomeDone 任务成功结束，响应在 frame.Response。
-	outcomeDone
-	// outcomeFailed 任务失败结束，错误在 frame.Err。
-	outcomeFailed
-	// outcomeSuspended 任务在安全点被抢占挂起，帧已保存（M3b 起使用）。
-	outcomeSuspended
+	// 终态的**声明点**在 agenttypes（同上）。
+	outcomeContinue  = agenttypes.OutcomeContinue
+	outcomeDone      = agenttypes.OutcomeDone
+	outcomeFailed    = agenttypes.OutcomeFailed
+	outcomeSuspended = agenttypes.OutcomeSuspended
 )
 
 // taskTerminal 是任务的终态种类（设计文档 §7：每个任务恰有一个终态）。
@@ -207,7 +196,7 @@ type TaskFrame struct {
 
 	// turnUsage 是本轮任务（一个 TaskFrame）内全部 LLM 调用的用量合计。
 	//
-	// 为何要单独存：standard.Ledger 是**会话级**累计（跨用户请求），
+	// 为何要单独存：kit.Ledger 是**会话级**累计（跨用户请求），
 	// 而对外回包的 usage 按 OpenAI 语义应是**本次请求**。
 	// 两者口径不同，不能互相顶替：把会话累计当本次报了，
 	// 第二次请求就会报出翻倍的数字。
@@ -282,7 +271,7 @@ func (a *Agent) runTaskSteps(f *TaskFrame) stepOutcome {
 		// 装配错误：Validate 应该已经在构造期拦住。这里返回失败而不是
 		// 退回某个"默认骨架" —— 基座不假设任何 loop 样式。
 		f.Err = fmt.Errorf("agent %q: no agent loop registered (Hooks.Loop is nil) — "+
-			"the assembly point must register this type's loop (standard.Loop for main/resident, async for rt)", a.id)
+			"the assembly point must register this type's loop (kit.Loop for main/resident, async for rt)", a.id)
 		return outcomeFailed
 	}
 	return a.hooks.Loop(a, f)
@@ -809,7 +798,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	// 这里做的是**止损 + 定位**：把没有配对结果的 tool_calls 剔掉（连同
 	// 该 assistant 消息里其余仍有效的 call 一起重排），并记录被剔的是谁。
 	// 不静默——日志里能看出是哪一轮、哪个工具。
-	f.Msgs = standard.DropUnpairedToolCalls(f.Msgs)
+	f.Msgs = kit.DropUnpairedToolCalls(f.Msgs)
 
 	req := &agentAPI.CompletionRequest{
 		Messages:        f.Msgs,
@@ -876,7 +865,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 
 	f.StageCtx.LLMText = resp.Content
 	f.StageCtx.ReasoningContent = resp.ReasoningContent
-	// 用量同时给插件看（StageCtx）与记账（standard.Ledger）。
+	// 用量同时给插件看（StageCtx）与记账（kit.Ledger）。
 	//
 	// StageCtx.TokenUsage 是 map[string]int，放不了布尔，
 	// 所以「上游是否报了缓存」只在事件里给（见下面的 cache_reported）。
@@ -914,7 +903,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	// 只有单次数字就得消费方自己一条条加。放在同一事件里，消费方无需另建状态。
 	a.usageLedger.Record(resp.TokenUsage)
 	// 本轮任务内的合计（一个 TaskFrame 可能多轮 LLM：工具回环）。
-	// 它与 standard.Ledger 的口径不同（本次请求 vs 会话累计），两者都要留。
+	// 它与 kit.Ledger 的口径不同（本次请求 vs 会话累计），两者都要留。
 	f.turnUsage.Add(resp.TokenUsage)
 
 	if resp.TokenUsage.Total > 0 {
@@ -1134,7 +1123,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	res.raw = outcome.Raw
 	tctx.ToolResults = []sdk.ToolResult{{
 		CallID: tc.ID, Name: tc.Name, Plugin: pluginName,
-		Success: !standard.IsToolError(outcome.Raw), Result: outcome.Raw,
+		Success: !kit.IsToolError(outcome.Raw), Result: outcome.Raw,
 	}}
 	return res
 }
@@ -1305,11 +1294,11 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 
 	// Success 此前是**唯一**赋值点且硬编码 true ⇒ 该字段恒真、结构上不可能为
 	// false。工具失败是以 nil error + 错误**值**返回的，所以判据必须看返回值。
-	// ⚠️ standard.IsToolError 必须同时覆盖存量插件的两种失败约定与「成功不误判」，
+	// ⚠️ kit.IsToolError 必须同时覆盖存量插件的两种失败约定与「成功不误判」，
 	// 否则升级会把存量插件的成功判成失败（见 toolerror_test.go）。
 	f.toolCtxFor(f.ToolIdx).ToolResults = []sdk.ToolResult{{
 		CallID: f.CurTool.ID, Name: f.CurTool.Name, Plugin: f.CurToolPlugin,
-		Success: !standard.IsToolError(outcome.Raw), Result: outcome.Raw,
+		Success: !kit.IsToolError(outcome.Raw), Result: outcome.Raw,
 	}}
 	f.Step = StepToolAfter
 	return outcomeContinue
@@ -1334,8 +1323,8 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 			// 插件清空结果：保持原样，不覆盖。
 		default:
 			f.CurRaw = r
-			result = standard.ToolErrorText(f.CurTool.Name, r)
-			if !standard.IsToolError(r) {
+			result = kit.ToolErrorText(f.CurTool.Name, r)
+			if !kit.IsToolError(r) {
 				result = fmt.Sprintf("%v", r)
 			}
 		}
@@ -1642,7 +1631,7 @@ func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers [
 			}
 
 			// opt-in 提示词抓包（HOMED_PROMPT_DUMP）：见 promptdump.go。
-			standard.DumpPrompt(channel, req)
+			kit.DumpPrompt(channel, req)
 
 			fCtx, fCancel := context.WithCancel(a.ctx)
 			a.llmMu.Lock()

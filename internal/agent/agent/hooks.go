@@ -138,8 +138,8 @@ func (h Hooks) Validate(who string) error {
 	slots := []slot{
 		{"ContextBudget", h.ContextBudget != nil, "由类型模块注册（主：RelevanceContext；驻留/rt：整窗）"},
 		{"OverBudget", h.OverBudget != nil, "由类型模块注册（主：按窗口预算判定；驻留/rt：恒 false）"},
-		{"Loop", h.Loop != nil, "由类型模块注册（standard.Loop 或 rt 的 Asyncloop）"},
-		{"ToolRunner", h.ToolRunner != nil, "由类型模块注册（standard.ToolRunner 或 rt 的 AsyncToolRunner）"},
+		{"Loop", h.Loop != nil, "由类型模块注册（kit.Loop 或 rt 的 Asyncloop）"},
+		{"ToolRunner", h.ToolRunner != nil, "由类型模块注册（kit.ToolRunner 或 rt 的 AsyncToolRunner）"},
 		{"SecurityGate", h.SecurityGate != nil, "由类型模块在装配点从 kernelapi.FacSecurity 取"},
 	}
 	for _, s := range slots {

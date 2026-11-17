@@ -10,7 +10,7 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
@@ -153,7 +153,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 				}
 			}
 
-			te := standard.NewToolError("panic", "", fmt.Sprintf("Tool %s panicked: %v", tc.Name, r),
+			te := kit.NewToolError("panic", "", fmt.Sprintf("Tool %s panicked: %v", tc.Name, r),
 				"This is a tool-side fault, not an argument problem. Do not retry with the same input; pick another tool or tell the user.")
 			out = toolOutcome{Text: te.Error(), Raw: te}
 		}
@@ -261,7 +261,7 @@ func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, tur
 		// 先 cancel 再返回：这一行就是"让插件停下来"的触发点。
 		cancel()
 		a.Logf("tool %s timed out after %v (cancel sent to executor)", tc.Name, toolTimeout)
-		te := standard.NewToolError(standard.ErrReasonTimeout, "", fmt.Sprintf("Tool %s timed out (%s)", tc.Name, fmtDuration(toolTimeout)),
+		te := kit.NewToolError(kit.ErrReasonTimeout, "", fmt.Sprintf("Tool %s timed out (%s)", tc.Name, fmtDuration(toolTimeout)),
 			"The tool did not return within its time limit. Split into a smaller task or use another tool.")
 		return toolOutcome{Text: te.Error(), Raw: te}
 	}
@@ -283,7 +283,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	// 对 "true"/20/"20s" 这类宽松等价形态一律放行，避免制造新失败。
 	if ve := a.validateArgsAgainstSchema(tc); ve != nil {
 		a.Logf("tool %s rejected by schema validation: field=%s reason=%s", tc.Name, ve.Field, ve.Reason)
-		return toolOutcome{Text: standard.RenderToolError(tc.Name, ve), Raw: ve}
+		return toolOutcome{Text: kit.RenderToolError(tc.Name, ve), Raw: ve}
 	}
 
 	// ★★ 安全策略闸（2026-10-29 接线）。
@@ -308,7 +308,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	// 而不是反复重试同一条被拒的调用。
 	if d := a.securityDecisionFor(tc.Name); !d.Allowed {
 		log.Printf("[security] tool %s denied by policy: %s", tc.Name, d.Reason)
-		te := standard.NewToolError(standard.ErrReasonDenied, "", fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
+		te := kit.NewToolError(kit.ErrReasonDenied, "", fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
 			"This tool is blocked by security policy. Do not retry it with the same or different arguments; use another tool or report back to the user.")
 		return toolOutcome{Text: te.Error(), Raw: te}
 	}
@@ -403,7 +403,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		if result, err := a.stageHost.ExecuteToolCtx(ctx, tc.Name, tc.Arguments); err == nil {
 			// Raw 必须带上：否则结构化失败（{"error":…} / ToolError）在这一步被抹平成文本，
 			// Success 又会退回恒真——正是阶段 1b 要修的那个洞。
-			return toolOutcome{Text: standard.RenderToolResult(tc.Name, result), Raw: result}
+			return toolOutcome{Text: kit.RenderToolResult(tc.Name, result), Raw: result}
 		} else if !agentIO.IsToolNotFound(err) {
 			// 非「不存在」= 真的执行失败，如实上报（可被 on_error/retry 处置）。
 			return toolOutcome{Text: fmt.Sprintf("Tool %s failed: %v", tc.Name, err)}
@@ -457,7 +457,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	}
 	// Raw 必须带上：否则结构化失败（{"error":…} / ToolError）在这一步被抹平成文本，
 	// Success 又会退回恒真——正是阶段 1b 要修的那个洞。
-	return toolOutcome{Text: standard.RenderToolResult(tc.Name, result), Raw: result}
+	return toolOutcome{Text: kit.RenderToolResult(tc.Name, result), Raw: result}
 }
 
 // toolNotFound / isToolNotFound 是 agentIO 哨兵在 core 侧的薄封装，
