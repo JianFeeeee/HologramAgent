@@ -25,7 +25,34 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 		return false
 	}
 	entry, ok := a.io.LookupInputChannel(evt.OutputChannel)
-	if !ok || entry.Owner == "" || entry.Owner == string(a.id) {
+	if !ok {
+		return false // 通道不存在 ⇒ 走兜底（下面有日志）
+	}
+
+	// ★ 悬空通道（2026-11-17 新增）：**不归任何人**，输入写进 stash。
+	//
+	// 这是"释放"与"悄悄接回"的分水岭。此前 Owner 清空后这里直接
+	// `return false` ⇒ 输入落给根 agent，而根以为通道已经放手了 ——
+	// 同一个状态、两种相反的预期，日志里还什么都看不到。
+	//
+	// 现在：悬空 ⇒ 暂存，等父显式接回（AssignAndDrainStash）或划给别的子时
+	// 一并交出。悬空期间**既不丢输入，也不让别人偷偷处理**。
+	//
+	// 判据 TestOrphanedChannelStashesInputInsteadOfFallingBackToParent 钉它。
+	if entry.Orphaned && entry.Owner == "" {
+		if reg := a.io.ChannelRegistry(); reg != nil {
+			if err := reg.Stash(evt.OutputChannel, []*agentIO.InputEvent{evt}); err != nil {
+				log.Printf("[route] orphaned inputch %s: stash failed (%v) — input handled by fallback %s",
+					evt.OutputChannel, err, a.id)
+				return false
+			}
+			log.Printf("[route] orphaned inputch %s: input stashed (source=%s request=%s), "+
+				"waiting for explicit assign/handover", evt.OutputChannel, evt.Source, evt.RequestID)
+			return true // 已被"通道暂存"接管，本内核不处理
+		}
+	}
+
+	if entry.Owner == "" || entry.Owner == string(a.id) {
 		return false // 未分配 / 归自己 ⇒ 本内核处理
 	}
 

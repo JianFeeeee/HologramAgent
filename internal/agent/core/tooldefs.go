@@ -797,6 +797,19 @@ func (a *Agent) buildToolDefs() []interface{} {
 				"description": "create：**你为它声明**的追加禁止（逗号分隔，支持通配）。你能用但不给它用的工具写这里。与 allowed_tools 同时给时两者同时生效（deny 优先）。",
 			},
 			"text": map[string]interface{}{"type": "string", "description": "send：要发给子 agent 的消息"},
+			// ★ 通道处置（2026-11-17 收敛为两种真语义）。
+			"channels": map[string]interface{}{
+				"type": "string",
+				"enum": []string{"orphan", "handover", "suspend", "takeover"},
+				"description": "reclaim/destroy：划入的 inputch 怎么处置。" +
+					"orphan（默认）=**悬空** —— 归属清空，期间输入暂存等显式接回或划拨；" +
+					"handover=**显式交接**给 channel_target（缺省父），并交出暂存任务。" +
+					"（suspend/takeover 是旧名，现在分别等价于 orphan/handover）",
+			},
+			"channel_target": map[string]interface{}{
+				"type":        "string",
+				"description": "handover 的目标 agent id（留空=父自己；可写另一个驻留子的 id 表示划拨给它）",
+			},
 			"residual": map[string]interface{}{
 				"type": "string",
 				"description": "reclaim/destroy：该子手头**未处理消息**的处置。" +
@@ -805,14 +818,6 @@ func (a *Agent) buildToolDefs() []interface{} {
 					"drop=丢弃（已确认不要）。" +
 					"四者都会逐条记日志；异步通道（如 qq）被 drop 时用户收不到任何回复，请慎重。",
 				"enum": []string{"keep", "takeover", "stash", "drop"},
-			},
-			"channels": map[string]interface{}{
-				"type": "string",
-				"description": "reclaim/destroy：该子**持有的通道**的处置。" +
-					"release=归还池子变「未分配」，可被任意 agent 再分配（默认）/ " +
-					"suspend=挂起：归属清空但不参与自动分配，通道上的暂存任务保留，等你接回/" +
-					"takeover=接回你自己：通道归你，并立即释放该通道上的暂存任务到你的队列。",
-				"enum": []string{"release", "suspend", "takeover"},
 			},
 		}, "action"))
 	}

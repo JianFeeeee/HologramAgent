@@ -34,8 +34,26 @@ type InputChannel struct {
 	Name string `json:"name"`
 	// Plugin 是注册它的插件名（"插件可注册多个 inputch"，归属可追溯）。
 	Plugin string `json:"plugin,omitempty"`
-	// Owner 是**被划给的 agent id**（"" = 未分配，归根 agent/内核默认）。
+	// Owner 是**被划给的 agent id**（"" = 未分配）。
+	//
+	// ★ 与 Orphaned 的组合决定"输入往哪去"（2026-11-17 起）：
+	//
+	//	Owner != ""            ⇒ 路由给那个 agent（驻留子/rtchild 或父）
+	//	Owner == "" && !Orphaned ⇒ **未分配**：本内核（根）兜底处理
+	//	Owner == "" &&  Orphaned ⇒ **悬空**：不归任何人，输入写进 stash
+	//
+	// 为什么需要区分后两者：原先 Owner 清空就是"悬空"，而路由对
+	// Owner=="" 直接 return false ⇒ **输入静默回落给父处理**。
+	// 于是"释放通道"实际等于"悄悄接回父"，而父以为已经放手了 ——
+	// 同一个状态、两种相反的预期，日志里还看不到。用户 2026-11-17 指出
+	// 「释放和挂起语义重复了」，根因就是这里没有"悬空"这个真实状态。
 	Owner string `json:"owner,omitempty"`
+
+	// Orphaned 标记该通道**已悬空**（原持有者已释放，还没决定交给谁）。
+	//
+	// 悬空期间到达的输入**写进 stash**（等接回/划拨时一并交出），
+	// 而不是被根 agent 静默接走。这是"真悬空"与"悄悄回落"的唯一区别。
+	Orphaned bool `json:"orphaned,omitempty"`
 	// Capacity 是该 inputch 的队列容量（0 = 用内核默认值）。
 	Capacity int `json:"capacity,omitempty"`
 	// Output 是该 inputch 的默认回程输出通道（"" = 由来源/调用方决定）。
@@ -165,9 +183,42 @@ func (r *ChannelRegistry) Lookup(name string) (InputChannel, bool) {
 //
 // 语义（默认取值，见设计文档 R6）：**读写授权**，不转移所有权 ——
 // 登记表仍记录 Plugin（谁注册的）与 Owner（划给了谁）两件事。
+//
+// ★ agentID 非空 ⇒ 同时清掉 Orphaned 标记（有人接手了，就不再悬空）。
 func (r *ChannelRegistry) Assign(name, agentID string, capacity int) error {
 	_, err := r.AssignAndDrainStash(name, agentID, capacity)
 	return err
+}
+
+// Orphan 把一个 inputch 置为**悬空**：原持有者已释放，还没决定交给谁。
+//
+// 与 Assign(name, "", 0) 的差别是**真实存在的行为差异**（2026-11-17 前两者等价，
+// 那是缺陷 —— 用户指出「释放和挂起语义重复了」）：
+//
+//	Assign(name, "", 0)  ⇒ 未分配：Owner 清空、无标记 ⇒ 输入由根 agent 兜底处理
+//	Orphan(name)         ⇒ 悬空：Owner 清空 + Orphaned ⇒ 输入**写进 stash**，
+//	                       谁接回/划拨谁拿到这批活
+//
+// 悬空期间**不丢输入**（写 stash），也不静默让别人处理。
+func (r *ChannelRegistry) Orphan(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ch, ok := r.channels[name]
+	if !ok {
+		return ErrInputChannelUnknown
+	}
+	ch.Owner = ""
+	ch.Orphaned = true
+	r.channels[name] = ch
+	return nil
+}
+
+// IsOrphaned 报告某通道是否处于悬空状态（无该通道时返回 false）。
+func (r *ChannelRegistry) IsOrphaned(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ch, ok := r.channels[name]
+	return ok && ch.Orphaned
 }
 
 // AssignAndDrainStash 与 Assign 相同，但**同时返回该通道上的暂存任务**。
@@ -190,6 +241,10 @@ func (r *ChannelRegistry) AssignAndDrainStash(name, agentID string, capacity int
 		return nil, ErrInputChannelUnknown
 	}
 	ch.Owner = agentID
+	if agentID != "" {
+		// 有人接手 ⇒ 不再悬空（否则它会一直"悬着"，输入永远只进 stash）。
+		ch.Orphaned = false
+	}
 	if capacity > 0 {
 		ch.Capacity = capacity
 	}

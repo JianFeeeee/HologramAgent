@@ -136,7 +136,7 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 		// 必须在 Destroy 之前 —— Destroy 会关掉 temp（这正是原先
 		// ReclaimResident 内部做的顺序）。
 		var promoted int
-		residual, rmsg, ferr := a.FinishResidentWith(id, residualPolicyOf(tc), channelDispositionOf(tc),
+		residual, rmsg, ferr := a.FinishResidentWithTarget(id, residualPolicyOf(tc), channelDispositionOf(tc), handoverTargetOf(tc),
 			func(rc *residentChild) error {
 				p, herr := a.harvestResidentMemory(rc)
 				if herr != nil {
@@ -154,7 +154,7 @@ func (a *Agent) executeResidentAgents(tc agentAPI.ToolCall) string {
 	case "destroy":
 		id := strArg(tc, "id")
 		// 同上：销毁前先把残余任务交出去，否则它们会随子一起无声消失。
-		residual, rmsg, ferr := a.FinishResidentWith(id, residualPolicyOf(tc), channelDispositionOf(tc), nil)
+		residual, rmsg, ferr := a.FinishResidentWithTarget(id, residualPolicyOf(tc), channelDispositionOf(tc), handoverTargetOf(tc), nil)
 		if ferr != nil {
 			return fmt.Sprintf("销毁失败: %v", ferr)
 		}
@@ -187,18 +187,33 @@ func residualPolicyOf(tc agentAPI.ToolCall) ResidualPolicy {
 	}
 }
 
-// channelDispositionOf 从工具参数读**通道**的处置方式（release/suspend/takeover）。
+// channelDispositionOf 从工具参数读**通道**的处置方式。
 //
-// 默认 release = 原有行为（归还未分配），保持向后兼容。
+// 2026-11-17 收敛为两种（原先 release/suspend 机制上等价，只有一行日志的差别）：
+//
+//	orphan（默认）      ⇒ 悬空：输入写进 stash，等显式接回或划拨
+//	handover / takeover ⇒ 显式交接给目标 agent（缺省父），交出暂存
+//
+// ★ 旧的 `suspend`/`park` 参数值**仍被接受**并映射到 orphan —— 不能因为
+// 内部收敛就把模型已经学会的参数名变成报错（那会让存量行为突然失效）。
+// 但它们现在与 orphan 完全同义，不再声称有额外语义。
 func channelDispositionOf(tc agentAPI.ToolCall) ChannelDisposition {
 	switch strings.ToLower(strArg(tc, "channels")) {
-	case "suspend", "park":
-		return ChannelSuspend
-	case "takeover", "take_over", "take":
-		return ChannelTakeover
+	case "handover", "takeover", "take_over", "take":
+		return ChannelHandover
 	default:
-		return ChannelRelease
+		// orphan / suspend / park / 空 —— 都是悬空。
+		return ChannelOrphan
 	}
+}
+
+// handoverTargetOf 读交接目标（空 = 父自己）。
+//
+// 为什么单独一个字段：`channels` 是**处置方式**，目标 agent 是另一件事。
+// 塞进同一个字符串（"handover:res_1"）会让参数解析变成字符串切片游戏，
+// 且模型很容易写错分隔符。分开更不容易错。
+func handoverTargetOf(tc agentAPI.ToolCall) string {
+	return strings.TrimSpace(strArg(tc, "channel_target"))
 }
 
 func intArg(tc agentAPI.ToolCall, key string) int {
