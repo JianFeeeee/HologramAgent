@@ -1,35 +1,19 @@
 package test
 
-// internal/agent 的黑盒判据：人格文件往返 + InjectPrompt 输出。
+// internal/agent 的黑盒判据：人格**读取**与 InjectPrompt 输出。
 // 不碰内部正则表、不读源码。
+//
+// ★ 原先还有两条测 SavePersonality（写人格文件）。那个函数**生产零调用**
+// （人格已迁到「配置项 + 默认模板 + 文件覆盖」，写路径没人用），
+// 属死代码 —— 本仓一贯处置是删代码而不是给它补判据。2026-11-16 删除。
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent"
 )
-
-// TestSaveThenLoadPersonality：Save → Load 拿回原文与路径。
-func TestSaveThenLoadPersonality(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "personal.md")
-	const content = "你是小宅，说话自然一点。"
-	if err := agent.SavePersonality(path, content); err != nil {
-		t.Fatalf("SavePersonality: %v", err)
-	}
-	p, err := agent.LoadPersonality(path)
-	if err != nil {
-		t.Fatalf("LoadPersonality: %v", err)
-	}
-	if p.Content != content {
-		t.Fatalf("★ Content = %q，期望原文", p.Content)
-	}
-	if p.Path != path {
-		t.Fatalf("★ Path = %q，期望 %q", p.Path, path)
-	}
-}
 
 // TestLoadMissingPersonalityGivesEmpty：文件不存在返回空人格而非报错。
 func TestLoadMissingPersonalityGivesEmpty(t *testing.T) {
@@ -70,16 +54,5 @@ func TestPersonaStaleHints(t *testing.T) {
 	clean := "你是小宅，说话自然，别用客服腔。"
 	if got := agent.PersonaStaleHints(clean); len(got) != 0 {
 		t.Fatalf("★ 干净人格卡被误报：%v", got)
-	}
-}
-
-// TestSavePersonalityCreatesParentDirs：父目录不存在时自动创建。
-func TestSavePersonalityCreatesParentDirs(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "a", "b", "personal.md")
-	if err := agent.SavePersonality(path, "x"); err != nil {
-		t.Fatalf("SavePersonality: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("★ 文件没落盘：%v", err)
 	}
 }

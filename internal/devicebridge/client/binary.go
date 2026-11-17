@@ -18,37 +18,6 @@ const (
 // ChunkCallback 分块发送回调，用于逐块处理。
 type ChunkCallback func(chunk []byte) error
 
-// ChunkData 将数据按指定大小分块。
-func ChunkData(data []byte, chunkSize int) [][]byte {
-	if chunkSize <= 0 {
-		chunkSize = DefaultChunkSize
-	}
-	total := len(data)
-	var chunks [][]byte
-	for off := 0; off < total; off += chunkSize {
-		end := off + chunkSize
-		if end > total {
-			end = total
-		}
-		chunks = append(chunks, data[off:end])
-	}
-	return chunks
-}
-
-// SendChunked 使用回调逐块发送数据。
-func SendChunked(data []byte, chunkSize int, fn ChunkCallback) error {
-	if chunkSize <= 0 {
-		chunkSize = DefaultChunkSize
-	}
-	chunks := ChunkData(data, chunkSize)
-	for _, chunk := range chunks {
-		if err := fn(chunk); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // ===== 数据聚合（接收端） =====
 
 // DataAccumulator 聚合从设备接收的二进制分块数据。
@@ -59,17 +28,6 @@ type DataAccumulator struct {
 	Total  int
 	Got    int
 	Chunks [][]byte
-}
-
-// NewDataAccumulator 创建数据聚合器。
-func NewDataAccumulator(reqID, kind, mime string, total int) *DataAccumulator {
-	return &DataAccumulator{
-		ReqID:  reqID,
-		Kind:   kind,
-		MIME:   mime,
-		Total:  total,
-		Chunks: make([][]byte, 0),
-	}
 }
 
 // Append 追加一块数据。

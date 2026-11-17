@@ -27,7 +27,6 @@ package security
 // 因此：启动期读一次，改配置需重启（与 core.agent.offload_enabled 同纪律）。
 
 import (
-	"fmt"
 	"log"
 	"strings"
 
@@ -143,9 +142,4 @@ func intersect(a, b []string) []string {
 		}
 	}
 	return out
-}
-
-// String 便于日志里一眼看出策略是否为空（诊断用）。
-func DescribePolicy(p sec.Policy) string {
-	return fmt.Sprintf("deny=%d allow=%d sandbox=%v", len(p.ToolDeny), len(p.ToolAllow), p.Sandbox.Enabled)
 }

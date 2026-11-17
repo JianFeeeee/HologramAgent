@@ -45,15 +45,6 @@ func RegisterPluginMeta(name, nameZh, nameEn string) {
 	globalPluginMeta.Store(name, sdk.PluginMeta{NameZh: nameZh, NameEn: nameEn})
 }
 
-// GetPluginMeta 查询插件的显示名称。
-func GetPluginMeta(name string) (PluginMeta, bool) {
-	v, ok := globalPluginMeta.Load(name)
-	if !ok {
-		return PluginMeta{}, false
-	}
-	return v.(PluginMeta), true
-}
-
 // globalFactories 是插件通过 init() 自注册的全局工厂表。
 // Registry.RegisterNative() 写入此表；Registry.Load() 从中查找。
 var globalFactories sync.Map

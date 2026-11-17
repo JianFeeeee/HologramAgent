@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 )
 
@@ -236,12 +235,4 @@ func LoadResult(path string) (*Result, error) {
 // ResultPath 返回 <dataDir>/recovery/recovery_result.json。
 func ResultPath(dataDir string) string {
 	return filepath.Join(dataDir, "recovery", "recovery_result.json")
-}
-
-// SortSteps 供测试/展示封装（保序打印）。
-func SortSteps(s []string) []string {
-	out := make([]string, len(s))
-	copy(out, s)
-	sort.Strings(out)
-	return out
 }

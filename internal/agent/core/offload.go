@@ -57,16 +57,6 @@ const (
 	defaultOffloadMaxResident = 2
 )
 
-// DefaultOffloadOptions 返回默认参数（Enabled=false）。
-func DefaultOffloadOptions() OffloadOptions {
-	return OffloadOptions{
-		BusyAfter:    defaultOffloadBusyAfter,
-		MinPending:   defaultOffloadMinPending,
-		MaxResidents: defaultOffloadMaxResident,
-		Enabled:      false,
-	}
-}
-
 func (o OffloadOptions) normalized() OffloadOptions {
 	if o.BusyAfter <= 0 {
 		o.BusyAfter = defaultOffloadBusyAfter

@@ -317,26 +317,3 @@ func TokenizeContentWords(text string) []string {
 func ExtractKeywords(text string) []string {
 	return TokenizeContentWords(text)
 }
-
-// CutExact 精确模式分词：返回去停用词后的所有有义项（不限数量），用于 doc→graph 蒸馏
-func CutExact(text string) []string {
-	text = CleanText(text)
-	x := GetJieba()
-	if x == nil {
-		return nil
-	}
-	words := x.Cut(text, false)
-	var result []string
-	seen := make(map[string]bool)
-	for _, w := range words {
-		if stopWords[w] || seen[w] {
-			continue
-		}
-		if !validEntityName(w) {
-			continue
-		}
-		seen[w] = true
-		result = append(result, w)
-	}
-	return result
-}

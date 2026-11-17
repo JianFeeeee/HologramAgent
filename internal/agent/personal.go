@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -25,14 +24,6 @@ func LoadPersonality(path string) (*Personality, error) {
 		Content: string(data),
 		Path:    path,
 	}, nil
-}
-
-func SavePersonality(path, content string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create personality dir: %w", err)
-	}
-	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func (p *Personality) InjectPrompt() string {

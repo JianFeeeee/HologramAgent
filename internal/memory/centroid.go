@@ -218,11 +218,6 @@ type CentroidCache struct {
 	dim int
 }
 
-// NewCentroidCache 建一个空缓存。
-func NewCentroidCache() *CentroidCache {
-	return &CentroidCache{}
-}
-
 // Get 返回该（dim, n）对应的中心。没有对应版本时返回 nil。
 func (cc *CentroidCache) Get(dim, n int) (*Centroid, CentroidStats) {
 	cc.mu.RLock()

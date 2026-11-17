@@ -729,14 +729,6 @@ func (a *Agent) Logf(format string, args ...any) {
 	a.logIdentity.Logf(format, args...)
 }
 
-// logTag 返回本 agent 的日志身份标签（少数需要自己拼进格式串的地方用）。
-func (a *Agent) logTag() string {
-	if a == nil {
-		return child.LogTagMain
-	}
-	return a.logIdentity.LogTag()
-}
-
 func (a *Agent) ID() types.AgentID { return a.id }
 
 // IsOutputAllowed 报告某个输出通道是否被授权给本 agent。

@@ -153,25 +153,6 @@ func NewSegment(data []byte) (*Segment, error) {
 	return s, nil
 }
 
-// AttachSegment 挂载一块已由 NewSegment 初始化的区域（插件进程侧调用）。
-//
-// 校验魔数与**描述符个数**（而非人工版本号）：个数是段布局的派生事实，
-// 加字段时自动变化，因此不需要谁记得去升一个号。插件若按旧字段数推算
-// 标志位基址会静默错位，这里显式拒绝。
-func AttachSegment(data []byte) (*Segment, error) {
-	if len(data) < headerSize+ctxSize {
-		return nil, fmt.Errorf("proc: 共享段过小（%d 字节）", len(data))
-	}
-	if got := binary.LittleEndian.Uint32(data[offMagic:]); got != shmMagic {
-		return nil, fmt.Errorf("proc: 共享段魔数不匹配（0x%x，期望 0x%x）", got, shmMagic)
-	}
-	if got := binary.LittleEndian.Uint32(data[offFieldCount:]); got != uint32(stageFieldCount) {
-		return nil, fmt.Errorf("proc: 共享段描述符个数不匹配（%d，本内核 %d）——插件需用配套 hmapdev 重编",
-			got, stageFieldCount)
-	}
-	return &Segment{data: data}, nil
-}
-
 func (s *Segment) arenaBase() uint32 { return binary.LittleEndian.Uint32(s.data[offArenaBase:]) }
 func (s *Segment) arenaCap() uint32  { return binary.LittleEndian.Uint32(s.data[offArenaCap:]) }
 func (s *Segment) ctxBase() uint32   { return binary.LittleEndian.Uint32(s.data[offCtxBase:]) }

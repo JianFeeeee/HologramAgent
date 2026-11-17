@@ -212,39 +212,6 @@ func (h *StageHost) findLocked(name string) (sdk.ToolDef, bool) {
 // 所以插件永远看不到它，也不可能因为多出一个键而报参数校验失败。
 const executeCtxArgKey = "\x00kernel.execute_ctx\x00"
 
-// CurrentExecuteCtx 取出本次工具调用的执行上下文（proc 桥用）。
-//
-// 没有绑定时返回 context.Background()，调用方可直接使用、无需判空。
-func CurrentExecuteCtx(args map[string]interface{}) context.Context {
-	if args != nil {
-		if ctx, ok := args[executeCtxArgKey].(context.Context); ok && ctx != nil {
-			return ctx
-		}
-	}
-	return context.Background()
-}
-
-// stripExecuteCtx 返回去掉执行上下文键的**副本**，供下发给插件/设备用。
-//
-// 为什么必须剥：插件侧可能对参数做严格校验（"未知参数"报错），
-// 而这个键是内核内部约定，不该出现在任何插件眼里。
-func stripExecuteCtx(args map[string]interface{}) map[string]interface{} {
-	if args == nil {
-		return nil
-	}
-	if _, ok := args[executeCtxArgKey]; !ok {
-		return args
-	}
-	out := make(map[string]interface{}, len(args))
-	for k, v := range args {
-		if k == executeCtxArgKey {
-			continue
-		}
-		out[k] = v
-	}
-	return out
-}
-
 // ExecuteTool 执行工具（无取消语义）。
 func (h *StageHost) ExecuteTool(name string, args map[string]interface{}) (ret interface{}, err error) {
 	return h.ExecuteToolCtx(context.Background(), name, args)

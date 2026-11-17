@@ -82,13 +82,6 @@ const (
 	legacyMemoryDivisor = 3
 )
 
-// ComputeTokenBudget 计算各部分的 token 预算（零值 tuning = 历史行为）。
-//
-// 保留这个签名是为了不改既有调用点；需要调参的调用方用 ComputeTokenBudgetTuned。
-func ComputeTokenBudget(provider api.Provider, systemPromptBase string) TokenBudget {
-	return ComputeTokenBudgetTuned(provider, systemPromptBase, ContextTuning{})
-}
-
 // computeTokenBudget 用本 agent 的配置调参计算上下文预算。
 //
 // 存在理由：ComputeTokenBudget 是包级函数、拿不到 agent 的配置；

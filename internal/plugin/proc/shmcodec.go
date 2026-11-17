@@ -464,14 +464,6 @@ type Snapshot struct {
 	noMemory    bool
 }
 
-// Snapshot 抓取当前 StageContext 的快照（插件进程侧 handler 前调用）。
-func TakeSnapshot(sc *pubsdk.StageContext) *Snapshot {
-	sc.RLock()
-	l := captureLocal(sc)
-	sc.RUnlock()
-	return newSnapshotFromLocal(l)
-}
-
 func newSnapshotFromLocal(l *localCtx) *Snapshot {
 	sn := &Snapshot{
 		strs:  map[stageField]string{},

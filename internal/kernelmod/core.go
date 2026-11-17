@@ -132,10 +132,3 @@ func Names() []string {
 	}
 	return out
 }
-
-// IsRegistered 报告某模块是否已注册（模块可用它判断依赖是否存在）。
-func IsRegistered(name string) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	return seen[name]
-}

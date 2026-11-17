@@ -190,17 +190,6 @@ type evtfdFder interface {
 	Fd() uintptr
 }
 
-func NewEvtConsumer(ringData []byte, evtfd evtfdReader, mask uint32, handler func(*pubsdk.Event) error) *EvtConsumer {
-	return &EvtConsumer{
-		ringData: ringData,
-		evtfd:    evtfd,
-		handler:  handler,
-		typeMask: mask,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
-	}
-}
-
 // readWakeInterval 是 poll 超时间隔：保证 Run 至少这么频繁地检查 stop。
 const readWakeInterval = 100 * time.Millisecond
 

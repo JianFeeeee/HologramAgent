@@ -54,21 +54,6 @@ func IsProtectedPath(path string) bool {
 	return false
 }
 
-// IsProtectedPathExplicit 同 IsProtectedPath，但仅匹配传入的显式前缀集
-// （不改全局状态时的判断入口，供测试/工具使用）。
-func IsProtectedPathExplicit(prefixes []string, path string) bool {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	for _, p := range prefixes {
-		if strings.HasPrefix(abs, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // ArchiveBeforeWrite 在覆盖某个受保护路径前调用：若目标为已存在的普通文件，
 // 则把原文复制到 <dataDir>/file_baseline/<相对路径>（幂等：已存在同 hash 则跳过），
 // 返回是否发生了留档。用于 L0 写 /etc 前的自动留档。

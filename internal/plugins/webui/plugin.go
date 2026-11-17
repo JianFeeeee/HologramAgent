@@ -76,10 +76,6 @@ func SetListenOverride(addr string) {
 	listenOverride = strings.TrimSpace(addr)
 }
 
-// ListenOverride 返回当前的覆盖值（空串表示未覆盖）。
-// 供调用方「保存-还原」用，避免测试互相污染。
-func ListenOverride() string { return listenOverride }
-
 // resolveListenAddr 决定最终监听地址：覆盖值 > 插件设置 > 内置默认。
 // 抽成纯函数是为了能被单测直接钉住优先级。
 func resolveListenAddr(setting string) string {

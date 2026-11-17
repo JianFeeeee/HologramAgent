@@ -63,21 +63,6 @@ const (
 	KindGroup PrincipalKind = "group"
 )
 
-// ParsePrincipalKind 把外部字符串解析成枚举（仅用于默认实现兼容）。
-//
-// 未识别的值返回 KindUnset 与 false：**不静默回退到某个默认类别** ——
-// 那会让拼写错误变成权限语义漂移（与“未知档位名不静默放行”同一条纪律）。
-func ParsePrincipalKind(s string) (PrincipalKind, bool) {
-	switch PrincipalKind(s) {
-	case KindInternal, KindSubAgent, KindUser, KindGroup:
-		return PrincipalKind(s), true
-	// 兼容旧调用方写过的 "resident"：语义等价于 KindSubAgent。
-	case "resident":
-		return KindSubAgent, true
-	}
-	return KindUnset, false
-}
-
 // Principal 是一次调用的**主体**：谁在请求。
 type Principal struct {
 	// ID 是主体标识（QQ 用户 id、群 id、驻留子 id、内部标记）。

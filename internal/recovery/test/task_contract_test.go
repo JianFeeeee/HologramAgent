@@ -76,12 +76,3 @@ func TestLoadTaskMissingFileReportsError(t *testing.T) {
 		t.Fatal("★ 读不存在的任务文件却返回成功")
 	}
 }
-
-// TestSortSteps：步骤排序输出可用（不钉死具体顺序以外的内部结构）。
-func TestSortSteps(t *testing.T) {
-	in := []string{"c", "a", "b"}
-	out := recovery.SortSteps(in)
-	if len(out) != 3 {
-		t.Fatalf("★ SortSteps = %v", out)
-	}
-}

@@ -221,12 +221,6 @@ type MockRemoteDevice struct {
 	devices map[string]*MockDevice
 }
 
-func NewMockRemoteDevice() *MockRemoteDevice {
-	return &MockRemoteDevice{
-		devices: make(map[string]*MockDevice),
-	}
-}
-
 func (s *MockServer) handleDeviceWS(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgradeWS(w, r)
 	if err != nil {

@@ -181,9 +181,3 @@ func ReadManifest(dir string) (*PluginManifest, error) {
 	}
 	return &m, nil
 }
-
-// IsPluginDir 判断目录是否为有效的插件目录（包含 plugin.json）
-func IsPluginDir(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, "plugin.json"))
-	return err == nil
-}

@@ -22,7 +22,6 @@ package update
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -74,32 +73,6 @@ func PlanUpgrade(c Capabilities, target string) UpgradePlan {
 		}
 	}
 	return p
-}
-
-// PackageManagerUpgrade 用本机包管理器升级本包（deb/rpm 通道）。
-//
-// ## 为什么需要 root，以及为什么本函数不自己提权
-//
-// dpkg/rpm 都要 root。而内核以非 root 服务账号运行（ProtectSystem=strict）。
-// **本函数不自带提权**：sudo/polkit 的形态因发行版与部署策略而异，
-// 在代码里猜一个（例如 exec sudo）会在无 tty 的服务环境里静默挂起等密码。
-//
-// 所以：能在 root 下调用就调（CLI 用 sudo 跑），否则返回一个
-// ErrNeedPrivilege，由调用方转成"请执行这条命令"。
-func PackageManagerUpgrade(c Capabilities, target string) error {
-	// 预检：非 root 直接返回可执行错误，不要等到 dpkg 报一堆权限噪音。
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("%w：需要 root 执行 `%s`", ErrNeedPrivilege, c.UpgradeCommand(target))
-	}
-
-	switch c.Kind {
-	case KindDeb:
-		return upgradeDeb(c, target)
-	case KindRPM:
-		return upgradeRPM(c, target)
-	default:
-		return fmt.Errorf("包管理器升级不适用于形态 %q", c.Kind)
-	}
 }
 
 // ErrNeedPrivilege 表示这条路径需要提权（调用方应转成可执行提示）。

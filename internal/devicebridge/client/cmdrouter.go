@@ -112,9 +112,3 @@ func BaseResult(reqID, status, output, errMsg string) map[string]interface{} {
 	}
 	return res
 }
-
-// ResultJSON 序列化结果 map 为 JSON。
-func ResultJSON(res map[string]interface{}) string {
-	b, _ := json.Marshal(res)
-	return string(b)
-}
