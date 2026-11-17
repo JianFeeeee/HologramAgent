@@ -369,6 +369,61 @@ func (l *Loop) InstallDispatcher(sink kernelapi.EventDispatchSink) error {
 // 编译期确认：本循环就是接口层要的投递驱动者。
 var _ kernelapi.EventDispatcher = (*Loop)(nil)
 
+// ───────────────────────── 输出事件的消费者 ─────────────────────────
+
+// OutputEvent 是"内核输出面"上的一条事件（供常驻消费者看）。
+//
+// ★ 为什么本包要定义它：常驻消费者（如"把 memory_candidate 写进文本记忆"）
+// 是**内核侧协调**的一部分（用户裁定「eventloop 也是协调各个模块的核心推动者」）。
+// 它们是运行期起点，不该再散落在装配点里各自起 goroutine。
+// 这里用最小字段集，避免本包认识 agent/io 的具体类型。
+type OutputEvent struct {
+	Target  string
+	Type    string
+	Payload map[string]interface{}
+}
+
+// OutputSource 是"输出事件从哪来"的最小契约（由 IO 适配）。
+type OutputSource interface {
+	// Output 返回输出事件的只读通道。
+	Output() <-chan OutputEvent
+}
+
+// StartOutputConsumer 把一个常驻消费者挂到循环里（loop 停止时它一并退出）。
+//
+// ★ 语义：**推动**而不是"另起一个不受管的 goroutine"。消费者随循环生命周期，
+// 停机时统一收口 —— 这正是"装配点不该有运行期起点"的落点。
+func (l *Loop) StartOutputConsumer(name string, src OutputSource, handle func(OutputEvent)) bool {
+	if l == nil || src == nil || handle == nil {
+		return false
+	}
+	l.done.Add(1)
+	go func() {
+		defer l.done.Done()
+		out := src.Output()
+		for {
+			select {
+			case <-l.stop:
+				return
+			case evt, ok := <-out:
+				if !ok {
+					return
+				}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[kernelloop] output consumer %q panic (isolated): %v\n%s", name, r, debug.Stack())
+						}
+					}()
+					handle(evt)
+				}()
+			}
+		}
+	}()
+	log.Printf("[kernelloop] output consumer %q started", name)
+	return true
+}
+
 // ───────────────────────── 健康心跳 ─────────────────────────
 
 // Heartbeat 每 interval 触碰一个文件，供外部守护（guard/systemd）判定

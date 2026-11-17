@@ -20,6 +20,7 @@ import (
 	"time"
 
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
@@ -36,7 +37,8 @@ import (
 //
 // 返回 stop 函数（与既有 cleanup 同序：先停 agent，再停循环）。
 func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
-	heartbeatPath string, agentStarter func(), periodic []kernelloop.PeriodicTask) (func(), error) {
+	heartbeatPath string, agentStarter func(), periodic []kernelloop.PeriodicTask,
+	iom *agentIO.IOManager, outputConsumer func(kernelloop.OutputEvent)) (func(), error) {
 
 	// periodic 由调用方从**类型模块的声明面**转换而来（agent.PeriodicTask →
 	// kernelloop.PeriodicTask）。转换留在装配点，内核循环不认识任何 agent 类型。
@@ -56,7 +58,13 @@ func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
 		loop.StartHeartbeat(kernelloop.Heartbeat{Path: heartbeatPath, Interval: 5 * time.Second})
 	}
 
-	// ② 各类型注册的定时任务（装配期已登记，这里统一刻度）。
+	// ② 常驻输出消费者（如 memory_candidate → 文本记忆 + 蒸馏）：
+	//    由循环推动，随循环停止一并收口。
+	if outputConsumer != nil && iom != nil {
+		loop.StartOutputConsumer("memory-candidate", ioOutputSource{iom: iom}, outputConsumer)
+	}
+
+	// ③ 各类型注册的定时任务（装配期已登记，这里统一刻度）。
 	for _, t := range periodic {
 		loop.RegisterPeriodic(t)
 	}
@@ -64,6 +72,8 @@ func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
 	loop.Start()
 
 	// ④ 主 agent 的 agentloop 从这一刻开始转（它与本循环天然并行）。
+	//
+	// ★ 这是**运行期**动作：装配期只 Instantiate（造实例），不启动。
 	if agentStarter != nil {
 		agentStarter()
 	}
@@ -74,6 +84,25 @@ func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
 	return func() {
 		loop.Stop()
 	}, nil
+}
+
+// ioOutputSource 把 agent/io 的输出通道适配成内核循环的 OutputSource。
+//
+// ★ 适配放装配侧：循环不认识 agent/io 的具体类型（否则"内核认识模块"重演）。
+type ioOutputSource struct{ iom *agentIO.IOManager }
+
+func (s ioOutputSource) Output() <-chan kernelloop.OutputEvent {
+	out := make(chan kernelloop.OutputEvent)
+	go func() {
+		defer close(out)
+		for evt := range s.iom.OutputChan() {
+			if evt == nil {
+				continue
+			}
+			out <- kernelloop.OutputEvent{Target: evt.Target, Type: evt.Type, Payload: evt.Payload}
+		}
+	}()
+	return out
 }
 
 // periodicOf 把 agent 声明的定时任务转成内核循环的刻度项。

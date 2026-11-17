@@ -12,68 +12,59 @@ package main
 // RunKernelModules 之后调用（原顺序里它在 textmem 之后、provider 之前）。
 
 import (
-	"context"
 	"log"
 	"time"
 
-	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 )
 
-// startMemoryCandidateConsumer 起一个常驻 goroutine：把 eventbus 上的
-// memory_candidate 事件写进文本记忆并喂给蒸馏管线。
-func startMemoryCandidateConsumer(ctx context.Context, iom *agentIO.IOManager,
-	textMem *text.Memory, memDB *memory.GraphDB, distiller *pipeline.Distiller) {
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case evt, ok := <-iom.OutputChan():
-				if !ok {
-					return
-				}
-				if evt.Target == "memory" && evt.Type == "memory_candidate" {
-					source, _ := evt.Payload["source"].(string)
-					input, _ := evt.Payload["input"].(string)
-					response, _ := evt.Payload["response"].(string)
-					toolsUsed, _ := evt.Payload["tools_used"].([]string)
-					toolResults, _ := evt.Payload["tool_results"].([]interface{})
-					agentID, _ := evt.Payload["agent_id"].(string)
+// memoryCandidateHandler 返回"把 memory_candidate 写进文本记忆并喂蒸馏"的
+// 处理函数。它被**内核事件循环**推动（不再自己起 goroutine）——
+// 用户裁定「eventloop 也是协调各个模块的核心推动者」。
+func memoryCandidateHandler(textMem *text.Memory, memDB *memory.GraphDB,
+	distiller *pipeline.Distiller) func(kernelloop.OutputEvent) {
+	return func(evt kernelloop.OutputEvent) {
+		if evt.Target != "memory" || evt.Type != "memory_candidate" {
+			return
+		}
+		source, _ := evt.Payload["source"].(string)
+		input, _ := evt.Payload["input"].(string)
+		response, _ := evt.Payload["response"].(string)
+		toolsUsed, _ := evt.Payload["tools_used"].([]string)
+		toolResults, _ := evt.Payload["tool_results"].([]interface{})
+		agentID, _ := evt.Payload["agent_id"].(string)
 
-					if input != "" && textMem != nil {
-						te := text.Event{
-							Timestamp: time.Now().Unix(),
-							Source:    source,
-							Input:     input,
-							Response:  response,
-							ToolsUsed: toolsUsed,
-							AgentID:   agentID,
-						}
-						if err := textMem.Append(te); err != nil {
-							log.Printf("[homed] text memory append: %v", err)
-						}
-					}
+		if input != "" && textMem != nil {
+			te := text.Event{
+				Timestamp: time.Now().Unix(),
+				Source:    source,
+				Input:     input,
+				Response:  response,
+				ToolsUsed: toolsUsed,
+				AgentID:   agentID,
+			}
+			if err := textMem.Append(te); err != nil {
+				log.Printf("[homed] text memory append: %v", err)
+			}
+		}
 
-					if input != "" && memDB != nil {
-						distiller.Append("agent", "user", input)
-					}
-					if response != "" && memDB != nil {
-						distiller.Append("agent", "assistant", response)
-					}
+		if input != "" && memDB != nil {
+			distiller.Append("agent", "user", input)
+		}
+		if response != "" && memDB != nil {
+			distiller.Append("agent", "assistant", response)
+		}
 
-					// 工具输出接入蒸馏管线
-					for _, tr := range toolResults {
-						if trMap, ok := tr.(map[string]interface{}); ok {
-							if out, ok := trMap["output"].(string); ok && out != "" && memDB != nil {
-								distiller.Append("agent", "tool", out)
-							}
-						}
-					}
+		// 工具输出接入蒸馏管线
+		for _, tr := range toolResults {
+			if trMap, ok := tr.(map[string]interface{}); ok {
+				if out, ok := trMap["output"].(string); ok && out != "" && memDB != nil {
+					distiller.Append("agent", "tool", out)
 				}
 			}
 		}
-	}()
+	}
 }

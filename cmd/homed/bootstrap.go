@@ -166,11 +166,13 @@ func loadPlugins(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, plugi
 func startAgentRuntime(cfgReg *internalConfig.ConfigRegistry, pluginReg *plugin.Registry,
 	agent *agentCore.Agent, logDir string, ctx context.Context) func() {
 
-	// 日志管理：层级压缩 + 保留策略
+	// 日志管理：层级压缩 + 保留策略（常驻消费者，由内核循环推动）。
 	logManager := logpkg.NewManager(logDir, cfgReg)
 	go logManager.Start(ctx)
 
-	agent.Start()
+	// ★ agent.Start() 不在这里：它是**运行期**起点，由 startRuntime 调用
+	//   （用户裁定「装配是装配，事件循环是事件循环」）。
+	//   本函数原本把"启动 agent"混在"装配收尾"里，那正是要消除的形态。
 
 	return func() {
 		// 与原 main 的两个 defer 同序（LIFO）：先停 agent，再停日志管理。

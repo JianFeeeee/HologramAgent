@@ -280,10 +280,11 @@ func main() {
 	pluginReg := kernelmod.MustValue[*plugin.Registry](ks, kernelapi.FacPluginRegistry)
 	agent, _ := kernelmod.MustValueAny(ks, kernelapi.FacAgent).(*agentCore.Agent)
 
-	// 候选消费管线：常驻 goroutine，把 eventbus 的 memory_candidate 写进
-	// 文本记忆并喂给蒸馏管线。原顺序里它在 textmem 之后、provider 之前。
-	startMemoryCandidateConsumer(ctx,
-		kernelmod.MustValue[*agentIO.IOManager](ks, kernelapi.FacIO),
+	// 候选消费管线（memory_candidate → 文本记忆 + 蒸馏）：
+	// ★ 它不再自己起 goroutine，而是**注册到内核事件循环**由循环推动
+	//   （用户裁定「eventloop 也是协调各个模块的核心推动者」）。
+	//   注册发生在 startRuntime 里（见下面），这里只准备处理函数。
+	memoryCandidate := memoryCandidateHandler(
 		kernelmod.MustValue[*text.Memory](ks, kernelapi.FacTextMem),
 		kernelmod.MustValue[*memory.GraphDB](ks, kernelapi.FacMemory),
 		kernelmod.MustValue[*pipeline.Distiller](ks, kernelapi.FacMemoryDistiller))
@@ -319,7 +320,8 @@ func main() {
 	// ⇒ agent.Start()（agentloop）、心跳、定时器、事件投递全部从这里开始，
 	//   不再散落在装配点。
 	stopAgent := startAgentRuntime(cfgReg, pluginReg, agent, logDir, ctx)
-	stopLoop, lerr := startRuntime(ks, logDir, ctx, heartbeatPath, nil, periodicOf(agent))
+	stopLoop, lerr := startRuntime(ks, logDir, ctx, heartbeatPath, agent.Start, periodicOf(agent),
+		kernelmod.MustValue[*agentIO.IOManager](ks, kernelapi.FacIO), memoryCandidate)
 	if lerr != nil {
 		log.Printf("[homed] runtime loop failed to start: %v", lerr)
 	}
