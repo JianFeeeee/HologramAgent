@@ -24,6 +24,11 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	if evt == nil || evt.OutputChannel == "" || a.io == nil {
 		return false
 	}
+	// ★ 路由的**推动者**是内核事件循环（2026-11-17 裁定：「处理输入事件路由」
+	//   是 eventloop 的核心职责）。本函数只做两件 agent 侧的事：
+	//   ① 判定归属（它读的是通道登记表，这是内核数据，不是 agent 私有状态）
+	//   ② 把事件交给循环登记的投递口
+	//   —— rt 的"单槽覆盖"等语义由 rtchild 的投递口自己实现（类型知识不进内核）。
 	entry, ok := a.io.LookupInputChannel(evt.OutputChannel)
 	if !ok {
 		return false // 通道不存在 ⇒ 走兜底（下面有日志）
