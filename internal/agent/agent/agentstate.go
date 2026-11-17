@@ -32,6 +32,7 @@ package agent
 // nil 表达前者（装配错误能响亮报出来），零值会把两者混成同一个。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"sync"
 	"time"
 
@@ -83,7 +84,7 @@ type workerState struct {
 	mu     sync.Mutex
 	nextID int64
 	seq    int64
-	tasks  map[string]*childTaskState
+	tasks  map[string]*agenttypes.ChildTaskState
 }
 
 // mainState 是**主 agent 专属状态**（记忆整理面 / 媒体 / 插件 / 预算统计）。
@@ -233,7 +234,7 @@ func (a *Agent) workerState() *workerState {
 func (a *Agent) mkWorker() *workerState {
 	s := a.ensureSub()
 	if s.worker == nil {
-		s.worker = &workerState{tasks: map[string]*childTaskState{}}
+		s.worker = &workerState{tasks: map[string]*agenttypes.ChildTaskState{}}
 	}
 	return s.worker
 }

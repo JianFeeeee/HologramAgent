@@ -5,24 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"log"
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
-
-// childTaskState 是一个子任务的生命周期状态。
-//
-// delivered 代替了早期的“读到即删”：完成通知会写进持久上下文
-// （formatMergedTimeline 每轮重新注入），模型之后还会再查。读一次就删的
-// 话，第二次查询返回“不存在或已过期”——那是一个**永远不会成功的可操作
-// 信号**，模型只能一遍遍地重试/汇报，循环永不结束。
-type childTaskState struct {
-	running   bool
-	result    string
-	delivered bool  // 结果是否已交付过（用于幂等应答）
-	seq       int64 // 完成顺序，用于有界淘汰
-}
 
 // maxRetainedChildTasks 是保留的已完成子任务上限（防结果无限占用内存）。
 const maxRetainedChildTasks = 20
@@ -33,11 +21,11 @@ func (w *workerState) evictLocked() {
 		oldestID := ""
 		var oldestSeq int64
 		for id, st := range w.tasks {
-			if st.running {
+			if st.Running {
 				continue
 			}
-			if oldestID == "" || st.seq < oldestSeq {
-				oldestID, oldestSeq = id, st.seq
+			if oldestID == "" || st.Seq < oldestSeq {
+				oldestID, oldestSeq = id, st.Seq
 			}
 		}
 		if oldestID == "" {
@@ -163,7 +151,7 @@ func (a *Agent) executeSpawnChild(tc agentAPI.ToolCall, parentChannel string) st
 	}
 
 	w.mu.Lock()
-	w.tasks[taskID] = &childTaskState{running: true}
+	w.tasks[taskID] = &agenttypes.ChildTaskState{Running: true}
 	w.mu.Unlock()
 	go a.runChildTask(taskID, task, parentChannel, maxTurns)
 
@@ -347,10 +335,10 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 	if w != nil {
 		w.mu.Lock()
 		if st := w.tasks[taskID]; st != nil {
-			st.running = false
-			st.result = finalResult
+			st.Running = false
+			st.Result = finalResult
 			w.seq++
-			st.seq = w.seq
+			st.Seq = w.seq
 		}
 		w.evictLocked()
 		w.mu.Unlock()
@@ -387,13 +375,13 @@ func (a *Agent) executeChildResultTool(tc agentAPI.ToolCall) string {
 		w.mu.Unlock()
 		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
 	}
-	if st.running {
+	if st.Running {
 		w.mu.Unlock()
 		return fmt.Sprintf("子任务 %s 仍在运行中，尚未完成。请等待完成通知后再查询。", taskID)
 	}
-	first := !st.delivered
-	st.delivered = true
-	result := st.result
+	first := !st.Delivered
+	st.Delivered = true
+	result := st.Result
 	w.mu.Unlock()
 
 	if first {

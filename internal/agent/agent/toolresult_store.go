@@ -48,27 +48,6 @@ import (
 // 工具结果全文的存储目录名（与 context.json 同级）。
 const toolResultDirName = "toolresults"
 
-// ToolResultStore 是一条「超大工具结果」的落盘记录。
-//
-// 它**只存元信息**进 context.json；正文在
-//
-//	<context.json 所在目录>/toolresults/<eventID>/tool_<index>.txt
-//
-// 这样 context.json 不会因为几条大结果膨胀成几 MB（它每 5s 全量重写一次）。
-type ToolResultStore struct {
-	// Tool 是产出这条结果的工具名（模型据此判断"是哪个工具给的"）。
-	Tool string `json:"tool"`
-	// File 是正文相对事件目录的文件名（如 tool_0.txt），不含绝对路径——
-	// 数据目录整体搬迁后仍然有效。
-	File string `json:"file"`
-	// TotalBytes / TotalLines 供模型规划怎么读（先读尾部？还是按行定位？）。
-	TotalBytes int `json:"total_bytes"`
-	TotalLines int `json:"total_lines"`
-	// TruncatedBytes 是**没有**落盘的字节数。非 0 表示落盘时触到了硬上限，
-	// 必须让模型知道（否则它以为全文就这么长）。默认 0。
-	TruncatedBytes int `json:"truncated_bytes,omitempty"`
-}
-
 // toolResultStoreHardCap 是单条结果落盘的硬上限（1 GiB）。
 //
 // 为什么还要上限：不设的话一个 `cat /dev/urandom` 就能把磁盘写满。
