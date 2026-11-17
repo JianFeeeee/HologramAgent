@@ -15,23 +15,10 @@ func ContextBudgetRelevance(a *Agent, b TokenBudget) int {
 	return b.ContextTokens
 }
 
-// ContextBudgetWholeWindow 是**整窗型**的预算（驻留子 / rtchild）。
-//
-// 只受模型能收多少这个硬上限约束，不做任何策略性裁剪。
-func ContextBudgetWholeWindow(a *Agent, b TokenBudget) int {
-	if b.MaxContext > 0 {
-		return b.MaxContext
-	}
-	return defaultMaxContextTokens
-}
-
 // OverBudgetRatio 是"是否已超出窗口预算"的判据（主 agent）。
 func OverBudgetRatio(a *Agent) bool {
 	return a.overflowRatioNow() >= overflowRatio
 }
-
-// OverBudgetNever 给整窗型用（它们靠 contextfull 上报父 agent，不做超页处置）。
-func OverBudgetNever(a *Agent) bool { return false }
 
 // PruneByQuery 是按相关度裁剪（主 agent）。
 func PruneByQuery(a *Agent, query string, protected int) int {

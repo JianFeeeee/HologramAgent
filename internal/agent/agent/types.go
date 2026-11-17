@@ -29,7 +29,6 @@ package agent
 
 import (
 	"fmt"
-	"sort"
 	"sync"
 )
 
@@ -84,24 +83,6 @@ func Instantiate(name string, cfg AgentConfig) (*Agent, error) {
 		return nil, fmt.Errorf("agent: type %q factory returned nil", name)
 	}
 	return a, nil
-}
-
-// RegisteredTypes 返回已登记的 agent 类型名（排序后，便于诊断与断言）。
-func RegisteredTypes() []string {
-	typeMu.RLock()
-	defer typeMu.RUnlock()
-	out := make([]string, len(typeOrder))
-	copy(out, typeOrder)
-	sort.Strings(out)
-	return out
-}
-
-// IsRegistered 报告某类型是否已登记（诊断用）。
-func IsRegistered(name string) bool {
-	typeMu.RLock()
-	defer typeMu.RUnlock()
-	_, ok := typeRegistry[name]
-	return ok
 }
 
 // TypeNameMain 是**主 agent** 的类型名（内核启动时自动实例化这一次）。
