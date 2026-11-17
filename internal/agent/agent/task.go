@@ -123,7 +123,7 @@ func (a *Agent) newTaskFrame(input string, stageCtx *sdk.StageContext) *TaskFram
 // 下面这段 `LoopStandard` 是**标准实现**（供主 agent / 驻留子注册）：
 // 它现在与基座同包只是因为拆包（→ `internal/agent/standard`）还没做完；
 // 但它**不会被基座自动启用** —— 基座不认识它，也不调用它。
-func (a *Agent) runTaskSteps(f *TaskFrame) stepOutcome {
+func (a *Agent) RunTaskSteps(f *TaskFrame) stepOutcome {
 	if a == nil || a.hooks.Loop == nil {
 		// 装配错误：Validate 应该已经在构造期拦住。这里返回失败而不是
 		// 退回某个"默认骨架" —— 基座不假设任何 loop 样式。
@@ -190,7 +190,7 @@ func (a *Agent) process(input string, stageCtx *sdk.StageContext) (response stri
 		return "", nil, nil, fmt.Errorf("agent: no LLM provider configured")
 	}
 	f := a.newTaskFrame(input, stageCtx)
-	switch a.runTaskSteps(f) {
+	switch a.RunTaskSteps(f) {
 	case outcomeDone:
 		return f.Response, f.ToolsUsed, f.ToolResults, nil
 	case outcomeFailed:
@@ -209,7 +209,7 @@ func (a *Agent) process(input string, stageCtx *sdk.StageContext) (response stri
 // 而 finish 段（上下文提交与回执）只在任务真正结束时执行一次。
 //
 // M3a 还没有抢占，因此 outcomeSuspended 只会由 M3b 的抢占检查产生。
-func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) {
+func (a *Agent) RunInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) {
 	// 临界区标记由调度器 goroutine 维护，任务结束（含挂起）即清。
 	// interceptLoop 读它来决定“能不能取消”，因此必须是原子的。
 	defer a.sched.setCritical(false)
@@ -246,12 +246,12 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 		return nil, outcomeDone
 	}
 
-	out := a.runTaskSteps(f)
+	out := a.RunTaskSteps(f)
 	if out == outcomeSuspended {
 		f.Terminal = terminalSuspended
 		return f, outcomeSuspended
 	}
-	a.finishInputTask(f, out)
+	a.FinishInputTask(f, out)
 	return f, out
 }
 
@@ -266,16 +266,16 @@ func (a *Agent) runInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 // 实现：重建基础前缀（system + timeline + 用户输入）；由于中断结束时已把它的
 // 输入/输出提交进 a.context，重建出的 timeline 已含中断的效果；再把本任务
 // 自己的尾部（Stage 上下文 + 工具轮产物 + 占位）原样接回。
-func (a *Agent) rebaseFramePrefix(f *TaskFrame) {
+func (a *Agent) RebaseFramePrefix(f *TaskFrame) {
 	if f == nil || f.PrefixLen <= 0 || f.PrefixLen > len(f.Msgs) {
 		return
 	}
 	tail := append([]agentAPI.Message(nil), f.Msgs[f.PrefixLen:]...)
 
-	budget := a.computeTokenBudget()
-	memContext := a.buildTaskMemoryContext(f, f.Input, budget.MemoryTokens)
-	sysPrompt := a.buildSystemPrompt(memContext, f.Input)
-	prefix := a.buildMessages(sysPrompt, f.Input, a.ContextTokenBudget(budget))
+	budget := a.ComputeTokenBudget()
+	memContext := a.BuildTaskMemoryContext(f, f.Input, budget.MemoryTokens)
+	sysPrompt := a.BuildSystemPrompt(memContext, f.Input)
+	prefix := a.BuildMessages(sysPrompt, f.Input, a.ContextTokenBudget(budget))
 
 	// 重建会丢掉 prepare 段对尾部消息的两处改写，这里等价地补回。
 	if f.IsInterrupt && len(prefix) > 0 {
@@ -298,7 +298,7 @@ func (a *Agent) rebaseFramePrefix(f *TaskFrame) {
 	//
 	// 用的是**恢复专用**入口：相关性按本帧最新上下文算、保护范围是本帧自己的
 	// 现场（f.Msgs[PrefixLen:]），而不是全局末尾 N 条。见 enforceResumeContextBudget。
-	if handled, _ := a.enforceResumeContextBudget(f); handled && f.Terminal == terminalError {
+	if handled, _ := a.EnforceResumeContextBudget(f); handled && f.Terminal == terminalError {
 		return // 预算耗尽：f.Err 已写明，调用方据此终止
 	}
 }
@@ -347,7 +347,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 媒体先变成一等块（字节进块的 Data）。不存的后果是 ContextEvent.Input
 	// 只剩一句 alt 文本，base64 随 message 数组发给模型后就丢了。
 	if len(in.blocks) > 0 {
-		a.stageMediaBlocks(a.captureBlockMedia(in.blocks, in.captureTool)...)
+		a.stageMediaBlocks(a.CaptureBlockMedia(in.blocks, in.captureTool)...)
 	}
 
 	noMemory := false
@@ -370,7 +370,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 因此这里：裁剪 → 结束本轮，**不进 LLM、不写上下文、不发回复**。
 	// 用 terminalSkipped（不是 terminalError）：这是正常完成，不是故障。
 	if in.airInterrupt {
-		a.pruneForAirInterrupt()
+		a.PruneForAirInterrupt()
 		return nil, terminalSkipped
 	}
 
@@ -392,9 +392,9 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	if noMemory {
 		stageCtx.NoMemory = true
 	}
-	a.injectSourceContext(stageCtx, evt)
+	a.InjectSourceContext(stageCtx, evt)
 
-	if a.runStage(sdk.StageOnInput, stageCtx) {
+	if a.RunStage(sdk.StageOnInput, stageCtx) {
 		// 插件在 OnInput 短路：本轮一个 LLM 都没跑，用量为零是如实的。
 		a.EmitResponse(evt, *stageCtx.Response, agentAPI.TokenUsage{})
 		return nil, terminalStageShortCircuit
@@ -417,7 +417,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 			rawPayload[k] = v
 		}
 	}
-	a.publishEvent(events.EventRawInput, rawPayload)
+	a.PublishEvent(events.EventRawInput, rawPayload)
 
 	// 裁剪与审计统一在 memoryPass 内（日志已带 trigger）。
 	a.PruneOnInput(evt, cleanInput)
@@ -450,7 +450,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 // finishInputTask 执行 processInput 的后半段（日志、上下文提交、回执、记忆候选）。
 //
 // 只在任务真正结束时调用一次——这正是不变量 I5（每任务恰一次终态）的落点。
-func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
+func (a *Agent) FinishInputTask(f *TaskFrame, out stepOutcome) {
 	evt := f.Evt
 
 	// pendingMedia 是「本轮」语义：任务结束即清（挂起时保留，见 runInputTask）。
@@ -503,7 +503,7 @@ func (a *Agent) finishInputTask(f *TaskFrame, out stepOutcome) {
 		ToolResults:      f.ToolResults,
 		ToolCalls:        f.ToolCalls,
 	}
-	a.bindEventMedia(&turnEvt, a.drainMediaBlocks())
+	a.BindEventMedia(&turnEvt, a.drainMediaBlocks())
 	// ★ 明文拦截发生在 a.context.Append **内部**（见 context.go 的 Append），
 	// 不是在每个调用点 —— 写 context 的地方有 5 处，逐个补必漏。
 	a.context.Append(turnEvt)
@@ -541,13 +541,13 @@ func (a *Agent) step(f *TaskFrame) stepOutcome {
 
 // stepPrepare 构建本轮任务的初始帧。
 func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
-	budget := a.computeTokenBudget()
+	budget := a.ComputeTokenBudget()
 
-	memContext := a.buildTaskMemoryContext(f, f.Input, budget.MemoryTokens)
-	sysPrompt := a.buildSystemPrompt(memContext, f.Input)
-	f.Tools = a.buildToolDefs()
+	memContext := a.BuildTaskMemoryContext(f, f.Input, budget.MemoryTokens)
+	sysPrompt := a.BuildSystemPrompt(memContext, f.Input)
+	f.Tools = a.BuildToolDefs()
 
-	f.Msgs = a.buildMessages(sysPrompt, f.Input, a.ContextTokenBudget(budget))
+	f.Msgs = a.BuildMessages(sysPrompt, f.Input, a.ContextTokenBudget(budget))
 	// ★ 插件声明的**本轮提示**（SDK InjectOptions.TurnHint）。
 	//
 	// 以**独立 system 消息**注入，绝不拼进用户消息正文：
@@ -583,7 +583,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 		a.MainState().personality != nil && a.MainState().personality.Content != "",
 		a.coldcontextStoreSize())
 
-	if a.runStage(sdk.StagePreAction, f.StageCtx) {
+	if a.RunStage(sdk.StagePreAction, f.StageCtx) {
 		f.Response = *f.StageCtx.Response
 		return outcomeDone
 	}
@@ -625,7 +625,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	//   整轮工具调用的代价已经付掉了。
 	//   必须在这里做而不能更早：f.Msgs 在上一行之前已经拼好，
 	//   而本次裁剪会让它过期。
-	if handled, _ := a.maybeHandleContextOverflow(f, ""); handled {
+	if handled, _ := a.MaybeHandleContextOverflow(f, ""); handled {
 		if f.Terminal == terminalError {
 			return outcomeFailed // 恢复预算耗尽，f.Err 已写明
 		}
@@ -667,7 +667,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		DisableThinking: !a.MainState().thinkingEnabled,
 	}
 
-	providers := a.resolveProviders(req)
+	providers := a.ResolveProviders(req)
 	resp, llmErr := a.callLLMWithFallback(req, providers, f.OutputChannel)
 
 	if llmErr != nil {
@@ -678,7 +678,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		// 之后的恢复预算 / 裁剪 / raise L4 与本地预判完全相同，共用同一个函数。
 		// 区别仅在于：本地预判在发请求**之前**判，这里在**收到错误之后**判。
 		if isUpstreamContextFull(llmErr) {
-			handled, _ := a.enforceContextBudget(f, "", true)
+			handled, _ := a.EnforceContextBudget(f, "", true)
 			if handled {
 				if f.Terminal == terminalError {
 					return outcomeFailed // 恢复预算耗尽，f.Err 已写明
@@ -739,10 +739,10 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 	f.StageCtx.ToolCalls = convertToolCalls(resp.ToolCalls)
 	for i := range f.StageCtx.ToolCalls {
 		if f.StageCtx.ToolCalls[i].Plugin == "" {
-			f.StageCtx.ToolCalls[i].Plugin = a.resolveToolPlugin(f.StageCtx.ToolCalls[i].Name)
+			f.StageCtx.ToolCalls[i].Plugin = a.ResolveToolPlugin(f.StageCtx.ToolCalls[i].Name)
 		}
 	}
-	if a.runStage(sdk.StagePostAction, f.StageCtx) {
+	if a.RunStage(sdk.StagePostAction, f.StageCtx) {
 		f.Response = *f.StageCtx.Response
 		return outcomeDone
 	}
@@ -799,10 +799,10 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		}
 		chainPayload["usage_session"] = sessPayload
 	}
-	a.publishEvent(events.EventAgentLLMChain, chainPayload)
+	a.PublishEvent(events.EventAgentLLMChain, chainPayload)
 
 	if resp.ReasoningContent != "" {
-		a.publishEvent(events.EventReasoning, map[string]interface{}{
+		a.PublishEvent(events.EventReasoning, map[string]interface{}{
 			"content": resp.ReasoningContent,
 			"channel": f.OutputChannel,
 		})
@@ -949,7 +949,7 @@ type batchItemResult struct {
 // （stepToolBatch 的顺序收尾段，或串行路径的 stepToolBegin/Exec）负责。
 func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	tc := f.PendingTools[idx]
-	pluginName := a.resolveToolPlugin(tc.Name)
+	pluginName := a.ResolveToolPlugin(tc.Name)
 	res := batchItemResult{name: tc.Name, plugin: pluginName}
 
 	tctx := toolCtxFor(f, idx)
@@ -957,7 +957,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	tctx.ToolResults = nil
 
 	// before_toolcall（拒绝则不执行）
-	if a.runStage(sdk.StageBeforeToolcall, tctx) {
+	if a.RunStage(sdk.StageBeforeToolcall, tctx) {
 		res.text = denialResultText(tctx, tc.Name)
 		res.denied = true
 		return res
@@ -977,7 +977,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 	if f != nil && f.SceneDone {
 		turn = f.TurnScene
 	}
-	outcome := a.executeToolCallOutcome(tc, f.OutputChannel, turn.Keys...)
+	outcome := a.ExecuteToolCallOutcome(tc, f.OutputChannel, turn.Keys...)
 	res.text = outcome.Text
 	res.raw = outcome.Raw
 	tctx.ToolResults = []sdk.ToolResult{{
@@ -999,7 +999,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	tc := f.PendingTools[f.ToolIdx]
 
 	appendToolCallRecord(f, tc)
-	pluginName := a.resolveToolPlugin(tc.Name)
+	pluginName := a.ResolveToolPlugin(tc.Name)
 	a.Logf("executing tool: %s (plugin=%s, id=%s)", tc.Name, pluginName, tc.ID)
 	if tc.RawArguments != "" {
 		// ★ 脱敏后再落盘：模型给的参数正常是别名（sec_xxx），但插件工具
@@ -1014,7 +1014,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 	tctx := toolCtxFor(f, f.ToolIdx)
 	tctx.ToolCalls = []sdk.ToolCall{sdkTC}
 	tctx.ToolResults = nil
-	if a.runStage(sdk.StageBeforeToolcall, tctx) {
+	if a.RunStage(sdk.StageBeforeToolcall, tctx) {
 		result := denialResultText(tctx, tc.Name)
 		ensureBatchAssistant(f)
 		f.Msgs = append(f.Msgs, agentAPI.Message{Role: "tool", ToolCallID: tc.ID, Content: result})
@@ -1022,7 +1022,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 		// 漏掉这行的实测后果：qq_call_state 被权限策略拒绝后，ContextEvent 里
 		// 有 call 没有 result，每一轮都触发上游 400，直到发送前自检把它剔掉。
 		appendToolResultRecord(f, tc.ID, tc.Name, result)
-		a.publishEvent(events.EventToolCall, map[string]interface{}{
+		a.PublishEvent(events.EventToolCall, map[string]interface{}{
 			"tool":    tc.Name,
 			"plugin":  pluginName,
 			"args":    tc.Arguments,
@@ -1141,7 +1141,7 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	// 执行工具前先解析本轮场景：写侧要用它给记忆自动挂场景（主动+被动两条路），
 	// 而工具步不一定走到下面的召回分支，所以不能等那里再解析。
 	turn := a.resolveTurnScenes(f, f.CurTool.Name)
-	outcome := a.executeToolCallOutcome(f.CurTool, f.OutputChannel, turn.Keys...)
+	outcome := a.ExecuteToolCallOutcome(f.CurTool, f.OutputChannel, turn.Keys...)
 	result := outcome.Text
 	f.CurResult = result
 	f.CurRaw = outcome.Raw
@@ -1170,7 +1170,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 	result := f.CurResult
 
 	tctx := toolCtxFor(f, f.ToolIdx)
-	a.runStage(sdk.StageAfterToolcall, tctx)
+	a.RunStage(sdk.StageAfterToolcall, tctx)
 	if len(tctx.ToolResults) > 0 {
 		// 此前是 `Result.(string)` 类型断言，而插件返回的多是 map ⇒ 断言几乎
 		// 恒失败，after_toolcall 阶段对结构化结果的改写**静默失效**。
@@ -1204,10 +1204,10 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 			// 与这一步工具本身（如 tool:qq_get_message）。带上工具场景，
 			// 才能让「凡是要回 QQ 消息」这类规则在该步被取回。
 			// 召回用两条路的并集：声明场景（注入点/通道/工具）+ 涌现场景
-			scenes := a.sceneKeysFor(f.Evt, tc.Name)
+			scenes := a.SceneKeysFor(f.Evt, tc.Name)
 			turn := a.resolveTurnScenes(f, tc.Name)
 			scenes = mergeSceneKeys(scenes, turn.Keys)
-			recallText = a.memoryPass(query, "tool:"+tc.Name, needPrune, needRecall, scenes).RecallText
+			recallText = a.MemoryPass(query, "tool:"+tc.Name, needPrune, needRecall, scenes).RecallText
 		}
 	}
 
@@ -1245,7 +1245,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 		}
 		if len(blocks) > 0 {
 			// 先落成块：无论下面走直视还是回退转写，媒体本体都该进记忆。
-			a.stageMediaBlocks(a.captureBlockMedia(blocks, tc.Name)...)
+			a.stageMediaBlocks(a.CaptureBlockMedia(blocks, tc.Name)...)
 
 			if native, fallbackText := a.prepareToolBlocks(blocks); len(native) > 0 {
 				// 能直视：另起一条 user message 承载媒体，并补一句来源说明。
@@ -1299,7 +1299,7 @@ func (a *Agent) stepToolAfter(f *TaskFrame) stepOutcome {
 		f.BatchRecall = recallText
 	}
 
-	a.publishEvent(events.EventToolCall, map[string]interface{}{
+	a.PublishEvent(events.EventToolCall, map[string]interface{}{
 		"tool":    tc.Name,
 		"plugin":  pluginName,
 		"args":    tc.Arguments,
@@ -1372,7 +1372,7 @@ func (a *Agent) stepTurnEnd(f *TaskFrame) stepOutcome {
 }
 
 // resolveProviders 按请求模型解析候选 provider（保持原语义）。
-func (a *Agent) resolveProviders(req *agentAPI.CompletionRequest) []agentAPI.Provider {
+func (a *Agent) ResolveProviders(req *agentAPI.CompletionRequest) []agentAPI.Provider {
 	var providers []agentAPI.Provider
 	if a.providerManager != nil {
 		var allProviders []agentAPI.Provider

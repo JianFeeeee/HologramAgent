@@ -135,19 +135,19 @@ type toolOutcome struct {
 }
 
 // executeToolCall 保留原签名（spawn.go 与既有测试依赖），只取文本。
-func (a *Agent) executeToolCall(tc agentAPI.ToolCall, channel string, turnScenes ...string) string {
-	return a.executeToolCallOutcome(tc, channel, turnScenes...).Text
+func (a *Agent) ExecuteToolCall(tc agentAPI.ToolCall, channel string, turnScenes ...string) string {
+	return a.ExecuteToolCallOutcome(tc, channel, turnScenes...).Text
 }
 
 // executeToolCallOutcome 是完整形态：崩溃/超时同样以 ToolError 表达，
 // 使「工具故障」与「工具报告的业务失败」在上层可区分。
-func (a *Agent) executeToolCallOutcome(tc agentAPI.ToolCall, channel string, turnScenes ...string) (out toolOutcome) {
+func (a *Agent) ExecuteToolCallOutcome(tc agentAPI.ToolCall, channel string, turnScenes ...string) (out toolOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
 			a.Logf("tool %s panic: %v\n%s", tc.Name, r, stack)
 
-			if pluginName := a.resolveToolPlugin(tc.Name); pluginName != "" {
+			if pluginName := a.ResolveToolPlugin(tc.Name); pluginName != "" {
 				if a.MainState().pluginHealth.RecordCrash(pluginName) {
 					a.Logf("plugin %s exceeded crash threshold, scheduling reload", pluginName)
 				}
@@ -365,7 +365,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	case tc.Name == "output_list_channels":
 		return toolOutcome{Text: a.executeOutputListChannels()}
 	case tc.Name == "input_channels":
-		return toolOutcome{Text: a.executeInputChannels(tc)}
+		return toolOutcome{Text: a.ExecuteInputChannels(tc)}
 	case tc.Name == "resident_agents":
 		return toolOutcome{Text: a.ExecuteResidentAgents(tc)}
 	// ★ rt_transcript：rtchild 上下文交接的**拉取**入口（用户裁定 2026-10-30）。
@@ -383,7 +383,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		return toolOutcome{Text: a.executePluginReload()}
 	case tc.Name == "get_plugin_tools":
 		pluginName, _ := tc.Arguments["plugin_name"].(string)
-		return toolOutcome{Text: a.executeGetPluginTools(pluginName)}
+		return toolOutcome{Text: a.ExecuteGetPluginTools(pluginName)}
 	case tc.Name == "spawn_child":
 		return toolOutcome{Text: a.ExecuteSpawnChild(tc, channel)}
 	case tc.Name == "child_result":
@@ -665,7 +665,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		//   ec/rc 恒为 0（旧表停写），块数差值也**不可靠** —— 块 ID 由内容
 		//   派生，同一实体第二次提交走 ON CONFLICT DO UPDATE，块数不涨。
 		//   两者都不涨时「幂等命中」与「全被拒」不可区分（2026-11-15 实测）。
-		written, mb, err := a.commitTriplesWithMedia(triples, string(a.id), 0, nil)
+		written, mb, err := a.CommitTriplesWithMedia(triples, string(a.id), 0, nil)
 		if err != nil {
 			return fmt.Sprintf("memory commit failed: %v", err)
 		}
@@ -1218,7 +1218,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 				// 存量文档（无 Events）降级：整篇渲成一个事件。
 				// 不伪造成「有原始事件」—— 那时归档确实只有渲染视图。
 				content := d.Content
-				if labels := a.blockLabelsForDoc(d); labels != "" {
+				if labels := a.BlockLabelsForDoc(d); labels != "" {
 					content = content + "\n关联媒体: " + labels
 				}
 				a.context.InsertByTimestamp(ContextEvent{

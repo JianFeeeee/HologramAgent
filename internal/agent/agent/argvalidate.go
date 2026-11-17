@@ -255,7 +255,7 @@ func (a *Agent) validateArgsAgainstSchema(tc agentAPI.ToolCall) *sdk.ToolError {
 // 即使同时写了 ParallelSafe:true 也不并发（判据 TestSerialOverridesParallelSafe）。
 // 没有这条，"显式声明必须串行"就只是一个没被读取的死字段 ——
 // 工具作者写了 Serial:true 以为能保护自己，实际毫无作用。
-func (a *Agent) toolParallelSafe(name string) bool {
+func (a *Agent) ToolParallelSafe(name string) bool {
 	if a == nil {
 		return false
 	}
@@ -290,7 +290,7 @@ func (a *Agent) toolParallelSafe(name string) bool {
 //     工具改名/新增不会跟着变，要靠 grep 源码的判据才能发现漂移；
 //  2. 往 required 变参里塞字符串 "toolParallel"：拼错静默失效，
 //     编译器不报错，而"少一个工具能并发"正是最难察觉的那类问题；
-//  3. 每次查询重跑 buildToolDefs()：正确但 O(工具数) 重复劳动。
+//  3. 每次查询重跑 BuildToolDefs()：正确但 O(工具数) 重复劳动。
 func (a *Agent) builtinToolParallelSafe(name string) bool {
 	return concurrencySafeOf(name)
 }
@@ -311,7 +311,7 @@ func batchRunnable(f *TaskFrame, a *Agent) bool {
 	}
 	chans := map[string]bool{}
 	for _, tc := range f.PendingTools {
-		if !a.toolParallelSafe(tc.Name) {
+		if !a.ToolParallelSafe(tc.Name) {
 			return false
 		}
 		// 同通道多次发送必须保序 —— 用户可见消息顺序敏感

@@ -31,7 +31,7 @@ import (
 // ★ 旧实体的名字里带的是**内容短 digest**；块自带负载后没有 CAS 可按
 // digest 取回字节，所以旧媒体实体的字节若已无从取得（CAS 已删），
 // 该实体只能如实删除而不建块——不造一个没有内容的空块。
-func (a *Agent) migrateLegacyGraphMedia() {
+func (a *Agent) MigrateLegacyGraphMedia() {
 	if a.GraphDB() == nil {
 		return
 	}
@@ -96,7 +96,7 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 
 // linkBlocksToDocument 把文档持有的块写入 L3，并建立
 // document --contains--> block 边。块的 ID 原样保留（迁移而非重建）。
-func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, scene string) int {
+func (a *Agent) LinkBlocksToDocument(docID string, blocks []memory.MemoryBlock, scene string) int {
 	if a.GraphDB() == nil || docID == "" || len(blocks) == 0 {
 		return 0
 	}
@@ -142,7 +142,7 @@ func (a *Agent) linkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 // 已无意义，签名是 SDK 契约不改），但要判断「这次到底写没写进去」，必须看
 // **written**（真正通过校验并落库的三元组条数）。不要再用块数差值 ——
 // 块 ID 由内容派生，幂等命中时块数根本不涨（详见 memory.CommitReady 的注释）。
-func (a *Agent) commitTriplesWithMedia(triples []memory.Triple, sessionID string, turnID int, seed []memory.MemoryBlock) (written, blocks int, err error) {
+func (a *Agent) CommitTriplesWithMedia(triples []memory.Triple, sessionID string, turnID int, seed []memory.MemoryBlock) (written, blocks int, err error) {
 	if a.GraphDB() == nil {
 		// 轻量内核（memory == nil，子只有图记忆）：只写图记忆。
 		// 写目标由 a.graph 决定 —— 根落 main，子落自己的 temp。
@@ -293,7 +293,7 @@ func (a *Agent) mediaContextForInjectedEntities(injected *memory.InjectedContext
 }
 
 // blockLabelsForDoc 渲染文档持有块的标签（MIME + 短块 ID），供 coldcontext_query 展示。
-func (a *Agent) blockLabelsForDoc(d *coldcontext.ColdDoc) string {
+func (a *Agent) BlockLabelsForDoc(d *coldcontext.ColdDoc) string {
 	if d == nil || len(d.Blocks) == 0 {
 		return ""
 	}

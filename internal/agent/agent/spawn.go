@@ -138,7 +138,7 @@ func (a *Agent) ExecuteSpawnChild(tc agentAPI.ToolCall, parentChannel string) st
 		maxTurns = 30
 	}
 
-	w := a.mkWorker()
+	w := a.MkWorker()
 	w.mu.Lock()
 	w.nextID++
 	taskID := fmt.Sprintf("child_%d", w.nextID)
@@ -218,7 +218,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		{Role: "user", Content: task},
 	}
 
-	allTools := a.buildToolDefs()
+	allTools := a.BuildToolDefs()
 	childTools := make([]interface{}, 0, len(allTools))
 	for _, t := range allTools {
 		toolMap, ok := t.(map[string]interface{})
@@ -331,7 +331,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		}
 	}
 
-	w := a.workerState()
+	w := a.WorkerStateOf()
 	if w != nil {
 		w.mu.Lock()
 		if st := w.tasks[taskID]; st != nil {
@@ -347,7 +347,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 	log.Printf("[child] %s done: %s", taskID, truncateStr(finalResult, 100))
 
 	notification := fmt.Sprintf("子任务 %s 已完成。请用 child_result 工具查看输出（只需查询一次；重复查询不会返回失败）。", taskID)
-	a.injectSelfChannel(selfInputMsg{
+	a.InjectSelfChannel(selfInputMsg{
 		text:    notification,
 		channel: parentChannel, // 回到父对话通道，正常处理（写入上下文 + emit 响应）
 	})
@@ -365,7 +365,7 @@ func (a *Agent) ExecuteChildResultTool(tc agentAPI.ToolCall) string {
 		return "请提供 task_id 参数"
 	}
 
-	w := a.workerState()
+	w := a.WorkerStateOf()
 	if w == nil {
 		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
 	}
@@ -475,7 +475,7 @@ func (a *Agent) ExecuteLLMTool(tc agentAPI.ToolCall) string {
 // 与主 agent 的 `callLLMWithFallback` 的区别是这里不重试、不切 active provider：
 // 子任务是短生命周期，重试只会把一个已经抖动的时间窗拉长。
 func (a *Agent) chatWithProviderChain(req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
-	providers := a.resolveProviders(req)
+	providers := a.ResolveProviders(req)
 	var lastErr error
 	for _, p := range providers {
 		resp, err := p.Chat(a.ctx, req)

@@ -193,7 +193,7 @@ func (a *Agent) kernelSections(memContext string) []kernelSection {
 
 	out = append(out, kernelSection{
 		order: orderKernelToolCata, section: "kernel.tool_catalog",
-		content: a.buildToolCatalog(),
+		content: a.BuildToolCatalog(),
 	})
 
 	return out

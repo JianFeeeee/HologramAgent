@@ -190,5 +190,5 @@ func (a *Agent) RaiseVector(id VectorID, args vectorArgs) bool {
 	if v.Guard != nil && !v.Guard(args) {
 		return false
 	}
-	return a.raiseKernelInterruptAt(v.Source(args), "kernel", v.Build(args), v.Level)
+	return a.RaiseKernelInterruptAt(v.Source(args), "kernel", v.Build(args), v.Level)
 }

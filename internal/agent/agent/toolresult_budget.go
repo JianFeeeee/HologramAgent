@@ -100,7 +100,7 @@ func (a *Agent) toolResultWarnLimit() int {
 	if a.MainState().toolResultWarnTokens > 0 {
 		return a.MainState().toolResultWarnTokens
 	}
-	budget := a.computeTokenBudget()
+	budget := a.ComputeTokenBudget()
 	base := budget.ContextTokens
 	if base <= 0 {
 		base = budget.TargetUsage

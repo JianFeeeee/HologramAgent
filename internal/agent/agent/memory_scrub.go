@@ -106,7 +106,7 @@ func (c *RelevanceContext) scrubEventSecrets(evt *ContextEvent) {
 //
 // 就地改写 map：调用方传进来的是一次性的快照，改它没有副作用。
 // ★ 2026-11-04：从包级自由函数改为 Agent 方法（变量库走 a.SecretStore()）。
-func (a *Agent) scrubMemoryCandidate(payload map[string]interface{}) {
+func (a *Agent) ScrubMemoryCandidate(payload map[string]interface{}) {
 	if payload == nil {
 		return
 	}

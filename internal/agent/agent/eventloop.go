@@ -21,12 +21,12 @@ import (
 // 无法承载优先级与抢占；现在任务先入就绪队列，由选择函数 pickTaskIndex 决定下一个。
 // 兼容性说明：M2 全部任务为 LevelBackground，因此行为等价于原先的 FIFO。
 
-func (a *Agent) interceptLoop() {
+func (a *Agent) InterceptLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[agent] interceptLoop panic recovered: %v\n%s", r, debug.Stack())
 			time.Sleep(time.Second)
-			go a.interceptLoop()
+			go a.InterceptLoop()
 		}
 	}()
 	for {
@@ -65,7 +65,7 @@ func (a *Agent) interceptLoop() {
 				n := a.sched.armStop(pending)
 				log.Printf("[agent] stop requested by %s/%s (queued=%d will be short-circuited at pre-action)",
 					evt.Source, evt.OutputChannel, n)
-				a.cancelCurrentLLM()
+				a.CancelCurrentLLM()
 				// ★ 同时停掉正在跑的工具：否则长阻塞工具会把整轮堵到它自己超时
 				// （实测 browser_start 夹到 10m），用户看到的就是「停止没反应」。
 				// 只在这里调（显式停止），不在下方 requestPreempt 分支调（R5）。
@@ -101,9 +101,9 @@ func (a *Agent) interceptLoop() {
 			// 级别由来源声明（InjectOptions.Priority → payload["priority"]）；
 			// 未声明一律 L1。L4（“立即打断”）只有内核级插件能声明，
 			// 外部插件即便报了 L4 也会被夹到 L3；内核自身另有 raiseKernelInterrupt。
-			level := interruptLevel(evt, a.isKernelLevelSource(evt.Source))
+			level := interruptLevel(evt, a.IsKernelLevelSource(evt.Source))
 			if a.sched.requestPreempt(clone, level) {
-				a.cancelCurrentLLM()
+				a.CancelCurrentLLM()
 			}
 
 		case <-a.ctx.Done():
@@ -117,7 +117,7 @@ func (a *Agent) interceptLoop() {
 // 边界（2026-10-31 更新）：它只停 LLM 流，**不停工具**。
 // 工具另有入口 `cancelCurrentTool`，且只由「用户按停止」触发 ——
 // 中断抢占用它会把正在执行副作用的工具掤断，那是用户裁定 R5 禁止的。
-func (a *Agent) cancelCurrentLLM() {
+func (a *Agent) CancelCurrentLLM() {
 	a.llmMu.Lock()
 	cancel := a.cancelLLM
 	a.llmMu.Unlock()
@@ -203,13 +203,13 @@ func selfEvent(msg selfInputMsg) *agentIO.InputEvent {
 }
 
 func (a *Agent) handleSelfInput(msg selfInputMsg) {
-	_, _ = a.runInputTask(selfEvent(msg))
+	_, _ = a.RunInputTask(selfEvent(msg))
 }
 
 func (a *Agent) handleInput(evt *agentIO.InputEvent) {
 	switch evt.Type {
 	case "text", "image", "audio":
-		_, _ = a.runInputTask(evt)
+		_, _ = a.RunInputTask(evt)
 
 	case "event":
 		log.Printf("[agent] event from %s: %v", evt.Source, evt.Payload)
@@ -493,7 +493,7 @@ func (a *Agent) EmitResponse(evt *agentIO.InputEvent, response string, turnUsage
 			stageCtx.Extra[k] = v
 		}
 	}
-	a.runStage(sdk.StageBeforeOutput, stageCtx)
+	a.RunStage(sdk.StageBeforeOutput, stageCtx)
 	response = stageCtx.FinalText
 
 	payload := map[string]interface{}{
@@ -544,9 +544,9 @@ func (a *Agent) EmitResponse(evt *agentIO.InputEvent, response string, turnUsage
 	if stageCtx.ReasoningContent != "" {
 		out["reasoning_content"] = stageCtx.ReasoningContent
 	}
-	a.publishEvent(events.EventAgentOutput, out)
+	a.PublishEvent(events.EventAgentOutput, out)
 	stageCtx.Phase = sdk.StageAfterOutput
-	a.runStage(sdk.StageAfterOutput, stageCtx)
+	a.RunStage(sdk.StageAfterOutput, stageCtx)
 }
 
 // pruneOnInput 按声明的上下文策略裁剪上下文，返回归档的事件数。
@@ -567,7 +567,7 @@ func (a *Agent) PruneOnInput(evt *agentIO.InputEvent, cleanInput string) int {
 	if !a.pruneDeclared(evt) {
 		return 0
 	}
-	return a.memoryPass(cleanInput, "input:"+evt.Source, true, false, a.sceneKeysFor(evt, "")).Archived
+	return a.MemoryPass(cleanInput, "input:"+evt.Source, true, false, a.SceneKeysFor(evt, "")).Archived
 }
 
 // pruneDeclared 判定这次输入是否显式声明了裁剪。

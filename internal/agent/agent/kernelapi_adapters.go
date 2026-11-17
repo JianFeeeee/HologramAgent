@@ -63,7 +63,7 @@ func (v vectorizerFace) Vectorize(text string) vector.Vector {
 //
 // 装配期（`kernelmod/*`）传入的字段大多允许"这一项没装配"，所以这种
 // typed-nil 必须在这里一次性归一，而不是让 20 个调用点各自判断。
-func (a *Agent) normalizeNilServices() {
+func (a *Agent) NormalizeNilServices() {
 	if a == nil {
 		return
 	}

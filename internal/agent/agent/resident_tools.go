@@ -138,7 +138,7 @@ func (a *Agent) ExecuteResidentAgents(tc agentAPI.ToolCall) string {
 		var promoted int
 		residual, rmsg, ferr := a.FinishResidentWithTarget(id, residualPolicyOf(tc), channelDispositionOf(tc), handoverTargetOf(tc),
 			func(rc *residentChild) error {
-				p, herr := a.harvestResidentMemory(rc)
+				p, herr := a.HarvestResidentMemory(rc)
 				if herr != nil {
 					return fmt.Errorf("合入主记忆失败: %w", herr)
 				}
@@ -228,7 +228,7 @@ func intArg(tc agentAPI.ToolCall, key string) int {
 
 // executeNotifyParent 是子的"主动向父发消息"（父侧阶梯 = **L3 中断**）。
 func (a *Agent) ExecuteNotifyParent(tc agentAPI.ToolCall) string {
-	return a.notifyParentFrom(strArg(tc, "text"))
+	return a.NotifyParentFrom(strArg(tc, "text"))
 }
 
 // executeInputchNote 是子"主动写入本轮 inputch 的处理信息"。
@@ -238,7 +238,7 @@ func (a *Agent) ExecuteInputchNote(tc agentAPI.ToolCall) string {
 	if text == "" {
 		return "text 不能为空"
 	}
-	a.recordInputchNote(text)
+	a.RecordInputchNote(text)
 	return "已记录本轮 inputch 处理信息（本轮系统不会再自动写）"
 }
 

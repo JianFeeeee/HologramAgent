@@ -48,7 +48,7 @@ func blockModalityFromMIME(mime string) memory.BlockModality {
 // 块 ID 由内容派生（memory.MediaBlockID）：同内容 ⇒ 同 ID ⇒ 落库时
 // ON CONFLICT 天然去重（这正是内容寻址当年的好处，但现在由块 ID 直接提供，
 // 不需要一层独立的寻址存储）。
-func (a *Agent) captureBlockMedia(blocks []agentAPI.ContentBlock, tool string) []memory.MemoryBlock {
+func (a *Agent) CaptureBlockMedia(blocks []agentAPI.ContentBlock, tool string) []memory.MemoryBlock {
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -131,7 +131,7 @@ func (a *Agent) drainMediaBlocks() []memory.MemoryBlock {
 //
 // 块存储在事件自身（随 context.json 持久化），不维护引用账本：
 // 存活与否由持有它的层决定。
-func (a *Agent) bindEventMedia(evt *ContextEvent, blocks []memory.MemoryBlock) {
+func (a *Agent) BindEventMedia(evt *ContextEvent, blocks []memory.MemoryBlock) {
 	if evt == nil || len(blocks) == 0 {
 		return
 	}

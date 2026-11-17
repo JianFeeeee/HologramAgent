@@ -36,7 +36,7 @@ import (
 // 并发策略：启动时用 worker pool 并行迁移，避免上千张图片串行耗时过长。
 // 并发数在 ONNX 内嵌路径下不超 CPU 核心数（避免 ONNX 并发限流），
 // 外部 API 路径下不超 8（避免打爆外部服务）。
-func (a *Agent) reembedStaleMedia() {
+func (a *Agent) ReembedStaleMedia() {
 	if a.MainState().multimodalSpace == nil || !a.MainState().multimodalSpace.Loaded() || a.GraphDB() == nil {
 		return
 	}

@@ -292,7 +292,7 @@ func (a *Agent) sendOneOutput(channel string, item outputItem) (string, bool) {
 			"output_type":    item.typ,
 		},
 	}
-	a.runStage(sdk.StageBeforeOutput, stageCtx)
+	a.RunStage(sdk.StageBeforeOutput, stageCtx)
 	if stageCtx.Response != nil {
 		return fmt.Sprintf("输出被插件拦截: %s", *stageCtx.Response), false
 	}
@@ -322,7 +322,7 @@ func (a *Agent) sendOneOutput(channel string, item outputItem) (string, bool) {
 		// ★ after_output：消息**已真正送达**之后触发一次。
 		// 与 before_output 成对（同一份 Extra）。
 		stageCtx.Phase = sdk.StageAfterOutput
-		a.runStage(sdk.StageAfterOutput, stageCtx)
+		a.RunStage(sdk.StageAfterOutput, stageCtx)
 		if err != nil {
 			return fmt.Sprintf("通过 [%s] 通道发送失败: %v", channel, err), false
 		}

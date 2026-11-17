@@ -120,12 +120,12 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 		tctx := &ctxs[i]
 		tctx.ToolCalls = []sdk.ToolCall{{
 			ID: tc.ID, Name: tc.Name,
-			Plugin: a.resolveToolPlugin(tc.Name), Arguments: tc.Arguments,
+			Plugin: a.ResolveToolPlugin(tc.Name), Arguments: tc.Arguments,
 		}}
 		tctx.ToolResults = nil
 
 		// ② before_toolcall —— **这一步就是本文件存在的理由**。
-		if a.runStage(sdk.StageBeforeToolcall, tctx) {
+		if a.RunStage(sdk.StageBeforeToolcall, tctx) {
 			res.Text = denialResultText(tctx, tc.Name)
 			res.Denied = true
 			results[i] = res
@@ -135,7 +135,7 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 		tc.Arguments = tctx.ToolCalls[0].Arguments
 
 		// ③ 插件崩溃态：不执行（与主 agent 一致）。
-		if pluginName := a.resolveToolPlugin(tc.Name); pluginName != "" {
+		if pluginName := a.ResolveToolPlugin(tc.Name); pluginName != "" {
 			if !a.MainState().pluginHealth.IsHealthy(pluginName) {
 				res.Text = pluginNameCrashedText(pluginName)
 				res.Denied = true
@@ -145,7 +145,7 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 		}
 
 		// ④ 真实执行。
-		out := a.executeToolCallOutcome(tc, opts.Channel, opts.Scenes...)
+		out := a.ExecuteToolCallOutcome(tc, opts.Channel, opts.Scenes...)
 		res.Text = out.Text
 		res.Raw = out.Raw
 		tctx.ToolResults = []sdk.ToolResult{{
@@ -154,7 +154,7 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 		}}
 
 		// ⑤ after_toolcall —— 插件可脱敏/改写结果。
-		a.runStage(sdk.StageAfterToolcall, tctx)
+		a.RunStage(sdk.StageAfterToolcall, tctx)
 		if len(tctx.ToolResults) > 0 {
 			switch r := tctx.ToolResults[0].Result.(type) {
 			case string:
@@ -195,7 +195,7 @@ func (a *Agent) batchParallelSafe(calls []agentAPI.ToolCall) bool {
 	}
 	chans := map[string]bool{}
 	for _, tc := range calls {
-		if !a.toolParallelSafe(tc.Name) {
+		if !a.ToolParallelSafe(tc.Name) {
 			return false
 		}
 		if isOutputDeliveryTool(tc.Name) {

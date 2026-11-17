@@ -151,7 +151,7 @@ func (a *Agent) ReleaseSecurityScope() {
 //
 // 这里只做转发：策略结构的组装与作用域落点由 security 负责
 // （`security.DeclareChildPolicy`）。
-func (a *Agent) declareChildPolicy(childID string, allow, deny []string) error {
+func (a *Agent) DeclareChildPolicy(childID string, allow, deny []string) error {
 	g := a.Gate()
 	if g == nil {
 		return nil
@@ -160,7 +160,7 @@ func (a *Agent) declareChildPolicy(childID string, allow, deny []string) error {
 }
 
 // revokeChildPolicy 在子执行体销毁时撤销父为它声明的策略。
-func (a *Agent) revokeChildPolicy(childID string) {
+func (a *Agent) RevokeChildPolicy(childID string) {
 	if g := a.Gate(); g != nil {
 		g.RevokeChildPolicy(childID)
 	}
@@ -225,12 +225,12 @@ func (a *Agent) ProbeSecurityRound(payload map[string]interface{}, source string
 
 // ProbeDeclareChildPolicy 是 declareChildPolicy 的导出包装（判据用）。
 func (a *Agent) ProbeDeclareChildPolicy(childID string, allow, deny []string) error {
-	return a.declareChildPolicy(childID, allow, deny)
+	return a.DeclareChildPolicy(childID, allow, deny)
 }
 
 // ProbeRevokeChildPolicy 是 revokeChildPolicy 的导出包装（判据用）。
 func (a *Agent) ProbeRevokeChildPolicy(childID string) {
-	a.revokeChildPolicy(childID)
+	a.RevokeChildPolicy(childID)
 }
 
 // ─────────────── 内容审查（敏感词 / 注入迹象）接线 ───────────────

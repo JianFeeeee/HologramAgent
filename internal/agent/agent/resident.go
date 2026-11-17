@@ -230,13 +230,13 @@ func (a *Agent) residentEntryOf(id string) (*residentChild, bool) {
 }
 
 // residentOf 按 id 取驻留子（不存在返回 nil）。
-func (a *Agent) residentOf(id string) *residentChild {
+func (a *Agent) ResidentOf(id string) *residentChild {
 	rc, _ := a.residentEntryOf(id)
 	return rc
 }
 
 // mainGraph 返回父自己的完整图记忆库（驻留子的受限句柄由它派生）。
-func (a *Agent) mainGraph() kernelapi.GraphMemory { return a.GraphDB() }
+func (a *Agent) MainGraph() kernelapi.GraphMemory { return a.GraphDB() }
 
 // SpawnResident 创建一个驻留子（父的"创建"动作）。
 func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
@@ -246,7 +246,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	if strings.TrimSpace(opts.TempPath) == "" {
 		return ResidentInfo{}, fmt.Errorf("驻留子必须给出 temp 图记忆路径")
 	}
-	main := a.mainGraph()
+	main := a.MainGraph()
 	if main == nil {
 		return ResidentInfo{}, fmt.Errorf("父没有图记忆，无法为驻留子提供主库只读视图")
 	}
@@ -369,7 +369,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	//
 	// 声明失败要**回滚整个创建**：一个“本该受限却无限”的执行体
 	// 比创建失败危险得多（而创建失败是可重试的）。
-	if err := a.declareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
+	if err := a.DeclareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
 		child.Stop()
 		if light != nil {
 			_ = light.Close()
@@ -425,7 +425,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	// 放在 registered 之后：那时所有可能失败的步骤都已过，落盘记录的是
 	// "真建成了的子"，不是"建了一半的"。
 	if !opts.OffloadOwned {
-		a.persistResidents()
+		a.PersistResidents()
 	}
 	return rc.info(), nil
 }
@@ -475,7 +475,7 @@ func (a *Agent) DestroyResidentWithTarget(id string, disp ChannelDisposition, ha
 	if rc != nil {
 		a.teardownResidentWith(rc, disp, handoverTarget, false, nil)
 		// 显式销毁 ⇒ 从登记表里去掉（否则重启会把它又建回来）。
-		a.persistResidents()
+		a.PersistResidents()
 	}
 	return nil
 }
@@ -534,7 +534,7 @@ const (
 // 一旦取走，不再调 ApplyResidual 就等于把它们丢了。控制面工具走 ApplyResidual
 // （取+处置一步完成）以避免这个误用。
 func (a *Agent) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
-	rc := a.residentOf(id)
+	rc := a.ResidentOf(id)
 	if rc == nil || rc.agent == nil {
 		return nil, fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -587,7 +587,7 @@ func (a *Agent) FinishResidentWith(id string, policy ResidualPolicy, disp Channe
 
 // FinishResidentWithTarget 是 FinishResidentWith 的完整版：额外给出交接目标。
 func (a *Agent) FinishResidentWithTarget(id string, policy ResidualPolicy, disp ChannelDisposition, handoverTarget string, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
-	rc := a.residentOf(id)
+	rc := a.ResidentOf(id)
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -631,7 +631,7 @@ func (a *Agent) ApplyResidual(id string, policy ResidualPolicy) (int, string, er
 	// 否则"取完到销毁之间"子还会收新任务，那些任务的结果随销毁丢失。
 	//
 	// 保留它是为了 TakeResidual 的配对语义（先取后自己决定），以及既有判据。
-	rc := a.residentOf(id)
+	rc := a.ResidentOf(id)
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
 	}
@@ -771,7 +771,7 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 	// 不撤销的后果：主体表以**调用方给的名字**为键，回收后同名重建是常规
 	// 操作 ⇒ 新一代用上一代父留的约束运行；且表随 create/destroy 单调增长。
 	// 与 rtchild 留档串线（rtClosedTranscripts）同一形态。
-	a.revokeChildPolicy(rc.ID)
+	a.RevokeChildPolicy(rc.ID)
 
 	rc.agent.Stop() // 停子的调度器（取消其运行中的任务）
 	if rc.light != nil {
@@ -987,8 +987,8 @@ func (a *Agent) CompressResident(id string) (int, error) {
 // harvestResidentMemory 把子 temp 里的活跃三元组收割进主记忆，返回合入条数。
 //
 // 必须在 Destroy **之前**调用：Destroy 会 Close 掉 temp。
-func (a *Agent) harvestResidentMemory(rc *residentChild, keep ...func([]InputchRecord, []memory.Triple) []memory.Triple) (int, error) {
-	if rc == nil || rc.light == nil || rc.light.Temp() == nil || a.mainGraph() == nil {
+func (a *Agent) HarvestResidentMemory(rc *residentChild, keep ...func([]InputchRecord, []memory.Triple) []memory.Triple) (int, error) {
+	if rc == nil || rc.light == nil || rc.light.Temp() == nil || a.MainGraph() == nil {
 		return 0, nil
 	}
 	exported, err := rc.light.Temp().ExportTriples(0)
@@ -1002,7 +1002,7 @@ func (a *Agent) harvestResidentMemory(rc *residentChild, keep ...func([]InputchR
 	if len(selected) == 0 {
 		return 0, nil
 	}
-	if _, _, err := a.mainGraph().Commit(selected, "reclaim/"+rc.ID, 0); err != nil {
+	if _, _, err := a.MainGraph().Commit(selected, "reclaim/"+rc.ID, 0); err != nil {
 		return 0, fmt.Errorf("合入主记忆失败: %w", err)
 	}
 	return len(selected), nil
@@ -1019,7 +1019,7 @@ func (a *Agent) ReclaimResident(id string, keep func([]InputchRecord, []memory.T
 	//
 	// 逻辑抽到 harvestResidentMemory，供 FinishResident 的 onDestroy 复用 ——
 	// 那里也必须**在 Destroy 之前**收割（Destroy 会关掉 temp）。
-	promoted, herr := a.harvestResidentMemory(rc, keep)
+	promoted, herr := a.HarvestResidentMemory(rc, keep)
 	if herr != nil {
 		return info, herr
 	}
@@ -1069,12 +1069,12 @@ func (a *Agent) CheckContextFull() {
 	}
 	// ★ 判据统一走 overflowRatioNow（与容量保护同一个量）：
 	//
-	// 原实现自己手写了一遍 `Input+Response` 的累加，与 overflow.accumulatedTokens
+	// 原实现自己手写了一遍 `Input+Response` 的累加，与 overflow.AccumulatedTokens
 	// 的差别不只是"重复"——后者用 eventTokens 计入 **ToolResults**，而手写版
 	// 漏了它。工具回灌正是 v4/T10 实测的 prompt 主力（17~40 万 token 几乎全部
 	// 来自工具输出），漏算等于把"已经装不下"误判成"还宽松"，
 	// 驻留子因此永远报不到 contextfull、父也就永远不知道该回收它。
-	if a.overflowRatioNow() < contextFullRatio {
+	if a.OverflowRatioNow() < contextFullRatio {
 		return
 	}
 	r.ctxFullMu.Lock()
@@ -1100,7 +1100,7 @@ func (a *Agent) resetContextFull() {
 // ---- 子侧：inputch 处理表（子持有，父 pull） ----
 
 // recordInputchNote 是子**主动写入**本轮 inputch 的处理信息（工具 inputch_note）。
-func (a *Agent) recordInputchNote(text string) {
+func (a *Agent) RecordInputchNote(text string) {
 	r := a.Resident()
 	if r == nil {
 		return
@@ -1163,7 +1163,7 @@ func (a *Agent) clearInputchTable() {
 
 // ---- 子侧：主动向父发消息（L3） ----
 
-func (a *Agent) notifyParentFrom(text string) string {
+func (a *Agent) NotifyParentFrom(text string) string {
 	r := a.Resident()
 	if r == nil || r.notifyParent == nil {
 		return "本 agent 没有上级，无法发送消息"

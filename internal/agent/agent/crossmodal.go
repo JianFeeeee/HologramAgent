@@ -253,7 +253,7 @@ func fuseCrossModal(textHits, visualHits []CrossModalHit, topK int, cfg CrossMod
 //
 // 现在每条给出「时间 · 来源 · 正文开头」，并在块尾**明确告知 coldcontext_query 的作用**：
 // 这才是让预填充真正被用起来的必要条件。
-func (a *Agent) crossModalMarkdown(hits []CrossModalHit) string {
+func (a *Agent) CrossModalMarkdown(hits []CrossModalHit) string {
 	if len(hits) == 0 {
 		return ""
 	}

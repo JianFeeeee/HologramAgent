@@ -490,7 +490,7 @@ func New(cfg AgentConfig) *Agent {
 	//   非主 agent（驻留子/rt/工作式子）不填它 —— 它们用不到那些实现句柄。
 	if cfg.Memory != nil || cfg.Indexer != nil || cfg.DocStore != nil || cfg.Knowledge != nil ||
 		cfg.PluginReg != nil || cfg.StageHost != nil {
-		m := a.mkMain()
+		m := a.MkMain()
 		m.indexer = cfg.Indexer
 		m.tracker = cfg.Tracker
 		m.coldcontextStore = cfg.DocStore
@@ -549,13 +549,13 @@ func New(cfg AgentConfig) *Agent {
 	//   接口字段装的是"具体类型的 nil 指针"时，接口值本身**不是 nil**
 	//   ⇒ `if a.pluginReg != nil` 会放行，随后方法内部解引用空指针 panic。
 	//   这里把每一处 typed-nil 显式折成真 nil。
-	a.normalizeNilServices()
+	a.NormalizeNilServices()
 
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
 	// （设计 §4.1「路由发生在进内核之前」）。io 层不认识 agent，所以在这里把路由器
 	// 注入进去：插件注入输入时先问它，被别的 agent 接管就不再进本内核队列。
 	if a.io != nil {
-		a.io.SetInputRouter(a.routeInputByOwner)
+		a.io.SetInputRouter(a.RouteInputByOwner)
 	}
 	return a
 }
@@ -568,13 +568,13 @@ func (a *Agent) Start() {
 		l.RegisterInputSink(string(a.id), &inputSink{a: a})
 	}
 	go a.schedulerLoop()
-	go a.interceptLoop()
+	go a.InterceptLoop()
 	// ★ 后台维护任务由**类型注册**（ticker.go），基座不硬编码任何一条。
 	//   主 agent 在装配点调 RegisterMaintenanceTasks；驻留子/rtchild 不调 ⇒
 	//   它们一个多余的后台 goroutine 都不会起。
 	a.startPeriodic()
-	a.reembedStaleMedia()
-	a.migrateLegacyGraphMedia()
+	a.ReembedStaleMedia()
+	a.MigrateLegacyGraphMedia()
 	a.Logf("%s started, waiting for IO interrupts", a.id)
 }
 
@@ -775,7 +775,7 @@ func (a *Agent) SelfInputChan() <-chan selfInputMsg {
 // injectSelf 向自循环通道发送记忆整理类内部任务（无记忆路径）。
 // 线程安全，不阻塞发送者（通道缓冲 64）。
 func (a *Agent) InjectSelf(task string) {
-	a.injectSelfChannel(selfInputMsg{
+	a.InjectSelfChannel(selfInputMsg{
 		text:    task,
 		channel: channelConsolidation,
 	})
@@ -783,7 +783,7 @@ func (a *Agent) InjectSelf(task string) {
 
 // injectSelfChannel 向自循环通道发送一条带目标通道标志的消息。
 // channel == "_consolidation_" 走无记忆整理路径；其他值走正常处理路径。
-func (a *Agent) injectSelfChannel(msg selfInputMsg) {
+func (a *Agent) InjectSelfChannel(msg selfInputMsg) {
 	select {
 	case a.selfInputCh <- msg:
 	default:

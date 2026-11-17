@@ -88,7 +88,7 @@ var builtinToolOwner = map[string]string{
 	"device_ctl_cmdresult": "core", "screensee": "core",
 }
 
-func (a *Agent) resolveToolPlugin(name string) string {
+func (a *Agent) ResolveToolPlugin(name string) string {
 	if a.MainState().stageHost != nil {
 		if plugin := a.MainState().stageHost.ToolPlugin(name); plugin != "" {
 			return plugin
@@ -127,7 +127,7 @@ func (a *Agent) isRegisteredPlugin(name string) bool {
 		for _, d := range a.MainState().stageHost.GetToolDefs() {
 			p := d.Plugin
 			if p == "" {
-				p = a.resolveToolPlugin(d.Name)
+				p = a.ResolveToolPlugin(d.Name)
 			}
 			if p == name {
 				return true
@@ -139,7 +139,7 @@ func (a *Agent) isRegisteredPlugin(name string) bool {
 
 // executeGetPluginTools 返回指定插件的完整工具定义(名称/参数/用途)。
 // 支持按插件名拉取, 未指定时返回全部插件的工具摘要。
-func (a *Agent) executeGetPluginTools(pluginName string) string {
+func (a *Agent) ExecuteGetPluginTools(pluginName string) string {
 	type toolItem struct {
 		name, desc string
 		params     interface{}
@@ -151,7 +151,7 @@ func (a *Agent) executeGetPluginTools(pluginName string) string {
 		for _, d := range a.MainState().stageHost.GetToolDefs() {
 			plg := d.Plugin
 			if plg == "" {
-				plg = a.resolveToolPlugin(d.Name)
+				plg = a.ResolveToolPlugin(d.Name)
 			}
 			if pluginName != "" && plg != pluginName {
 				continue
@@ -162,7 +162,7 @@ func (a *Agent) executeGetPluginTools(pluginName string) string {
 	// 收集 IOManager(设备/通道)工具
 	if a.io != nil {
 		for _, d := range a.io.GetAllTools() {
-			plg := a.resolveToolPlugin(d.Name)
+			plg := a.ResolveToolPlugin(d.Name)
 			if pluginName != "" && plg != pluginName {
 				continue
 			}
@@ -177,13 +177,13 @@ func (a *Agent) executeGetPluginTools(pluginName string) string {
 	// 症状：agent 能调这些工具，却调 get_plugin_tools("") 看不到它们，
 	// 于是「工具不见了」时无处可查（正是本项目反复踩的那类静默失效）。
 	//
-	// 以 buildToolDefs() 为**单一真相源** —— 它就是发给模型的那份工具表，
+	// 以 BuildToolDefs() 为**单一真相源** —— 它就是发给模型的那份工具表，
 	// 这里不再维护第二份清单（第二份必然会漂移）。
 	seen := map[string]bool{}
 	for _, it := range items {
 		seen[it.name] = true
 	}
-	for _, raw := range a.buildToolDefs() {
+	for _, raw := range a.BuildToolDefs() {
 		fn := extractToolSchema(raw)
 		if fn == nil {
 			continue
@@ -193,7 +193,7 @@ func (a *Agent) executeGetPluginTools(pluginName string) string {
 			continue
 		}
 		// 归属：设备/通道工具已在上面收过；剩下的按显式表（或 core）算。
-		plg := a.resolveToolPlugin(name)
+		plg := a.ResolveToolPlugin(name)
 		if pluginName != "" && plg != pluginName {
 			continue
 		}

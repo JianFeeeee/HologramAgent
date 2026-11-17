@@ -32,15 +32,6 @@ import (
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-// RunTaskSteps 把一帧交给**本类型注册的 loop**推进（基座只做一次转发）。
-//
-// ★ 这是"阶段"而不是"策略"：它不含任何 loop 样式，样式在 `Hooks.Loop` 里。
-// 所以 loop 实现可以再调回来（standard.Loop → a.RunTaskSteps → 逐 step），
-// 不影响单向依赖。
-func (a *Agent) RunTaskSteps(f *agenttypes.Frame) agenttypes.Outcome {
-	return a.runTaskSteps(f)
-}
-
 // RunToolBatch 执行一批工具并按索引返回结果（同步语义）。
 //
 // rt 的异步实现不必用它 —— 异步是 rt 自己的 agentloop 语义。
@@ -53,7 +44,7 @@ func (a *Agent) RunToolBatch(calls []agenttypes.ToolCall, opts agenttypes.BatchO
 }
 
 // OverBudgetRatio 报告"上下文是否已超出窗口预算"（纯判据，无副作用）。
-func (a *Agent) OverBudgetRatio() bool { return a.overflowRatioNow() >= overflowRatio }
+func (a *Agent) OverBudgetRatio() bool { return a.OverflowRatioNow() >= overflowRatio }
 
 // PruneContext 是**裁剪原语**：按相关度裁一次，返回裁掉的事件数。
 //
@@ -69,14 +60,14 @@ func (a *Agent) PruneContext(query string, protected int) int {
 	// ★ 这里是**真正执行裁剪**（不是把活再交给钩子）：钩子实现调本方法，
 	//   本方法若回头调钩子就成了无限递归（实测栈溢出）。
 	if protected >= 0 {
-		return a.context.PruneWithProtected(query, a.contextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
+		return a.context.PruneWithProtected(query, a.ContextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
 	}
-	return a.context.PruneWithProtected(query, a.contextTopK(), a.MainState().coldcontextStore, a.effectiveProtectedCount())
+	return a.context.PruneWithProtected(query, a.ContextTopK(), a.MainState().coldcontextStore, a.EffectiveProtectedCount())
 }
 
 // EnforceOverflowStandard 执行标准超页处置（裁剪 + 上报），返回是否已处置。
 func (a *Agent) EnforceOverflowStandard(f *agenttypes.Frame, query string, force bool) (bool, int) {
-	return a.enforceContextBudgetDefault(f, query, force)
+	return a.EnforceContextBudgetDefault(f, query, force)
 }
 
 // RunStageStandard 执行插件阶段（before_toolcall / after_output …）。

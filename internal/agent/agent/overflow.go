@@ -50,7 +50,7 @@ var overflowRecoverBudget = 2
 // targetUsage = 0.8×窗口 裁过，结构上封顶 80%，对任何 >0.8 的阈值都**永远
 // 不成立**（这个坑已由 resident.go:checkContextFull 的注释记录过一次，
 // 这里抽成函数是为了让两处共用同一口径，避免再次漂移）。
-func (a *Agent) accumulatedTokens() int {
+func (a *Agent) AccumulatedTokens() int {
 	if a == nil || a.context == nil {
 		return 0
 	}
@@ -66,11 +66,11 @@ func (a *Agent) accumulatedTokens() int {
 // 与 singleEventFitsBudget 的区别：那个用的是**平均值**（全局视角：
 // 平均每条是否装得下），本函数看的是**任意一条**是否越过预算。
 // 前者判断"裁剪是否无解"，后者是"有没有该走页级剔除的帧"。
-func (a *Agent) hasOversizedFrame() bool {
+func (a *Agent) HasOversizedFrame() bool {
 	if a == nil || a.context == nil || a.context.Len() == 0 {
 		return false
 	}
-	budget := a.computeTokenBudget().ContextTokens
+	budget := a.ComputeTokenBudget().ContextTokens
 	if budget <= 0 {
 		return false
 	}
@@ -127,7 +127,7 @@ func eventTokens(e ContextEvent) int {
 }
 
 // contextWindowTokens 取本 agent 的窗口上限（token）。
-func (a *Agent) contextWindowTokens() int {
+func (a *Agent) ContextWindowTokens() int {
 	if a != nil && a.provider != nil {
 		if max := a.provider.MaxContextTokens(); max > 0 {
 			return max
@@ -137,12 +137,12 @@ func (a *Agent) contextWindowTokens() int {
 }
 
 // overflowRatioNow 返回「积累量 / 窗口」。窗口拿不到时返回 0（表示不判定）。
-func (a *Agent) overflowRatioNow() float64 {
-	max := a.contextWindowTokens()
+func (a *Agent) OverflowRatioNow() float64 {
+	max := a.ContextWindowTokens()
 	if max <= 0 {
 		return 0
 	}
-	return float64(a.accumulatedTokens()) / float64(max)
+	return float64(a.AccumulatedTokens()) / float64(max)
 }
 
 // enforceContextBudget 是**上下文容量保护**的唯一实现（基础设施）。
@@ -174,7 +174,7 @@ func (a *Agent) overflowRatioNow() float64 {
 // 若 f.Terminal == terminalError 则表示恢复预算耗尽，调用方应直接终止。
 //
 // 幂等：未超页时零开销（一次 token 估算 + 一次比较），可安全地在热路径调用。
-func (a *Agent) enforceContextBudget(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
+func (a *Agent) EnforceContextBudget(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
 	// ★ 超页处置是**类型注册的钩子**：未注册 ⇒ 本类型不做（整窗型靠
 	//   contextfull 上报父 agent 决策，见本文件顶部注释）。
 	if a == nil || a.hooks.EnforceOverflow == nil {
@@ -184,12 +184,12 @@ func (a *Agent) enforceContextBudget(f *TaskFrame, query string, force bool) (ha
 }
 
 // enforceContextBudgetDefault 是标准超页处置的实现（由 hooks 注册）。
-func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
+func (a *Agent) EnforceContextBudgetDefault(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
 	light := a != nil && a.hooks.EnforceOverflow == nil
 	noCtx := a == nil || a.context == nil
 	var ratio float64
 	if !noCtx {
-		ratio = a.overflowRatioNow()
+		ratio = a.OverflowRatioNow()
 	}
 	if a != nil {
 		a.MainState().overflowStat.Lock()
@@ -202,7 +202,7 @@ func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bo
 		if checked%20 == 0 {
 			log.Printf("[agent] overflow check #%d: ratio=%.2f window=%d events=%d "+
 				"(threshold=%.2f lightKernel=%v noContext=%v force=%v)",
-				checked+1, ratio, a.contextWindowTokens(), a.contextLenSafe(),
+				checked+1, ratio, a.ContextWindowTokens(), a.ContextLenSafe(),
 				overflowRatio, light, noCtx, force)
 		}
 	}
@@ -221,7 +221,7 @@ func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bo
 	// 单帧撑爆是"这一帧里有水页"，全局超限是"该遗忘的没忘"，两种病。
 	// 只要任一条成立就该进本函数 —— 后面 evictPagesToBudget 只处理
 	// 前者，后者仍走 Prune/L4，互不干扰。
-	if !force && ratio < overflowRatio && !a.hasOversizedFrame() {
+	if !force && ratio < overflowRatio && !a.HasOversizedFrame() {
 		return false, 0
 	}
 	if force {
@@ -239,7 +239,7 @@ func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bo
 			log.Printf("[agent] context overflow: recover budget exhausted (%d/%d), "+
 				"terminating this frame instead of looping",
 				f.OverflowRecover, overflowRecoverBudget)
-			a.markOverflowAborted(ratio, a.context.Len())
+			a.MarkOverflowAborted(ratio, a.context.Len())
 			f.Err = fmt.Errorf("上下文超限：已裁剪 %d 次仍超出窗口，"+
 				"本轮终止（请检查 core.agent.max_context_size 与窗口是否匹配）",
 				f.OverflowRecover)
@@ -254,8 +254,8 @@ func (a *Agent) enforceContextBudgetDefault(f *TaskFrame, query string, force bo
 // maybeHandleContextOverflow 保留为发 LLM 请求前的薄封装（历史调用点）。
 //
 // 它现在只是 enforceContextBudget 的一个调用点，不再持有独立判据。
-func (a *Agent) maybeHandleContextOverflow(f *TaskFrame, query string) (handled bool, pruned int) {
-	return a.enforceContextBudget(f, query, false)
+func (a *Agent) MaybeHandleContextOverflow(f *TaskFrame, query string) (handled bool, pruned int) {
+	return a.EnforceContextBudget(f, query, false)
 }
 
 // enforceResumeContextBudget 是**任务恢复**入口的容量保护。
@@ -276,19 +276,19 @@ func (a *Agent) maybeHandleContextOverflow(f *TaskFrame, query string) (handled 
 //
 // 判据仍是容量（不看声明）：声明式裁剪归 pruneOnInput / stepToolAfter，
 // 那是业务策略；这里是"装不下就得裁"的基础设施。
-func (a *Agent) enforceResumeContextBudget(f *TaskFrame) (handled bool, pruned int) {
+func (a *Agent) EnforceResumeContextBudget(f *TaskFrame) (handled bool, pruned int) {
 	if f == nil {
 		return false, 0
 	}
 	// 水位判定（与通用入口同一套判据，只是 query/保护范围不同）。
-	if !a.overBudgetLocked() {
+	if !a.OverBudgetLocked() {
 		return false, 0
 	}
 	// 恢复预算：同一帧不能无限裁。
 	if f.OverflowRecover >= overflowRecoverBudget {
 		log.Printf("[agent] resume overflow: recover budget exhausted (%d/%d), terminating frame",
 			f.OverflowRecover, overflowRecoverBudget)
-		a.markOverflowAborted(a.overflowRatioNow(), a.context.Len())
+		a.MarkOverflowAborted(a.OverflowRatioNow(), a.context.Len())
 		f.Err = fmt.Errorf("上下文超限：恢复时已裁剪 %d 次仍超出窗口，本轮终止", f.OverflowRecover)
 		f.Terminal = terminalError
 		return true, 0
@@ -302,7 +302,7 @@ func (a *Agent) enforceResumeContextBudget(f *TaskFrame) (handled bool, pruned i
 		protected = 0
 	}
 	before := a.context.Len()
-	a.pruneForResume(query, protected)
+	a.PruneForResume(query, protected)
 	after := a.context.Len()
 	if after >= before {
 		log.Printf("[agent] resume overflow: no reduction (%d→%d events), not raising L4", before, after)
@@ -311,21 +311,21 @@ func (a *Agent) enforceResumeContextBudget(f *TaskFrame) (handled bool, pruned i
 	pruned = before - after
 	log.Printf("[agent] resume overflow: pruned=%d (%d→%d events), protected=%d frame tail msgs",
 		pruned, before, after, protected)
-	a.raiseContextOverflow(pruned)
+	a.RaiseContextOverflow(pruned)
 	return true, pruned
 }
 
 // overBudgetLocked 是纯判据（无副作用），供各入口复用。
 //
 // 命名带 Locked 是历史遗留，实际不加锁；调用方在调度器单线程上下文里使用。
-func (a *Agent) overBudgetLocked() bool {
+func (a *Agent) OverBudgetLocked() bool {
 	if a == nil || a.context == nil {
 		return false
 	}
 	if a.hooks.OverBudget != nil {
 		return a.hooks.OverBudget(a)
 	}
-	return a.overflowRatioNow() >= overflowRatio
+	return a.OverflowRatioNow() >= overflowRatio
 }
 
 // resumeQueryFrom 取任务帧的**最新有效上下文**作为相关性查询。
@@ -377,11 +377,11 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 	// 剔页之后仍无解：单条事件本身就超预算（实测 T10c：事件 40026 token
 	// vs 预算 10667）。此时裁剪在任何保护数下都无解，直接终止并报真实原因，
 	// 而不是裁剪两轮后 Budget 耗尽 —— 后者会丢失已经裁掉的记忆。
-	if !a.singleEventFitsBudget() {
-		avg := a.accumulatedTokens() / a.context.Len()
+	if !a.SingleEventFitsBudget() {
+		avg := a.AccumulatedTokens() / a.context.Len()
 		log.Printf("[agent] context overflow: single event (%d tok) exceeds budget (%d tok) — "+
-			"pruning cannot help, terminating", avg, a.computeTokenBudget().ContextTokens)
-		a.markOverflowAborted(ratio, a.context.Len())
+			"pruning cannot help, terminating", avg, a.ComputeTokenBudget().ContextTokens)
+		a.MarkOverflowAborted(ratio, a.context.Len())
 		return 0
 	}
 
@@ -397,7 +397,7 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 	before := a.context.Len()
 	log.Printf("[agent] context overflow: ratio=%.2f events=%d — raising L4 air interrupt (prune happens at task boundary)",
 		ratio, before)
-	a.raiseContextOverflow(0)
+	a.RaiseContextOverflow(0)
 	return 0
 }
 
@@ -410,7 +410,7 @@ func (a *Agent) handleContextOverflow(query string, ratio float64) int {
 // 全局超限的病是"该遗忘的没忘"，而单条撑爆的病是"这一帧里有水页"，
 // 两者的药不同。
 //
-// ## 为什么 protected/预算取自 c.computeTokenBudget
+// ## 为什么 protected/预算取自 c.ComputeTokenBudget
 //
 // 剔除的唯一目的是让这一帧能被渲染进窗口。用与渲染同一套预算计算，
 // 避免"按 A 阈值剔除、按 B 阈值判定仍超"的自相矛盾。
@@ -428,14 +428,14 @@ func (a *Agent) evictPagesToBudget(query string) (evicted int, reduced bool) {
 	// 推导口径与 pruneForAirInterrupt 一致：取上下文里最后一条真实用户输入。
 	// 剔除靠它给页打相似度分；拿不到才退化为按时间/顺序处理。
 	if query == "" {
-		query = a.lastUserQueryForPrune()
+		query = a.LastUserQueryForPrune()
 	}
 	if query == "" {
 		// 连一条用户输入都没有（全新会话的首帧）⇒ 无从算相关性。
 		// 此时不做剔除：宁可不剔，也不按空 query 乱剔。
 		return 0, false
 	}
-	budget := a.computeTokenBudget().ContextTokens
+	budget := a.ComputeTokenBudget().ContextTokens
 	if budget <= 0 {
 		return 0, false
 	}
@@ -462,7 +462,7 @@ func (a *Agent) evictPagesToBudget(query string) (evicted int, reduced bool) {
 }
 
 // markOverflowAborted 记录一次「超页但裁不出东西」的终止，供状态面观测。
-func (a *Agent) markOverflowAborted(ratio float64, events int) {
+func (a *Agent) MarkOverflowAborted(ratio float64, events int) {
 	a.MainState().overflowStat.Lock()
 	a.MainState().overflowStat.Aborted++
 	a.MainState().overflowStat.LastRatio = ratio
@@ -492,7 +492,7 @@ func (a *Agent) markOverflowAborted(ratio float64, events int) {
 // 正确的分工是：中断只负责抢占（空），裁剪由任务真正执行时做
 // （见 pruneForAirInterrupt）。模型不需要知道"有内容被移走"这件事本身，
 // 它需要的是**保留下来的内容与当前问题相关**——那由裁剪质量保证。
-func (a *Agent) raiseContextOverflow(pruned int) {
+func (a *Agent) RaiseContextOverflow(pruned int) {
 	a.MainState().overflowStat.Lock()
 	a.MainState().overflowStat.Triggered++
 	a.MainState().overflowStat.LastPruned = pruned
@@ -505,7 +505,7 @@ func (a *Agent) raiseContextOverflow(pruned int) {
 
 // isUpstreamContextFull 判定上游错误是否表示「上下文装不下」。
 //
-// 它只做**判定**，不做处理：处理一律交给 enforceContextBudget(force=true)。
+// 它只做**判定**，不做处理：处理一律交给 EnforceContextBudget(force=true)。
 // 此前这里叫 handleUpstreamContextFull，自己又调了一遍 handleContextOverflow ——
 // 那等于在中断语义之外另造一套裁剪，绕过恢复预算，且与 raise L4 抢占的
 // 任务互相抢跑（2026-10-25 实测）。
@@ -515,7 +515,7 @@ func isUpstreamContextFull(llmErr error) bool {
 }
 
 // contextLenSafe 是 nil 安全的上下文条数（诊断日志用）。
-func (a *Agent) contextLenSafe() int {
+func (a *Agent) ContextLenSafe() int {
 	if a == nil || a.context == nil {
 		return 0
 	}
@@ -540,23 +540,23 @@ func (a *Agent) contextLenSafe() int {
 // 空中断本身没有正文，所以拿不到"当前问题"。这里用上下文里**最后一条真实
 // 用户输入的文本**作为相关性基准：裁剪要保留的正是与"刚才在做的事"相关的
 // 内容。取不到就退化为按时间保留（pruneByQuery 内部对空 query 的处理）。
-func (a *Agent) pruneForAirInterrupt() {
+func (a *Agent) PruneForAirInterrupt() {
 	if a == nil || a.context == nil || a.hooks.Prune == nil {
 		return
 	}
 	before := a.context.Len()
-	beforeTokens := a.accumulatedTokens()
+	beforeTokens := a.AccumulatedTokens()
 
-	a.pruneByQuery(a.lastUserQueryForPrune())
+	a.PruneByQuery(a.LastUserQueryForPrune())
 
 	after := a.context.Len()
-	afterTokens := a.accumulatedTokens()
+	afterTokens := a.AccumulatedTokens()
 	if after >= before && afterTokens >= beforeTokens {
 		// 裁不动：记录下来即可。空中断不承担"必须裁成功"的职责——
 		// 真正的超限判定仍在 enforceContextBudget，那里有终止语义。
 		a.MainState().overflowStat.Lock()
 		a.MainState().overflowStat.Aborted++
-		a.MainState().overflowStat.LastRatio = a.overflowRatioNow()
+		a.MainState().overflowStat.LastRatio = a.OverflowRatioNow()
 		a.MainState().overflowStat.LastEvents = before
 		a.MainState().overflowStat.Unlock()
 		log.Printf("[agent] air-interrupt prune: no reduction (%d→%d events, %d→%d tokens)",
@@ -568,14 +568,14 @@ func (a *Agent) pruneForAirInterrupt() {
 	a.MainState().overflowStat.LastPruned = before - after
 	a.MainState().overflowStat.Unlock()
 	log.Printf("[agent] air-interrupt prune: %d→%d events (%d→%d tokens), ratio=%.2f",
-		before, after, beforeTokens, afterTokens, a.overflowRatioNow())
+		before, after, beforeTokens, afterTokens, a.OverflowRatioNow())
 }
 
 // lastUserQueryForPrune 取最后一条非中断用户输入作为裁剪的相关性基准。
 //
 // 空中断自己没有正文，但它被触发时"刚才在做什么"是有答案的：
 // 上下文里最后一条真实用户输入。取不到返回空串（pruneByQuery 按时间保留）。
-func (a *Agent) lastUserQueryForPrune() string {
+func (a *Agent) LastUserQueryForPrune() string {
 	if a == nil || a.context == nil {
 		return ""
 	}

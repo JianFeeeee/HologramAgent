@@ -128,7 +128,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.MainState().embedder}, a.toolDeclaresNoMemory)
 	written := 0
 	if len(triples) > 0 {
-		w, _, err := a.commitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
+		w, _, err := a.CommitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
 		if err != nil {
 			// 写库失败是**瞬时故障**（值得重试）；「抽不出来」不是，两者必须分开。
 			log.Printf("[agent] coldcontext->graph: %s commit failed (%d triples): %v",
@@ -194,7 +194,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	// 这是可以接受的：PutMemoryBlocks 是 upsert、AddMemoryBlockEdge 显式查重，
 	// 下一轮重试幂等收敛（补上缺的边），不会产生重复块。
 	if len(coldDoc.Blocks) > 0 {
-		bound := a.linkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source))
+		bound := a.LinkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source))
 		if bound != len(coldDoc.Blocks) {
 			// 迁移不完整：此时 L3 里已有一部分块，L2 仍是全量。
 			// 重试是靠 PutMemoryBlocks/AddMemoryBlockEdge 的幂等性收敛的
@@ -670,7 +670,7 @@ func (a *Agent) emitMemoryCandidate(source, input, response, reasoning string, t
 	}
 	// ★ 记忆候选是**不经 context** 的另一条持久化侧路（走 EmitOutput）。
 	// 不在这里拦，明文会直接进长期记忆 —— 而记忆跨会话保留、每轮被召回。
-	a.scrubMemoryCandidate(payload)
+	a.ScrubMemoryCandidate(payload)
 	a.io.EmitOutput("memory", "memory_candidate", payload)
 }
 
@@ -679,7 +679,7 @@ func (a *Agent) processConsolidation(evt *agentIO.InputEvent, input string) {
 
 	stageCtx := a.stageCtxFromInput(input, evt.Source, "")
 	stageCtx.Extra["output_channel"] = evt.OutputChannel
-	a.injectSourceContext(stageCtx, evt)
+	a.InjectSourceContext(stageCtx, evt)
 
 	_, toolsUsed, _, err := a.process(input, stageCtx)
 	if err != nil {

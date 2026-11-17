@@ -220,7 +220,7 @@ func TestL1RenderPrefersNewerWhenBudgetTight(t *testing.T) {
 
 // 一条**不写**的判据：`protected` 分支压过预算
 //
-// 实现里尾部 `effectiveProtectedCount()` 条是无条件纳入的（不看预算）。
+// 实现里尾部 `EffectiveProtectedCount()` 条是无条件纳入的（不看预算）。
 // 实测这条分支在当前参数下**从未被行使**：`effectiveProtectedCount` 本身
 // 就按「预算 / 单条平均成本」收紧过（见该函数注释），所以"保护 N 条"
 // 天然装得下。把它改成 `protected := false` —— 上面两条判据**仍然全绿**。

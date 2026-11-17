@@ -48,7 +48,7 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 	//
 	// 放进本函数后：输入路用输入文本、工具路用工具正文，两条路都能召回 L2 摘要。
 	if a.MainState().coldcontextStore != nil {
-		if md := a.crossModalMarkdown(a.retrieveCrossModal(input, 3, a.MainState().fusionCfg)); md != "" {
+		if md := a.CrossModalMarkdown(a.retrieveCrossModal(input, 3, a.MainState().fusionCfg)); md != "" {
 			if s != "" {
 				s += "\n"
 			}
@@ -69,8 +69,8 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 //
 // query 取**清洗后**的输入（通道 Cleaner 的输出），与裁剪侧同一套语义：
 // 原始输入里的 ANSI/base64/JSON 包装会把相关性打分带偏。清洗为空时回退原文。
-func (a *Agent) buildTaskMemoryContext(f *TaskFrame, input string, maxTokens int) string {
-	scenes := a.sceneKeysFor(evtOf(f), "")
+func (a *Agent) BuildTaskMemoryContext(f *TaskFrame, input string, maxTokens int) string {
+	scenes := a.SceneKeysFor(evtOf(f), "")
 	if f == nil {
 		return a.recallText(input, "input", maxTokens, scenes)
 	}
@@ -104,10 +104,10 @@ func evtOf(f *TaskFrame) *agentIO.InputEvent {
 // 这是“召回”侧的单一入口：与 Prune 共用同一份**清洗后**的 query，
 // 使“取进来”（召回）与“踢出去”（裁剪）落在同一个相关性过程上。
 // trigger 仅用于日志溯源（如 "tool:qq_get_message"）。
-func (a *Agent) recallTextFor(query, trigger string, scenes []string) string {
+func (a *Agent) RecallTextFor(query, trigger string, scenes []string) string {
 	memTokens := 0 // 0 = 不截断
 	if a != nil && a.provider != nil {
-		memTokens = a.computeTokenBudget().MemoryTokens
+		memTokens = a.ComputeTokenBudget().MemoryTokens
 	}
 	return a.recallText(query, trigger, memTokens, scenes)
 }
@@ -190,7 +190,7 @@ func appendPromptBlock(prompt, block string) string {
 //
 // userInput 参数保留：它是部分内核块（如记忆上下文的相关性）的输入，
 // 由调用方在 buildMemoryContext 里使用后传入，渲染层不需要它。
-func (a *Agent) buildSystemPrompt(memContext string, userInput string) string {
+func (a *Agent) BuildSystemPrompt(memContext string, userInput string) string {
 	_ = userInput
 	return a.renderSystemPrompt(memContext)
 }
@@ -218,8 +218,8 @@ func cleanParams(params map[string]interface{}) map[string]interface{} {
 	return cleaned
 }
 
-func (a *Agent) buildToolCatalog() string {
-	defs := a.buildToolDefs()
+func (a *Agent) BuildToolCatalog() string {
+	defs := a.BuildToolDefs()
 	if len(defs) == 0 {
 		return ""
 	}
@@ -237,7 +237,7 @@ func (a *Agent) buildToolCatalog() string {
 		if name == "" {
 			continue
 		}
-		plg := a.resolveToolPlugin(name)
+		plg := a.ResolveToolPlugin(name)
 		if _, seen := byPlugin[plg]; !seen {
 			order = append(order, plg)
 		}
@@ -431,7 +431,7 @@ func init() {
 	}
 }
 
-func (a *Agent) buildToolDefs() []interface{} {
+func (a *Agent) BuildToolDefs() []interface{} {
 	var tools []interface{}
 
 	if a.io != nil {
@@ -472,7 +472,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	//   · 绝大多数会话没有超长结果，无条件暴露等于每轮多付一份 schema 开销
 	//     （本仓已有"175 个工具占满上下文"的实测教训）；
 	//   · 没有句柄时这个工具对模型毫无用处，给了只会诱导它乱猜 event_id。
-	if a.hasStoredToolResults() {
+	if a.HasStoredToolResults() {
 		tools = append(tools, toolDef("toolresult_read",
 			"【工具结果回读】读取某个超大工具结果的指定字节区间。"+
 				"当工具返回内容过大时，上下文里给你的只是预览，会附一个 event_id 句柄和总字节数。"+
@@ -865,7 +865,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 //
 // 形态照 StageHost.NoMemoryToolNames：**一次聚合**，查询不再遍历工具表。
 // 之前 builtinToolParallelSafe 每次 toolParallelSafe 调用都重跑一遍
-// buildToolDefs()，等于 O(工具数) 的重复劳动 —— 声明是静态的，没有理由每次重算。
+// BuildToolDefs()，等于 O(工具数) 的重复劳动 —— 声明是静态的，没有理由每次重算。
 type builtinDefRegistry struct {
 	mu     sync.RWMutex
 	byName map[string]sdk.BuiltinToolDef

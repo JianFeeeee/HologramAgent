@@ -21,7 +21,7 @@ import (
 //
 // 多个场景是**并列命中**（取回任一场景的记忆），不是交集：
 // 「在 QQ 上」与「刚取回消息正文」是两个都能独立成立的触发条件。
-func (a *Agent) sceneKeysFor(evt *agentIO.InputEvent, toolName string) []string {
+func (a *Agent) SceneKeysFor(evt *agentIO.InputEvent, toolName string) []string {
 	var keys []string
 	// 通道/注入点声明不参与场面识别时，**连派生场景键也不给**。
 	// 只停掉指纹采集而留着声明路，等于给「不参与场面」这个口子开了后门。
@@ -119,16 +119,16 @@ type memoryPassOut struct {
 // 稠密/词向量给已有事件打分，recall 用图 + TF-IDF 实体索引）。真正的
 // 「一次打分」要先统一打分空间（后续步骤）；这里统一的是**入口、query、
 // 预算与审计**——这已是「一个过程」的可审计外壳，剩下的差在打分空间。
-func (a *Agent) memoryPass(query, trigger string, prune, recall bool, scenes []string) memoryPassOut {
+func (a *Agent) MemoryPass(query, trigger string, prune, recall bool, scenes []string) memoryPassOut {
 	var out memoryPassOut
 	if a == nil || (!prune && !recall) {
 		return out
 	}
 	if prune {
-		out.Archived = a.pruneByQuery(query)
+		out.Archived = a.PruneByQuery(query)
 	}
 	if recall && query != "" {
-		out.RecallText = a.recallTextFor(query, trigger, scenes)
+		out.RecallText = a.RecallTextFor(query, trigger, scenes)
 	}
 	if out.Archived > 0 || out.RecallText != "" {
 		log.Printf("[agent] memory pass (%s): archived=%d recalled=%d chars",
@@ -141,11 +141,11 @@ func (a *Agent) memoryPass(query, trigger string, prune, recall bool, scenes []s
 //
 // **不做声明判定**——声明已由调用方（pruneOnInput / stepToolAfter）解析，
 // 这里只负责执行。放在 memoryPass 内部是为了让裁剪与召回共享入口。
-func (a *Agent) pruneByQuery(query string) int {
+func (a *Agent) PruneByQuery(query string) int {
 	if a == nil || a.context == nil {
 		return 0
 	}
-	return a.pruneWithHook(query, a.effectiveProtectedCount())
+	return a.pruneWithHook(query, a.EffectiveProtectedCount())
 }
 
 // pruneWithHook 是裁剪的**唯一入口**：策略由类型注册的钩子决定。
@@ -164,36 +164,36 @@ func (a *Agent) pruneWithHook(query string, protected int) int {
 //
 // 与 pruneByQuery 的唯一差别是 protected 的来源：
 //
-//	pruneByQuery    protected = a.effectiveProtectedCount()（全局末尾 N 条）
+//	pruneByQuery    protected = a.EffectiveProtectedCount()（全局末尾 N 条）
 //	pruneForResume  protected = 调用方给的条数（该任务帧自己的现场）
 //
 // 为什么恢复要用后者：被挂起任务的现场在 f.Msgs[PrefixLen:] 里，
 // 可能是一整批工具结果。若按全局末尾 N 条保护，那些结果可能落在保护范围外
 // 被归档——恢复后的任务引用的内容已不在上下文里，等于自相矛盾。
-func (a *Agent) pruneForResume(query string, protected int) int {
+func (a *Agent) PruneForResume(query string, protected int) int {
 	if a == nil || a.context == nil || a.hooks.Prune == nil {
 		return 0
 	}
 	if protected < 0 {
 		protected = 0
 	}
-	// ★ 不能直接复用 contextTopK()：它内部会把 topK 抬到
-	// effectiveProtectedCount()+1（全局末尾保护），而恢复场景的保护范围是
+	// ★ 不能直接复用 ContextTopK()：它内部会把 topK 抬到
+	// EffectiveProtectedCount()+1（全局末尾保护），而恢复场景的保护范围是
 	// **本帧现场**，两者不是同一个数。直接用会得到「按全局保护算出来的
 	// 下限 ≥ 实际条数」⇒ 裁不动（实测 protected=8、上下文 20 条时
 	// topK 被抬到 20，Prune 空转）。
 	//
 	// 这里按**本帧保护条数**重新推导：先算 token 预算能装几条，
 	// 再保证下限是 protected+1（否则 Prune 会把 protected 之外的裁光）。
-	topK := a.contextTopKForProtected(protected)
+	topK := a.ContextTopKForProtected(protected)
 	return a.context.PruneWithProtected(query, topK, a.MainState().coldcontextStore, protected)
 }
 
 // contextTopKForProtected 是按**指定保护条数**推导保留条数的版本。
 //
-// 与 contextTopK 的唯一差别是下限：后者用 effectiveProtectedCount()（全局末尾
+// 与 contextTopK 的唯一差别是下限：后者用 EffectiveProtectedCount()（全局末尾
 // 保护），这里用调用方给的 protected。恢复场景必须用后者——保护范围是本帧现场。
-func (a *Agent) contextTopKForProtected(protected int) int {
+func (a *Agent) ContextTopKForProtected(protected int) int {
 	if protected < 0 {
 		protected = 0
 	}
@@ -205,7 +205,7 @@ func (a *Agent) contextTopKForProtected(protected int) int {
 		hardCap = 1
 	}
 
-	budget := a.computeTokenBudget()
+	budget := a.ComputeTokenBudget()
 	tokens := budget.ContextTokens
 	if tokens <= 0 {
 		return hardCap
@@ -213,7 +213,7 @@ func (a *Agent) contextTopKForProtected(protected int) int {
 	avg := 0
 	if a.context != nil {
 		if n := a.context.Len(); n > 0 {
-			avg = a.accumulatedTokens() / n
+			avg = a.AccumulatedTokens() / n
 		}
 	}
 	if avg <= 0 {
@@ -244,13 +244,13 @@ func (a *Agent) contextTopKForProtected(protected int) int {
 //
 // max_context_size 仍作为**上限**保留：它是运维给的「活跃条数」硬约束，
 // 预算算出来的条数超过它时以它为准（否则改了配置不生效会让人困惑）。
-func (a *Agent) contextTopK() int {
+func (a *Agent) ContextTopK() int {
 	hardCap := a.MainState().maxContextSize - 1 // 运维配置的上限（历史语义：-1 因为要留 protected）
 	if hardCap < 1 {
 		hardCap = 1
 	}
 
-	budget := a.computeTokenBudget()
+	budget := a.ComputeTokenBudget()
 	tokens := budget.ContextTokens
 	if tokens <= 0 {
 		return hardCap
@@ -260,7 +260,7 @@ func (a *Agent) contextTopK() int {
 	avg := 0
 	if a.context != nil {
 		if n := a.context.Len(); n > 0 {
-			avg = a.accumulatedTokens() / n
+			avg = a.AccumulatedTokens() / n
 		}
 	}
 	if avg <= 0 {
@@ -282,7 +282,7 @@ func (a *Agent) contextTopK() int {
 	// 工具大回执型事件平均 48000 token，而预算只有 40000）。此时正确的做法
 	// 不是「只留 1 条」（等于清空记忆），而是至少留够 protected 条 ——
 	// 宁可暂时超页，等 budget 或事件尺寸回到正常区间再裁。
-	if min := a.effectiveProtectedCount() + 1; topK < min {
+	if min := a.EffectiveProtectedCount() + 1; topK < min {
 		topK = min
 	}
 	if topK > hardCap {
@@ -443,7 +443,7 @@ func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 		return f.TurnScene
 	}
 
-	declared := a.sceneKeysFor(evtOf(f), tool)
+	declared := a.SceneKeysFor(evtOf(f), tool)
 	feats := a.situationFeaturesFor(evtOf(f), cleanInputOf(f), tool)
 	sig := memory.NewSituation(feats...)
 

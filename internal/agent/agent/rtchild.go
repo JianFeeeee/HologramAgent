@@ -441,7 +441,7 @@ func (rc *rtChild) Dispose() string {
 //
 // 统一走 children 登记表，再做一次类型断言 —— 断言失败说明该 id 属于
 // 别的类型（如驻留子），对调用方而言同样"不是 rtchild"，返回 nil 是对的。
-func (a *Agent) rtChildOf(id string) *rtChild {
+func (a *Agent) RTChildOf(id string) *rtChild {
 	e, ok := a.children.Get(id)
 	if !ok {
 		return nil
@@ -614,7 +614,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//
 	// 形态与驻留子**逐项对齐**（resident.go 的 SpawnResident ①）：
 	//
-	//	主库受限只读句柄  memory.OpenGraphDBReadOnly(a.mainGraph().Path())
+	//	主库受限只读句柄  memory.OpenGraphDBReadOnly(a.MainGraph().Path())
 	//	temp 实例（可选）  memory.NewLightMemory(ro, TempPath, AllowGraphWrite)
 	//
 	// 三处差异是刻意的，且都有理由：
@@ -627,7 +627,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		rtLight  *memory.LightMemory
 		rtMainRO *memory.GraphDB
 	)
-	if gm := a.mainGraph(); gm != nil {
+	if gm := a.MainGraph(); gm != nil {
 		ro, err := memory.OpenGraphDBReadOnly(gm.Path())
 		if err != nil {
 			cancel()
@@ -821,7 +821,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	// 那时策略必须已在内核里，否则存在一个“无约束执行”的窗口。
 	//
 	// 声明失败要回滚：一个“本该受限却无限”的执行体比创建失败危险得多。
-	if err := a.declareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
+	if err := a.DeclareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
 		cancel()
 		rollback()
 		return "", fmt.Errorf("为 rtchild %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
@@ -861,7 +861,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 // 而**执行**它们的是骨架的 Cleanup —— 单数与复数路径共用那一段。
 func (a *Agent) rtStopDeps() child.StopDeps {
 	return child.StopDeps{
-		RevokePolicy: a.revokeChildPolicy,
+		RevokePolicy: a.RevokeChildPolicy,
 		UnregisterInbound: func(ch string) {
 			if a.io == nil {
 				return
@@ -907,7 +907,7 @@ func (a *Agent) StopRTChildren() int {
 // 后者进四级中断阶梯（会被 preemptCooldown=2s 降级为入队），
 // 本函数直接覆盖单槽（最新者胜，永不排队）。
 func (a *Agent) PushRTInput(id, text string) (uint64, error) {
-	rc := a.rtChildOf(id)
+	rc := a.RTChildOf(id)
 	if rc == nil {
 		return 0, fmt.Errorf("rtchild %s 不存在", id)
 	}
@@ -957,7 +957,7 @@ type RTChildStats struct {
 
 // RTChildStats 返回该实例的状态快照。
 func (a *Agent) RTChildStats(id string) (RTChildStats, bool) {
-	rc := a.rtChildOf(id)
+	rc := a.RTChildOf(id)
 	if rc == nil {
 		return RTChildStats{}, false
 	}
@@ -1052,7 +1052,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 	history := append([]agentAPI.Message(nil), rc.history...)
 	rc.mu.Unlock()
 	msgs := a.buildRTContext(rc, history, input)
-	tools := a.buildToolDefs()
+	tools := a.BuildToolDefs()
 	// 裁掉 output_send__*：rtchild 的输出走 outputch(rt)，不走主动输出门
 	// （那张门会要求模型显式点名通道，与"流式连续输出"是两套语义）。
 	tools = rtStripOutputTools(tools)
@@ -1206,7 +1206,7 @@ func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []
 	//
 	// 判据 TestRTChild_PreferredProviderIsUsed / _ProviderFallsBackOnFailure /
 	// _InterruptDoesNotFallback 钉住这三条。
-	providers := a.resolveProviders(req)
+	providers := a.ResolveProviders(req)
 	ch, err := a.streamWithFallback(ctx, req, providers)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1416,7 +1416,7 @@ func (a *Agent) buildRTContext(rc *rtChild, history []agentAPI.Message, input st
 	msgs = append(msgs, history...)
 	msgs = append(msgs, agentAPI.Message{Role: "user", Content: input})
 	// 只裁这份临时视图；history 本身保持完整。
-	return rtTrimToWindow(msgs, rc.agent.contextWindowTokens())
+	return rtTrimToWindow(msgs, rc.agent.ContextWindowTokens())
 }
 
 // rtTrimToWindow 把消息序列裁到窗口内：**从最旧的整组开始丢**。
@@ -1615,7 +1615,7 @@ const rtTranscriptToolMaxRunes = 500
 //
 // 返回交接了多少条消息（0 表示没有历史）。
 func (a *Agent) CloseRTChild(id string) (int, error) {
-	rc := a.rtChildOf(id)
+	rc := a.RTChildOf(id)
 	if rc == nil {
 		return 0, fmt.Errorf("rtchild %s 不存在", id)
 	}
@@ -1643,7 +1643,7 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 	// ★★ 同名键在这里**自然覆写**（2026-10-30）：留档以 id 为键，同名回收
 	//   会替换掉上一次的留档。串线问题不在写侧而在**读侧**（见 RTTranscript
 	//   的"在跑实例优先"），所以这里不需要额外清理动作。
-	ar := a.mkArchive()
+	ar := a.MkArchive()
 	ar.mu.Lock()
 	if ar.closed == nil {
 		ar.closed = map[string][]agentAPI.Message{}
@@ -1670,8 +1670,8 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 // 两条都保留，缺一条就会在某个时序下拿不到原文。二者的先后由
 // "实例还在不在" 决定，而不是由"留档里有没有" 决定。
 func (a *Agent) RTTranscript(id string) ([]agentAPI.Message, bool) {
-	rc := a.rtChildOf(id)
-	ar := a.archive()
+	rc := a.RTChildOf(id)
+	ar := a.ArchiveOf()
 	if ar == nil {
 		return nil, false
 	}

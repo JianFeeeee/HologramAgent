@@ -28,7 +28,7 @@ func (a *Agent) ToolDefinitions() []api.ToolDefinition {
 	if a == nil {
 		return nil
 	}
-	raw := a.buildToolDefs()
+	raw := a.BuildToolDefs()
 	out := make([]api.ToolDefinition, 0, len(raw))
 	for _, item := range raw {
 		m, ok := item.(map[string]interface{})
@@ -49,7 +49,7 @@ func (a *Agent) ToolDefinitions() []api.ToolDefinition {
 			Description: desc,
 			// 并发资格与超时**不在这里重算**：它们由 argvalidate.go 的
 			// batchRunnable / resolveToolTimeout 统一判定（单一事实来源）。
-			ParallelSafe: a.toolParallelSafe(name),
+			ParallelSafe: a.ToolParallelSafe(name),
 			Timeout:      "",
 		})
 	}
@@ -65,11 +65,11 @@ func (a *Agent) ExecuteTool(name string, args map[string]interface{}) (string, e
 	if a == nil {
 		return "", errNoAgentForDevice
 	}
-	return a.executeToolCall(api.ToolCall{
+	return a.ExecuteToolCall(api.ToolCall{
 		ID:        "device_" + name,
 		Name:      name,
 		Arguments: args,
-	}, a.defaultChannelForBuiltin()), nil
+	}, a.DefaultChannelForBuiltin()), nil
 }
 
 // MountDevice 挂载 device 数据面。
@@ -141,7 +141,7 @@ func (h builtinHandlers) ExecuteOutputListChannels() string {
 	return h.a.executeOutputListChannels()
 }
 func (h builtinHandlers) ExecuteInputChannels(tc api.ToolCall) string {
-	return h.a.executeInputChannels(tc)
+	return h.a.ExecuteInputChannels(tc)
 }
 func (h builtinHandlers) ExecuteResidentAgents(tc api.ToolCall) string {
 	return h.a.ExecuteResidentAgents(tc)
@@ -156,5 +156,5 @@ func (h builtinHandlers) ExecutePluginReload() string {
 	return h.a.executePluginReload()
 }
 func (h builtinHandlers) ExecuteGetPluginTools(pluginName string) string {
-	return h.a.executeGetPluginTools(pluginName)
+	return h.a.ExecuteGetPluginTools(pluginName)
 }

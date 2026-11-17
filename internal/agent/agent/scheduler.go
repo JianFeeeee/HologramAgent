@@ -1131,7 +1131,7 @@ func interruptLevel(evt *agentIO.InputEvent, privileged bool) Level {
 // 而不是插件自报的名字本身——外部插件经 proc 桥时已被夹到 L3，这里是第二道闸。
 //
 // source 的约定是 `插件名` 或 `插件名/实例`（如 webui/<deviceID>），故取第一段。
-func (a *Agent) isKernelLevelSource(source string) bool {
+func (a *Agent) IsKernelLevelSource(source string) bool {
 	if source == "" {
 		return false
 	}
@@ -1366,7 +1366,7 @@ func (a *Agent) pumpInbox() {
 // 能否抢占由调度器按统一判据决定；若会抢占，则顺手取消可取消的 LLM 流式步骤
 // （与 interceptLoop 对插件中断的处理完全一致）。
 func (a *Agent) raiseKernelInterrupt(source, channel, text string) {
-	a.raiseKernelInterruptAt(source, channel, text, LevelCritical)
+	a.RaiseKernelInterruptAt(source, channel, text, LevelCritical)
 }
 
 // raiseKernelInterruptAt 是 raiseKernelInterrupt 的**带级别**版本。
@@ -1377,7 +1377,7 @@ func (a *Agent) raiseKernelInterrupt(source, channel, text string) {
 //
 // 注意：外部插件走的不是这条路（它们经 interruptLevel 解析 + clampPluginLevel
 // 夹取），这里只服务内核自己登记的中断源。
-func (a *Agent) raiseKernelInterruptAt(source, channel, text string, level Level) bool {
+func (a *Agent) RaiseKernelInterruptAt(source, channel, text string, level Level) bool {
 	if a.sched == nil {
 		return false
 	}
@@ -1395,7 +1395,7 @@ func (a *Agent) raiseKernelInterruptAt(source, channel, text string, level Level
 	}
 	armed := a.sched.registerInterrupt(newKernelInterruptTaskAt(evt, level))
 	if armed {
-		a.cancelCurrentLLM()
+		a.CancelCurrentLLM()
 	}
 	return armed
 }
@@ -1432,9 +1432,9 @@ func (a *Agent) executeNewTask(t *Task) {
 		}()
 		switch t.Kind {
 		case TaskKindInput:
-			f, out = a.runInputTask(t.Event)
+			f, out = a.RunInputTask(t.Event)
 		case TaskKindSelf:
-			f, out = a.runInputTask(selfEvent(t.Self))
+			f, out = a.RunInputTask(selfEvent(t.Self))
 		}
 	}()
 
@@ -1445,7 +1445,7 @@ func (a *Agent) executeNewTask(t *Task) {
 		log.Printf("[agent] suspend: %s (%s) yields to an interrupt; suspendStack=%d",
 			describeTask(t), sourceOf(t, f), a.sched.suspendDepth())
 		a.sched.suspend(t, f)
-		a.publishEvent(events.EventScheduler, map[string]interface{}{
+		a.PublishEvent(events.EventScheduler, map[string]interface{}{
 			"action": "suspend", "task": t.ID, "level": int(t.Level),
 		})
 		return
@@ -1466,10 +1466,10 @@ func (a *Agent) resumeTask(t *Task, f *TaskFrame) {
 	a.sched.mu.Unlock()
 	log.Printf("[agent] resume: %s (%s) resumes after the interrupt finished",
 		describeTask(t), sourceOf(t, f))
-	a.publishEvent(events.EventScheduler, map[string]interface{}{
+	a.PublishEvent(events.EventScheduler, map[string]interface{}{
 		"action": "resume", "task": t.ID, "level": int(t.Level),
 	})
-	a.rebaseFramePrefix(f)
+	a.RebaseFramePrefix(f)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[agent] resume task#%d panic recovered: %v\n%s",
@@ -1479,12 +1479,12 @@ func (a *Agent) resumeTask(t *Task, f *TaskFrame) {
 		}
 	}()
 
-	out := a.runTaskSteps(f)
+	out := a.RunTaskSteps(f)
 	if out == outcomeSuspended {
 		a.sched.suspend(t, f)
 		return
 	}
-	a.finishInputTask(f, out)
+	a.FinishInputTask(f, out)
 	a.sched.done(t)
 }
 

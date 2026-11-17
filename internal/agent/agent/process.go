@@ -186,7 +186,7 @@ func chatStreamWithFallback(ctx context.Context, p agentAPI.Provider, req *agent
 	if errors.Is(accErr, context.Canceled) || errors.Is(accErr, context.DeadlineExceeded) {
 		// 通知客户端：本轮流式作废，清空 delta 累积并定格已显示内容
 		if a != nil {
-			a.publishEvent(events.EventContentDelta, map[string]interface{}{
+			a.PublishEvent(events.EventContentDelta, map[string]interface{}{
 				"content": "",
 				"channel": channel,
 				"reset":   true,
@@ -344,7 +344,7 @@ func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *Ag
 			if ck.ReasoningContent != "" {
 				resp.ReasoningContent += ck.ReasoningContent
 				if a != nil {
-					a.publishEvent(events.EventReasoningDelta, map[string]interface{}{
+					a.PublishEvent(events.EventReasoningDelta, map[string]interface{}{
 						"content": ck.ReasoningContent,
 						"channel": channel,
 					})
@@ -353,7 +353,7 @@ func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *Ag
 			if ck.Content != "" {
 				resp.Content += ck.Content
 				if a != nil {
-					a.publishEvent(events.EventContentDelta, map[string]interface{}{
+					a.PublishEvent(events.EventContentDelta, map[string]interface{}{
 						"content": ck.Content,
 						"channel": channel,
 					})
@@ -617,7 +617,7 @@ func chatUtteranceFromResults(trs []ToolResultItem) string {
 	return ""
 }
 
-func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI.Message {
+func (a *Agent) BuildMessages(sysPrompt, input string, ctxTokens int) []agentAPI.Message {
 	msgs := []agentAPI.Message{{Role: "system", Content: sysPrompt}}
 
 	// L1 必须保持 provider 原生的消息序列：历史 user/assistant/tool
@@ -653,7 +653,7 @@ func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI
 // 现在的顺序：
 //
 //	· 从最新往旧遍历；
-//	· 尾部 `effectiveProtectedCount()` 条**无条件纳入**（那是承诺，
+//	· 尾部 `EffectiveProtectedCount()` 条**无条件纳入**（那是承诺，
 //	  且该值已按预算收紧，见 effectiveProtectedCount）；
 //	· 更旧的部分按剩余预算补，正常组放不下就停（更旧的只会更超）；
 //	· 单个**超大帧**（> 总预算 1/4）跳过继续往旧找，而不是把它之后的
@@ -695,7 +695,7 @@ func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
 		groups = append(groups, l1Group{msgs: msgs, cost: cost})
 	}
 
-	pCount := a.effectiveProtectedCount()
+	pCount := a.EffectiveProtectedCount()
 	if pCount > len(groups) {
 		pCount = len(groups)
 	}

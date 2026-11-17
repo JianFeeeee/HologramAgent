@@ -19,7 +19,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
-func (a *Agent) executeInputChannels(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteInputChannels(tc agentAPI.ToolCall) string {
 	view, _ := tc.Arguments["view"].(string)
 	view = strings.TrimSpace(view)
 	if view == "" {

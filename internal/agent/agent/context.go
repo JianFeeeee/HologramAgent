@@ -109,19 +109,19 @@ type RelevanceContext struct {
 // 下限保1：protected=0 会让「最近 N 条一定在候选里」这条保证消失，
 // 而 Prune 的 protected 切片是 `events[len-protected:]` —— 0 值会切出空切片
 // 后仍走 keep 逻辑，虽不panic，但等于放弃了近处保护的意义。
-func (a *Agent) effectiveProtectedCount() int {
+func (a *Agent) EffectiveProtectedCount() int {
 	cfgCap := kit.DefaultProtectedCount
 	if n := a.context.ProtectedCount(); n > 0 {
 		cfgCap = n
 	}
 
-	budget := a.computeTokenBudget()
+	budget := a.ComputeTokenBudget()
 	tokens := budget.ContextTokens
 	if tokens <= 0 || a.context == nil || a.context.Len() == 0 {
 		return cfgCap // 没有样本/预算，按配置来
 	}
 
-	avg := a.accumulatedTokens() / a.context.Len()
+	avg := a.AccumulatedTokens() / a.context.Len()
 	if avg <= 0 {
 		avg = defaultAvgEventTokens
 	}
@@ -144,15 +144,15 @@ func (a *Agent) effectiveProtectedCount() int {
 //
 // 此时正确做法不是继续收紧（收紧也没用），而是让调用方知道「裁剪帮不上忙」，
 // 由超页处理走终止路径并报出真实原因，而不是反复裁剪直到预算耗尽。
-func (a *Agent) singleEventFitsBudget() bool {
+func (a *Agent) SingleEventFitsBudget() bool {
 	if a == nil || a.context == nil || a.context.Len() == 0 {
 		return true
 	}
-	avg := a.accumulatedTokens() / a.context.Len()
+	avg := a.AccumulatedTokens() / a.context.Len()
 	if avg <= 0 {
 		avg = defaultAvgEventTokens
 	}
-	return avg <= a.computeTokenBudget().ContextTokens
+	return avg <= a.ComputeTokenBudget().ContextTokens
 }
 
 // ──────────────────────────────────────────────
@@ -471,8 +471,8 @@ func (a *Agent) recallBudget() int {
 	if a == nil || a.context == nil {
 		return 0
 	}
-	tb := a.computeTokenBudget()
-	avail := tb.ContextTokens - a.accumulatedTokens()
+	tb := a.ComputeTokenBudget()
+	avail := tb.ContextTokens - a.AccumulatedTokens()
 	floor := tb.ContextTokens / 4
 	if avail < floor {
 		avail = floor

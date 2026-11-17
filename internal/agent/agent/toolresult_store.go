@@ -226,7 +226,7 @@ func (c *RelevanceContext) findToolResultStore(evtID string) *ToolResultStore {
 // hasStoredToolResults 判断当前上下文里是否有可回读的超长工具结果。
 //
 // 供 buildToolDefs 决定要不要暴露 toolresult_read（见那里的说明）。
-func (a *Agent) hasStoredToolResults() bool {
+func (a *Agent) HasStoredToolResults() bool {
 	if a == nil || a.context == nil {
 		return false
 	}

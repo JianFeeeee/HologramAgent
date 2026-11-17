@@ -130,7 +130,7 @@ func saveResidentRecords(dataDir string, recs []residentRecord) {
 //
 // 何时调用：创建成功后、销毁/回收成功后。不放在轮次循环里 ——
 // 登记表的变动是低频事件（创建/销毁），而每轮写一次是白耗 IO。
-func (a *Agent) persistResidents() {
+func (a *Agent) PersistResidents() {
 	if a == nil || a.dataDir == "" {
 		return
 	}

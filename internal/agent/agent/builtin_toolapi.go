@@ -46,7 +46,7 @@ func (p builtinProvider) Defs() []sdk.BuiltinToolDef {
 	}
 
 	var out []sdk.BuiltinToolDef
-	for _, raw := range p.a.buildToolDefs() {
+	for _, raw := range p.a.BuildToolDefs() {
 		m, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
@@ -86,7 +86,7 @@ func (p builtinProvider) Exec(name string, args map[string]interface{}) (string,
 		Name:      name,
 		Arguments: args,
 	}
-	return p.a.executeToolCall(tc, p.a.defaultChannelForBuiltin()), nil
+	return p.a.ExecuteToolCall(tc, p.a.DefaultChannelForBuiltin()), nil
 }
 
 // defaultChannelForBuiltin 给出内置工具执行时的输出通道。
@@ -94,7 +94,7 @@ func (p builtinProvider) Exec(name string, args map[string]interface{}) (string,
 // 内置工具本身不产出"用户可见输出"（结果回给调用方），但 executeToolCall
 // 的签名需要 channel（如记忆写入会记场景）。用 agent 的调度当前通道不可靠
 // （它逐任务变化），故用一个稳定的内部标记。
-func (a *Agent) defaultChannelForBuiltin() string { return "builtin" }
+func (a *Agent) DefaultChannelForBuiltin() string { return "builtin" }
 
 // errBuiltinNoAgent 表示 provider 未绑定 agent（装配顺序错误）。
 var errBuiltinNoAgent = &builtinErr{"内置工具执行器未绑定 agent"}

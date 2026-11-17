@@ -218,7 +218,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 //
 // 用排队语义（isInterrupt=false）：转投的是"待办工作"，不是"打断子"。
 func (a *Agent) forwardInputToResident(residentID string, evt *agentIO.InputEvent) error {
-	rc := a.residentOf(residentID)
+	rc := a.ResidentOf(residentID)
 	if rc == nil || rc.agent == nil || rc.agent.io == nil {
 		return fmt.Errorf("驻留子 %s 不存在或不可用", residentID)
 	}

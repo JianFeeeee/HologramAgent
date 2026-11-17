@@ -10,7 +10,7 @@ import (
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-func (a *Agent) runStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
+func (a *Agent) RunStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
 	// ★ 阶段执行是**类型注册的钩子**（用户裁定：stage 与 agentloop 同理）。
 	if a == nil || a.hooks.RunStage == nil {
 		return false
@@ -32,7 +32,7 @@ func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 	if ctx != nil && len(ctx.ToolCalls) > 0 {
 		payload["tool"] = ctx.ToolCalls[0].Name
 	}
-	a.publishEvent(events.EventStage, payload)
+	a.PublishEvent(events.EventStage, payload)
 	if a.MainState().stageHost == nil {
 		return false
 	}
@@ -48,7 +48,7 @@ func (a *Agent) runStageDefault(stage sdk.Stage, ctx *sdk.StageContext) bool {
 	return ctx.Response != nil
 }
 
-func (a *Agent) publishEvent(evtType events.EventType, payload map[string]interface{}) {
+func (a *Agent) PublishEvent(evtType events.EventType, payload map[string]interface{}) {
 	a.Publish(evtType, payload)
 }
 
@@ -67,7 +67,7 @@ func (a *Agent) stageCtxFromInput(input, userID, groupID string) *sdk.StageConte
 	return ctx
 }
 
-func (a *Agent) injectSourceContext(stageCtx *sdk.StageContext, evt *agentIO.InputEvent) {
+func (a *Agent) InjectSourceContext(stageCtx *sdk.StageContext, evt *agentIO.InputEvent) {
 	if stageCtx == nil || evt == nil {
 		return
 	}

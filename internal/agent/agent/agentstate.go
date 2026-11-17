@@ -189,7 +189,7 @@ func (a *Agent) mkRT(slot *rtSlot, maxTools int) {
 }
 
 // archive 取父侧的 rt 留档（不是 rt 父时返回 nil）。
-func (a *Agent) archive() *rtArchiveState {
+func (a *Agent) ArchiveOf() *rtArchiveState {
 	if a == nil || a.sub == nil {
 		return nil
 	}
@@ -197,7 +197,7 @@ func (a *Agent) archive() *rtArchiveState {
 }
 
 // mkArchive 创建留档区（父第一次拉起 rt 时调）。
-func (a *Agent) mkArchive() *rtArchiveState {
+func (a *Agent) MkArchive() *rtArchiveState {
 	s := a.ensureSub()
 	if s.archive == nil {
 		s.archive = &rtArchiveState{closed: map[string][]agentAPI.Message{}}
@@ -221,7 +221,7 @@ func (a *Agent) mkResident(notifyParent func(string), onContextFull func()) *res
 }
 
 // worker 取工作式子状态（不是工作式子父时返回 nil）。
-func (a *Agent) workerState() *workerState {
+func (a *Agent) WorkerStateOf() *workerState {
 	if a == nil || a.sub == nil {
 		return nil
 	}
@@ -231,7 +231,7 @@ func (a *Agent) workerState() *workerState {
 // mkWorker 创建工作式子状态（父第一次 spawn_child 时调）。
 //
 // ★ 调用方持锁：并发 spawn 时不能各建一张表（两张表会丢一半任务）。
-func (a *Agent) mkWorker() *workerState {
+func (a *Agent) MkWorker() *workerState {
 	s := a.ensureSub()
 	if s.worker == nil {
 		s.worker = &workerState{tasks: map[string]*agenttypes.ChildTaskState{}}
@@ -260,7 +260,7 @@ func (a *Agent) MainState() *mainState {
 }
 
 // mkMain 创建主 agent状态（主 agent 构造时调）。
-func (a *Agent) mkMain() *mainState {
+func (a *Agent) MkMain() *mainState {
 	s := a.ensureSub()
 	if s.main == nil {
 		s.main = &mainState{}

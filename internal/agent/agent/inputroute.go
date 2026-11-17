@@ -21,7 +21,7 @@ import (
 // 已知边界：路由只在本 agent 的**直接**驻留子里找。若孙辈的 inputch 由子划拨，
 // 而插件注入打在根 io 上，根解析不到那个 owner ⇒ 兜底给根处理（有日志）。
 // 这一层要等"孙辈 + 根可见的 agent 表"再收口，此处不静默丢输入。
-func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) bool {
+func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) bool {
 	if evt == nil || evt.OutputChannel == "" || a.io == nil {
 		return false
 	}
@@ -63,7 +63,7 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	}
 
 	// 驻留子从**统一登记表**取（不再是专用表 + 专用锁）。
-	rc := a.residentOf(entry.Owner)
+	rc := a.ResidentOf(entry.Owner)
 
 	// ★ rtchild 分支：rt 通道的输入必须进 **rtSlot**（单槽覆盖），
 	// 而不是走 rc.agent.io.DeliverRouted（那会进四级中断阶梯）。
@@ -74,7 +74,7 @@ func (a *Agent) routeInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	//
 	// 判据 TestRTChannel_PluginInputReachesRTSlot 钉它。
 	// rt 实例从**统一登记表**取（不再是专用表 + 专用锁）。
-	if rt := a.rtChildOf(entry.Owner); rt != nil {
+	if rt := a.RTChildOf(entry.Owner); rt != nil {
 		// 不区分 isInterrupt：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
 		// 这正是"rt 输入不进四级中断阶梯"的落点（rt 单槽 vs 四级阶梯是两套目标
 		// 函数相反的设计，见 rtchild.go 开头的取舍说明）。
