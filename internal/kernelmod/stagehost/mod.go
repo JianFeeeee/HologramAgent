@@ -22,7 +22,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 
-	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
@@ -54,7 +54,7 @@ func (Module) Init(ks *kstate.State) error {
 	memDB := kernelmod.MustValue[*memory.GraphDB](ks, kernelapi.FacMemory)
 	providerMgr := kernelmod.MustValue[*agentProvider.ProviderManager](ks, kernelapi.FacLLM)
 
-	stageHost := agentCore.NewStageHost()
+	stageHost := kit.NewStageHost()
 
 	// 插件声明式系统提示词段的注册表：本模块产出，挂到内核挂载点。
 	//

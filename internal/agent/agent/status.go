@@ -9,6 +9,7 @@ import (
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -77,7 +78,7 @@ func collectKernelStatus(
 	agentID string,
 	providerName string,
 	sourceCount int,
-	stageHost *StageHost,
+	stageHost *kit.StageHostType,
 	iom *agentIO.IOManager,
 	pluginReg kernelapi.PluginHost,
 	memDB kernelapi.GraphMemory,

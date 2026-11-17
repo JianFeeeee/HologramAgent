@@ -2,7 +2,7 @@ package test
 
 // internal/agent/agent 的**工具定义对外投影**判据 —— 面向接口的黑盒。
 //
-// 入口：agent.NewStageHost() 注册工具 → agent.New(AgentConfig{StageHost}) →
+// 入口：kit.NewStageHost() 注册工具 → agent.New(AgentConfig{StageHost}) →
 // Agent.ToolDefinitions()（api.ToolDefinition 列表）。
 //
 // ## 原判据的缺口
@@ -27,13 +27,14 @@ import (
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // toolDefHarness 造一个带工具集的 agent。
 func toolDefHarness(t *testing.T, defs ...sdk.ToolDef) *agent.Agent {
 	t.Helper()
-	sh := agent.NewStageHost()
+	sh := kit.NewStageHost()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	for _, d := range defs {
 		if err := sh.RegisterTool(d.Name, d, noop); err != nil {
@@ -128,7 +129,7 @@ func TestUndeclaredToolsAreSerial(t *testing.T) {
 // 而残留的工具会让模型调到一个不存在的 handler（表现为执行时报错，
 // 但清单看起来一切正常）。
 func TestUnregisteredPluginToolsLeaveNoTrace(t *testing.T) {
-	sh := agent.NewStageHost()
+	sh := kit.NewStageHost()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	for _, name := range []string{"alpha_tool", "beta_tool"} {
 		if err := sh.RegisterTool(name, sdk.ToolDef{Name: name, Plugin: "acme"}, noop); err != nil {
@@ -168,7 +169,7 @@ func TestUnregisteredPluginToolsLeaveNoTrace(t *testing.T) {
 // 它与并行位是两件不同的事，但都属于"工具定义写下的声明真的被读到了吗"
 // 这个共同契约：写得下、读得到，中间没有白名单把字段吃掉。
 func TestNoMemoryDeclarationIsVisible(t *testing.T) {
-	sh := agent.NewStageHost()
+	sh := kit.NewStageHost()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	if err := sh.RegisterTool("quiet", sdk.ToolDef{Name: "quiet", NoMemory: true}, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)

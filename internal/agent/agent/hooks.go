@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
@@ -81,7 +82,7 @@ type Hooks struct {
 
 	// Loop 驱动一帧任务直到终态（`runTaskSteps` 的标准实现挂这里）。
 	// rt 模块注册异步版；主/驻留注册 standard 同步版。
-	Loop func(a *Agent, f *TaskFrame) stepOutcome
+	Loop func(a *Agent, f *TaskFrame) agenttypes.Outcome
 
 	// ── 槽位 7：stage ──
 

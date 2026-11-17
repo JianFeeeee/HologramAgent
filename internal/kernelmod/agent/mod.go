@@ -149,7 +149,7 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		}
 	}
 	// StageHost 在挂载点里存 any（kstate 不持有模块类型），取用处断言回具体类型。
-	stageHost, _ := kernelmod.MustValueAny(k, kernelapi.FacStageHost).(*agentCore.StageHost)
+	stageHost, _ := kernelmod.MustValueAny(k, kernelapi.FacStageHost).(*kit.StageHostType)
 	var evBus kernelapi.EventBus
 	if impl, ok := k.Require(kernelapi.FacEventBus); ok {
 		evBus, _ = impl.(kernelapi.EventBus)

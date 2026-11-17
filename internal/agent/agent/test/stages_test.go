@@ -7,12 +7,12 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 func TestStageHostRegisterTool(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	err := host.RegisterTool("test_tool", sdk.ToolDef{Name: "test_tool"}, func(args map[string]interface{}) (interface{}, error) {
 		return "ok", nil
@@ -31,7 +31,7 @@ func TestStageHostRegisterTool(t *testing.T) {
 }
 
 func TestStageHostRegisterToolDuplicate(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 	host.RegisterTool("dup", sdk.ToolDef{Name: "dup"}, nil)
 	err := host.RegisterTool("dup", sdk.ToolDef{Name: "dup"}, nil)
 	if err == nil {
@@ -40,7 +40,7 @@ func TestStageHostRegisterToolDuplicate(t *testing.T) {
 }
 
 func TestStageHostExecuteTool(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	host.RegisterTool("hello", sdk.ToolDef{Name: "hello"}, func(args map[string]interface{}) (interface{}, error) {
 		return "world", nil
@@ -61,7 +61,7 @@ func TestStageHostExecuteTool(t *testing.T) {
 }
 
 func TestStageHostRunStage(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	var called bool
 	host.RegisterStage(sdk.StageOnInput, func(ctx *sdk.StageContext) error {
@@ -78,7 +78,7 @@ func TestStageHostRunStage(t *testing.T) {
 }
 
 func TestStageHostRunStageParallel(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	// Two handlers that both try to set Response under Lock.
 	// Only the first to acquire Lock actually wins; the second sees IsResponded() and skips.
@@ -113,7 +113,7 @@ func TestStageHostRunStageParallel(t *testing.T) {
 }
 
 func TestStageHostRunStageConcurrency(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	var counter int32
 	n := 10
@@ -132,7 +132,7 @@ func TestStageHostRunStageConcurrency(t *testing.T) {
 }
 
 func TestStageHostRunStageAll(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	var mu sync.Mutex
 	count := 0
@@ -157,7 +157,7 @@ func TestStageHostRunStageAll(t *testing.T) {
 }
 
 func TestStageHostEmpty(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	if host.ToolCount() != 0 {
 		t.Errorf("expected 0 tools, got %d", host.ToolCount())
@@ -177,7 +177,7 @@ func TestStageHostEmpty(t *testing.T) {
 }
 
 func TestStageHostMultipleTools(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 
 	host.RegisterTool("tool1", sdk.ToolDef{Name: "tool1"}, func(args map[string]interface{}) (interface{}, error) {
 		return "from_p1", nil
@@ -202,7 +202,7 @@ func TestStageHostMultipleTools(t *testing.T) {
 }
 
 func TestStageHostToolDefLookup(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 	host.RegisterTool("tool_a", sdk.ToolDef{Name: "tool_a", NoMemory: true}, nil)
 	host.RegisterTool("tool_b", sdk.ToolDef{Name: "tool_b"}, nil)
 
@@ -229,7 +229,7 @@ func TestStageHostToolDefLookup(t *testing.T) {
 }
 
 func TestStageHostToolDefNoMemoryStored(t *testing.T) {
-	host := agent.NewStageHost()
+	host := kit.NewStageHost()
 	host.RegisterTool("mem_tool", sdk.ToolDef{Name: "mem_tool", NoMemory: true}, nil)
 	host.RegisterTool("normal_tool", sdk.ToolDef{Name: "normal_tool", NoMemory: false}, nil)
 
@@ -255,7 +255,7 @@ func TestStageHostToolDefNoMemoryStored(t *testing.T) {
 // TestRunStageCollectsHandlerErrors：handler 返回的错误必须汇总到
 // ctx.Errors，且不阻断其他 handler（模块级失败语义）。
 func TestRunStageCollectsHandlerErrors(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 	h.RegisterStage(sdk.StagePreAction, func(*sdk.StageContext) error {
 		return fmt.Errorf("boom-from-handler")
 	})
@@ -281,7 +281,7 @@ func TestRunStageCollectsHandlerErrors(t *testing.T) {
 // TestRunStagePanicDoesNotKillRun：handler panic 必须被隔离，
 // 其余 handler 照常执行且 RunStage 正常返回。
 func TestRunStagePanicDoesNotKillRun(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 	h.RegisterStage(sdk.StageAfterOutput, func(*sdk.StageContext) error { panic("handler exploded") })
 	var ran int
 	h.RegisterStage(sdk.StageAfterOutput, func(*sdk.StageContext) error { ran++; return nil })
@@ -293,7 +293,7 @@ func TestRunStagePanicDoesNotKillRun(t *testing.T) {
 
 // TestUnregisterPluginToolsOnlyThatPlugin：工具摘除必须只影响目标插件。
 func TestUnregisterPluginToolsOnlyThatPlugin(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 	for _, name := range []string{"a_tool", "b_tool"} {
 		pluginName := strings.SplitN(name, "_", 2)[0]
 		h.RegisterTool(name, sdk.ToolDef{Name: name, Plugin: pluginName},

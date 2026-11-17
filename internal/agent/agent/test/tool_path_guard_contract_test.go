@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
@@ -52,7 +53,7 @@ func pathGuardHarnessDef(t *testing.T, dataDir string, sandbox security.SandboxP
 	rt := security.NewDisabledRuntime()
 	rt.SetPolicy(security.Policy{Sandbox: sandbox})
 
-	sh := agent.NewStageHost()
+	sh := kit.NewStageHost()
 	noop := func(map[string]interface{}) (interface{}, error) { return "EXECUTED", nil }
 	if err := sh.RegisterTool(def.Name, def, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)

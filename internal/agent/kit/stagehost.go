@@ -1,4 +1,4 @@
-package agent
+package kit
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-type StageHost struct {
+type StageHostType struct {
 	// frozenFn 报告内核是否处于伪关机（迁移中）。nil = 永不冻结。
 	// 用函数而不是直接引用 plugin.Registry，避免 agent/core 反向依赖 plugin 包。
 	frozenFn func() bool
@@ -61,8 +61,8 @@ type stageEntry struct {
 	fn     sdk.StageHandler
 }
 
-func NewStageHost() *StageHost {
-	return &StageHost{
+func NewStageHost() *StageHostType {
+	return &StageHostType{
 		tools:       make(map[string]sdk.ToolHandler),
 		toolPlugins: make(map[string]string),
 		cancelable:  make(map[string]bool),
@@ -71,7 +71,7 @@ func NewStageHost() *StageHost {
 }
 
 // SetSecretStore 注入变量库（装配期由 Agent 调用）。
-func (h *StageHost) SetSecretStore(s kernelapi.SecretStore) {
+func (h *StageHostType) SetSecretStore(s kernelapi.SecretStore) {
 	if h == nil {
 		return
 	}
@@ -81,7 +81,7 @@ func (h *StageHost) SetSecretStore(s kernelapi.SecretStore) {
 }
 
 // secretStore 返回注入的变量库（未注入为 nil）。
-func (h *StageHost) secretStore() kernelapi.SecretStore {
+func (h *StageHostType) secretStore() kernelapi.SecretStore {
 	if h == nil {
 		return nil
 	}
@@ -90,7 +90,7 @@ func (h *StageHost) secretStore() kernelapi.SecretStore {
 	return h.secretStoreV
 }
 
-func (h *StageHost) RegisterTool(name string, def sdk.ToolDef, handler sdk.ToolHandler) error {
+func (h *StageHostType) RegisterTool(name string, def sdk.ToolDef, handler sdk.ToolHandler) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, exists := h.tools[name]; exists {
@@ -109,19 +109,19 @@ func (h *StageHost) RegisterTool(name string, def sdk.ToolDef, handler sdk.ToolH
 	return nil
 }
 
-func (h *StageHost) RegisterStage(stage sdk.Stage, handler sdk.StageHandler) {
+func (h *StageHostType) RegisterStage(stage sdk.Stage, handler sdk.StageHandler) {
 	h.RegisterStageFor("", stage, handler)
 }
 
 // RegisterStageFor 注册带归属插件名的 stage handler。
 // plugin 为空时等同 RegisterStage（内核自身注册的 handler，不参与成组摘除）。
-func (h *StageHost) RegisterStageFor(plugin string, stage sdk.Stage, handler sdk.StageHandler) {
+func (h *StageHostType) RegisterStageFor(plugin string, stage sdk.Stage, handler sdk.StageHandler) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.stages[stage] = append(h.stages[stage], stageEntry{plugin: plugin, fn: handler})
 }
 
-func (h *StageHost) GetToolDefs() []sdk.ToolDef {
+func (h *StageHostType) GetToolDefs() []sdk.ToolDef {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	defs := make([]sdk.ToolDef, len(h.toolDefs))
@@ -142,7 +142,7 @@ func (h *StageHost) GetToolDefs() []sdk.ToolDef {
 // 只需"是否存在 + 声明项"的调用方（toolParallelSafe、validateArgsAgainstSchema
 // 等热路径）应改用 ConcurrencySafeOf / HasTool，避免拷贝。
 // 需要拿到完整声明的（如 Cleaner）才用 ToolDef。
-func (h *StageHost) ToolDef(name string) *sdk.ToolDef {
+func (h *StageHostType) ToolDef(name string) *sdk.ToolDef {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	if def, ok := h.findLocked(name); ok {
@@ -155,7 +155,7 @@ func (h *StageHost) ToolDef(name string) *sdk.ToolDef {
 //
 // 与 ToolDef(name).ParallelSafe && !Serial 等价，但只读两个 bool 字段。
 // 热路径（每批并发判据）必须走这个。
-func (h *StageHost) ConcurrencySafeOf(name string) (safe, found bool) {
+func (h *StageHostType) ConcurrencySafeOf(name string) (safe, found bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	def, ok := h.findLocked(name)
@@ -166,7 +166,7 @@ func (h *StageHost) ConcurrencySafeOf(name string) (safe, found bool) {
 }
 
 // NoMemoryOf 报告工具是否声明 NoMemory，同样不拷贝。
-func (h *StageHost) NoMemoryOf(name string) (v, found bool) {
+func (h *StageHostType) NoMemoryOf(name string) (v, found bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	def, ok := h.findLocked(name)
@@ -177,7 +177,7 @@ func (h *StageHost) NoMemoryOf(name string) (v, found bool) {
 }
 
 // HasTool 报告工具是否存在，不拷贝。
-func (h *StageHost) HasTool(name string) bool {
+func (h *StageHostType) HasTool(name string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	_, ok := h.findLocked(name)
@@ -185,7 +185,7 @@ func (h *StageHost) HasTool(name string) bool {
 }
 
 // findLocked 必须在持有 h.mu 时调用。
-func (h *StageHost) findLocked(name string) (sdk.ToolDef, bool) {
+func (h *StageHostType) findLocked(name string) (sdk.ToolDef, bool) {
 	for _, def := range h.toolDefs {
 		if def.Name == name {
 			return def, true
@@ -213,7 +213,7 @@ func (h *StageHost) findLocked(name string) (sdk.ToolDef, bool) {
 const executeCtxArgKey = "\x00kernel.execute_ctx\x00"
 
 // ExecuteTool 执行工具（无取消语义）。
-func (h *StageHost) ExecuteTool(name string, args map[string]interface{}) (ret interface{}, err error) {
+func (h *StageHostType) ExecuteTool(name string, args map[string]interface{}) (ret interface{}, err error) {
 	return h.ExecuteToolCtx(context.Background(), name, args)
 }
 
@@ -225,7 +225,7 @@ func (h *StageHost) ExecuteTool(name string, args map[string]interface{}) (ret i
 //   - io 设备工具：同样经 goroutine 本地 ctx 下传（见 ExecuteTool 的调用方）。
 //
 // handler 本身仍是旧签名；它若不消费 ctx，行为与今天逐字一致。
-func (h *StageHost) ExecuteToolCtx(ctx context.Context, name string, args map[string]interface{}) (ret interface{}, err error) {
+func (h *StageHostType) ExecuteToolCtx(ctx context.Context, name string, args map[string]interface{}) (ret interface{}, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[stage] tool %s handler panic: %v\n%s", name, r, debug.Stack())
@@ -290,13 +290,13 @@ func withExecuteCtx(ctx context.Context, args map[string]interface{}) map[string
 	return out
 }
 
-func (h *StageHost) ToolPlugin(name string) string {
+func (h *StageHostType) ToolPlugin(name string) string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.toolPlugins[name]
 }
 
-func (h *StageHost) UnregisterPluginTools(pluginName string) {
+func (h *StageHostType) UnregisterPluginTools(pluginName string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -316,7 +316,7 @@ func (h *StageHost) UnregisterPluginTools(pluginName string) {
 //
 // 与 UnregisterPluginTools 成对：卸载/重载/崩溃时两者都得做，
 // 否则插件的工具没了但 stage handler 还在，继续打向不存在的插件。
-func (h *StageHost) UnregisterPluginStages(pluginName string) int {
+func (h *StageHostType) UnregisterPluginStages(pluginName string) int {
 	if pluginName == "" {
 		return 0
 	}
@@ -358,7 +358,7 @@ func inferToolPlugin(name string) string {
 //
 // 如果任意 handler 设置了 Response，后续 handler 可通过 ctx.IsResponded() 判断后提前返回。
 // handler 返回的 error 会被收集到 ctx.Errors 中并记录日志，不会中断其他 handler 的执行。
-func (h *StageHost) RunStage(stage sdk.Stage, ctx *sdk.StageContext) {
+func (h *StageHostType) RunStage(stage sdk.Stage, ctx *sdk.StageContext) {
 	h.mu.RLock()
 	entries := make([]stageEntry, len(h.stages[stage]))
 	copy(entries, h.stages[stage])
@@ -398,7 +398,7 @@ func (h *StageHost) RunStage(stage sdk.Stage, ctx *sdk.StageContext) {
 	}
 }
 
-func (h *StageHost) ToolDefCleaner(name string) func(string) string {
+func (h *StageHostType) ToolDefCleaner(name string) func(string) string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, def := range h.toolDefs {
@@ -409,7 +409,7 @@ func (h *StageHost) ToolDefCleaner(name string) func(string) string {
 	return nil
 }
 
-func (h *StageHost) NoMemoryToolNames() map[string]bool {
+func (h *StageHostType) NoMemoryToolNames() map[string]bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	set := make(map[string]bool, len(h.toolDefs))
@@ -421,7 +421,7 @@ func (h *StageHost) NoMemoryToolNames() map[string]bool {
 	return set
 }
 
-func (h *StageHost) ToolCount() int {
+func (h *StageHostType) ToolCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.tools)

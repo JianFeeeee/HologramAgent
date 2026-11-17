@@ -179,7 +179,7 @@ type Agent struct {
 	// 当前请求的输出通道（mutex 保护，process() 内独占）
 
 	// 阶段管道：插件消息流编辑
-	stageHost *StageHost
+	stageHost *kit.StageHostType
 	// ★ 原先这里是 `eventBus *events.Bus`（裸总线）。
 	//
 	// 用户裁定（2026-11-17）：「事件总线是被安全模块代理的吧，原始总线只被
@@ -448,7 +448,7 @@ type AgentConfig struct {
 	ContextSavePath    string // 上下文持久化路径，空则不持久化
 	EmbeddingModelPath string // 预训练词嵌入模型路径（word2vec 文本格式），空则不使用
 	Embedder           Embedder
-	StageHost          *StageHost
+	StageHost          *kit.StageHostType
 	// EventBus 是**发布代理的注入源**（见 agent_eventbus.go）。
 	//
 	// ★ 用户裁定：原始总线只被安全模块持有 ⇒ agent 不存裸总线，

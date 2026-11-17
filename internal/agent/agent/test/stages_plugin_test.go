@@ -1,9 +1,9 @@
 package test
 
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"testing"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -14,7 +14,7 @@ import (
 // 打向已死进程；重启后新 handler 追加进来，旧的仍不退场——
 // 错误与重复执行随重启次数线性累积。
 func TestUnregisterPluginStages_RemovesOnlyThatPlugin(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 
 	var aRan, bRan, coreRan int
 	h.RegisterStageFor("a", sdk.StagePreAction, func(*sdk.StageContext) error { aRan++; return nil })
@@ -42,7 +42,7 @@ func TestUnregisterPluginStages_RemovesOnlyThatPlugin(t *testing.T) {
 
 // 摘除某插件的最后一个 handler 后，该 stage 应从表中消失（RunStage 直接短路）。
 func TestUnregisterPluginStages_DropsEmptyStage(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 	h.RegisterStageFor("solo", sdk.StageAfterToolcall, func(*sdk.StageContext) error { return nil })
 
 	// ★ 2026-11-04：原先这里用 `h.mu.RLock(); h.stages[...]` 直接读私有字段，
@@ -61,7 +61,7 @@ func TestUnregisterPluginStages_DropsEmptyStage(t *testing.T) {
 
 // 空插件名不得误摘内核自身注册的 handler。
 func TestUnregisterPluginStages_EmptyNameIsNoop(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 	ran := 0
 	h.RegisterStage(sdk.StagePreAction, func(*sdk.StageContext) error { ran++; return nil })
 
@@ -76,7 +76,7 @@ func TestUnregisterPluginStages_EmptyNameIsNoop(t *testing.T) {
 
 // 工具与 stage 的摘除互不干扰：都摘完后两者皆空。
 func TestUnregisterPluginToolsAndStages_Together(t *testing.T) {
-	h := agent.NewStageHost()
+	h := kit.NewStageHost()
 	if err := h.RegisterTool("demo_run", sdk.ToolDef{Name: "demo_run", Plugin: "demo"},
 		func(map[string]interface{}) (interface{}, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
