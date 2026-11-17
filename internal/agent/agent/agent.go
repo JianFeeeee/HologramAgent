@@ -12,7 +12,6 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
-	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -452,7 +451,7 @@ type AgentConfig struct {
 	//
 	// ★ 用户裁定：原始总线只被安全模块持有 ⇒ agent 不存裸总线，
 	//   构造期把它包成带身份的发布代理（`publisher`）。
-	EventBus        *events.Bus
+	EventBus        kernelapi.EventBus
 	ThinkingEnabled bool
 
 	InputProcessing types.InputProcessingConfig // 非文本输入处理配置

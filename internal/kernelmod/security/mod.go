@@ -74,8 +74,15 @@ func setPreparedRuntime(rt *sec.Runtime) {
 type Module struct{}
 
 func (Module) Name() string       { return "security" }
-func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
-func (Module) Provides() []string { return []string{kernelmod.FacSecurity} }
+func (Module) Requires() []string {
+	// ★ 需要裸总线（FacEventBusRaw）才能劫持它、并把代理面注册到 FacEventBus。
+	// 这是**装配期的依赖**（新增一条边，属于装配语义的正常变化：安全模块
+	// 确实需要总线才装得上闸门）。分层会把它排到 kernel-api 之后。
+	return []string{kernelmod.FacConfig, kernelapi.FacEventBusRaw}
+}
+func (Module) Provides() []string {
+	return []string{kernelmod.FacSecurity, kernelapi.FacEventBus}
+}
 
 func (Module) Init(ks *kstate.State) error {
 	if ks.DataDir == "" {
@@ -104,15 +111,25 @@ func (Module) Init(ks *kstate.State) error {
 	// ★ 事件总线从挂载点取（kstate 不持有模块类型）。
 	// 必须装在这里而不是只在 SDK 层：插件有四条路径能拿裸总线，
 	// 不装在总线上"安全监控"就只对合规者生效。
-	if busImpl, ok := ks.Require(kernelapi.FacEventBus); ok {
-		if bus, _ := busImpl.(*events.Bus); bus != nil {
-			if g := sec.AsEventGuard(rt); g != nil {
-				bus.SetGuard(g)
-			}
-			if rt.Enabled() {
-				bus.Publish(secReadyEvent(rt))
-			}
-		}
+	// ★ 取的是 **Raw**（裸总线）：装配侧只有两个地方能碰到它 —— 创建它的
+	//   kernel-api，和这里（劫持它 + 把它挡在消费方可达面之外）。
+	rawBus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBusRaw).(*events.Bus)
+	if rawBus == nil {
+		return fmt.Errorf("security: facility %q is not provided - the kernel-api module "+
+			"must create the raw event bus first", kernelapi.FacEventBusRaw)
+	}
+	// ① 劫持原始接口：授权 + 出入向脱敏都在总线内部生效（已有能力）。
+	if g := sec.AsEventGuard(rt); g != nil {
+		rawBus.SetGuard(g)
+	}
+	// ② 注册代理面：此后消费方 `Require(FacEventBus)` 拿到的只有它。
+	proxy := sec.AsEventBus(rawBus, "")
+	if proxy == nil {
+		return fmt.Errorf("security: failed to register the event bus proxy")
+	}
+	ks.Provide(kernelapi.FacEventBus, proxy)
+	if rt.Enabled() {
+		rawBus.Publish(secReadyEvent(rt))
 	}
 	return nil
 }

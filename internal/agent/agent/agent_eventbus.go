@@ -29,13 +29,14 @@ import (
 	"log"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
 // agentEventBus 是 agent 的事件发布代理（身份 = 本 agent 的 id）。
 //
 // ★ 它**不是** `*events.Bus`：拿不到裸总线，就绕不过闸门。
 type agentEventBus struct {
-	bus  *events.Bus
+	bus  kernelapi.EventBus
 	who  string
 	name string
 }
@@ -44,7 +45,7 @@ type agentEventBus struct {
 //
 // bus 为 nil 时保持 nil（单测/独立工具没有总线）——发布变成 no-op，
 // 与"未装配"语义一致（静默不做，而不是 panic）。
-func (a *Agent) SetEventBus(bus *events.Bus, pluginName string) {
+func (a *Agent) SetEventBus(bus kernelapi.EventBus, pluginName string) {
 	if a == nil || bus == nil {
 		return
 	}

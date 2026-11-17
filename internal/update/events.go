@@ -19,13 +19,14 @@ import (
 	"fmt"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
 // publishProgress 发布一个升级步骤（kernel 或 plugin）。
 //
 // scope: "kernel" | "plugin"; name: 插件名（kernel 时为空）
 // step:  verify / backup / replace / restart / verify_version / rollback / done / failed
-func publishProgress(bus *events.Bus, scope, name, step, detail string) {
+func publishProgress(bus kernelapi.EventBus, scope, name, step, detail string) {
 	if bus == nil {
 		return
 	}
@@ -52,7 +53,7 @@ func publishProgress(bus *events.Bus, scope, name, step, detail string) {
 //
 // ★ 顺序约定：调用方必须在动作**之前**发事件（见文件头注释）。
 // 成功路径也一样：result 发出后调用方可能立即重启，进程随即消失。
-func publishResult(bus *events.Bus, scope, name string, ok bool, from, to string, rolledBack bool, errMsg string) {
+func publishResult(bus kernelapi.EventBus, scope, name string, ok bool, from, to string, rolledBack bool, errMsg string) {
 	if bus == nil {
 		return
 	}
@@ -72,7 +73,7 @@ func publishResult(bus *events.Bus, scope, name string, ok bool, from, to string
 }
 
 // publishCheck 发布一次更新检查结果（只读，不改动任何东西）。
-func publishCheck(bus *events.Bus, scope, name, current, latest string, hasUpdate bool, reason string) {
+func publishCheck(bus kernelapi.EventBus, scope, name, current, latest string, hasUpdate bool, reason string) {
 	if bus == nil {
 		return
 	}

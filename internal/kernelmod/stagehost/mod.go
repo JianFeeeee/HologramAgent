@@ -12,7 +12,6 @@ package stagehost
 import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
-	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
@@ -47,7 +46,8 @@ func (Module) Init(ks *kstate.State) error {
 	// 依赖的产物从挂载点取（编译期只认 kernelapi 的接口/具名设施，不 import 实现）：
 	// 这里的断言是**装配契约**——缺了就响亮失败，不许静默降级。
 	iom := kernelmod.MustValue[*agentIO.IOManager](ks, kernelapi.FacKernelIO)
-	evBus := kernelmod.MustValue[*events.Bus](ks, kernelapi.FacEventBus)
+	// ★ 取的是**代理面**（FacEventBus），不是裸总线（第⑥次裁定）。
+	evBus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(kernelapi.EventBus)
 	docStore := kernelmod.MustValue[*coldcontext.Store](ks, kernelapi.FacDocStore)
 	knowledgeStore := kernelmod.MustValue[*knowledge.Store](ks, kernelapi.FacKnowledge)
 	textMem := kernelmod.MustValue[*text.Memory](ks, kernelapi.FacTextMem)

@@ -22,14 +22,22 @@ type Module struct{}
 
 func (Module) Name() string       { return "kernel-api" }
 func (Module) Requires() []string { return nil }
-func (Module) Provides() []string { return []string{kernelmod.FacKernelIO} }
+func (Module) Provides() []string {
+	// FacEventBusRaw 是本模块**创建**的裸总线（第⑥次裁定：它只给 security 取，
+	// 由 security 劫持后把代理面注册到 FacEventBus）。
+	return []string{kernelmod.FacKernelIO, kernelapi.FacEventBusRaw}
+}
 
 func (Module) Init(ks *kstate.State) error {
 	iom := agentIO.NewIOManager()
 	evBus := events.NewBus()
 	log.Printf("[homed] kernel API ready: IOManager + EventBus")
 	ks.Provide(kernelapi.FacIO, iom)
-	ks.Provide(kernelapi.FacEventBus, evBus)
+	// ★ 裸总线只挂在 **Raw** 名下（2026-11-17 第⑥次裁定）：
+	//   `FacEventBus` 留给安全模块注册的**代理面**，消费方只能取到代理。
+	//   本模块是**创建者**，装配侧的 security 是**劫持者**，两者是仅有的
+	//   两个能碰到裸总线的地方。
+	ks.Provide(kernelapi.FacEventBusRaw, evBus)
 	return nil
 }
 

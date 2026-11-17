@@ -442,7 +442,7 @@ func planCatalog(ks *kstate.State) *PluginCatalog {
 // 订阅者（如 seq 的开机序列）不会自动执行。**必须可见** ——
 // 静默失败会让"为什么开机序列没跑"完全无从查起。
 func publishToolsReady(ks *kstate.State) {
-	bus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(*events.Bus)
+	bus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(kernelapi.EventBus)
 	if ks == nil || bus == nil {
 		log.Printf("[pluginhost] tools_ready NOT published: EventBus is not provided " +
 			"(subscribers such as seq boot sequences will not run)")

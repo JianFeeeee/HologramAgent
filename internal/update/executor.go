@@ -32,6 +32,7 @@ import (
 	"sync"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
 // executor 是内核侧的升级执行器实例（进程级单例）。
@@ -51,7 +52,7 @@ var kernelExec = &executor{}
 //
 // bus 为空时什么也不做（未接总线的宿主，如部分单测）。
 // 返回的 cleanup 用于关停时退订。
-func AttachExecutor(bus *events.Bus, dataDir string) func() {
+func AttachExecutor(bus kernelapi.EventBus, dataDir string) func() {
 	if bus == nil {
 		return func() {}
 	}
@@ -93,7 +94,7 @@ func AttachExecutor(bus *events.Bus, dataDir string) func() {
 // 升级会替换二进制并请求重启，本进程随后消失。事件处理器是**同步投递**的
 // （events.Bus.Publish 直接调 handler），在处理器里同步做完会让发布方卡住
 // 直到进程被杀。
-func handleUpdateRequest(evt *events.Event, dataDir string, bus *events.Bus) {
+func handleUpdateRequest(evt *events.Event, dataDir string, bus kernelapi.EventBus) {
 	if evt == nil || evt.Payload == nil {
 		return
 	}
@@ -131,7 +132,7 @@ func handleUpdateRequest(evt *events.Event, dataDir string, bus *events.Bus) {
 //
 // 流程：解析来源 → 形态闸门 → 取包 → Apply（写 pending + 原子替换）。
 // **不重启**：重启由调用方走 KernelControlAPI（restartCh → exit 42）。
-func RunUpgrade(pkgPath string, release bool, dataDir string, bus *events.Bus) error {
+func RunUpgrade(pkgPath string, release bool, dataDir string, bus kernelapi.EventBus) error {
 	src, err := ParseSource(pkgPath, release)
 	if err != nil {
 		publishResult(bus, "kernel", "", false, "", "", false, err.Error())

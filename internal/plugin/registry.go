@@ -20,7 +20,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
-	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
@@ -105,7 +105,7 @@ type Registry struct {
 	sdkRefs           map[string]*sdk.PluginSDK
 
 	iom              *agentIO.IOManager
-	evBus            *events.Bus
+	evBus            kernelapi.EventBus
 	memDB            *memory.GraphDB
 	textMem          *text.Memory
 	coldcontextStore *coldcontext.Store
@@ -242,7 +242,7 @@ func (r *Registry) SetIOManager(iom *agentIO.IOManager) {
 	r.iom = iom
 }
 
-func (r *Registry) SetEventBus(evBus *events.Bus) {
+func (r *Registry) SetEventBus(evBus kernelapi.EventBus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.evBus = evBus
@@ -585,7 +585,7 @@ type sdkDeps struct {
 	dataDir          string
 	cfgReg           *internalConfig.ConfigRegistry
 	iom              *agentIO.IOManager
-	evBus            *events.Bus
+	evBus            kernelapi.EventBus
 	memDB            *memory.GraphDB
 	textMem          *text.Memory
 	coldcontextStore *coldcontext.Store
@@ -676,7 +676,7 @@ func (r *Registry) toolCleanerOrNil() PluginToolCleaner {
 	return tc
 }
 
-func (r *Registry) eventBusOrNil() *events.Bus {
+func (r *Registry) eventBusOrNil() kernelapi.EventBus {
 	r.mu.RLock()
 	bus := r.evBus
 	r.mu.RUnlock()

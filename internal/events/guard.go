@@ -26,22 +26,20 @@ package events
 //
 // 这与 syncbus 的「内核可写 / 插件只读」是同一思路：类型层面表达边界。
 
-import "fmt"
+import (
+	"fmt"
 
-// Publisher 是事件发布/订阅的主体身份。
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
+)
+
+// Publisher 是事件发布/订阅的主体身份（声明点见 kernelapi/model）。
 //
 // ★ 为什么必须显式传：没有身份就无法判定"这个 plugin 能不能发这个事件"。
 // 空身份 = 内核内部（内核模块自己发布时不需要授权）。
-type Publisher struct {
-	// Name 是插件名；空串表示**内核内部**。
-	//
-	// 内核模块（update / device / pluginhost / agent）发布系统事件时
-	// 不填 Name —— 它们本身就是可信的执行体，且没有"插件名"这个身份。
-	Name string
-}
+type Publisher = model.Publisher
 
-// IsKernel 报告该发布者是否内核内部。
-func (p Publisher) IsKernel() bool { return p.Name == "" }
+// IsKernel 报告该发布者是否内核内部（别名提升，保留包级入口）。
+func IsKernel(p Publisher) bool { return p.IsKernel() }
 
 // Guard 是总线闸门：判定某个主体能否发布/订阅某事件。
 //

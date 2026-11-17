@@ -28,9 +28,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JianFeeeee/HologramAgent/internal/events"
-
 	"github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/systemd"
 )
 
@@ -515,7 +514,7 @@ func KernelDataDir() string {
 
 var (
 	eventBusMu sync.RWMutex
-	eventBus   *events.Bus
+	eventBus   kernelapi.EventBus
 )
 
 // SetEventBus 由内核适配层在启动时注入事件总线。
@@ -531,14 +530,14 @@ var (
 //	· 插件调用 Apply 不用再碰总线（传 nil 即可）
 //	· 进度事件由**内核子系统**以内核身份发出（Source="update"），语义也正确
 //	· 插件侧再没有理由持有 *events.Bus
-func SetEventBus(b *events.Bus) {
+func SetEventBus(b kernelapi.EventBus) {
 	eventBusMu.Lock()
 	defer eventBusMu.Unlock()
 	eventBus = b
 }
 
 // eventBusOr 返回传入的总线；为空时退回内核注入的那个。
-func eventBusOr(b *events.Bus) *events.Bus {
+func eventBusOr(b kernelapi.EventBus) kernelapi.EventBus {
 	if b != nil {
 		return b
 	}

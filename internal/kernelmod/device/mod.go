@@ -80,7 +80,7 @@ func (Module) Init(ks *kstate.State) error {
 	host.MountDevice(rt)
 
 	if busImpl, ok := ks.Require(kernelapi.FacEventBus); ok {
-		if bus, _ := busImpl.(*events.Bus); bus != nil {
+		if bus, _ := busImpl.(kernelapi.EventBus); bus != nil {
 			bus.Publish(&events.Event{
 				Type:   events.EventDeviceReady,
 				Source: "kernelmod/device",

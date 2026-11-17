@@ -47,8 +47,13 @@ const (
 	FacKernelIO = "kernel-io"
 	// FacIO 是 IO 抽象层的**具名能力**（与 FacKernelIO 同值语义，供 Require 使用）。
 	FacIO = "kernel-io"
-	// FacEventBus 是事件总线（kernel-io 模块提供，类型 EventBus）。
+	// FacEventBus 是事件总线的**代理面**（安全模块注册；消费方唯一的取用入口）。
 	FacEventBus = "eventbus"
+	// FacEventBusRaw 是**裸总线**（kernel-io 模块创建；只有 security 取它，
+	// 用来挂闸门并把它挡在消费方可达面之外）。消费方**不得**使用本设施名。
+	//
+	// ★ 名字本身就是一条纪律：能取到 Raw 的只有装配侧的 security。
+	FacEventBusRaw = "eventbus.raw"
 	// FacMemory 是图记忆（memory 模块提供，类型 GraphMemory）。
 	FacMemory = "memory"
 	// FacMemoryIndexer 是记忆索引器（memory 模块提供）。
@@ -320,9 +325,31 @@ type MultimodalSpace interface {
 
 // ───────────────────────── 事件总线 ─────────────────────────
 
-// EventBus 是内核事件总线（发布面）。
+// EventBus 是内核事件总线的**消费面**（2026-11-17 第⑥次裁定）。
+//
+// ★ 它是**安全模块注册的代理面**，不是裸总线的形状：
+//
+//	设施表 `FacEventBus` 上放的就是它，裸总线退到 `FacEventBusRaw`
+//	（只有 security 取，用来劫持与挡在表外）。
+//
+// ★ 方法集刻意与总线的既有 API **同形**（Publish / Subscribe 同签名、同语义），
+//
+//	于是调用点的写法一行不用改 —— 换的是实现，不是调用约定。
+//
+// 契约要点：
+//
+//	· 发布/订阅都要带**主体身份**（空身份 = 内核内部）
+//	· 授权与出入向脱敏由代理在**发布时刻**完成；被拒必须能被调用方观察到
+//	· 投递（投给谁、按什么顺序）由事件循环推动，不属于本接口的职责
 type EventBus interface {
+	// Publish 发布一条事件（内核身份）。
 	Publish(evt *model.Event)
+	// PublishAs 以指定主体身份发布；被拒返回错误（不能静默丢弃）。
+	PublishAs(p model.Publisher, evt *model.Event) error
+	// Subscribe 以内核身份订阅，返回退订函数。
+	Subscribe(eventType model.EventType, handler model.Handler) func()
+	// SubscribeAs 以指定主体身份订阅；被拒返回错误与空退订函数。
+	SubscribeAs(p model.Publisher, eventType model.EventType, handler model.Handler) (func(), error)
 }
 
 // ───────────────────────── 安全闸门 ─────────────────────────

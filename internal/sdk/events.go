@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -52,7 +53,7 @@ const (
 
 type eventsAPI struct {
 	pluginName string
-	bus        *events.Bus
+	bus        kernelapi.EventBus
 	sec        *security.Runtime // 可 nil：未装配时按**默认策略**（最小集合）判定
 	unsubs     []func()
 	// unavailable 非空表示宿主没接总线：Publish/Subscribe 一律返回该原因。
@@ -65,7 +66,7 @@ type eventsAPI struct {
 // 返回 nil 会让 `s.Events().Publish(...)` 在未接总线的宿主里直接 panic
 // （实测：internal/plugins 的集成测试在 loadOne 阶段崩在 clawhubadapter 上）。
 // 插件不该为"宿主没接总线"写 nil 判断——那是一个该报错、而不是该崩溃的状态。
-func newEventsAPI(pluginName string, bus *events.Bus, rt *security.Runtime) pubsdk.EventsAPI {
+func newEventsAPI(pluginName string, bus kernelapi.EventBus, rt *security.Runtime) pubsdk.EventsAPI {
 	// sec 由内核注入（不再读 RuntimeGlobal 包级单例）。
 	api := &eventsAPI{pluginName: pluginName, bus: bus, sec: rt}
 	if bus == nil {

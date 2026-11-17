@@ -4,9 +4,18 @@ import (
 	"fmt"
 	"log"
 	"sync"
+
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
-type EventType string
+// EventType / Event / Publisher / Handler 的**声明点**在 kernelapi/model
+// （接口层的共享值模型）。这里做别名：实现包反向依赖值模型，调用点零改动。
+//
+// ★ 为什么必须这样（2026-11-17 第⑥次裁定）：安全模块注册的代理面要成为
+//
+//	**唯一选择**，而它的契约由 `kernelapi`（叶子包）声明 —— 叶子包不能
+//	import 本实现包，所以事件的值类型必须声明在更底层。
+type EventType = model.EventType
 
 const (
 	EventRawInput      EventType = "raw_input"
@@ -163,18 +172,29 @@ const (
 	EventAll EventType = "*"
 )
 
-type Event struct {
-	Type      EventType              `json:"type"`
-	Source    string                 `json:"source"`
-	Payload   map[string]interface{} `json:"payload"`
-	Timestamp int64                  `json:"timestamp"`
-}
+type Event = model.Event
 
-type Handler func(event *Event)
+type Handler = model.Handler
 
 type Bus struct {
 	mu   sync.RWMutex
 	subs map[EventType][]Handler
+
+	// dispatch 是**投递驱动者**（可 nil = 当场同步投递，即改造前的行为）。
+	//
+	// ★ 用户裁定（2026-11-17 第⑤次）：「publish，订阅这些现在这样就行，
+	//   只不过 eventbus 的路由过程由 eventloop 推动了」。
+	//   ⇒ 总线的 API 面（Publish/Subscribe/闸门/订阅表）一律不动；
+	//     只有「这条事件投给谁、按什么顺序投」这一步交给事件循环来推动。
+	//
+	// 为什么是"驱动者"而不是"异步化 Publish"：
+	//
+	//	· 闸门判定必须发生在**发布时刻**（DeniedError 要能当场返回给调用方），
+	//	  这是既有契约，不能因为换驱动者就变成"发了、没反应"
+	//	· 投递才是有可能耗时的部分（订阅者可能做 IO / 慢解析）
+	//
+	// 所以 dispatch 只在"闸门已放行、载荷已脱敏"之后被调用一次。
+	dispatch Dispatcher
 
 	// guard 是**总线闸门**（可 nil = 不设闸门）。
 	//
@@ -184,6 +204,35 @@ type Bus struct {
 	//
 	// 现在：Publish / Subscribe 本身先问 guard，绕不过去。
 	guard Guard
+}
+
+// Dispatcher 是**投递驱动者**的契约（由事件循环实现）。
+//
+// 语义：把一次已过闸、已脱敏的投递"推动"出去。
+// 实现可以是异步队列，也可以是当场同步（后者即改造前的行为）。
+//
+// ★ 它**不**负责授权与脱敏：那两步已在 publishAs 里完成，传进来的
+// handlers/evt 已经是"可以被看见的东西"。把闸门放进 Dispatcher 会让
+// "被拒"变成投递期才知道，而调用方那时早已返回。
+type Dispatcher interface {
+	// Dispatch 把事件投给这批订阅者。
+	Dispatch(evt *Event, handlers []Handler)
+}
+
+// SetDispatcher 注入投递驱动者（由事件循环在启动时调用一次）。
+//
+// 传 nil 恢复"当场同步投递"（改造前的行为，单测/独立工具用）。
+func (b *Bus) SetDispatcher(d Dispatcher) {
+	b.mu.Lock()
+	b.dispatch = d
+	b.mu.Unlock()
+}
+
+// Dispatcher 返回当前投递驱动者（可能 nil = 同步当场投递）。
+func (b *Bus) Dispatcher() Dispatcher {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.dispatch
 }
 
 func NewBus() *Bus {
@@ -256,16 +305,25 @@ func (b *Bus) publishAs(p Publisher, evt *Event) error {
 	}
 
 	b.mu.RLock()
+	d := b.dispatch
 	allHandlers := make([]Handler, len(b.subs[EventAll]))
 	copy(allHandlers, b.subs[EventAll])
 	typeHandlers := make([]Handler, len(b.subs[evt.Type]))
 	copy(typeHandlers, b.subs[evt.Type])
 	b.mu.RUnlock()
 
-	for _, h := range allHandlers {
-		b.safeCall(h, evt)
+	// 两轮全部订阅者合成一批（顺序：通配在前、类型在后，与改造前一致）。
+	handlers := make([]Handler, 0, len(allHandlers)+len(typeHandlers))
+	handlers = append(handlers, allHandlers...)
+	handlers = append(handlers, typeHandlers...)
+
+	// ★ 投递由**驱动者**推动（事件循环 / 缺省同步）。
+	//   闸门与脱敏已在上面做完了 —— 到这里事件已经"可以被人看见"。
+	if d != nil {
+		d.Dispatch(evt, handlers)
+		return nil
 	}
-	for _, h := range typeHandlers {
+	for _, h := range handlers {
 		b.safeCall(h, evt)
 	}
 	return nil

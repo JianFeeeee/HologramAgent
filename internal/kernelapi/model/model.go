@@ -653,8 +653,18 @@ type Event struct {
 
 // Publisher 是发布/订阅的主体身份（Name 空 = 内核内部）。
 type Publisher struct {
+	// Name 是插件名；空串表示**内核内部**（内核模块发布系统事件时的身份）。
 	Name string
 }
+
+// IsKernel 报告该发布者是否内核内部。
+func (p Publisher) IsKernel() bool { return p.Name == "" }
+
+// Handler 是事件订阅处理器（声明点与事件值类型同处，供接口层命名契约）。
+//
+// ★ 用**具名类型**而不是裸 func：接口方法集要能被叶子包逐字声明，
+// 而调用方写匿名函数时仍可直接传入（同一底层类型 ⇒ 可赋值）。
+type Handler func(*Event)
 
 // ───────────────────────── 安全闸门口径 ─────────────────────────
 

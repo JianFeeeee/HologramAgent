@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
 // binVersion 是 homed --version 的输出。
@@ -305,7 +305,7 @@ func FileSize(p string) int64 {
 // 每个文件都记了 sha256，还原后逐一校对；只有全部对上才清 marker。
 // 这不是“多抄一遍”，“重新读版本”在旧内核上根本做不到 —— 旧内核没有
 // `--version`，而旧内核恰恰是最常见的回滚目标。
-func Apply(root, binPath, newDG, dataDir string, bus *events.Bus) (*Outcome, error) {
+func Apply(root, binPath, newDG, dataDir string, bus kernelapi.EventBus) (*Outcome, error) {
 	// ★ 调用方可以传 nil：内核在启动时 SetEventBus 注入过总线，
 	// 这里取回那份（插件不再需要持有 *events.Bus）。
 	bus = eventBusOr(bus)

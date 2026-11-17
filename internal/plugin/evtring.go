@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -16,8 +17,10 @@ import (
 // 不改 Bus 自身结构（保护零 API 变动）。
 type EventRing struct {
 	ring *proc.EvtRing
-	bus  *events.Bus
-	efd  int
+	// bus 是**安全模块注册的代理面**（第⑥次裁定：代理是唯一选择）。
+	// 本适配层只需要 Subscribe 一个动作，所以收成接口而不持裸总线。
+	bus kernelapi.EventBus
+	efd int
 
 	// unsubs 保存全部已注册订阅的取消函数。
 	//
@@ -36,7 +39,7 @@ type EventRing struct {
 	unsubs []func()
 }
 
-func NewEventRing(ring *proc.EvtRing, efd int, bus *events.Bus) *EventRing {
+func NewEventRing(ring *proc.EvtRing, efd int, bus kernelapi.EventBus) *EventRing {
 	return &EventRing{ring: ring, bus: bus, efd: efd}
 }
 

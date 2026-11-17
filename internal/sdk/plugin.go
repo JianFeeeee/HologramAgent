@@ -9,6 +9,7 @@ import (
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
@@ -194,7 +195,7 @@ type PluginSDK struct {
 	llm      LLMAPI
 
 	iom       *agentIO.IOManager
-	eventBus  *events.Bus
+	eventBus  kernelapi.EventBus
 	events    pubsdk.EventsAPI
 	logger    *log.Logger
 	pluginMgr PluginManager
@@ -370,7 +371,9 @@ type AudioURL = pubsdk.AudioURL
 // SDKConfig holds all dependencies for creating a PluginSDK.
 type SDKConfig struct {
 	IOManager *agentIO.IOManager
-	EventBus  *events.Bus
+	// EventBus 是**安全模块注册的代理面**（第⑥次裁定：代理是唯一选择）。
+	// sdk 不需要裸总线：它只需要 PublishAs / SubscribeAs 两个动作。
+	EventBus kernelapi.EventBus
 	// SecurityRuntime 是安全运行时（插件事件闸门 + 档位声明需要它）。
 	//
 	// ★ 注入而不是让 sdk 读 security.RuntimeGlobal() 包级单例：
@@ -621,7 +624,8 @@ func (s *PluginSDK) Publish(evt *events.Event) {
 //	之前返回 *events.Bus 的后果是任何插件都能调 bus.Publish(伪造事件)
 //	而不经任何授权 —— 那正是“安全监控可被绕过”的根源。
 type BusHandle struct {
-	bus  *events.Bus
+	// bus 是**安全模块的代理面**（第⑥次裁定：代理是唯一选择）。
+	bus  kernelapi.EventBus
 	name string
 }
 

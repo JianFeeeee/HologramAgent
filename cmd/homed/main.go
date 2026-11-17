@@ -5,7 +5,6 @@ import (
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
-	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
@@ -264,12 +263,13 @@ func main() {
 	// 而升级内核这件事不能依赖一个可被禁用的部件。
 	// ★ 注入事件总线（升级进度/结果都要发出去）。
 	//
-	// 注入后 internal/update 以内核身份发事件，**插件不再需要持有 *events.Bus**
-	// —— 那正是“安全监控可被绕过”的根源（拿裸总线就能伪造任意事件）。
+	// 注入的是**安全模块的代理面**（`FacEventBus`），不是裸总线 ——
+	// 第⑥次裁定：「是让安全模块代理的接口成为唯一选择」。
+	// 升级闭环只发不收，代理面已足够。
 	// ★ 能力全部从挂载点按具名设施取（kstate 不持有模块类型）。
-	evBus := kernelmod.MustValue[*events.Bus](ks, kernelapi.FacEventBus)
-	updatepkg.SetEventBus(evBus)
-	defer updatepkg.AttachExecutor(evBus, ks.DataDir)()
+	rawBus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(kernelapi.EventBus)
+	updatepkg.SetEventBus(rawBus)
+	defer updatepkg.AttachExecutor(rawBus, ks.DataDir)()
 
 	cfg := ks.Cfg
 	ctx := ks.Ctx
