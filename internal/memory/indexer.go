@@ -183,20 +183,6 @@ func (idx *Indexer) syncIfStale() bool {
 	return true
 }
 
-type InjectedContext struct {
-	Entities      []Entity   `json:"entities"`
-	Relations     []Relation `json:"relations"`
-	Summary       string     `json:"summary"`
-	TokenEstimate int        `json:"token_estimate"`
-
-	// Scenes 是本轮识别出的当前场景；SceneRelations 是被钉在这些场景上的
-	// 记忆（带 relation_type 与原句）。两者都进注入文本——场景记忆是
-	// **带条件的规则**，只给实体名等于没召回。
-	Scenes         []string      `json:"scenes,omitempty"`
-	SceneRelations []Relation    `json:"scene_relations,omitempty"`
-	SceneBlocks    []MemoryBlock `json:"scene_blocks,omitempty"`
-}
-
 // BuildContext 不带场景的召回（保持既有行为：词法 + 实体名向量）。
 func (idx *Indexer) BuildContext(userInput string) *InjectedContext {
 	return idx.BuildContextInScene(userInput, nil)

@@ -30,46 +30,8 @@ import (
 // 规模数据时优化是猜，本会话已经因此浪费过几轮。
 
 // BlockHit 是一条块召回的候选及相似度。
-type BlockHit struct {
-	Block MemoryBlock `json:"block"`
-	Score float64     `json:"score"`
-}
 
 // BlockRecallQuery 描述一次块召回请求。
-type BlockRecallQuery struct {
-	Vector []float64
-	// Fingerprint 是发起方所用向量空间的指纹。与库中块不一致的块会被
-	// **跳过**（不是报错）：库里可能同时存在两个空间的块（迁移期），
-	// 跳过才是正确的——拿新空间的查询向量去比旧空间的块向量，余弦值
-	// 没有任何意义，而且不会报错，只是"结果看起来还行但全是错的"。
-	Fingerprint string
-	TopK        int
-	// MinScore 低于此分数的候选被丢弃（0 表示不设下限）。
-	MinScore float64
-	// Modality 非空时只召回该模态的块（空 = 不限）。
-	//
-	// ★ 为何需要它（实测回归）：CAS 时代视觉路查 `FROM media`（只含媒体），
-	//   结构上不可能被文本块挤掉。块 union 化后视觉路改用本接口（全局
-	//   top-K，含数千文本块），而实测同一个 chineseclip 空间里：
-	//       查询「图片」→ 图像块 max cosine 0.377，文本块 max 1.000
-	//       查询「照片」→ 图像块 max 0.385，文本块 max 0.935
-	//   图片的绝对相似度天然低于字面相同的文本，per=200 时视觉路返回
-	//   1000 条里**图像块 0 条** —— 视觉路被彻底饿死。
-	//   所以“取全局 top-K 再过滤掉文本块”是错的取法：过滤发生在截断之后。
-	//   必须在 SQL 层就限定模态，让 top-K 在目标模态内部竞争。
-	Modality BlockModality
-	// ExcludeText 为 true 时排除文本块（等价 Modality 取非文本全集，
-	// 用于“媒体块”语义；模态可能有 image/video/audio 多种）。
-	ExcludeText bool
-	// SkipCentroid 关闭中心化校正，直接用原始向量算余弦。
-	//
-	// 默认是要校正的：实测 chineseclip 的块向量均值范数 0.9374，
-	// 93.7% 的能量在同一个方向上，导致同属性不同值的分离度只有 0.0095
-	// （去均值后 0.0689，提升 7.3 倍）。而中心是**按需加载**的 ——
-	// 库里没建过中心、或中心已失效（块数变化 >20%）时自动跳过校正，
-	// 所以这个开关只在「明确知道中心存在却想绕开」时才需要。
-	SkipCentroid bool
-}
 
 // RecallBlocks 按向量相似度召回块节点。
 //

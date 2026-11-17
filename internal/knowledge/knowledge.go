@@ -16,65 +16,18 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
 
-type Knowledge struct {
-	Name      string            `json:"name"`
-	Content   string            `json:"content"`
-	Path      string            `json:"path"`
-	Category  string            `json:"category,omitempty"` // 父路径，如 "tech/go"
-	Tags      []string          `json:"tags"`
-	UpdatedAt time.Time         `json:"updated_at"`
-	Meta      map[string]string `json:"meta,omitempty"`
-
-	// Dense 是该条目在**多模态统一空间**（image ⊕ text 共享坐标系）里的向量。
-	// nil 表示未嵌入或嵌入失败——检索侧会被长度守卫跳过，退回流沙两路。
-	// 不落 content.md：它是可重算的派生数据，落盘只会多个会失效的副本。
-	Dense []float64 `json:"-"`
-	// DenseFP 是产生 Dense 的模型空间标识（≠ 当前 fingerprint 时视为过期）。
-	DenseFP string `json:"-"`
-	// Media 是本条目携带的媒体块（媒体是**一等节点**：由自己的向量参与
-	// 召回，不依赖任何生成的描述文本）。与 Dense 一同内存持有。
-	Media []MediaRef `json:"-"`
-}
-
 // MediaRef 是媒体在知识条目里的一等引用。Digest 是内容派生的媒体身份
 // （与记忆块的 `MediaBlockID` 同构：同内容⇒同 Digest），但**字节不在别处**：
 // 字节作为条目自带数据落在条目目录的 `File` 上（与 content.md 并列，随条目生灭）。
 // 向量不入侧车——它随条目在内存/稠密缓存里按需算。
 //
 // 命名为 KnowledgeMediaRef 而非 MediaRef，是为了不与别的包的类型撞名。
-type KnowledgeMediaRef struct {
-	Digest string `json:"digest"`
-	MIME   string `json:"mime"`
-	Kind   string `json:"kind,omitempty"`
-	// File 是媒体字节在**条目目录内**的相对文件名（随条目生灭）。
-	//
-	// ★ 2026-10-11 CAS 淘汰：媒体字节不再寄存于全局内容寻址库，而是作为
-	// 条目自带数据落在 entry 目录里（与 content.md、.media.json 并列）。
-	// Remove 的 os.RemoveAll 天然把它清掉，不留孤儿。
-	File string `json:"file,omitempty"`
-	// Data 是写入期的瞬态字节：putMediaFile → Write 之间搬运，Write 落盘后清空。
-	// json:"-" 保证它不进 .media.json 侧车（侧车只记引用，不记字节）。
-	Data []byte `json:"-"`
-}
 
 // KnowledgeMediaRef 的别名，照顾内部可读性。
-type MediaRef = KnowledgeMediaRef
 
 // IndexItem — 索引条目，包含向量特征和内容摘要
-type IndexItem struct {
-	Name    string             `json:"name"`
-	Preview string             `json:"preview"` // 前 200 字摘要
-	Tags    []string           `json:"tags"`
-	Vector  map[string]float64 `json:"vector"` // TF-IDF 特征向量（top-N 特征）
-	Size    int                `json:"size"`   // 内容总字节数
-}
 
 // TreeIndex — 树状索引节点
-type TreeIndex struct {
-	Name     string                `json:"name"`
-	Children map[string]*TreeIndex `json:"children,omitempty"`
-	Items    []IndexItem           `json:"items,omitempty"` // 此节点下的知识条目（含向量）
-}
 
 func newTreeIndex(name string) *TreeIndex {
 	return &TreeIndex{Name: name, Children: make(map[string]*TreeIndex)}

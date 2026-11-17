@@ -93,7 +93,7 @@ func SetPersonaKV(kv PersonaKV, mode, content string) (restartRequired bool, err
 }
 
 // RegistryPersonaStore 把配置注册表暴露成内核的 core.PersonaStore 接口
-// （结构类型：方法集匹配即可，无需 import internal/agent/core）。
+// （结构类型：方法集匹配即可，无需 import internal/agent/agent）。
 type RegistryPersonaStore struct{ Reg *ConfigRegistry }
 
 func (p RegistryPersonaStore) PersonaInitialized() bool { return PersonaInitialized(p.Reg) }

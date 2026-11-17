@@ -366,10 +366,10 @@ func (g *GraphDB) orphanEntitiesLocked() ([]Entity, error) {
 			&e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
-		// ★ ID 退化为序号；blockKey 才是真实块 ID
-		//   （PurgeOrphans 按 blockKey 删除 —— 见该函数注释）。
+		// ★ ID 退化为序号；BlockKey 才是真实块 ID
+		//   （PurgeOrphans 按 BlockKey 删除 —— 见该函数注释）。
 		e.ID = int64(len(out) + 1)
-		e.blockKey = blockID
+		e.BlockKey = blockID
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -403,17 +403,17 @@ func (g *GraphDB) PurgeOrphans(dryRun bool) (int, error) {
 	// ★★ 删的是**块**，不是旧表行（2026-10-04）
 	//
 	// orphanEntitiesLocked 已改扫 memory_blocks —— 它返回的 Entity.ID
-	// 是「本次查询内的序号」，blockKey 才是真实块 ID。
+	// 是「本次查询内的序号」，BlockKey 才是真实块 ID。
 	//
 	// 原实现把 e.ID 当旧表行号去 DELETE FROM entities ⇒ 删错对象
 	// （而删不到任何行时静默报 0）。
 	ids := make([]interface{}, 0, len(orphans))
 	for _, e := range orphans {
-		if e.blockKey == "" {
+		if e.BlockKey == "" {
 			// 没有块 ID = 不是块侧的孤立实体（理论上不该出现）
 			continue
 		}
-		ids = append(ids, e.blockKey)
+		ids = append(ids, e.BlockKey)
 	}
 	if len(ids) == 0 {
 		return 0, nil

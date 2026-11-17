@@ -369,7 +369,11 @@ for a, b in _DUALS:
 # 两侧都是 Go 常量字符串，扫一遍对账即可。
 import re as _re2
 
-_kfac = open("internal/kernelmod/facilities.go", encoding="utf-8").read()
+# ★ 设施名的**唯一声明点**已搬到 internal/kernelapi（纯接口叶子包）：
+# 常量与能力接口必须同居一个叶子，消费方才可能"只 import 接口"。
+# internal/kernelmod/facilities.go 保留同名常量但改为转发（对外 SDK 契约不变）。
+# ⇒ 对账必须扫**声明点**，否则会抽到 0 个（本门禁 2026-11-17 由此红过一次）。
+_kfac = open("internal/kernelapi/kernelapi.go", encoding="utf-8").read()
 _sfac = open("third_party/hologramagentsdk/sdk/facilities.go", encoding="utf-8").read()
 
 # 内核侧：Fac<Name> = "<value>"（只取「插件可依赖」那一段之前的部分）

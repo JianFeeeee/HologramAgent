@@ -4,6 +4,7 @@
 package lua
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"path/filepath"
 
@@ -34,10 +35,10 @@ func (Module) Init(ks *kstate.State) error {
 	}
 	if err := luaVM.Start(); err != nil {
 		log.Printf("[homed] warning: lua vm init failed: %v", err)
-		ks.LuaVM = luaVM
+		ks.Provide(kernelapi.FacLua, luaVM)
 		return nil // 与原语义一致：起不来只告警，仍交回实例
 	}
-	ks.LuaVM = luaVM
+	ks.Provide(kernelapi.FacLua, luaVM)
 	ks.AddCloser(luaVM.Stop)
 	return nil
 }

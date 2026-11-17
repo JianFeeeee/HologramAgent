@@ -2,8 +2,15 @@ package pluginhost
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
+	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"log"
 	"os"
 	"path/filepath"
@@ -48,9 +55,14 @@ func (Module) Provides() []string { return []string{FacPlugins} }
 
 func (Module) Init(ks *kstate.State) error {
 	// ── 前置检查（用户要求："nil 加读取前检查"）──
-	if ks.PluginRegistry == nil || ks.StageHost == nil {
-		return fmt.Errorf("plugin-host：ks.PluginRegistry/StageHost 为 nil —— " +
-			"stage-host 模块必须先完成（插件加载的硬前置）")
+	pluginReg, ok := kernelmod.MustValueAny(ks, kernelapi.FacPluginRegistry).(*plugin.Registry)
+	if !ok || pluginReg == nil {
+		return fmt.Errorf("plugin-host：facility %q 未提供 —— "+
+			"stage-host 模块必须先完成（插件加载的硬前置）", kernelapi.FacPluginRegistry)
+	}
+	if !ks.Has(kernelapi.FacStageHost) {
+		return fmt.Errorf("plugin-host：facility %q 未提供 —— "+
+			"stage-host 模块必须先完成（插件加载的硬前置）", kernelapi.FacStageHost)
 	}
 	if ks.Cfg == nil {
 		return fmt.Errorf("plugin-host：ks.Cfg 为 nil —— config 模块必须先完成")
@@ -66,7 +78,7 @@ func (Module) Init(ks *kstate.State) error {
 	dir := ks.Cfg.Plugin.Dir
 	os.MkdirAll(dir, 0o755)
 	catalog, noManifest := scanCatalog(dir, ks.CfgReg.IsPluginDisabled)
-	ks.PluginCatalog = catalog
+	ks.Provide(kernelapi.FacPluginCatalog, catalog)
 	// ★ 措辞必须准确（我第一版写成"跳过 N 个非插件目录" ⇒ **误导**）：
 	// 那些目录大多是**内置插件**（编译期工厂，本就没有 plugin.json，
 	// 由下面的 LoadSkipping 从工厂表加载）。只有既无 manifest
@@ -115,9 +127,11 @@ func (Module) Init(ks *kstate.State) error {
 	// 而未声明的**恢复原行为**（等内核完全初始化）。
 	var bus kstate.SyncState
 	var busConcrete *kstate.SyncBus // 保留具体类型以便订阅 OnUpdate
-	if ks.SyncBus != nil {
-		bus = ks.SyncBus
-		busConcrete = ks.SyncBus
+	if impl, ok := ks.Require(kernelapi.FacSyncBus); ok {
+		busConcrete, _ = impl.(*kstate.SyncBus)
+	}
+	if busConcrete != nil {
+		bus = busConcrete
 	} else {
 		// ★★ typed-nil 陷阱：`var nb *SyncBus; var i SyncState = nb`
 		// ⇒ i **非 nil** ⇒ 方法里解引用空指针 panic（实测复现）。
@@ -131,12 +145,12 @@ func (Module) Init(ks *kstate.State) error {
 	}
 
 	sched := kernelboot.NewScheduler(bus, func(spec kernelboot.PluginSpec) error {
-		return ks.PluginRegistry.LoadOneDir(filepath.Join(dir, spec.Name), spec.Name)
+		return pluginReg.LoadOneDir(filepath.Join(dir, spec.Name), spec.Name)
 	})
 	sched.SetLaunchErrorHandler(func(spec kernelboot.PluginSpec, err error) {
 		log.Printf("[pluginhost] warning: failed to start %s: %v", spec.Name, err)
 	})
-	ks.PluginScheduler = sched
+	ks.Provide(kernelapi.FacPluginScheduler, sched)
 
 	specs := buildSpecs(catalog, groups)
 	// Submit 返回"此刻就能拉起"的：
@@ -179,10 +193,10 @@ func (Module) Init(ks *kstate.State) error {
 			return
 		}
 		loadOnce.Do(func() {
-			if err := ks.PluginRegistry.LoadSkipping(dir, skip); err != nil {
+			if err := pluginReg.LoadSkipping(dir, skip); err != nil {
 				log.Printf("[pluginhost] warning: loading built-in/undeclared plugin: %v", err)
 			}
-			ks.PluginsReady = true
+			ks.Provide(kernelapi.FacPluginHostReady, true)
 			log.Printf("[pluginhost] kernel fully initialized -> loaded remaining plugins (%d built-in)",
 				len(noManifest))
 
@@ -299,13 +313,30 @@ func buildSkipSet(c *PluginCatalog, g formGroups) map[string]bool {
 // 由 agent 模块**后补注入**（见其注释）。这不是遗漏，是有意的分层：
 // 让插件加载不必等 agent 那 35 秒。
 func injectBaseDeps(ks *kstate.State) {
-	reg := ks.PluginRegistry
-	reg.SetLuaVM(ks.LuaVM)
-	reg.SetBaseAPIKey(ks.BaseAPIKey)
-	if ks.Supervisor != nil {
-		reg.SetSupervisor(supervisor.NewSDKAdapter(ks.Supervisor))
+	reg, _ := kernelmod.MustValueAny(ks, kernelapi.FacPluginRegistry).(*plugin.Registry)
+	if reg == nil {
+		return
 	}
-	reg.SetTracker(ks.Tracker)
+	if impl, ok := ks.Require(kernelapi.FacLua); ok {
+		if vm, _ := impl.(*luapkg.VM); vm != nil {
+			reg.SetLuaVM(vm)
+		}
+	}
+	if key, ok := ks.Require(kernelapi.FacBaseAPIKey); ok {
+		if s, _ := key.(string); s != "" {
+			reg.SetBaseAPIKey(s)
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacSupervisor); ok {
+		if sup, _ := impl.(*supervisor.Daemon); sup != nil {
+			reg.SetSupervisor(supervisor.NewSDKAdapter(sup))
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacTracker); ok {
+		if trk, _ := impl.(*tracker.Tracker); trk != nil {
+			reg.SetTracker(trk)
+		}
+	}
 	reg.SetConfig(ks.Cfg)
 	// 插件声明式系统提示词段：从内核挂载点取，注入给插件 SDK。
 	//
@@ -313,17 +344,21 @@ func injectBaseDeps(ks *kstate.State) {
 	// publishIndex 静默什么都不做 ⇒ 模型看不到任何 skill 索引。
 	// 而那正是本次重构要修的生产故障（分诊助手拿 terminal_create 当
 	// cmd_run 用）。症状是"静默不生效"，不是报错。
-	if ks.PromptSections != nil {
-		reg.SetPromptSections(ks.PromptSections)
+	if impl, ok := ks.Require(kernelapi.FacPromptSections); ok {
+		if sections, _ := impl.(*promptsec.Registry); sections != nil {
+			reg.SetPromptSections(sections)
+		}
 	}
 
 	// 变量库注入：sdk.SecretsAPI 桥接到它（不再读包级单例）。
 	// ks.Security 可能为 nil（未启用安全模块），那正是"不可用"语义。
-	if ks.Security != nil {
-		reg.SetSecretStore(ks.Security.Store())
-		// 同一个 Runtime 也供插件的事件闸门与档位声明面使用
-		// （原先是 sdk 自己读 RuntimeGlobal 包级单例）。
-		reg.SetSecurityRuntime(ks.Security)
+	if impl, ok := ks.Require(kernelapi.FacSecurity); ok {
+		if secRT, _ := impl.(*security.Runtime); secRT != nil {
+			reg.SetSecretStore(secRT.Store())
+			// 同一个 Runtime 也供插件的事件闸门与档位声明面使用
+			// （原先是 sdk 自己读 RuntimeGlobal 包级单例）。
+			reg.SetSecurityRuntime(secRT)
+		}
 	}
 	// StageHost 在挂载点里存 any（kstate 不依赖 agent/core，否则成环）。
 	// 断言成 sdk.ToolSource（plugin 真正需要的只读工具视图）。
@@ -331,14 +366,18 @@ func injectBaseDeps(ks *kstate.State) {
 	// 断言失败时**不静默跳过**：SetStageHost 不设的后果是插件加载后
 	// 工具表为空，而那与"插件没注册工具"无法区分。所以这里响亮记录。
 	// （Init 里已检查过 StageHost != nil，此处失败是类型不合约，属装配缺陷。）
-	if ts, ok := ks.StageHost.(sdk.ToolSource); ok && ts != nil {
-		reg.SetStageHost(ts)
-	} else {
-		log.Printf("[plugin-host] WARNING: ks.StageHost 未实现 sdk.ToolSource —— 插件工具将不可见")
+	if impl, ok := ks.Require(kernelapi.FacStageHost); ok {
+		if ts, ok := impl.(sdk.ToolSource); ok && ts != nil {
+			reg.SetStageHost(ts)
+		} else {
+			log.Printf("[plugin-host] WARNING: facility %q 未实现 sdk.ToolSource —— 插件工具将不可见", kernelapi.FacStageHost)
+		}
 	}
 
-	if ks.Memory != nil {
-		reg.SetIndexer(ks.Memory.Indexer)
+	if impl, ok := ks.Require(kernelapi.FacMemoryIndexer); ok {
+		if idx, _ := impl.(*memory.Indexer); idx != nil {
+			reg.SetIndexer(idx)
+		}
 	}
 }
 
@@ -381,7 +420,11 @@ func classify(c *PluginCatalog) formGroups {
 
 // loadOne 加载单个插件（走既有 LoadOneDir 路径，不绕过任何机制）。
 func loadOne(ks *kstate.State, dir, name string) (bool, error) {
-	if err := ks.PluginRegistry.LoadOneDir(filepath.Join(dir, name), name); err != nil {
+	reg, _ := kernelmod.MustValueAny(ks, kernelapi.FacPluginRegistry).(*plugin.Registry)
+	if reg == nil {
+		return false, fmt.Errorf("facility %q is not provided", kernelapi.FacPluginRegistry)
+	}
+	if err := reg.LoadOneDir(filepath.Join(dir, name), name); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -389,7 +432,7 @@ func loadOne(ks *kstate.State, dir, name string) (bool, error) {
 
 // planCatalog 取元数据缓存（类型断言集中一处，便于排查"缓存没建起来"）。
 func planCatalog(ks *kstate.State) *PluginCatalog {
-	c, _ := ks.PluginCatalog.(*PluginCatalog)
+	c, _ := kernelmod.MustValueAny(ks, kernelapi.FacPluginCatalog).(*PluginCatalog)
 	return c
 }
 
@@ -399,16 +442,17 @@ func planCatalog(ks *kstate.State) *PluginCatalog {
 // 订阅者（如 seq 的开机序列）不会自动执行。**必须可见** ——
 // 静默失败会让"为什么开机序列没跑"完全无从查起。
 func publishToolsReady(ks *kstate.State) {
-	if ks == nil || ks.EventBus == nil {
-		log.Printf("[pluginhost] tools_ready NOT published: EventBus is nil " +
+	bus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(*events.Bus)
+	if ks == nil || bus == nil {
+		log.Printf("[pluginhost] tools_ready NOT published: EventBus is not provided " +
 			"(subscribers such as seq boot sequences will not run)")
 		return
 	}
 	var loaded []string
-	if ks.PluginRegistry != nil {
-		loaded = ks.PluginRegistry.ListLoadedPlugins()
+	if reg, _ := kernelmod.MustValueAny(ks, kernelapi.FacPluginRegistry).(*plugin.Registry); reg != nil {
+		loaded = reg.ListLoadedPlugins()
 	}
-	ks.EventBus.Publish(&events.Event{
+	bus.Publish(&events.Event{
 		Type:   events.EventToolsReady,
 		Source: "plugin-host",
 		Payload: map[string]interface{}{

@@ -72,7 +72,7 @@ func (h *Handler) handleKernel(w http.ResponseWriter, r *http.Request) {
 // 不回答就是「稍后」：保留默认并打标记，不阻塞任何流程。
 //
 // 跨通道：这里只是 WebUI 侧的入口；任何通道的消息到来时，内核都会检查同一枚标记，
-// 未确认则在提示词里要求模型主动询问（见 internal/agent/core 的首启门禁）。
+// 未确认则在提示词里要求模型主动询问（见 internal/agent/agent 的首启门禁）。
 func (h *Handler) handlePersona(w http.ResponseWriter, r *http.Request) {
 	if h.settings == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "settings not available"})

@@ -5,6 +5,7 @@ package tracker
 
 import (
 	"errors"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"time"
 
@@ -41,7 +42,7 @@ func (Module) Init(ks *kstate.State) error {
 	} else {
 		log.Printf("[homed] change tracker active at %s", trk.MergeDir())
 	}
-	ks.Tracker = trk
+	ks.Provide(kernelapi.FacTracker, trk)
 	return nil
 }
 

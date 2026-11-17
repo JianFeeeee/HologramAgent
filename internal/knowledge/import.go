@@ -14,49 +14,8 @@ import (
 // ===== 从目录导入知识 =====
 
 // ImportOptions 是 ImportDir 的参数。
-type ImportOptions struct {
-	// Dir 是源目录，**必须是绝对路径**。
-	//
-	// 为什么强制绝对：agent 调工具时 cwd 不受控（内核 daemon 的 cwd 是
-	// 工作目录，不是 agent 心智模型里的那个"项目目录"）。相对路径会
-	// 静默导到错误的地方，而用户以为导的是他指定的目录。
-	Dir string
-
-	// Category 是**前缀叠加**在源目录结构之上的分类路径。
-	//
-	// 选"叠加"而非"替换"：替换会丢掉源目录本身的层级信息
-	//（导入 ~/docs/go/x.md 配 category=tech 得到 tech/x，
-	//  而"go" 这一层正是这份资料最有价值的组织信息）。
-	Category string
-
-	// DryRun 只统计不落盘。
-	DryRun bool
-
-	// MaxItems 限制本次导入条目数，0 用默认值。
-	// 防呆：agent 误传 "/" 或整个家目录时不会一次把盘灌满。
-	MaxItems int
-
-	// IncludeMedia 是否把图片/音视频一并导入（进媒体库、按 digest 引用）。
-	IncludeMedia bool
-}
 
 // ImportStats 是导入结果。
-type ImportStats struct {
-	// Imported 成功写入的条目数。
-	Imported int
-	// Skipped 因同名冲突跳过的条目数（**不覆盖已有知识**）。
-	Skipped int
-	// Failed 失败的条目数。
-	Failed int
-	// Media 是导入的媒体文件数。
-	Media int
-	// Truncated 表示因 MaxItems 被截断（agent 据此知道"没导完"）。
-	Truncated bool
-	// Names 是本次导入的知识名（dry_run 与成功路径都给，便于 agent 复核）。
-	Names []string
-	// Errors 记前若干条失败原因（不全量：失败成百上千时返回上万行没意义）。
-	Errors []string
-}
 
 // defaultImportMaxItems 是单次导入的默认上限。
 const defaultImportMaxItems = 500

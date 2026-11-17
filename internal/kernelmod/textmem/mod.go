@@ -21,6 +21,7 @@
 package textmem
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"path/filepath"
 
@@ -44,11 +45,11 @@ func (Module) Init(ks *kstate.State) error {
 	textMem := text.New(filepath.Join(ks.Cfg.Daemon.DataDir, "memory", "text"))
 	if err := textMem.Start(); err != nil {
 		log.Printf("[homed] warning: text memory start: %v", err)
-		ks.TextMemory = textMem
+		ks.Provide(kernelapi.FacTextMem, textMem)
 		return nil
 	}
 	log.Printf("[homed] text memory active at %s", filepath.Join(ks.Cfg.Daemon.DataDir, "memory", "text"))
-	ks.TextMemory = textMem
+	ks.Provide(kernelapi.FacTextMem, textMem)
 	// ★ 伪关机登记（迁移数据目录用）：text memory 的 rotationLoop 会周期性写盘。
 	ks.AddQuiescer("textmem",
 		func() error { return textMem.Pause() },

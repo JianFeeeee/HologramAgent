@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/ipc"
 	logpkg "github.com/JianFeeeee/HologramAgent/internal/log"

@@ -4,6 +4,7 @@
 package docstore
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"path/filepath"
 
@@ -29,7 +30,7 @@ func (Module) Init(ks *kstate.State) error {
 	// 关停时落盘：文档记忆的内存态变更（迁移结果、访问计数等）只在 flush 里写盘，
 	// 而 flush 的唯一入口是 Stop() —— 此前全仓无人调用它，
 	// 于是迁移结果永不落盘、每次启动白算一遍。
-	ks.DocStore = coldcontextStore
+	ks.Provide(kernelapi.FacDocStore, coldcontextStore)
 	ks.AddCloser(coldcontextStore.Stop)
 	return nil
 }

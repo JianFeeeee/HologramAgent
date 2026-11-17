@@ -6,8 +6,8 @@ package api
 //
 // 依赖图上有两个方向的需求：
 //
-//	internal/kernelmod/device → kernelboot → internal/agent/core
-//	internal/agent/core       → 需要满足 device 的 ToolHost 接口
+//	internal/kernelmod/device → kernelboot → internal/agent/agent
+//	internal/agent/agent       → 需要满足 device 的 ToolHost 接口
 //
 // 如果接口定义在 kernelmod/device，agent/core 就得 import 它 ⇒ **循环**。
 // 所以契约下沉到 agent/api（core 早已依赖它，而它不依赖任何内核模块）。

@@ -741,7 +741,7 @@ var seededPromptVersionLiteral = regexp.MustCompile(`HΔ-Kernel v\d+\.\d+\.\d+`)
 // 为什么必须改：内核发版不会去改配置项里的文本，写死的版本于是永远停留在
 // 装机那天（生产实测：内核 1.3.x 的实例自称 "v1.0.3"，用户当场发现）。
 // 改成 {{kernel_version}} 后由内核在组装系统提示词时按真实构建展开
-// （见 internal/agent/core.expandPromptVars）。
+// （见 internal/agent/agent.expandPromptVars）。
 //
 // 幂等由标记守住：本函数只在标记缺失时执行一次 —— 幂等语句不等于语义幂等，
 // 重复执行会把用户之后手工写回的版本号再改一次。

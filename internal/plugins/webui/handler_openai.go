@@ -345,7 +345,7 @@ type deltaItem struct {
 // isResetMarked 判定增量事件是否要求重置。
 //
 // 内核在「流式失败、回退到非流式」时会发一个 content="" + reset=true 的
-// 事件（见 internal/agent/core/process.go）。若忽略它，客户端会看到
+// 事件（见 internal/agent/agent/process.go）。若忽略它，客户端会看到
 // 半截内容后又接上完整内容（重复且自相矛盾）。
 func isResetMarked(payload map[string]interface{}) bool {
 	reset, _ := payload["reset"].(bool)

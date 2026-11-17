@@ -10,12 +10,20 @@
 package stagehost
 
 import (
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"log"
 	"strings"
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 
-	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
@@ -36,6 +44,16 @@ func (Module) Requires() []string {
 func (Module) Provides() []string { return []string{kernelmod.FacStageHost} }
 
 func (Module) Init(ks *kstate.State) error {
+	// 依赖的产物从挂载点取（编译期只认 kernelapi 的接口/具名设施，不 import 实现）：
+	// 这里的断言是**装配契约**——缺了就响亮失败，不许静默降级。
+	iom := kernelmod.MustValue[*agentIO.IOManager](ks, kernelapi.FacKernelIO)
+	evBus := kernelmod.MustValue[*events.Bus](ks, kernelapi.FacEventBus)
+	docStore := kernelmod.MustValue[*coldcontext.Store](ks, kernelapi.FacDocStore)
+	knowledgeStore := kernelmod.MustValue[*knowledge.Store](ks, kernelapi.FacKnowledge)
+	textMem := kernelmod.MustValue[*text.Memory](ks, kernelapi.FacTextMem)
+	memDB := kernelmod.MustValue[*memory.GraphDB](ks, kernelapi.FacMemory)
+	providerMgr := kernelmod.MustValue[*agentProvider.ProviderManager](ks, kernelapi.FacLLM)
+
 	stageHost := agentCore.NewStageHost()
 
 	// 插件声明式系统提示词段的注册表：本模块产出，挂到内核挂载点。
@@ -43,16 +61,17 @@ func (Module) Init(ks *kstate.State) error {
 	// ★ 不往下传参：读方（agent 模块、SDK）自己去 ks 取 ——
 	// 与 StageHost / PluginRegistry 完全同型。往构造点传指针会让
 	// "记得接这一根线"成为每种 agent 类型的义务（那正是之前的老毛病）。
-	ks.PromptSections = promptsec.NewRegistry()
+	promptSections := promptsec.NewRegistry()
+	ks.Provide(kernelapi.FacPromptSections, promptSections)
 
 	pluginReg := plugin.NewRegistry()
-	pluginReg.SetIOManager(ks.IO)
-	pluginReg.SetEventBus(ks.EventBus)
-	pluginReg.SetMemory(ks.Memory.DB)
-	pluginReg.SetTextMemory(ks.TextMemory)
-	pluginReg.SetDocStore(ks.DocStore)
-	pluginReg.SetKnowledge(ks.Knowledge)
-	pluginReg.SetProviderManager(ks.LLMManager)
+	pluginReg.SetIOManager(iom)
+	pluginReg.SetEventBus(evBus)
+	pluginReg.SetMemory(memDB)
+	pluginReg.SetTextMemory(textMem)
+	pluginReg.SetDocStore(docStore)
+	pluginReg.SetKnowledge(knowledgeStore)
+	pluginReg.SetProviderManager(providerMgr)
 	pluginReg.SetConfigRegistry(ks.CfgReg)
 	pluginReg.SetPluginDir(ks.Cfg.Plugin.Dir)
 	pluginReg.SetDataDir(ks.DataDir) // 插件 SettingsAPI.DataDir() 的数据根目录
@@ -68,8 +87,8 @@ func (Module) Init(ks *kstate.State) error {
 	pluginReg.SetAPIRegistrar(func(name string) error { return nil })
 	pluginReg.SetToolCleaner(stageHost)
 
-	ks.StageHost = stageHost
-	ks.PluginRegistry = pluginReg
+	ks.Provide(kernelapi.FacStageHost, stageHost)
+	ks.Provide(kernelapi.FacPluginRegistry, pluginReg)
 
 	// ★ 这两行必须在插件 Start（loadPlugins）**之前**设置：
 	// CLI 插件的 unix socket 路径，与 webui 的监听地址覆盖。

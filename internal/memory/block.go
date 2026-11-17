@@ -9,7 +9,6 @@ import (
 )
 
 // BlockModality 是一等记忆块的原生模态。
-type BlockModality string
 
 const (
 	BlockText  BlockModality = "text"
@@ -27,7 +26,6 @@ const (
 //
 // 这两类是**渲染正确性的最小单位**：整页留下或整页剔除，
 // 永远不会产生"有 call 没 result"的破帧。
-type PageKind string
 
 const (
 	// PageLLMRound 是一次模型往返（input → output）。
@@ -41,7 +39,6 @@ const (
 // 每页拆成 request / response 两块（而不是合成一块）的理由：
 // 用户的提问与模型的回答语义常常不同，合成一块后只能有一个向量，
 // 检索时无法单独命中"用户问的"或"模型答的"。
-type BlockRole string
 
 const (
 	// RoleRequest 是页的请求端：llm 的 input，或 tool 的 call（含参数）。
@@ -85,136 +82,9 @@ const (
 // 自当同理。把媒体内容拆到块外、只留一个 digest 指向外部 CAS，会凭空多出
 // 一层需单独维护生命周期的东西（第二套向量、第二套召回路、引用账本、自己的
 // db），并与「块是唯一记忆载体」直接冲突。内容随块同生同灭才是正解。
-type MemoryBlock struct {
-	ID       string        `json:"id"`
-	Modality BlockModality `json:"modality"`
-	// Text 是文本块（Modality=text）的负载。
-	Text string `json:"text,omitempty"`
-	// Data 是媒体块（Modality=image/video/audio）的负载：内容的原始字节。
-	//
-	// 落盘形态随所在层而定：L0/L1 的块内联在 JSON 里（Data 序列化为 base64），
-	// L3 的块落 SQLite 的 BLOB 列。无论哪层，字节都不脱离块单独存在。
-	Data        []byte    `json:"data,omitempty"`
-	MIME        string    `json:"mime,omitempty"`
-	Size        int64     `json:"size,omitempty"`
-	Width       int       `json:"width,omitempty"`
-	Height      int       `json:"height,omitempty"`
-	Vector      []float64 `json:"vector,omitempty"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	Source      string    `json:"source,omitempty"`
-	Tool        string    `json:"tool,omitempty"`
-	// Scene 是这个块所属的场景键（可空）。
-	//
-	// 块是记忆流水线里最细的「子项目」：一段转写、一张图的描述、一份附件。
-	// 场景要贯穿到流水线底，就得从块开始——否则「QQ 那场对话里发过来的那张图」
-	// 在场面重现时永远拿不回来。块进 L3 时按 Scene 挂 scene_refs(kind='block')，
-	// 场景召回即可把它取回（见 GraphDB.RecallByScene）。
-	Scene string `json:"scene,omitempty"`
-	// SemanticType 是实体的语义类别（Person / Animal / Concept / Topic…），
-	// 对应旧 entities.type 与 Triple.SubjectType/ObjectType。
-	//
-	// ★ 2026-10-04 加入。此前 Triple 标注的类型只写旧表，块侧完全没有 ——
-	//   判据 TestGraphCommit_CarriesAllFields 抓到：
-	//   Commit 标注的 (Person, Animal) 读回来是 ("block","block")。
-	SemanticType string `json:"semantic_type,omitempty"`
-
-	// ─────────── 段页式身份（2026-10-29）───────────
-	//
-	// ## 为什么需要这三个字段
-	//
-	// 设计约束（用户裁定）：**淘汰/渲染的最小单位必须是"移除后上下文仍渲染正确"**。
-	// 而"渲染正确"的硬性要求是 OpenAI 协议那条：assistant(tool_calls)
-	// 后面必须紧跟配对齐全的 tool 消息。所以最小单位不是单块，而是**页**。
-	//
-	//	段 Frame = 一次完整任务（一个 FrameTS）
-	//	  └─ 页 Page = 一次完整往返
-	//	       ├─ llm_round  : llm_input  ──→ llm_output
-	//	       └─ tool_round : tool_call  ──配对(CallID)──→ tool_result
-	//
-	// ## 为什么用时间戳而不是自增帧号
-	//
-	// 用户裁定：帧号**直接用时间戳**，不另造自增编号。理由：
-	//   · 时间戳在 L1/L2/L3 三层天然一致，不需要额外的编号分配器
-	//   · 跨进程/跨层迁移时无需协调（自增号需要中心分配，重启即冲突）
-	//   · 天然可排序（渲染时序直接按它排）
-	//
-	// ## 为什么不跨帧
-	//
-	// 同一 FrameTS 的块不管走到哪层，**整批待在同一层**。原因不是洁癖：
-	// 帧是最小可渲染单元，拆开就会出现"有 call 没 result"的破帧。
-	// 判据见 §C7。
-	//
-	// ★ 旧数据（FrameTS 为零值）视为"独立帧"，各自成帧、不参与配对校验。
-	//   这是迁移的兼容路径：不能因为它们没有帧号就拒绝写入或丢弃。
-	FrameTS time.Time `json:"frame_ts,omitempty"`
-	// PageSeq 是帧内的**页序号**（从 1 开始，连续不减）。
-	//
-	// 与 FrameTS 一起构成页的身份：`(FrameTS, PageSeq)`。
-	// 同一页内的块（request/response，或 call/result）靠它归组。
-	PageSeq int `json:"page_seq,omitempty"`
-	// PageKind 标记这一页是哪种往返。
-	PageKind PageKind `json:"page_kind,omitempty"`
-	// BlockRole 是块在页内的角色（request 端 / response 端）。
-	BlockRole BlockRole `json:"block_role,omitempty"`
-	// CallID 是 tool_round 的**配对键**：tool_call 块与它的 tool_result 块
-	// 必须同 CallID。llm_round 的页此字段为空。
-	//
-	// ★ 为什么不靠 (FrameTS, PageSeq) 配对：并行工具调用时，
-	//   一页里有 N 个 call（assistant 一次声明多个），它们共用 PageSeq
-	//   但各自配对不同的 result —— 必须有 CallID 才分得清。
-	CallID string `json:"call_id,omitempty"`
-	// Inactive 标记该页**不参与渲染**（但仍可回读、仍在原层）。
-	//
-	// 用户裁定：段超预算时按相似度**剔除**低分页 —— 实际是标注 inactive，
-	// 不渲染为消息。数据不删、层不迁、随时可读回，因此不是"静默丢失"。
-	// 渲染时必须在原位置留下提示行，让模型知道"这里省略了内容"。
-	Inactive bool `json:"inactive,omitempty"`
-
-	// LastRecalledAt 是最近一次被召回的时间（P6 回收判定）。
-	//
-	// ★ 为什么用「被召回」而不是「被创建」判死活：
-	//   判断一块记忆有没有用，看它有没有被想起来，不是什么时候写进来的。
-	//   旧块若一直命中查询，它是活的 —— 不能因为"老"就回收。
-	//
-	// 零值 = 从未被召回（回收候选）；非零 = 至少用过一次（按时间窗判定）。
-	// 两者刻意分开：从不被召回 与 很久没被召回 是不同的病。
-	LastRecalledAt time.Time `json:"last_recalled_at,omitempty"`
-
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
 
 // MemoryBlockEdge 是 L3 中连接一等记忆节点的结构化语义边。
 // source/target kind 当前允许 block、entity、sentence、document。
-type MemoryBlockEdge struct {
-	ID         int64     `json:"id"`
-	SourceKind string    `json:"source_kind"`
-	SourceID   string    `json:"source_id"`
-	TargetKind string    `json:"target_kind"`
-	TargetID   string    `json:"target_id"`
-	Type       string    `json:"type"`
-	CreatedAt  time.Time `json:"created_at"`
-
-	// ★ 以下是「边作为独立单位」需要的属性列。
-	//
-	// 结构边（contains 等）不填这些；关系边填。
-	// 旧 relations 表有同名列 —— 块化后属性挂在**边**上，
-	// 而不是挂在一张独立的 relations 表上（那才是「边不是独立单位」的根源）。
-	Confidence float64 `json:"confidence,omitempty"`
-	SessionID  string  `json:"session_id,omitempty"`
-	TurnID     int     `json:"turn_id,omitempty"`
-	// Status 是 EdgeActive / EdgeDeleted / EdgeMerged。
-	// 空字符串表示结构边（无状态语义）。
-	Status string `json:"status,omitempty"`
-	// MergedInto 在 EdgeMerged 时指向目标块：源块被并进哪里，
-	// 历史边留在源块上不重定向。
-	MergedInto string `json:"merged_into,omitempty"`
-}
-
-// IsRelationEdge 判断该边是否为**关系边**（而非结构边）。
-func (e MemoryBlockEdge) IsRelationEdge() bool {
-	return e.SessionID != "" || e.Status != "" || e.Confidence != 0
-}
 
 func validBlockModality(modality BlockModality) bool {
 	return modality == BlockText || modality == BlockImage || modality == BlockVideo || modality == BlockAudio

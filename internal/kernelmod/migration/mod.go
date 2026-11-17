@@ -26,6 +26,7 @@ package migration
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,9 +71,9 @@ type DirInfo struct {
 
 func (Module) Init(ks *kstate.State) error {
 	// 体检结果放在 KernelState 上，供工具/WebUI 读（可选能力，nil 安全）
-	ks.MigrationPreflight = func(target string) (interface{}, error) {
+	ks.Provide(kernelapi.FacMigrationPreflight, func(target string) (interface{}, error) {
 		return Preflight(ks.DataDir, target)
-	}
+	})
 	return nil
 }
 

@@ -54,7 +54,7 @@ func TestReasoningSurvivesL2RoundTrip(t *testing.T) {
 		t.Fatalf("★ 事件数 = %d，期望 1", len(doc.Events))
 	}
 
-	in, resp, reasoning, _ := doc.Events[0].InOutWithReasoning()
+	in, resp, reasoning, _ := coldcontext.InOutWithReasoning(&doc.Events[0])
 	if reasoning != thinking {
 		t.Fatalf("★ L2 丢了思考内容：读回 %q，期望 %q", reasoning, thinking)
 	}
@@ -123,7 +123,7 @@ func TestNoReasoningMeansNoBlock(t *testing.T) {
 			t.Fatal("★ 无思考时不应生成 reasoning 块")
 		}
 	}
-	_, _, reasoning, _ := doc.Events[0].InOutWithReasoning()
+	_, _, reasoning, _ := coldcontext.InOutWithReasoning(&doc.Events[0])
 	if reasoning != "" {
 		t.Fatalf("★ 无思考时读回 %q，期望空串", reasoning)
 	}
@@ -147,7 +147,7 @@ func TestReasoningRoundTripWithSpecialChars(t *testing.T) {
 	if err != nil || doc == nil {
 		t.Fatalf("ContextToColdContext: %v / %v", err, doc)
 	}
-	_, _, got, _ := doc.Events[0].InOutWithReasoning()
+	_, _, got, _ := coldcontext.InOutWithReasoning(&doc.Events[0])
 	if got != thinking {
 		t.Fatalf("★ 特殊字符往返失真：\n got=%q\nwant=%q", got, thinking)
 	}
@@ -170,7 +170,7 @@ func TestInOutSignatureStillUsable(t *testing.T) {
 		t.Fatalf("ContextToColdContext: %v / %v", err, doc)
 	}
 	// 三返回值必须仍然可用，且语义不变。
-	in, resp, held := doc.Events[0].InOut()
+	in, resp, held := coldcontext.InOut(&doc.Events[0])
 	if in != "问" || resp != "答" {
 		t.Fatalf("★ InOut 语义变了：in=%q resp=%q", in, resp)
 	}

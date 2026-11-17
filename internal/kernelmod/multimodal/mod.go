@@ -4,6 +4,7 @@
 package multimodal
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"strings"
 
@@ -58,9 +59,8 @@ func (Module) Init(ks *kstate.State) error {
 		}
 	}
 
-	ks.MultimodalSpace = multimodalSpace
-	ks.MultimodalProviderName = mmProviderName
-	ks.MultimodalErr = mmErr
+	ks.Provide(kernelapi.FacMultimodal, multimodalSpace)
+	ks.Provide(kernelapi.FacMultimodalStatus, &kernelapi.MultimodalStatus{Provider: mmProviderName, Error: mmErr})
 	if closeAdapted != nil {
 		ks.AddCloser(closeAdapted)
 	}

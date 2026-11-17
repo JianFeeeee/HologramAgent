@@ -6,6 +6,7 @@
 package supervisor
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
@@ -25,7 +26,7 @@ func (Module) Init(ks *kstate.State) error {
 	if err := sup.Start(); err != nil {
 		log.Fatalf("start supervisor: %v", err)
 	}
-	ks.Supervisor = sup
+	ks.Provide(kernelapi.FacSupervisor, sup)
 	return nil
 }
 

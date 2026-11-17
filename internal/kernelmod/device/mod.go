@@ -26,6 +26,8 @@ package device
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"sort"
 
@@ -50,36 +52,44 @@ func (Module) Provides() []string { return []string{kernelmod.FacDevice} }
 func (Module) Init(ks *kstate.State) error {
 	// Agent 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环）。
 	// 这里断言成**最小接口**而不是具体类型：device 只需要"能挂数据面"。
-	host, ok := ks.Agent.(api.DeviceMounter)
+	agentImpl, ok := ks.Require(kernelapi.FacAgent)
+	if !ok || agentImpl == nil {
+		return fmt.Errorf("device module: facility %q is not provided", kernelmod.FacAgent)
+	}
+	host, ok := agentImpl.(api.DeviceMounter)
 	if !ok || host == nil {
-		return fmt.Errorf("device module: ks.Agent is not a DeviceMounter (requires %s)", kernelmod.FacAgent)
+		return fmt.Errorf("device module: %q is not a DeviceMounter (requires %s)", kernelapi.FacAgent, kernelmod.FacAgent)
 	}
-	if ks.Security == nil {
+	secImpl, ok := ks.Require(kernelapi.FacSecurity)
+	if !ok || secImpl == nil {
 		// 安全模块必须已装配（配置关闭时是 Disabled Runtime，**不是** nil）。
-		// nil 表示装配顺序错了 —— 那会让本模块"看起来装好了但没有闸门"。
-		return fmt.Errorf("device module: ks.Security is nil - the security module must be " +
-			"assembled first (when disabled it installs a Disabled Runtime, not nil)")
+		// 缺失表示装配顺序错了 —— 那会让本模块"看起来装好了但没有闸门"。
+		return fmt.Errorf("device module: facility %q is not provided - the security module must be "+
+			"assembled first (when disabled it installs a Disabled Runtime, not nil)", kernelapi.FacSecurity)
 	}
+	secRT, _ := secImpl.(*security.Runtime)
 
 	// ExecuteTool 面：ToolHost 与 DeviceMounter 是两个不同用途的接口
 	// （执行 vs 装配），此处两个断言都要成功。
-	toolHost, ok := ks.Agent.(api.ToolHost)
+	toolHost, ok := agentImpl.(api.ToolHost)
 	if !ok || toolHost == nil {
-		return fmt.Errorf("device module: ks.Agent is not a ToolHost (requires %s)", kernelmod.FacAgent)
+		return fmt.Errorf("device module: %q is not a ToolHost (requires %s)", kernelapi.FacAgent, kernelmod.FacAgent)
 	}
-	rt := New(toolHost, ks.Security)
-	ks.Device = rt
+	rt := New(toolHost, secRT)
+	ks.Provide(kernelapi.FacDevice, rt)
 	host.MountDevice(rt)
 
-	if ks.EventBus != nil {
-		ks.EventBus.Publish(&events.Event{
-			Type:   events.EventDeviceReady,
-			Source: "kernelmod/device",
-			Payload: map[string]interface{}{
-				"tools":   rt.ToolCount(),
-				"secured": rt.Secured(),
-			},
-		})
+	if busImpl, ok := ks.Require(kernelapi.FacEventBus); ok {
+		if bus, _ := busImpl.(*events.Bus); bus != nil {
+			bus.Publish(&events.Event{
+				Type:   events.EventDeviceReady,
+				Source: "kernelmod/device",
+				Payload: map[string]interface{}{
+					"tools":   rt.ToolCount(),
+					"secured": rt.Secured(),
+				},
+			})
+		}
 	}
 	log.Printf("[device] ready: %d tools, security=%v", rt.ToolCount(), rt.Secured())
 	return nil

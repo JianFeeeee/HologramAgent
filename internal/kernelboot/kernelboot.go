@@ -36,6 +36,7 @@ package kernelboot
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"sort"
 	"strings"
@@ -410,7 +411,7 @@ func Run(plan *Plan, opts RunOptions) (*RunResult, error) {
 		// ★ 把 bus 放进 KernelState：模块的 Init 只能看到 ks，
 		// 而 plugin-host 需要订阅状态变化（挂"等 agent 就绪"的回调）。
 		// 不放这里 ⇒ 模块拿不到 bus（实测撞到）。
-		ks.SyncBus = opts.Bus
+		ks.Provide(kernelapi.FacSyncBus, opts.Bus)
 	}
 
 	for li, layer := range plan.Layers {

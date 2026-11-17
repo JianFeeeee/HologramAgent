@@ -31,20 +31,6 @@ import (
 )
 
 // FusedHit 是融合后的候选。
-type FusedHit struct {
-	BlockID   string
-	Text      string
-	Score     float64 // 统一分数
-	VectorHit float64 // 向量路分数（0 = 未命中）
-	SymbolHit float64 // 符号路分数（0 = 未命中）
-	// ExactHit 表示「查询里的精确数字串/版本串命中了本块」。
-	//
-	// ★ 这是**布尔信号**不是强度信号：它的价值在于「存在与否」。
-	//   混进加权和会被低权重稀释（实测：sym=1.0×0.3=0.30
-	//   输给 vec=0.62 + sym=0.33 → 0.534），所以单独一路置顶。
-	ExactHit bool
-	Why      []string // 可读的归因，给调试与模型解释用
-}
 
 // FusionWeights 是两路的权重。
 //

@@ -77,7 +77,7 @@ func (i *indexerImpl) queryDocs(q string, limit int) []DocSnippet {
 			continue
 		}
 		when := h.Doc.CreatedAt.Format(time.DateTime)
-		if h.Doc.HasEvents() {
+		if coldcontext.HasEvents(h.Doc) {
 			when = h.Doc.Events[0].Timestamp.Format(time.DateTime)
 		}
 		// 正文在事件的**文本块**里（DocEvent 只有 Blocks，没有 Input/Response）。

@@ -2,8 +2,19 @@ package main
 
 import (
 	"context"
-	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
+	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
+	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"log"
 	"path/filepath"
 	"strings"
@@ -231,8 +242,10 @@ func main() {
 	if _, err := RunKernelModules(ks, kernelAssembleHooks{
 		// 在 stage-host 就绪、插件真正拉起**之前**把白名单设上。
 		OnLayerDone: func(_ int, _ []kernelboot.Module) {
-			if pendingAllowlist != nil && ks.PluginRegistry != nil {
-				ks.PluginRegistry.SetLoadAllowlist(pendingAllowlist)
+			if pendingAllowlist != nil {
+				if reg, ok := kernelmod.MustValueAny(ks, kernelapi.FacPluginRegistry).(*plugin.Registry); ok && reg != nil {
+					reg.SetLoadAllowlist(pendingAllowlist)
+				}
 			}
 		},
 	}); err != nil {
@@ -253,26 +266,33 @@ func main() {
 	//
 	// 注入后 internal/update 以内核身份发事件，**插件不再需要持有 *events.Bus**
 	// —— 那正是“安全监控可被绕过”的根源（拿裸总线就能伪造任意事件）。
-	updatepkg.SetEventBus(ks.EventBus)
-	defer updatepkg.AttachExecutor(ks.EventBus, ks.DataDir)()
+	// ★ 能力全部从挂载点按具名设施取（kstate 不持有模块类型）。
+	evBus := kernelmod.MustValue[*events.Bus](ks, kernelapi.FacEventBus)
+	updatepkg.SetEventBus(evBus)
+	defer updatepkg.AttachExecutor(evBus, ks.DataDir)()
 
 	cfg := ks.Cfg
-	luaVM := ks.LuaVM
-	sup := ks.Supervisor
-	trk := ks.Tracker
 	ctx := ks.Ctx
-	pluginReg := ks.PluginRegistry
-	// Agent 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环）。
-	// cmd/homed 本来就 import core，这里断言回具体类型即可。
-	agent, _ := ks.Agent.(*agentCore.Agent)
+
+	luaVM := kernelmod.MustValue[*luapkg.VM](ks, kernelapi.FacLua)
+	sup := kernelmod.MustValue[*supervisor.Daemon](ks, kernelapi.FacSupervisor)
+	trk := kernelmod.MustValue[*tracker.Tracker](ks, kernelapi.FacTracker)
+	pluginReg := kernelmod.MustValue[*plugin.Registry](ks, kernelapi.FacPluginRegistry)
+	agent, _ := kernelmod.MustValueAny(ks, kernelapi.FacAgent).(*agentCore.Agent)
 
 	// 候选消费管线：常驻 goroutine，把 eventbus 的 memory_candidate 写进
 	// 文本记忆并喂给蒸馏管线。原顺序里它在 textmem 之后、provider 之前。
-	startMemoryCandidateConsumer(ctx, ks.IO, ks.TextMemory, ks.Memory.DB, ks.Memory.Distiller)
+	startMemoryCandidateConsumer(ctx,
+		kernelmod.MustValue[*agentIO.IOManager](ks, kernelapi.FacIO),
+		kernelmod.MustValue[*text.Memory](ks, kernelapi.FacTextMem),
+		kernelmod.MustValue[*memory.GraphDB](ks, kernelapi.FacMemory),
+		kernelmod.MustValue[*pipeline.Distiller](ks, kernelapi.FacMemoryDistiller))
 
 	// L1 failback：受限 worker 启动即跑恢复梯子，结果以退出码交回 guard。
 	if opt.boot == "failback" {
-		runFailbackRecovery(opt.dataDir, cfgReg, luaVM, ks.LLMManager, ks.BaseAPIKey)
+		runFailbackRecovery(opt.dataDir, cfgReg, luaVM,
+			kernelmod.MustValue[*agentProvider.ProviderManager](ks, kernelapi.FacLLM),
+			kernelmod.MustValue[string](ks, kernelapi.FacBaseAPIKey))
 	}
 
 	// ---- 插件已完成调度（plugin-host 模块做的事）----
@@ -282,7 +302,7 @@ func main() {
 	//   ② 按三形态分流（自动启动 / 不自动启动 / 禁用）
 	//   ③ 拉起"声明设施已就绪"的插件；挂起"等更晚设施（如 agent）"的
 	//      （挂起项经 syncbus 在 agent 就绪时自动拉起，见 pluginhost/waiter.go）
-	if cat, ok := ks.PluginCatalog.(*pluginhost.PluginCatalog); ok {
+	if cat, ok := kernelmod.MustValueAny(ks, kernelapi.FacPluginCatalog).(*pluginhost.PluginCatalog); ok {
 		log.Printf("[homed] plugin scheduling done: %d metadata cached, %d loaded",
 			cat.Size(), len(pluginReg.ListLoadedPlugins()))
 	} else {

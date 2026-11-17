@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 	"github.com/JianFeeeee/HologramAgent/internal/recovery"
@@ -27,7 +27,7 @@ import (
 //
 // 成功后写 recovery_result.json 并以 exitRecovered 退出；失败以 exitRecoveryFailed 退出。
 // 全程确定性、无 token 消耗（除 rescue 源 QuickChat 复检外）。
-func runFailbackRecovery(dataDir string, cfgReg *internalConfig.ConfigRegistry, lua *luaVM.VM, providerMgr *agentAPI.ProviderManager, baseAPIKey string) {
+func runFailbackRecovery(dataDir string, cfgReg *internalConfig.ConfigRegistry, lua *luaVM.VM, providerMgr *agentProvider.ProviderManager, baseAPIKey string) {
 	applySystemConfig(loadGuardConfig(dataDir)) // 发行版/部署路径适配：guard.yaml system.*
 	task, err := recovery.LoadTask(recovery.TaskPath(dataDir))
 	if err != nil {
@@ -50,7 +50,7 @@ func runFailbackRecovery(dataDir string, cfgReg *internalConfig.ConfigRegistry, 
 	if key == "" {
 		key = baseAPIKey
 	}
-	rescueProvider := agentAPI.NewLuaAdaptedProvider(agentAPI.BaseConfig{
+	rescueProvider := agentProvider.NewLuaAdaptedProvider(agentProvider.BaseConfig{
 		Model:         task.RescueSource.Model,
 		BaseURL:       task.RescueSource.BaseURL,
 		APIKey:        key,

@@ -47,29 +47,6 @@ import (
 )
 
 // Section 是插件声明的一段系统提示词内容。
-type Section struct {
-	// Section 是**全局唯一**的段名，约定 `<插件名>.<名字>`（如 "skillmgr.skills"）。
-	//
-	// ★ 强制前缀约定（与 security 的 Profile.Name 同型）：拼错能被立刻发现，
-	// 且插件之间不可能互相覆盖。
-	Section string
-
-	// Owner 是声明它的插件名。必须与 Section 的前缀一致。
-	Owner string
-
-	// Order 决定渲染顺序（小的在前）。同 Order 按 Section 字典序，保证稳定。
-	Order int
-
-	// Content 是正文。**空串表示移除该段**（运行时撤销声明）。
-	Content string
-
-	// Volatile 表示内容会频繁变化（如技能索引随 skill 增删变化）。
-	//
-	// 仅用于诊断输出（状态面能看到哪些段每轮都在变），不参与渲染决策。
-	// 存在的理由：技能索引是本类声明里唯一"随时可能变"的段，
-	// 出问题时需要能一眼区分"这段是静态说明"还是"这段每轮重算"。
-	Volatile bool
-}
 
 // Registry 是**内核级**的声明表：一个进程一份，所有 agent 共享。
 //

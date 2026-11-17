@@ -34,43 +34,6 @@ type ChannelCleaner func(source string) func(string) string
 //
 // Content 只是**渲染视图**（供摘要、人工阅读、SDK 的 ColdDoc.Content 字段），
 // 不是原文载体。原文在 Events 里，正文内联在文本块里。
-type ColdDoc struct {
-	ID      string      `json:"id"`
-	Summary string      `json:"summary"`
-	Content string      `json:"content"` // 渲染视图，不是原文
-	Events  []ColdEvent `json:"events,omitempty"`
-
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	Source      string            `json:"source"`
-	Meta        map[string]string `json:"meta,omitempty"`
-	AccessCount int               `json:"access_count"`
-	LastAccess  time.Time         `json:"last_access"`
-
-	// ArchiveAttempts 是 L2→L3 归档失败的累计次数。
-	//
-	// ★ 为什么必须持久化（2026-11-15）：归档失败此前只是「保留待下一轮」，
-	// 没有计数、没有退避。生产实测 50 个文档每小时重试一次，从 2026-11-11
-	// 连跑 3 天共 2950 次 —— 输入完全相同 ⇒ 必然失败的无限循环。
-	// 计数进不了内存以外的任何东西 ⇒ 重启后清零，无限继续。
-	ArchiveAttempts  int    `json:"archive_attempts,omitempty"`
-	ArchiveLastError string `json:"archive_last_error,omitempty"`
-
-	// Blocks 是本文档持有的**全部**块（事件里的文本块 + 媒体块去重后的并集）。
-	//
-	// ★ 为什么还留一个扁平列表而不是只看 Events：
-	//   · 向量检索／跨模态融合要能不遍历事件就拿到所有块；
-	//   · L2→L3 蒸馏按块迁移；
-	//   · 存量文档（无 Events）只有这一个字段有块。
-	//
-	// ★ 它是**视图**，不是事实源：块的真实归属在 Events[i].Blocks 里。
-	//   两者由 ContextToColdContext 同一处产出，不得分别修改。
-	Blocks []memory.MemoryBlock `json:"blocks,omitempty"`
-
-	Vector   tfidf.Vector `json:"vector,omitempty"`    // TF-IDF 稀疏向量（fallback 时持久化）
-	DenseVec []float64    `json:"dense_vec,omitempty"` // 多模态稠密向量（主路径）
-	DenseFP  string       `json:"dense_fp,omitempty"`  // DenseVec 所属统一空间指纹，变化时触发重算
-}
 
 // ColdEvent 是一条被 L2 持有的**原始事件**，与 L1 的 ContextEvent 同构。
 //
@@ -81,40 +44,16 @@ type ColdDoc struct {
 // 那会出现「块里的正文」与「字段里的正文」两份真相。
 //
 // 读原文 = 读 Blocks 里文本块的 Text。
-type ColdEvent struct {
-	Timestamp   time.Time        `json:"ts"`
-	Source      string           `json:"source"`
-	ToolsUsed   []string         `json:"tools_used,omitempty"`
-	ToolResults []ToolResultItem `json:"tool_results,omitempty"`
 
-	// NoMemory 继承自 L1 的 ContextEvent.NoMemory（声明源：插件注入的
-	// payload.no_memory 或 ChannelDef.NoMemory）。
-	//
-	// ★ 为什么必须一路带到 L2（2026-11-15）：
-	// 声明说的是「不参与记忆计算」，而 **L3 蒸馏（coldDocToTriples）会
-	// 拿 L2 的原文重新跑一遍三元组抽取**。若声明在 L2 边界断了，
-	// 同一段内容就在第一次蒸馏被挡、第二次蒸馏被放行 —— 声明等于失效。
-	//
-	// 生产后果（实测）：`context_archived` 文档以终端日志/ADB 截图回执为正文，
-	// NLP 抽出「、」「（」「，」当主语，被 validEntityName 全数拒掉 ⇒
-	// 块数不涨 ⇒ 文档被永久扣在 L2，每小时重试一次，连跑 3 天 2950 次。
-	NoMemory bool `json:"no_memory,omitempty"`
-	// ToolCalls 是每次工具调用的完整记录（含参数），与 ToolResults 靠 CallID 配对。
-	ToolCalls []ToolCallItem `json:"tool_calls,omitempty"`
-
-	// Blocks 是本事件持有的块，**正文就在里面**。
-	//
-	// 顺序约定（复原时按此顺序回填 ContextEvent）：
-	//   Input 文本块 → Response 文本块 → 媒体块…
-	// 由 docBlocksForEntry 保证；回填由 blocksToInOut 对称解读。
-	Blocks []memory.MemoryBlock `json:"blocks,omitempty"`
-}
-
-// HasEvents 报告这篇文档是否保存了可逐条回填的原始事件。
+// HasEvents 报告该文档是否持有可逐条回填的原始事件。
 //
 // 存量文档（Events 引入之前归档的）没有它 —— 调用方必须据此降级到
 // 「把 Content 塞进一条事件」，而不是假装能回填。
-func (d *ColdDoc) HasEvents() bool { return d != nil && len(d.Events) > 0 }
+//
+// ★ 它原本是 `ColdDoc` 的方法。DTO 声明已搬到 internal/kernelapi/model
+// （纯数据），而 Go 不允许跨包定义方法 ⇒ 按用户裁定（«funcs_in_memory»）
+// 降为本包的**包级函数**，行为逐字不变。
+func HasEvents(d *ColdDoc) bool { return d != nil && len(d.Events) > 0 }
 
 // coldcontextVectorAlgoVersion 是**文档向量算法**的版本标记。
 //
@@ -325,12 +264,12 @@ func coldcontextTextForVector(doc *ColdDoc) string {
 	if doc == nil {
 		return ""
 	}
-	if !doc.HasEvents() {
+	if !HasEvents(doc) {
 		return strings.TrimSpace(doc.Content)
 	}
 	var b strings.Builder
 	for _, ev := range doc.Events {
-		in, resp, _ := ev.InOut()
+		in, resp, _ := InOut(&ev)
 		if in != "" {
 			b.WriteString(in)
 			b.WriteString("\n")
@@ -565,14 +504,6 @@ func (s *Store) Query(text string, topK int) []*ColdDoc {
 }
 
 // ColdHit 是一篇文档记忆的相似度候选及原始分数。
-type ColdHit struct {
-	// Doc 是命中的冷上下文条目。
-	//
-	// 字段名保持 Doc：它是**字段**不是类型，改名会波及所有 h.Doc 调用点，
-	// 而与"类型叫什么"无关。
-	Doc   *ColdDoc
-	Score float64
-}
 
 func (s *Store) QueryScored(text string, topK int) []ColdHit {
 	if topK <= 0 {
@@ -853,45 +784,14 @@ func (s *Store) flushLocked() {
 
 // ToolResultItem 是一条工具结果。
 //
-// ★ CallID 与 internal/agent/core 的同名字段必须**逐字一致**（JSON 键名
+// ★ CallID 与 internal/agent/agent 的同名字段必须**逐字一致**（JSON 键名
 // 都是 call_id）：L1↔L2 之间靠它配对，键名不一致会在归档/回填时静默丢失。
-type ToolResultItem struct {
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name"`
-	Output string `json:"output"`
-}
 
 // ToolCallItem 是一次工具调用的完整记录（含参数与配对键）。
 //
-// 与 internal/agent/core.ToolCalls 的字段逐字对应。
+// 与 internal/agent/agent.ToolCalls 的字段逐字对应。
 // L2 之所以也要存它：回灌（coldcontext_query）要把事件原样插回 L1，
 // 若 L2 缺参数，回灌后「这一页的 call 侧是空的」，页化与配对校验都失效。
-type ToolCallItem struct {
-	CallID       string                 `json:"call_id,omitempty"`
-	Name         string                 `json:"name"`
-	Arguments    map[string]interface{} `json:"arguments,omitempty"`
-	RawArguments string                 `json:"raw_arguments,omitempty"`
-}
-
-type ContextEntry struct {
-	Timestamp time.Time
-	Source    string
-	Content   string
-	Response  string
-	// NoMemory 是 L1 事件上的同一声明，原样带到 L2（见 ColdEvent.NoMemory）。
-	NoMemory bool
-	// ReasoningContent 是本轮模型的思考内容（thinking 模式的思维链）。
-	//
-	// L2 必须存它（2026-11-11 用户裁定）：决策依据、排除掉的选项、
-	// "先查 A 再查 B"的因果链常常只在思考里。只存 Response 会导致
-	// 召回后只能答出"做了什么"，答不出"为何这么做"。
-	ReasoningContent string
-	// ToolCalls 是工具调用的完整记录（含参数），归档时原样带到 L2。
-	ToolCalls   []ToolCallItem
-	ToolsUsed   []string
-	ToolResults []ToolResultItem
-	Blocks      []memory.MemoryBlock // 一等记忆块随事件一起迁移到文档
-}
 
 func blocksFromEntries(entries []ContextEntry) []memory.MemoryBlock {
 	seen := make(map[string]bool)
@@ -1388,7 +1288,7 @@ func contentFromEvents(events []ColdEvent) string {
 //
 // 这是 blocksToEntry 的导出形态：L1（agent/core）需要它来回填 ContextEvent，
 // 而正文住在块里，所以必须由本包解读块的角色与归属。
-func (ev *ColdEvent) InOut() (input, response string, held []memory.MemoryBlock) {
+func InOut(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
 	return blocksToEntry(ev)
 }
 
@@ -1401,6 +1301,6 @@ func (ev *ColdEvent) InOut() (input, response string, held []memory.MemoryBlock)
 // 为何不把 InOut 直接改成多返回值：它被 8 个调用点用，而其中只有 2 处
 // 需要思考内容。让另外 6 处跟着改，只会把"哪些地方真的关心思考"
 // 这个信号淹没在一堆样板修改里。
-func (ev *ColdEvent) InOutWithReasoning() (input, response, reasoning string, held []memory.MemoryBlock) {
+func InOutWithReasoning(ev *ColdEvent) (input, response, reasoning string, held []memory.MemoryBlock) {
 	return blocksToEntryWithReasoning(ev)
 }

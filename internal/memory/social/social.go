@@ -15,17 +15,6 @@ const (
 	traitPrefix      = "trait:"
 )
 
-type PersonProfile struct {
-	Name      string            `json:"name"`
-	Traits    map[string]string `json:"traits,omitempty"`
-	Relations []SocialRelation  `json:"relations,omitempty"`
-}
-
-type SocialRelation struct {
-	Person   string `json:"person"`
-	Relation string `json:"relation"` // 关系类型：朋友/家人/同事/邻居/...
-}
-
 type SocialStore struct {
 	db *memory.GraphDB
 	mu sync.RWMutex

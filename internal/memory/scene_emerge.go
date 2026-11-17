@@ -59,14 +59,15 @@ const (
 )
 
 // SituationFeature 是一轮交互里的一个可观察信号，形如 `chan:qq`、`peer:group_1027`。
-type SituationFeature struct {
-	Kind  string
-	Value string
-}
 
-// Key 返回规范化的特征串。Kind 与 Value 都过场景键归一化，
+// FeatureKey 返回规范化的特征串。Kind 与 Value 都过场景键归一化，
 // 保证 `chan:QQ` 与 `chan:qq` 是同一个特征。
-func (f SituationFeature) Key() string {
+//
+// ★ 它原本是 `SituationFeature` 的方法。DTO 的声明已搬到
+// internal/kernelapi/model（纯数据、零业务依赖），而 Go 不允许在别的包上
+// 定义方法 ⇒ 按用户裁定（«funcs_in_memory»）降为**本包的包级函数**，
+// 行为逐字不变（归一化与权重表都属于本实现侧的语义知识）。
+func FeatureKey(f SituationFeature) string {
 	kind := NormalizeSceneKey(f.Kind)
 	val := NormalizeSceneKey(f.Value)
 	if kind == "" || val == "" {
@@ -76,7 +77,7 @@ func (f SituationFeature) Key() string {
 }
 
 // Weight 返回该特征的权重（按 Kind）。
-func (f SituationFeature) Weight() float64 {
+func WeightOf(f SituationFeature) float64 {
 	switch NormalizeSceneKey(f.Kind) {
 	case "chan":
 		return wFeatChan
@@ -97,23 +98,20 @@ func (f SituationFeature) Weight() float64 {
 }
 
 // Situation 是一轮交互的场面指纹（去重、上限裁剪后的特征集合）。
-type Situation struct {
-	Features []SituationFeature
-}
 
 // NewSituation 由若干特征构造指纹：归一化、去重、按权重降序裁剪到上限。
 func NewSituation(features ...SituationFeature) Situation {
 	seen := make(map[string]bool, len(features))
 	out := make([]SituationFeature, 0, len(features))
 	for _, f := range features {
-		k := f.Key()
+		k := FeatureKey(f)
 		if k == "" || seen[k] {
 			continue
 		}
 		seen[k] = true
 		out = append(out, f)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Weight() > out[j].Weight() })
+	sort.SliceStable(out, func(i, j int) bool { return WeightOf(out[i]) > WeightOf(out[j]) })
 	if len(out) > maxSituationFeatures {
 		out = out[:maxSituationFeatures]
 	}
@@ -121,16 +119,16 @@ func NewSituation(features ...SituationFeature) Situation {
 }
 
 // Keys 返回指纹的特征串列表。
-func (s Situation) Keys() []string {
+func SituationKeys(s Situation) []string {
 	out := make([]string, 0, len(s.Features))
 	for _, f := range s.Features {
-		out = append(out, f.Key())
+		out = append(out, FeatureKey(f))
 	}
 	return out
 }
 
 // Empty 表示指纹里没有任何可判定的信号。
-func (s Situation) Empty() bool { return len(s.Features) == 0 }
+func SituationEmpty(s Situation) bool { return len(s.Features) == 0 }
 
 // labelFeatureWeight 是参与**场景身份**的最低特征权重。
 //
@@ -152,16 +150,16 @@ const labelFeatureWeight = 0.5
 //     auto:chan:qq_part:morning 两个键——key UNIQUE 拦不住（两个不同字符串），
 //     于是「有 features 却 0 条记忆」与「有记忆却不参与聚类」两个半死节点并存
 //     （生产实测 strength=270 / 6 features / 0 refs 对 strength=1 / 0 / 201）。
-func (s Situation) Label(max int) string {
+func SituationLabel(s Situation, max int) string {
 	if max <= 0 {
 		max = 2
 	}
 	var picked []string
 	for _, f := range s.Features {
-		if f.Weight() < labelFeatureWeight {
+		if WeightOf(f) < labelFeatureWeight {
 			continue
 		}
-		picked = append(picked, f.Key())
+		picked = append(picked, FeatureKey(f))
 		if len(picked) >= max {
 			break
 		}
@@ -174,7 +172,7 @@ func (s Situation) Label(max int) string {
 			n = len(s.Features)
 		}
 		for _, f := range s.Features[:n] {
-			picked = append(picked, f.Key())
+			picked = append(picked, FeatureKey(f))
 		}
 	}
 	return NormalizeSceneKey(strings.Join(picked, "+"))
@@ -220,7 +218,7 @@ func (a emergentScene) similarity(b emergentScene) float64 {
 func situationSimilarity(sig Situation, sc emergentScene) float64 {
 	cur := make(map[string]float64, len(sig.Features))
 	for _, f := range sig.Features {
-		cur[f.Key()] = f.Weight()
+		cur[FeatureKey(f)] = WeightOf(f)
 	}
 	return emergentScene{Weights: cur}.similarity(sc)
 }
@@ -234,7 +232,7 @@ func situationSimilarity(sig Situation, sc emergentScene) float64 {
 // 「首次不建场景」的例外：指纹只出现一次时返回空键——一次性交互不该有场面，
 // 见 minSceneEvidence 的说明。
 func (g *GraphDB) EnterScene(sig Situation) (string, bool, error) {
-	if sig.Empty() {
+	if SituationEmpty(sig) {
 		return "", false, nil
 	}
 	g.mu.Lock()
@@ -347,7 +345,7 @@ func (g *GraphDB) reinforceSceneLocked(sceneID int64, sig Situation) error {
 		if _, err := tx.Exec(
 			`INSERT INTO scene_features (scene_id, feature, weight) VALUES (?, ?, ?)
 			 ON CONFLICT(scene_id, feature) DO UPDATE SET weight = MAX(weight, excluded.weight)`,
-			sceneID, f.Key(), f.Weight()); err != nil {
+			sceneID, FeatureKey(f), WeightOf(f)); err != nil {
 			return err
 		}
 	}
@@ -365,7 +363,7 @@ func (g *GraphDB) createSceneLocked(sig Situation) (string, error) {
 	// 这里再过一次防御性归一化：键的唯一性是整个场景层的地基，
 	// 不能依赖「上游一定调对了 Label」——生产库里已经存在双胞胎键，
 	// 任何一条新路径再漏归一化就会再生产一批（见 Label 的注释）。
-	base := NormalizeSceneKey("auto:" + sig.Label(2))
+	base := NormalizeSceneKey("auto:" + SituationLabel(sig, 2))
 	if base == "auto:" {
 		// Label 退化到空（指纹被裁空）：不建无主场景，否则所有空指纹会堆进同一行。
 		return "", fmt.Errorf("situation label 为空，拒绝建无名场景")
@@ -406,7 +404,7 @@ func (g *GraphDB) createSceneLocked(sig Situation) (string, error) {
 		if _, err := tx.Exec(
 			`INSERT INTO scene_features (scene_id, feature, weight) VALUES (?, ?, ?)
 			 ON CONFLICT(scene_id, feature) DO UPDATE SET weight = MAX(weight, excluded.weight)`,
-			sceneID, f.Key(), f.Weight()); err != nil {
+			sceneID, FeatureKey(f), WeightOf(f)); err != nil {
 			return "", err
 		}
 	}
@@ -418,9 +416,9 @@ func (g *GraphDB) createSceneLocked(sig Situation) (string, error) {
 	// **永远**攒不到 2 次，场景永远长不出来。实测：6 个通道各来 3 次，
 	// 只长出 2 个场景。
 	//
-	// ★ 桶键是 sig.Label(2) 本身，**不带 "auto:" 前缀**（见
+	// ★ 桶键是 SituationLabel(sig, 2) 本身，**不带 "auto:" 前缀**（见
 	// recordSituationEvidenceLocked）——base 是带前缀的场景键，两者不是一回事。
-	if _, err := tx.Exec(`DELETE FROM situation_evidence WHERE label = ?`, sig.Label(2)); err != nil {
+	if _, err := tx.Exec(`DELETE FROM situation_evidence WHERE label = ?`, SituationLabel(sig, 2)); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -434,7 +432,7 @@ func (g *GraphDB) createSceneLocked(sig Situation) (string, error) {
 // 用 Label(2) 做粗聚类桶（Label 已过归一化、不含时段），只服务于
 // 「首次不建场景」的门槛判定，不参与后续匹配——匹配永远走 EnterScene 的相似度。
 func (g *GraphDB) recordSituationEvidenceLocked(sig Situation) (int, error) {
-	label := sig.Label(2)
+	label := SituationLabel(sig, 2)
 	if _, err := g.db.Exec(
 		`INSERT INTO situation_evidence (label, count, updated_at) VALUES (?, 1, CURRENT_TIMESTAMP)
 		 ON CONFLICT(label) DO UPDATE SET count = count + 1, updated_at = CURRENT_TIMESTAMP`, label); err != nil {
@@ -454,7 +452,7 @@ func (g *GraphDB) recordSituationEvidenceLocked(sig Situation) (int, error) {
 // 置信度）为准，相似度只决定哪些场景参与、不参与每条关系的排序。
 // 这正是「类似的场景自动唤起对应的记忆」那一下。
 func (g *GraphDB) RecallBySituation(sig Situation, limit int) (*SceneRecall, error) {
-	if sig.Empty() {
+	if SituationEmpty(sig) {
 		return &SceneRecall{}, nil
 	}
 	scenes, err := g.loadEmergentScenesLocked()
@@ -538,17 +536,6 @@ func (g *GraphDB) DecaySceneRefs(halfLife time.Duration, floor float64) (int, er
 }
 
 // TurnScene 是一轮交互解析出来的场景集合。
-type TurnScene struct {
-	// Primary 是本轮写记忆时的**首选**场景：优先用涌现出来的（细粒度、
-	// 与措辞无关），没有（首次出现、场景还没长出来）时退到第一个声明场景。
-	Primary string
-	// Keys 是声明场景 + 涌现场景的全集（去重保序），供召回并集使用。
-	Keys []string
-	// Emergent 标记 Primary 是否来自涌现。
-	Emergent bool
-	// DeclaredCreated 是本次**新建**的声明场景（此前不存在，因声明而成立）。
-	DeclaredCreated []string
-}
 
 // EnterSceneWithHint 同时走**主动声明**与**被动涌现**两条路。
 //
@@ -588,7 +575,7 @@ func (g *GraphDB) EnterSceneWithHint(sig Situation, declaredKeys []string) (Turn
 	//
 	// EnterScene 只在真的命中/新建时返回非空键；返回空键时 created 必为
 	// false（首次只登记足迹），所以这里无需再判 created。
-	if !sig.Empty() {
+	if !SituationEmpty(sig) {
 		key, _, err := g.EnterScene(sig)
 		if err != nil {
 			return out, err
@@ -641,7 +628,7 @@ func (g *GraphDB) EnsureScene(key string) (bool, error) {
 		if _, err := g.db.Exec(
 			`INSERT INTO scene_features (scene_id, feature, weight) VALUES (?, ?, ?)
 			 ON CONFLICT(scene_id, feature) DO UPDATE SET weight = MAX(weight, excluded.weight)`,
-			sceneID, f.Key(), f.Weight()); err != nil {
+			sceneID, FeatureKey(f), WeightOf(f)); err != nil {
 			return created, err
 		}
 	}
@@ -671,7 +658,7 @@ func FeaturesFromSceneKey(key string) []SituationFeature {
 			continue
 		}
 		feat := SituationFeature{Kind: kind, Value: val}
-		if feat.Key() == "" {
+		if FeatureKey(feat) == "" {
 			continue
 		}
 		out = append(out, feat)

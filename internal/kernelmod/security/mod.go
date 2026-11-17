@@ -34,6 +34,7 @@ package security
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"path/filepath"
 	"sync"
@@ -87,7 +88,7 @@ func (Module) Init(ks *kstate.State) error {
 	if err != nil {
 		return err
 	}
-	ks.Security = rt
+	ks.Provide(kernelapi.FacSecurity, rt)
 
 	// ★ 把安全策略注入**总线本体**（用户 2026-10-28 指正：「eventbus 上所有
 	// 事件都要接受安全模块的监控」）。
@@ -100,14 +101,18 @@ func (Module) Init(ks *kstate.State) error {
 	// ★ rt 为 nil 或未 enable 时**仍然装**：enable=false 关掉的是凭据替换，
 	// “插件不许发 raw_input”这类授权与密钥无关（见 EventPolicy 头注释）。
 	// 不装就等于默认放行全部事件，方向错误。
-	if ks.EventBus != nil {
-		if g := sec.AsEventGuard(rt); g != nil {
-			ks.EventBus.SetGuard(g)
+	// ★ 事件总线从挂载点取（kstate 不持有模块类型）。
+	// 必须装在这里而不是只在 SDK 层：插件有四条路径能拿裸总线，
+	// 不装在总线上"安全监控"就只对合规者生效。
+	if busImpl, ok := ks.Require(kernelapi.FacEventBus); ok {
+		if bus, _ := busImpl.(*events.Bus); bus != nil {
+			if g := sec.AsEventGuard(rt); g != nil {
+				bus.SetGuard(g)
+			}
+			if rt.Enabled() {
+				bus.Publish(secReadyEvent(rt))
+			}
 		}
-	}
-
-	if ks.EventBus != nil && rt.Enabled() {
-		ks.EventBus.Publish(secReadyEvent(rt))
 	}
 	return nil
 }

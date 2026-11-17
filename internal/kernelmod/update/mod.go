@@ -18,6 +18,7 @@
 package update
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"log"
 	"path/filepath"
@@ -53,7 +54,7 @@ func (Module) Init(ks *kstate.State) error {
 	upd.SetKernelDataDir(ks.DataDir)
 
 	st := &upd.State{}
-	ks.Update = st
+	ks.Provide(kernelapi.FacUpdate, st)
 
 	// ⓪ 把内核**真实**的 --data 注入 update 包。
 	//
@@ -132,7 +133,7 @@ func (Module) Init(ks *kstate.State) error {
 	// ★ 探测失败不能阻断启动：它只是诊断信息。拿不到就报 Unknown，
 	//   Apply 会因 Unknown 拒绝自替换（失败方向是收紧）。
 	capab := upd.Detect(bin, ks.DataDir)
-	ks.UpdateCapabilities = &capab
+	ks.Provide(kernelapi.FacUpdateCapabilities, &capab)
 	log.Printf("[update] install kind=%s variant=%s channel=%s can_replace=%v",
 		capab.Kind, capab.Variant, capab.Channel(), capab.CanWriteBin)
 	if !capab.CanWriteBin {

@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
@@ -112,7 +112,7 @@ type Registry struct {
 	// CAS 已淘汰（块自带负载）。本注册表不保留媒体存储字段：
 	// 留着会诱导后来者再接线，走回头路。媒体字节走 sdk.Memory().MediaBytes。
 	ks      *knowledge.Store
-	mgr     *agentAPI.ProviderManager
+	mgr     *agentProvider.ProviderManager
 	cfgReg  *internalConfig.ConfigRegistry
 	plgDir  string
 	dataDir string // 守护进程数据目录（注入给插件 SettingsAPI.DataDir）
@@ -267,7 +267,7 @@ func (r *Registry) SetKnowledge(ks *knowledge.Store) {
 	defer r.mu.Unlock()
 	r.ks = ks
 }
-func (r *Registry) SetProviderManager(mgr *agentAPI.ProviderManager) {
+func (r *Registry) SetProviderManager(mgr *agentProvider.ProviderManager) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.mgr = mgr
@@ -590,7 +590,7 @@ type sdkDeps struct {
 	textMem          *text.Memory
 	coldcontextStore *coldcontext.Store
 	ks               *knowledge.Store
-	mgr              *agentAPI.ProviderManager
+	mgr              *agentProvider.ProviderManager
 	lua              *luaVM.VM
 	baseKey          string
 	regTool          sdk.ToolRegistrar

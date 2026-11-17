@@ -15,14 +15,6 @@ import (
 )
 
 // Event — 原始 I/O 事件记录，写入 JSONL
-type Event struct {
-	Timestamp int64    `json:"ts"`
-	Source    string   `json:"source"`
-	Input     string   `json:"input"`
-	Response  string   `json:"response,omitempty"`
-	ToolsUsed []string `json:"tools_used,omitempty"`
-	AgentID   string   `json:"agent_id,omitempty"`
-}
 
 // Memory — 文本记忆：追加写 JSONL，按时间/大小旋转
 type Memory struct {

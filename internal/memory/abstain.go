@@ -165,7 +165,7 @@ func AbstainCheck(query string, blocks []MemoryBlock) (bool, float64, []string) 
 //
 // ★ 为什么拒答必须在这一层而不是上层
 // -------------------------------------
-// 第一版把拒答放在 `internal/agent/core/toolcall.go` 里
+// 第一版把拒答放在 `internal/agent/agent/toolcall.go` 里
 // （recallByBlocks 召回前先查一次），结果：
 //
 //	生产路径  core → AbstainCheck → RecallBlocksFused    ✔ 有拒答
@@ -234,12 +234,6 @@ func (g *GraphDB) RecallBlocksGuarded(q BlockRecallQuery, query string) (
 const bfsDepthForRecall = 2
 
 // AbstainReason 是一次拒答的完整记录（含可展示给模型的说明）。
-type AbstainReason struct {
-	Query   string
-	Ratio   float64
-	Matched []string
-	Notice  string
-}
 
 // AbstainNotice 是给模型看的拒答说明。
 //

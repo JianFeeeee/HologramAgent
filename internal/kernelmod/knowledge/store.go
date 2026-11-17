@@ -2,6 +2,7 @@
 package knowledge
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"path/filepath"
 
@@ -21,12 +22,13 @@ func (StoreModule) Requires() []string {
 func (StoreModule) Provides() []string { return []string{kernelmod.FacKnowledge} }
 
 func (StoreModule) Init(ks *kstate.State) error {
-	ks.Knowledge = knowledge.NewStore(filepath.Join(ks.Cfg.Daemon.DataDir, "knowledge"))
-	if err := ks.Knowledge.Start(); err != nil {
+	store := knowledge.NewStore(filepath.Join(ks.Cfg.Daemon.DataDir, "knowledge"))
+	if err := store.Start(); err != nil {
 		log.Printf("[homed] warning: knowledge store: %v", err)
 	} else {
-		log.Printf("[homed] knowledge store active with %d items", len(ks.Knowledge.List()))
+		log.Printf("[homed] knowledge store active with %d items", len(store.List()))
 	}
+	ks.Provide(kernelapi.FacKnowledge, store)
 	return nil
 }
 

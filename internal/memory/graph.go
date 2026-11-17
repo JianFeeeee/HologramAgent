@@ -40,120 +40,6 @@ const maxAdjacentRelations = 200
 // 无上限时一张大图会被整表 read 进内存。超限时 GraphDB.Recall 会记日志。
 const maxFullRecallEntities = 10000
 
-type Entity struct {
-	// MatchRank 是**实词关键词**上的最佳命中层级（0=完全相等, 1=前缀, 2=包含）。
-	//
-	// ★ 为什么实体要带这个字段（2026-10-01 跑分实测）：召回结果平铺给模型时，
-	// 「为什么这条相关」此前完全不可见 —— 模型看到 193 个同格式的
-	// 「-名称(提及N次)」，无从判断该信哪个，于是转去 grep 知识库文件，
-	// 还把「没检索到」当成「不存在」。带上层级后最相关的几条一眼可辨。
-	// 仅在关键词召回路径上填充；深度扩展产出与 seed 路径为 -1（未知）。
-	MatchRank int `json:"match_rank,omitempty"`
-	// Seq 是该实体最新一次被写入时的**句子 id**（sentences.id，自增单调）。
-	//
-	// ★ 为什么实体时间排序需要它（真实库实测）：entities.updated_at 来自
-	// SQLite CURRENT_TIMESTAMP，只到**秒**，而一批记忆常在同一秒内批量写入。
-	// 实测 ha-c 生产库 190 个实体里最多的一批 20 个实体共享同一秒。
-	// sentences.id 是自增主键，严格单调，是唯一可靠的时序信号。
-	// 0 表示该实体没有关联句子（合成/导入的实体），此时回退到 UpdatedAt。
-	Seq          int64     `json:"seq,omitempty"`
-	ID           int64     `json:"id"`
-	Name         string    `json:"name"`
-	Type         string    `json:"type"`
-	MentionCount int       `json:"mention_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-
-	// blockKey 是对应的**块 ID**（2026-10-04）。
-	//
-	// ★ 为什么 ID 不能直接用块 ID：Entity.ID 是 int64（JSON 与 SDK 契约），
-	//   而块 ID 是内容派生的字符串（blk_ent_<hash>）—— 放不进去。
-	//   所以 ID 退化为「本次召回内的序号」，块 ID 走这个新字段。
-	//
-	// ★ 为什么需要它：召回内部要用块 ID 做 map 键（跨关键词去重、
-	//   深度扩展的前沿集合），而出口排序 sortRecallEntities 按
-	//   Entity.ID 建索引 —— 两者需要一次映射。
-	//
-	// ★ 不导出到 JSON（omitempty + json:"-"）：它是内部索引键，
-	//   不是对外契约的一部分 —— 对外应该是 block_id 而不是这个临时序号。
-	blockKey string `json:"-"`
-}
-
-// IsLegacyRow 报告这个实体行是**旧表**（entities）来的，而不是块。
-//
-// ★ 存在的理由：读侧切块之后，External Recall 回来的东西既可能是块
-//
-//	（blockKey 非空）也可能是旧表行（blockKey 为空）。
-//	而判据常需要区分「块」与「旧表残留」——
-//	两者 Name/Type 可能完全一样，光看内容分不出来。
-//
-// ★ 只读，不进 JSON。
-func (e Entity) IsLegacyRow() bool { return e.blockKey == "" }
-
-type Relation struct {
-	ID       int64 `json:"id"`
-	SourceID int64 `json:"source_id"`
-	TargetID int64 `json:"target_id"`
-	// ★★ 块体系的端点 ID（2026-10-04）
-	//
-	// 旧 SourceID/TargetID 是 relations 表的行号，退场后无效。
-	// 块体系里端点是 memory_blocks.id（字符串，内容派生的稳定 ID）。
-	// 两个字段并存：RecallByScene 已走块侧，旧字段留给旧表读方；
-	// 旧表退场时删掉 SourceID/TargetID 即可。
-	SourceBlockID string    `json:"source_block_id,omitempty"`
-	TargetBlockID string    `json:"target_block_id,omitempty"`
-	SourceName    string    `json:"source_name"`
-	TargetName    string    `json:"target_name"`
-	RelationType  string    `json:"relation_type"`
-	Confidence    float64   `json:"confidence"`
-	Status        string    `json:"status"`
-	SessionID     string    `json:"session_id"`
-	TurnID        int       `json:"turn_id"`
-	CreatedAt     time.Time `json:"created_at"`
-	DateBucket    string    `json:"date_bucket"`
-	SentenceID    int64     `json:"sentence_id,omitempty"`   // FK → sentences.id（退场后不用）
-	SentenceText  string    `json:"sentence_text,omitempty"` // 原句全文（走原句块回溯）
-	// SentenceBlockID 是原句块的 ID（blk_src_<hash>），供场景引用与去重。
-	SentenceBlockID string `json:"sentence_block_id,omitempty"`
-	// SourceVec / TargetVec / SentenceVec 是端点块与原句块的**稠密向量**。
-	//
-	// 为什么带在关系上：场景召回是"每轮都要跑的常驻注入"，排序必须与本轮
-	// query 相关（块里本来就存着向量，相关性就是一次余弦比较）。
-	// 此前 RecallByScene 只按「场景权重 → 时间倒序」排，老图库里的历史高频
-	// 三元组常年霸榜，每轮灌同一批无关内容（实测 90% token 是这些）。
-	//
-	// 不落 JSON / 不入库：它们只用于本次比较，块向量本身仍在 memory_blocks 里。
-	SourceVec   []float64 `json:"-"`
-	TargetVec   []float64 `json:"-"`
-	SentenceVec []float64 `json:"-"`
-}
-
-type Triple struct {
-	Subject      string  `json:"subject"`
-	Relation     string  `json:"relation"`
-	Object       string  `json:"object"`
-	Confidence   float64 `json:"confidence,omitempty"`
-	SubjectType  string  `json:"subject_type,omitempty"`
-	ObjectType   string  `json:"object_type,omitempty"`
-	SentenceText string  `json:"sentence_text,omitempty"` // 原始句子文本，Commit时写入sentences表
-	// MediaDigests 是该三元组显式携带的媒体 digest（完整或前缀）。
-	// 媒体不再靠正文 marker 反解：结构化字段直接给出归属，
-	// 由调用方（core）把它变成 L3 一等块并与句子建立结构边。
-	MediaDigests []string `json:"media_digests,omitempty"`
-	// Scene 是这条记忆所属的**场景键**（可空）。写完后该三元组的两个实体
-	// 与这条关系都会被挂到这个场景上，场景重现时按场景召回。
-	// 约定见 memory.NormalizeSceneKey：`chan:qq`、`chan:qq/peer:group_123`。
-	Scene string `json:"scene,omitempty"`
-	// Scenes 是同一批多场景挂载（可空）：主动**声明**的场景（如 chan:qq）
-	// 与被动**涌现**出来的场景（如 auto:chan:qq+peer_group:1027）可以同时挂。
-	//
-	// 为什么要两条都挂：声明路是"我知道这是哪个场面"，稳定、可读、可兜底；
-	// 涌现路是"这轮看起来像哪个场面"，细粒度、不需要任何人声明。
-	// 只挂一条的代价：只挂声明则细粒度唤起丢失，只挂涌现则首次交互（场景
-	// 还没长出来）没有兜底。
-	Scenes []string `json:"scenes,omitempty"`
-}
-
 type GraphDB struct {
 	db     *sql.DB
 	mu     sync.RWMutex
@@ -944,13 +830,7 @@ func (g *GraphDB) upsertEntity(tx *sql.Tx, name string, entityType string) (int,
 	return 0, nil
 }
 
-type RecallResult struct {
-	Entities  []Entity   `json:"entities"`
-	Relations []Relation `json:"relations"`
-}
-
 // SortMode 决定召回结果的呈现顺序。
-type SortMode string
 
 const (
 	// SortRelevance：按「实词命中层级 → 提及次数 → 名字长度」排序。
@@ -1006,16 +886,16 @@ func (g *GraphDB) RecallSorted(keywords []string, seedEntities []string, depth i
 		seen := make(map[string]struct{}, len(result.Entities))
 		ids := make([]string, 0, len(result.Entities))
 		for _, e := range result.Entities {
-			// 只报有块键的实体：旧实现下部分实体来自非块路径（无 blockKey），
+			// 只报有块键的实体：旧实现下部分实体来自非块路径（无 BlockKey），
 			// 报出去星图也找不到对应节点。
-			if e.blockKey == "" {
+			if e.BlockKey == "" {
 				continue
 			}
-			if _, dup := seen[e.blockKey]; dup {
+			if _, dup := seen[e.BlockKey]; dup {
 				continue
 			}
-			seen[e.blockKey] = struct{}{}
-			ids = append(ids, e.blockKey)
+			seen[e.BlockKey] = struct{}{}
+			ids = append(ids, e.BlockKey)
 		}
 		g.emitAccess(AccessEvent{Op: "recall", Blocks: ids})
 	}
@@ -1195,7 +1075,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 			}
 			if !entityIDs[b.ID] {
 				entityIDs[b.ID] = true
-				e.blockKey = b.ID
+				e.BlockKey = b.ID
 				result.Entities = append(result.Entities, e)
 			}
 		}
@@ -1230,7 +1110,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 					Type:      blockSemanticType(b),
 					CreatedAt: b.CreatedAt,
 					UpdatedAt: b.UpdatedAt,
-					blockKey:  b.ID,
+					BlockKey:  b.ID,
 				})
 			}
 		}
@@ -1396,7 +1276,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 					Type:      blockSemanticType(b),
 					CreatedAt: b.CreatedAt,
 					UpdatedAt: b.UpdatedAt,
-					blockKey:  b.ID,
+					BlockKey:  b.ID,
 				})
 			}
 		}
@@ -1412,7 +1292,7 @@ func (g *GraphDB) recallSortedLocked(keywords []string, seedEntities []string, d
 	//   序号在本次调用内唯一，所以映射是一一对应的。
 	rankBySeq := make(map[int64]int, len(result.Entities))
 	for i := range result.Entities {
-		if r, ok := entityRank[result.Entities[i].blockKey]; ok {
+		if r, ok := entityRank[result.Entities[i].BlockKey]; ok {
 			rankBySeq[result.Entities[i].ID] = r
 		}
 	}
@@ -2165,10 +2045,6 @@ func (g *GraphDB) deleteEntityLocked(name string) (DeleteResult, []string, error
 //
 //	是**两种不同的事实**，压成一个 int 就会让工具层只能说谎
 //	—— 那正是本缺陷的成因（回「已彻底删除…及其所有关联关系」而实际 Δ0）。
-type DeleteResult struct {
-	Blocks int `json:"blocks"`
-	Edges  int `json:"edges"`
-}
 
 // Archive 把 days 天前的**关系边**标记为 archived。
 //
@@ -2210,7 +2086,7 @@ func (g *GraphDB) Archive(days int) (int, error) {
 // ★★★ 改走块/边体系（2026-10-04）
 //
 // 原实现 `UPDATE relations SET sentence_id = 0 WHERE id = ?` ——
-// 而调用方（internal/agent/core/distill.go）传的 rel.ID 来自
+// 而调用方（internal/agent/agent/distill.go）传的 rel.ID 来自
 // RecallSorted 的返回，那里 Relation.ID 现在是**关系边 ID**。
 //
 // ⇒ ★★ 也就是说：它一直在清理**错误的行**。

@@ -5,18 +5,19 @@ import (
 	"fmt"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
 )
 
 type llmImpl struct {
-	mgr        *agentAPI.ProviderManager
+	mgr        *agentProvider.ProviderManager
 	cfgReg     *internalConfig.ConfigRegistry
 	lua        *luaVM.VM
 	baseAPIKey string
 }
 
-func NewLLM(mgr *agentAPI.ProviderManager, cfgReg *internalConfig.ConfigRegistry, lua *luaVM.VM, baseAPIKey string) LLMAPI {
+func NewLLM(mgr *agentProvider.ProviderManager, cfgReg *internalConfig.ConfigRegistry, lua *luaVM.VM, baseAPIKey string) LLMAPI {
 	return &llmImpl{mgr: mgr, cfgReg: cfgReg, lua: lua, baseAPIKey: baseAPIKey}
 }
 
@@ -123,14 +124,14 @@ func (l *llmImpl) ReloadFromConfig() error {
 	l.mgr.Reset()
 	adapterConcurrency := map[string]int{}
 	for _, src := range cfg.LLM.Sources {
-		if !agentAPI.IsValidSourceConfig(src.Name, src.BaseURL, src.Model, src.Adapter) {
+		if !agentProvider.IsValidSourceConfig(src.Name, src.BaseURL, src.Model, src.Adapter) {
 			continue
 		}
 		key := src.APIKey
 		if key == "" {
 			key = l.baseAPIKey
 		}
-		provider := agentAPI.NewLuaAdaptedProvider(agentAPI.BaseConfig{
+		provider := agentProvider.NewLuaAdaptedProvider(agentProvider.BaseConfig{
 			Model:         src.Model,
 			BaseURL:       src.BaseURL,
 			APIKey:        key,

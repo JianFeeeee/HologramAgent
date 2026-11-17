@@ -13,17 +13,28 @@ package agent
 
 import (
 	"fmt"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"log"
 	"path/filepath"
 	"strings"
 	"time"
 
-	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/core"
+	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 
 	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
@@ -59,14 +70,14 @@ func (Module) Requires() []string {
 func (Module) Provides() []string { return []string{kernelmod.FacAgent} }
 
 func (Module) Init(k *kstate.State) error {
-	if k.Memory == nil {
+	if !k.Has(kernelapi.FacMemory) {
 		return errMissing("agent", kernelmod.FacMemory)
 	}
-	if k.LLMManager == nil {
+	if !k.Has(kernelapi.FacLLM) {
 		return errMissing("agent", kernelmod.FacLLM)
 	}
-	if k.PluginRegistry == nil {
-		return errMissing("agent", kernelmod.FacStageHost)
+	if !k.Has(kernelapi.FacPluginRegistry) {
+		return errMissing("agent", kernelmod.FacPluginRegistry)
 	}
 	// ★ FacSecurity 已声明在 Requires 里，到这里它必须非 nil。
 	//
@@ -77,10 +88,10 @@ func (Module) Init(k *kstate.State) error {
 	//
 	// 注意区分：**配置显式关闭**时 security 模块装的是 Disabled Runtime
 	// （非 nil，零成本透传），所以这里报错只可能是装配顺序错了。
-	if k.Security == nil {
+	if !k.Has(kernelapi.FacSecurity) {
 		return errMissing("agent", kernelmod.FacSecurity)
 	}
-	k.Agent = buildAgent(k)
+	k.Provide(kernelapi.FacAgent, buildAgent(k))
 
 	// 插件 SDK 接线（必须在 loadPlugins 之前）。
 	wirePluginSDK(k)
@@ -102,26 +113,38 @@ Reply in natural language, like a person talking: do not enumerate which tools y
 func buildAgent(k *kstate.State) *agentCore.Agent {
 	cfg := k.Cfg
 	cfgReg := k.CfgReg
-	provider := k.LLMProvider
-	providerMgr := k.LLMManager
-	iom := k.IO
-	memDB := k.Memory.DB
-	memIdx := k.Memory.Indexer
-	trk := k.Tracker
-	coldcontextStore := k.DocStore
-	ks := k.Knowledge
-	socialStore := k.Memory.Social
-	textMem := k.TextMemory
-	pluginReg := k.PluginRegistry
-	embedder := k.Embedder
-	multimodalSpace := k.MultimodalSpace
-	mmProviderName := k.MultimodalProviderName
-	mmErr := k.MultimodalErr
-	// StageHost 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环），
-	// 取用处断言回具体类型。装配顺序由依赖图保证（FacStageHost）。
-	stageHost, _ := k.StageHost.(*agentCore.StageHost)
-	evBus := k.EventBus
-	secRT := k.Security
+	// ★ 能力一律从挂载点按**具名设施**取，再断言到具体/接口类型。
+	//   「谁提供什么名字」的知识只在 kernelapi（常量）与本文件（断言）里，
+	//   kstate 不再持有任何模块类型（用户裁定 2026-11-17）。
+	providerMgr := kernelmod.MustValue[*agentProvider.ProviderManager](k, kernelapi.FacLLM)
+	provider, _ := providerMgr.Default(), true
+	iom := kernelmod.MustValue[*agentIO.IOManager](k, kernelapi.FacIO)
+	memDB := kernelmod.MustValue[*memory.GraphDB](k, kernelapi.FacMemory)
+	memIdx := kernelmod.MustValue[*memory.Indexer](k, kernelapi.FacMemoryIndexer)
+	trk := kernelmod.MustValue[*tracker.Tracker](k, kernelapi.FacTracker)
+	coldcontextStore := kernelmod.MustValue[*coldcontext.Store](k, kernelapi.FacDocStore)
+	ksStore := kernelmod.MustValue[*knowledge.Store](k, kernelapi.FacKnowledge)
+	socialStore := kernelmod.MustValue[*social.SocialStore](k, kernelapi.FacMemorySocial)
+	textMem := kernelmod.MustValue[*text.Memory](k, kernelapi.FacTextMem)
+	pluginReg := kernelmod.MustValue[*plugin.Registry](k, kernelapi.FacPluginRegistry)
+	embedder := kernelmod.MustValue[*memory.StaticEmbedder](k, kernelapi.FacEmbedder)
+	var multimodalSpace vector.MultimodalEmbedder
+	if impl, ok := k.Require(kernelapi.FacMultimodal); ok {
+		multimodalSpace, _ = impl.(vector.MultimodalEmbedder)
+	}
+	var mmProviderName, mmErr string
+	if impl, ok := k.Require(kernelapi.FacMultimodalStatus); ok {
+		if st, _ := impl.(*kernelapi.MultimodalStatus); st != nil {
+			mmProviderName, mmErr = st.Provider, st.Error
+		}
+	}
+	// StageHost 在挂载点里存 any（kstate 不持有模块类型），取用处断言回具体类型。
+	stageHost, _ := kernelmod.MustValueAny(k, kernelapi.FacStageHost).(*agentCore.StageHost)
+	var evBus *events.Bus
+	if impl, ok := k.Require(kernelapi.FacEventBus); ok {
+		evBus, _ = impl.(*events.Bus)
+	}
+	secRT := kernelmod.MustValue[*security.Runtime](k, kernelapi.FacSecurity)
 
 	personality := loadPersonality(cfg, cfgReg)
 
@@ -147,7 +170,7 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 		Indexer:           memIdx,
 		Tracker:           trk,
 		DocStore:          coldcontextStore,
-		Knowledge:         ks,
+		Knowledge:         ksStore,
 		SocialStore:       socialStore,
 		TextMemory:        textMem,
 		// MediaStore 已随 CAS 淘汰：块自带负载。
@@ -312,9 +335,9 @@ func buildAgent(k *kstate.State) *agentCore.Agent {
 // 无意义的重复写。两件事都做，缺一不可。
 func wirePluginSDK(k *kstate.State) {
 	// Agent 是本包自己的类型，构造期已知；不走挂载点断言。
-	a, _ := k.Agent.(*agentCore.Agent)
+	a, _ := kernelmod.MustValueAny(k, kernelapi.FacAgent).(*agentCore.Agent)
 	if a != nil {
-		k.PluginRegistry.SetStatusProvider(a)
+		kernelmod.MustValue[*plugin.Registry](k, kernelapi.FacPluginRegistry).SetStatusProvider(a)
 	}
 }
 

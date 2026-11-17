@@ -12,6 +12,7 @@ package memory
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"path/filepath"
 	"strings"
@@ -78,26 +79,29 @@ func (Module) Init(ks *kstate.State) error {
 		distiller.Start()
 	}
 
-	ks.Memory = &kstate.MemoryBundle{
-		DB:        memDB,
-		Indexer:   memIdx,
-		Social:    socialStore,
-		Distiller: distiller,
+	// ★ 四个产物各自挂到**具名设施**上（不再打包成 kstate.MemoryBundle）：
+	// 「记忆子系统」的打包类型一旦住进挂载点，挂载点就持有模块知识
+	// （用户裁定 2026-11-17）。拆开之后"只填了 db 忘了 indexer"不再可能：
+	// 每个名字要么装着、要么缺失（Require 返回 ok=false，消费方响亮报错）。
+	if memDB != nil {
+		ks.Provide(kernelapi.FacMemory, memDB)
 	}
+	ks.Provide(kernelapi.FacMemoryIndexer, memIdx)
+	ks.Provide(kernelapi.FacMemorySocial, socialStore)
+	ks.Provide(kernelapi.FacMemoryDistiller, distiller)
 	// 共享词嵌入：蒸馏与 Agent 上下文复用同一实例
 	// （避免同一模型被二次加载，约 200k×300 维 ≈ 数百 MB）。
-	ks.Embedder = memory.NewStaticEmbedder(
+	embedder := memory.NewStaticEmbedder(
 		strings.Split(ks.CfgReg.GetString("core.agent.embedding_model_path", ""), ",")...)
-	distiller.SetEmbedder(ks.Embedder)
+	distiller.SetEmbedder(embedder)
+	ks.Provide(kernelapi.FacEmbedder, embedder)
 
 	// ★ 伪关机登记（迁移数据目录用，见 kernelboot/lifecycle.go）。
 	// 只登记**持有写句柄**的 distiller —— 它每 10min 写 memory/graph.db，
 	// 迁移期间一旦写入就会搬走"写了一半的库"。
-	if ks.Memory != nil && ks.Memory.Distiller != nil {
-		ks.AddQuiescer("distiller",
-			func() error { return ks.Memory.Distiller.Pause() },
-			func() error { return ks.Memory.Distiller.Resume() })
-	}
+	ks.AddQuiescer("distiller",
+		func() error { return distiller.Pause() },
+		func() error { return distiller.Resume() })
 
 	ks.AddCloser(func() {
 		// 与原 main 的两个 defer 同序（LIFO）：先停蒸馏器，再关图库。

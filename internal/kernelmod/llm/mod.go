@@ -4,11 +4,12 @@
 package llm
 
 import (
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"log"
 	"os"
 
-	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
@@ -45,23 +46,33 @@ func (Module) Init(ks *kstate.State) error {
 	// 注入晚了先注册的那批就没被装饰（静默漏掉一条出网路径）。
 	//
 	// 依赖图（Requires 里的 FacSecurity）保证 ks.Security 此时非 nil。
-	ks.BaseAPIKey = resolveBaseAPIKey(ks.Cfg)
-	ks.LLMManager = buildProviderManager(ks.Cfg, ks.LuaVM, ks.BaseAPIKey, ks.Security)
-	ks.LLMProvider = ks.LLMManager.Default()
+	baseAPIKey := resolveBaseAPIKey(ks.Cfg)
+	var luaVM *luapkg.VM
+	if impl, ok := ks.Require(kernelapi.FacLua); ok {
+		luaVM, _ = impl.(*luapkg.VM)
+	}
+	var secRT *security.Runtime
+	if impl, ok := ks.Require(kernelapi.FacSecurity); ok {
+		secRT, _ = impl.(*security.Runtime)
+	}
+	providerMgr := buildProviderManager(ks.Cfg, luaVM, baseAPIKey, secRT)
+	ks.Provide(kernelapi.FacLLM, providerMgr)
+	ks.Provide(kernelapi.FacLLMDefault, providerMgr.Default())
+	ks.Provide(kernelapi.FacBaseAPIKey, baseAPIKey)
 	return nil
 }
 
 // buildProviderManager 按配置注册全部 LLM 源（原 cmd/homed 的整块平移）。
 func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string,
-	secRT *security.Runtime) *api.ProviderManager {
-	providerMgr := api.NewProviderManager()
+	secRT *security.Runtime) *agentProvider.ProviderManager {
+	providerMgr := agentProvider.NewProviderManager()
 	// 先注入变量库，再注册 —— 顺序反了会静默漏装饰（见 Init 的注释）。
 	if secRT != nil {
 		providerMgr.SetSecretStore(secRT.Store())
 	}
 	adapterConcurrency := map[string]int{}
 	for _, src := range cfg.LLM.Sources {
-		if !api.IsValidSourceConfig(src.Name, src.BaseURL, src.Model, src.Adapter) {
+		if !agentProvider.IsValidSourceConfig(src.Name, src.BaseURL, src.Model, src.Adapter) {
 			log.Printf("[homed] skip invalid llm source %q (base_url=%q model=%q adapter=%q)",
 				src.Name, src.BaseURL, src.Model, src.Adapter)
 			continue
@@ -70,7 +81,7 @@ func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string
 		if key == "" {
 			key = baseAPIKey
 		}
-		luaProvider := api.NewLuaAdaptedProvider(api.BaseConfig{
+		luaProvider := agentProvider.NewLuaAdaptedProvider(agentProvider.BaseConfig{
 			Model:         src.Model,
 			BaseURL:       src.BaseURL,
 			APIKey:        key,
@@ -86,7 +97,7 @@ func buildProviderManager(cfg *types.Config, luaVM *luapkg.VM, baseAPIKey string
 		// ★ 能力是**配置事实**，由装配层登记；不让内核靠 adapter 上的
 		// 类型断言去猜（断言穿过 adapter + 安全装饰器，任一层漏实现方法
 		// 就会静默变成"没有视觉"—— 这是反复出现的老 bug）。
-		providerMgr.SetCapabilities(src.Name, api.ProviderCaps{
+		providerMgr.SetCapabilities(src.Name, agentProvider.ProviderCaps{
 			Vision: src.Vision,
 			Audio:  src.Audio,
 		})

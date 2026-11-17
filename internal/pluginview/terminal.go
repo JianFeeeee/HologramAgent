@@ -11,7 +11,7 @@ import (
 // TerminalView 是**插件侧**的终端会话与命令历史视图。
 //
 // 职责边界（2026-10-20 调整）：终端逻辑只归 agentcli ——PTY、会话、历史都在它
-// 那里；内核**不**再维护终端语义（旧的 internal/agent/core/terminal_registry.go
+// 那里；内核**不**再维护终端语义（旧的 internal/agent/agent/terminal_registry.go
 // 已删除）。插件要展示终端，就订阅事件总线自己攒视图：
 //
 //	EventTerminalOutput（agentcli 发）→ 会话输出 + 生命周期

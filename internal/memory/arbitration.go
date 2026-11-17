@@ -190,14 +190,6 @@ func sortHitsByTimeThenScore(hits []BlockHit) {
 }
 
 // ArbitrationResult 是仲裁后的结果。
-type ArbitrationResult struct {
-	// Kept 是仲裁后保留的块（按时间升序）。
-	Kept []BlockHit
-	// Superseded 是被取代的块（按时间降序，最早的在前）。
-	Superseded []BlockHit
-	// Status 是仲裁结论，用于日志与调试。
-	Status string
-}
 
 // sameSentenceOf 返回每个块所属的原句 id。
 //

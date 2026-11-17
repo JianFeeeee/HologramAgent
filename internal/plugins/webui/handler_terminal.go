@@ -9,7 +9,7 @@ import (
 // 终端面：终端会话列表与命令历史接口。
 //
 // 职责边界（2026-10-20 调整）：终端状态归 agentcli，内核**不**再维护终端语义
-// （旧的 internal/agent/core/terminal_registry.go 已删除）。WebUI 在
+// （旧的 internal/agent/agent/terminal_registry.go 已删除）。WebUI 在
 // NewHandler 里订阅事件总线（EventTerminalOutput + EventToolCall）攒自己的视图，
 // CLI 用同一份 internal/pluginview 实现，两个插件的解析口径一致。
 //

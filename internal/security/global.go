@@ -7,7 +7,7 @@ package security
 //	internal/security        ← 纯逻辑，不 import 任何 agent 包
 //	    ↑
 //	internal/agent/api       provider 装饰器（出向改写）
-//	internal/agent/core      工具参数/载荷填充（入向回填）
+//	internal/agent/agent      工具参数/载荷填充（入向回填）
 //
 // 是 DAG，**没有 import 环**。所以装饰器可以直接用内核的 Provider 接口，
 // 不必做接口投影。（初版误以为会成环而写了一层投影接口，已删除。）

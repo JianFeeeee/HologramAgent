@@ -28,7 +28,7 @@ import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/config"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/device"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/docstore"
-	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/kernelapi"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/iobus"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/knowledge"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/llm"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/lua"

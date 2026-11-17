@@ -1,0 +1,810 @@
+package agent
+
+import (
+	"context"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
+	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
+	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/tracker"
+	"github.com/JianFeeeee/HologramAgent/pkg/types"
+)
+
+// ContextEvent 和 RelevanceContext 定义在 context.go
+
+// Agent — 单 agent，不区分会话/实例
+//
+// 并发现状（M3a 起）：所有任务状态只由 **schedulerLoop goroutine** 独占读写，
+// 因此不再有保护整轮执行的互斥量——挂起不能持锁（见 docs/zh/input-scheduler-design.md §8.1 I3）。
+// 仍需跨 goroutine 保护的是：childMu/llmMu/lastInputMu/noMergeMu 与各子系统自己的锁；
+// interceptLoop 只允许触碰 preemptionRequest 与 cancelLLM（经 llmMu）。
+type Agent struct {
+	// logIdentity 提供日志身份标签（`[main]` / `[resident:<id>]` / `[rt:<id>]`）。
+	//
+	// ★ 主 agent 没有 child.Child（它是根），但工具执行日志是**共用代码路径**
+	// （toolcall.go 的 executeToolCallOutcome 三条路都经过它）。标签推导收在
+	// child.LogIdentity 里，这里嵌入一份，让主 agent 与子 agent 用同一个入口。
+	logIdentity child.LogIdentity
+
+	id              types.AgentID
+	provider        agentAPI.Provider
+	providerManager *agentProvider.ProviderManager
+	// preferredProvider 是本 agent 优先使用的模型源名（"" = 总默认源）。
+	// 语义见 AgentConfig.PreferredProvider：优先而非独占。
+	preferredProvider string
+	io                *agentIO.IOManager
+	memory            *memory.GraphDB
+	// graph 是本 agent 的**图记忆共同面**（根 = 同一个 GraphDB；驻留子 = LightMemory）。
+	// 整理面仍走 memory 字段（子为 nil ⇒ 既有的 nil 关卡自动禁用整理面）。
+	graph GraphMemory
+
+	// kernelSource/parentID/taskPrompt/dataDir：驻留子相关的层级信息（见 AgentConfig）。
+	kernelSource string
+	parentID     string
+	taskPrompt   string
+	dataDir      string
+
+	// isRealtime 标记本 agent 是 **rtchild**（实时子 agent，见 rtchild.go）。
+	//
+	// 它是 agent **类型标签**，与通道侧的 CapRT 是两个不同结构：
+	//   · CapRT      —— “这个**通道**能承载 rt 流”（插件声明）
+	//   · isRealtime —— “这个 **agent** 是 rtchild”（内核构造时定）
+	// rt 通道的划拨要两侧都满足（见 Agent.AssignRealtime）。
+	//
+	// 与 kernelSource 同类：都是“这个 agent 在层级/类型上是谁”的不可变标记。
+	isRealtime bool
+
+	// children 是**全部类型**的子 agent 的唯一登记表（重构 R1 起）。
+	//
+	// ## 为什么只有一张表
+	//
+	// 此前 residents 与 rtChildren 各自一张表 + 一把锁，每加一种类型就
+	// 多一张表、一把锁、一段路由分支。实测新增一种子 agent 要改 18 个生产
+	// 文件，并已因复制而漂移过一次（StopRTChildren 漏注销入站登记）。
+	//
+	// 现在类型差异下沉到 child.Entry / 各类型的 Dispose，骨架
+	// （单数/复数停止、撤销策略、注销入站）只写一遍。
+	children child.Registry
+
+	// rt 的实例登记已并入 children（统一登记表）。
+	//
+	// 这里只剩**已回收实例的上下文留档**：它不是登记表的一部分
+	// （实例已经不在了），而是"推信号 + 拉状态"交接协议的拉侧数据源。
+	//
+	// ★ 键是调用方（模型）给的 id，所以同名复用会撞键。串线的真因在**读侧**
+	// （RTTranscript 曾"先查留档、命中即返回"），现在按"在跑实例优先"。
+	// 刻意**不**在 Spawn 时删留档：提前删掉等于让"推了信号却拉不到正文"。
+	rtArchiveMu         sync.Mutex
+	rtClosedTranscripts map[string][]agentAPI.Message
+
+	// rtSlot 是**本 agent 作为 rtchild 时**的输入槽（作为父时无用）。
+	rtSlot *rtSlot
+	// rtMaxTools 是本 agent 作为 rtchild 时的工具批数上限（0 = 不限）。
+	rtMaxTools int
+
+	// 子侧：向父发消息（L3）与 contextfull 上报（父侧内核级事件）的钩子。
+	notifyParent  func(text string)
+	onContextFull func()
+	// ctxFullSignaled / ctxFullMu：contextfull 只上报一次的去重标记。
+	//
+	// ★ 必须加锁（2026-10-30，-race 实测抓到真实竞争）：
+	// 读它的是**子自己的调度器 goroutine**（checkContextFull，stepPrepare 里），
+	// 而写它的是**父的 goroutine**（CompressResident → resetContextFull）。
+	// 这两个 goroutine 并发读写同一 bool，是无锁数据竞争。
+	ctxFullMu       sync.Mutex
+	ctxFullSignaled bool
+
+	// 子侧：inputch 处理表（子持有，父 pull）。
+	tableMu        sync.Mutex
+	inputchTable   []InputchRecord
+	inputchPending *InputchRecord
+	currentInputch string
+	indexer        *memory.Indexer
+	tracker        *tracker.Tracker
+	context        *RelevanceContext
+	systemPrompt   string
+	ctx            context.Context
+	cancel         context.CancelFunc
+
+	// 文档记忆（第二层）
+	coldcontextStore *coldcontext.Store
+
+	// 知识库
+	knowledge *knowledge.Store
+
+	// 人物特质与关系网
+	social *social.SocialStore
+
+	// 文本记忆（原始对话日志）
+	textMem *text.Memory
+
+	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
+
+	// 人格设定（内容来自启动时载入的人格文件/配置项）
+	personality *agentPkg.Personality
+
+	// 人格落库面：首启门禁与 persona_set 工具使用（见 persona.go）。
+	// 为 nil 时门禁与工具都静默关闭（例如单测里不接配置的场景）。
+	personaStore PersonaStore
+
+	// 被授权的输出通道集合（空 = 完整授权，见 AgentConfig.AllowedOutputs）。
+	allowedOutputs []string
+
+	// toolResultWarnTokens 是「单条工具结果过大」的告警阈值（0 = 用默认）。
+	// ⚠️ 方案 B 只**统计与报告**，绝不裁剪（见 toolresult_budget.go 的理由）。
+	toolResultWarnTokens int
+	// toolResultReporter 报告超限；nil 时用 logReporter。
+	toolResultReporter toolResultReporter
+
+	// 插件注册表（用于 plgreload）
+	pluginReg *plugin.Registry
+	pluginDir string
+
+	// 定期心跳蒸馏
+	distillInterval time.Duration
+
+	// 三个独立心跳任务间隔
+	archiveInterval time.Duration // 冷文档归档
+	reviewInterval  time.Duration // 关系复审
+	mergeInterval   time.Duration // 实体合并检测
+
+	// 上下文裁剪：活跃上下文最大条数，超出按相关性裁剪
+	maxContextSize int
+
+	// overflowStat 统计上下文超页处理（触发次数、裁剪条数、终止次数）。
+	// 放 Agent 上而非全局：多实例并存时各自独立（跑分台就要实例隔离）。
+	overflowStat struct {
+		sync.Mutex
+		Checked    int // 判据执行次数（诊断：区分「没触发」与「没执行」）
+		Triggered  int // L4 上报次数
+		Aborted    int // 裁不出东西的终止次数
+		Upstream   int // 上游 ErrContextFull 次数
+		LastPruned int // 上次裁剪条数
+		LastRatio  float64
+		LastEvents int
+	}
+
+	// ctxTuning 是上下文预算的可调参数（零值 = 历史默认）。
+	//
+	// 从配置读入（core.agent.context.*），使不同窗口的实例可以各自调优，
+	// 而不是所有实例共用一套写死的 0.8 / 600000 / 1:3。
+	ctxTuning ContextTuning
+
+	// 当前请求的输出通道（mutex 保护，process() 内独占）
+
+	// 阶段管道：插件消息流编辑
+	stageHost    *StageHost
+	eventBus     *events.Bus
+	pluginHealth *pluginHealthTracker
+
+	// 自循环输入通道：核心内部任务（记忆消歧、系统维护、子 Agent 通知），
+	// 不经过 IO 层。每条消息携带目标输出通道：
+	//   "_consolidation_" = 记忆整理（无记忆路径，不写入上下文、不 emit 响应）
+	//   其他 = 正常处理（写入上下文、emit 响应到该通道）
+	selfInputCh chan selfInputMsg
+
+	// 子任务异步执行
+	childMu     sync.Mutex
+	childNextID int64
+	// childTasks 记录子任务状态：运行中 / 结果 / 是否已交付。
+	//
+	// 为什么保留结果而不是“读到即删”：完成通知会写进持久上下文
+	// （formatMergedTimeline 每轮都重新注入），模型之后还会再查。若读到即删，
+	// 第二次查询就得到“不存在或已过期”这个**永久失败信号**——模型据此认为
+	// 任务未完成，会无限重试/汇报（实测单轮 35 次工具调用、持续 514 秒）。
+	childTasks map[string]*childTaskState
+	// childSeq 给完成的任务排个序，用于有界淘汰。
+	childSeq int64
+
+	// 输入调度器：就绪队列、任务抽象与快照（见 scheduler.go）。
+	// M2 起取代 eventLoop 的隐式 channel 排队。
+	sched *scheduler
+
+	// 工具轮次硬上限（0 = 不限）；见 AgentConfig.MaxToolTurns。
+	maxToolTurns int
+	// offload 是积压任务自动转投的参数（见 offload.go）。
+	offload OffloadOptions
+
+	// 进行中的 LLM 请求取消函数，interceptLoop 可调用以在请求中打断
+	cancelLLM context.CancelFunc
+	llmMu     sync.Mutex
+
+	// 进行中的**工具调用**取消函数集合（2026-10-31 加）。
+	//
+	// ❗为何需要它：`cancelCurrentLLM` 只能停 LLM 流。而工具可能是长阻塞的
+	// （实测：`browser_start` 被模型要求 30m、被硬上限夹到 10m）。
+	// 那种情况下用户按「停止」什么都不发生 —— 日志里只有
+	// `stop requested ... (queued=1 will be short-circuited at pre-action)`，
+	// 而当前轮仍卡在工具里直到自己超时。
+	//
+	// ❗为何是**集合**而不是单个槽：同一轮可并发执行多个工具
+	// （批内全部声明 ParallelSafe 时），单槽会互相覆盖，且先完成的那个
+	// 会把别人的取消函数清掉。
+	//
+	// ❗为何只给「停止」用、不给中断抢占用：工具执行期间不取消是用户
+	// 裁定（R5）—— 副作用不可回滚，中途掤断会把「决定执行但未执行」
+	// 变成尴尬状态。所以 `cancelRunningTools` 只在 stop 分支调，
+	// 不在 `requestPreempt` 分支调（见 eventloop.go）。
+	cancelTools map[uint64]context.CancelFunc
+	toolSeq     uint64
+	toolMu      sync.Mutex
+
+	// 模型思考模式（thinking/reasoning）
+	thinkingEnabled bool
+
+	pendingToolBlocks []interface{} // 插件工具通过 SetToolBlocks 注入的多模态块（type agentAPI.ContentBlock），process.go 消费后追加到 tool message
+
+	// 启动时间
+	startTime time.Time
+
+	// 当前轮次的非文本媒体数据（图片/音频），供 describe_image 等工具访问
+	pendingMedia map[string]interface{}
+
+	// pendingMediaBlocks 累积本轮已捕获的媒体块。
+	//
+	// 需要缓存而不是当场挂到事件上：媒体在 process() 执行期间被捕获，
+	// 而承载它的 ContextEvent 要等 process() 返回后才 Append——此刻还没有 owner。
+	// 由 schedulerLoop goroutine 独占读写。
+	pendingMediaBlocks []memory.MemoryBlock
+
+	// 当前输入是否为工具提醒/中断（以 system 角色注入，避免被当成用户消息）
+	interruptInput bool
+
+	// 非文本输入处理配置
+	inputCfg types.InputProcessingConfig
+
+	// noMergeMarkets 记录被标记"禁止合并"的实体对，key="entityA||entityB"（字典序），
+	// 每次 reorgGraph 扫描到对应实体对时计数减一，归零后自动移除。
+	noMergeMarkers map[string]int
+	noMergeMu      sync.Mutex
+
+	// 输入去重：防 webui/GUI 断线重连导致的消息重放
+	// key=source+"|"+content, value=上次接收时间；短窗口内同内容丢弃
+	lastInput   map[string]time.Time
+	lastInputMu sync.Mutex
+
+	// 词嵌入模型，用于实体语义相似度计算
+	embedder *memory.StaticEmbedder
+
+	// multimodalSpace 是统一多模态向量空间（可选）。实现可以是内嵌 ONNX，
+	// 也可以是外部 API 客户端；两者共享同一套 L0/L2/L3 向量缓存与检索基础设施。
+	multimodalSpace vector.MultimodalEmbedder
+
+	// embeddingProvider 是配置里指定的统一向量空间 provider 名；
+	// embeddingError 是打开/适配失败的原因（成功时为空）。
+	// 二者只用于状态报告：区分「没配」「配了但打不开」「已启用」。
+	embeddingProvider string
+	embeddingError    string
+
+	// fusionCfg 控制文本路与视觉路的跨模态融合权重，可按模型实测结果配置。
+	fusionCfg CrossModalFusionConfig
+
+	// device 是挂载上来的工具/通道数据面（kernelmod/device 产出）。
+	// 类型是低层接口：core 不认识具体模块，避免 core ↔ kernelboot 成环。
+	device agentAPI.DeviceSurface
+	// deviceMu 只保护 device 字段（挂载是装配期动作，读取可能来自状态面）。
+	// ★ 刻意不复用整轮执行的锁：Agent 按设计**没有**保护整轮的互斥量
+	//（挂起不能持锁，见 input-scheduler-design §8.1 I3）。
+	deviceMu sync.RWMutex
+
+	// builtinHandlers 是交给 device 路由层的族处理器适配器（装配期构造一次）。
+	builtinHandlers agentAPI.BuiltinToolHandlers
+
+	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
+	// （security 按 agentID 持有，见 security_profile.go 的 securityScope）。
+	//
+	// ★ 为什么是 per-agent 而不是全局：轮次档位（sessionProfile）是该 agent
+	// 独有的状态。放在共享单例上，主 agent 的 guest 会被驻留子的 owner 覆盖
+	// —— 实测可复现（两者同进程并发）。
+	securityScopeView *security.AgentScope
+	securityScopeOnce sync.Once
+
+	// security 是安全防火墙运行时（security 模块产出，可 nil）。
+	//
+	// ★ 可 nil：测试与独立工具（memgc 等）不需要安全模块。
+	// 所有使用点写法统一为 `if a.security != nil`（零成本跳过）。
+	security *security.Runtime
+
+	// usageLedger 累计**跨调用**的 token 用量与缓存命中。
+	//
+	// 为何是 Agent 级而不是 TaskFrame 级：「这个会话花了多少、缓存省了多少」
+	// 不是单次调用的属性，必须跨轮次、跨任务累积才有意义。
+	// 单次用量一直在 StageCtx 与 LLM chain 事件里，缺的正是这个落点。
+	usageLedger usageLedger
+}
+
+type AgentConfig struct {
+	ID              types.AgentID
+	SystemPrompt    string
+	Provider        agentAPI.Provider
+	ProviderManager *agentProvider.ProviderManager
+	// PreferredProvider 是本 agent **优先使用**的模型源名（空 = 用总默认源）。
+	//
+	// ## 为什么需要它（用户 2026-10-30 要求）
+	//
+	// 「要求支持为主 agent、子 agent、驻留式子 agent、rt agent 可各自配置模型源，
+	//   **默认使用总模型源（default）**」
+	//
+	// 之前四类 agent 共用 providerManager 的同一套顺序：谁都没法单独指定。
+	// 但它们的负载完全不同 —— 主 agent 要强推理、rtchild 要极低首字延迟、
+	// 驻留子要长时间挂着省成本。用同一个源对三者都是妥协。
+	//
+	// ## 语义：**优先，不是独占**
+	//
+	// 它把该源排到候选链**最前面**，其余源仍作为回退（与原有多源回退语义一致）。
+	// 硬锁定成唯一源会让"这个源挂了"直接变成"这个 agent 完全不工作"，
+	// 而回退链正是本仓为此建立的机制。
+	//
+	// 名字不存在时**响亮回退到默认源并记日志**（不静默）：配置拼错要能看见。
+	PreferredProvider string
+	IO                *agentIO.IOManager
+	Memory            *memory.GraphDB
+	// LightMemory 是**轻量内核**的图记忆装配（驻留子用；读 temp∪main，只写 temp）。
+	//
+	// 给了它就意味着这是轻量内核：`Memory` 必须为 nil，
+	// 于是记忆整理面（块/媒体/流水线/整理工具）全部不可达（见 memoryface.go）。
+	LightMemory *memory.LightMemory
+	Indexer     *memory.Indexer
+	Tracker     *tracker.Tracker
+
+	DocStore    *coldcontext.Store
+	Knowledge   *knowledge.Store
+	SocialStore *social.SocialStore
+	TextMemory  *text.Memory
+	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
+	MultimodalSpace vector.MultimodalEmbedder
+	// EmbeddingProvider / EmbeddingError 是向量空间的配置身份与打开失败原因，
+	// 供 healthcheck_kernel 状态报告区分「未配置 / 打开失败 / 已启用」。
+	EmbeddingProvider string
+	EmbeddingError    string
+	FusionCfg         CrossModalFusionConfig // 跨模态融合权重；零值用默认
+	Personality       *agentPkg.Personality
+	PersonaStore      PersonaStore // 人格设定的读写面（首启门禁 + persona_set 工具）
+	PluginReg         *plugin.Registry
+	// KernelSource 是本 agent 的"上级"（驻留子的父）。
+	//
+	// 设计 §6.1：某个 agent 的 L4 只属于它的**内核** —— 根 agent 的内核是内核自身与
+	// 内核级插件；驻留子的内核是**父 agent**。因此子的 KernelSource = 父 ⇒ 只有父
+	// 能在子的阶梯上产生 L4（父的"发送消息"）。
+	KernelSource string
+	// ParentID 是父 agent 的 id（空 = 根 agent）。子用它判断自己是不是驻留子。
+	ParentID string
+	// DataDir 是本 agent 的数据目录；创建驻留子时用它派生 temp 图记忆路径。
+	DataDir string
+	// TaskPrompt 是在固定提示词之上注入的**任务提示词**（驻留子创建时给定）。
+	TaskPrompt string
+	// AllowedOutputs 是本 agent **被授权的输出通道集合**（设计 §4.4 / R2）。
+	//
+	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
+	// 父 agent 创建驻留子时用它收窄子的输出能力。
+	AllowedOutputs []string
+	// Security 是安全防火墙运行时（security 模块产出，可 nil）。
+	//
+	// ## 为什么它是**装配期字段**而不是事后 Set
+	//
+	// 这个字段曾经只能靠 `SetSecurity()` 注入，而生产装配链里**没有任何
+	// 地方调用它** —— 唯一的调用方是 4 条测试。于是 `securityDecisionFor`
+	// 在生产中恒走 nil 分支、恒放行，而策略表本身完全正确：这是
+	// 「机制 ≠ 接线」的教科书样本（GUI 无拒绝记录，看起来像"没人违规"）。
+	//
+	// ★ 根因在**依赖图**，不在这行赋值：`agent.Requires()` 没声明
+	//   `FacSecurity`，图就没有理由把 security 的产物交给 agent（只有声明了
+	//   的 device 拿到了）。所以修复必须同时改三处：
+	//     ① kernelmod/agent 的 Requires() 加 FacSecurity
+	//     ② 这里加字段 + New() 赋值 + buildAgent 传 k.Security
+	//     ③ 装配级判据（删 ① 或 ② 必须红）
+	//   只做 ②不做 ① 会让代码读 `k.Security` 而图不保证它已就绪 ——
+	//   今天恰好对（security 在第 1 层）是运气，不是设计。
+	//
+	// ## 子 agent 必须继承
+	//
+	// 驻留子 / rtchild 各自 `New(AgentConfig{...})`，不继承就等于子 agent
+	// 完全没有闸门（而它们恰是"能指挥设备、能写记忆"的高风险执行体）。
+	// 见 resident.go / rtchild.go 里 `Security: a.security`。
+	Security *security.Runtime
+
+	// IsRealtime 标记本 agent 是 **rtchild**（实时子 agent，见 rtchild.go）。
+	//
+	// 置 true 后：
+	//   · 只有它能被划入带 CapRT 的 rt 通道（Agent.AssignRealtime 校验）；
+	//   · 打断不走四级中断阶梯，而走单槽覆盖。
+	//
+	// ★ 这不是权限位，而是**类型标记**：另外两类子 agent 的设计目标函数
+	//   与 rt 相反（公平 vs 最新者胜），混用会两边都坏。
+	IsRealtime      bool
+	PluginDir       string
+	DistillInterval time.Duration
+	ArchiveInterval time.Duration // 冷文档归档间隔（L2→L3），0 则使用 DistillInterval
+	ReviewInterval  time.Duration // 关系复审间隔，0 则使用 DistillInterval
+	MergeInterval   time.Duration // 实体合并检测间隔，0 则使用 DistillInterval
+	MaxContextSize  int           // 活跃上下文最大条数，超出按相关性裁剪
+
+	// CtxTuning 是上下文预算的可调参数。零值 ⇒ 使用历史默认（与硬编码时代一致）。
+	//
+	// 为何必须能从配置传进来：这些阈值原本写死在 ComputeTokenBudget 里，
+	// 界面改不了、不同窗口的实例也没法各自调优（详见 ContextTuning 的注释）。
+	CtxTuning          ContextTuning
+	ContextSavePath    string                 // 上下文持久化路径，空则不持久化
+	EmbeddingModelPath string                 // 预训练词嵌入模型路径（word2vec 文本格式），空则不使用
+	Embedder           *memory.StaticEmbedder // 共享词嵌入实例；nil 时按 EmbeddingModelPath 自建
+	StageHost          *StageHost
+	EventBus           *events.Bus
+	ThinkingEnabled    bool
+
+	InputProcessing types.InputProcessingConfig // 非文本输入处理配置
+
+	// MaxToolTurns 是单个任务允许的工具轮次上限（0 = 不限）。
+	// 设计文档 D6：主循环必须有硬上限，否则模型不停调用就永不完结。
+	MaxToolTurns int
+
+	// Offload 是「积压任务自动转投给驻留子」的参数（见 offload.go）。
+	//
+	// 默认关闭（Enabled=false）：它让**内核替父做决策**，是设计 §7
+	//「决策在父的模型手里」的刻意例外，因此必须由部署方显式打开。
+	Offload OffloadOptions
+}
+
+func New(cfg AgentConfig) *Agent {
+	ctx, cancel := context.WithCancel(context.Background())
+	if cfg.DistillInterval <= 0 {
+		cfg.DistillInterval = 30 * time.Minute
+	}
+	if cfg.ArchiveInterval <= 0 {
+		cfg.ArchiveInterval = cfg.DistillInterval
+	}
+	if cfg.ReviewInterval <= 0 {
+		cfg.ReviewInterval = cfg.DistillInterval
+	}
+	if cfg.MergeInterval <= 0 {
+		cfg.MergeInterval = cfg.DistillInterval
+	}
+	if cfg.MaxContextSize <= 0 {
+		cfg.MaxContextSize = 30
+	}
+
+	embedder := cfg.Embedder
+	if embedder == nil {
+		embedder = memory.NewStaticEmbedder(strings.Split(cfg.EmbeddingModelPath, ",")...)
+	}
+	// DocStore 无需处理：TF-IDF 内置为 fallback，不需要外部注入向量器。
+	if cfg.Knowledge != nil {
+		cfg.Knowledge.SetVectorizer(embedder)
+		cfg.Knowledge.ReindexWithVectorizer(embedder)
+	}
+
+	rc := NewRelevanceContext(cfg.ContextSavePath, embedder)
+	// 裁剪保留条数：从配置传入（0 时保持 NewRelevanceContext 的历史默认）。
+	if cfg.CtxTuning.ProtectedCount > 0 {
+		rc.protectedCount = cfg.CtxTuning.ProtectedCount
+	}
+	if cfg.StageHost != nil {
+		rc.SetToolDefLookup(cfg.StageHost.ToolDef)
+	}
+	if cfg.IO != nil {
+		rc.SetChannelDefLookup(cfg.IO.GetInputChannelDef)
+	}
+	// 注入稠密多模态向量空间（可选）：配置后文档检索、L0 相关性裁剪、
+	// 跨模态检索全部共享同一向量空间，取代稀疏 fastText 语义路。
+	// 未配置时退化到 TF-IDF/fastText 稀疏检索，保持既有行为。
+	if cfg.MultimodalSpace != nil && cfg.MultimodalSpace.Loaded() {
+		rc.SetDenseSpace(cfg.MultimodalSpace)
+		// 场景召回的相关性判定用同一空间：块里存的就是这个空间的向量，
+		// 所以"相关"只是一次余弦比较（缺了它就只能按时间倒序灌旧事实）。
+		if cfg.Indexer != nil {
+			cfg.Indexer.SetDenseSpace(cfg.MultimodalSpace)
+		}
+		if cfg.DocStore != nil {
+			cfg.DocStore.SetDenseSpace(cfg.MultimodalSpace)
+			cfg.DocStore.BuildDenseIndex(cfg.MultimodalSpace)
+		}
+		// 知识库接入同一多模态空间：媒体作为一等节点参与稠密召回，
+		// 于是「按图搜知识」「按文搜含图知识」成立。
+		//
+		// 稀疏两路（词向量 + TF-IDF）**保持启用**且仍是主召回路径：多模态
+		// 空间未配置时知识库行为与此前逐字一致（退化为 0.5/0.5 两路融合）。
+		if cfg.Knowledge != nil {
+			// 顺序要紧：先接线再重建。ReindexDense 会尝试从 .dense.json 缓存恢复，
+			// 恢复不了才重算，最后把结果落盘。若先重建后接线，首次启动算出的
+			// 向量会被丢掉而不落盘。
+			cfg.Knowledge.SetDenseSpace(cfg.MultimodalSpace)
+			// 媒体字节随知识条目自带（CAS 淘汰后）：denseFor 直接读条目目录里的
+			// 媒体文件，无需 mediaGet/mediaPut 接线。
+			built, skipped := cfg.Knowledge.ReindexDense()
+			if built > 0 || skipped > 0 {
+				log.Printf("[knowledge] multimodal dense index: built %d, skipped %d (rest hit cache)", built, skipped)
+			}
+		}
+	}
+
+	a := &Agent{
+		id:                cfg.ID,
+		startTime:         time.Now(),
+		provider:          cfg.Provider,
+		preferredProvider: cfg.PreferredProvider,
+		providerManager:   cfg.ProviderManager,
+		io:                cfg.IO,
+		memory:            cfg.Memory,
+		graph:             graphMemoryOf(cfg),
+		kernelSource:      cfg.KernelSource,
+		parentID:          cfg.ParentID,
+		taskPrompt:        cfg.TaskPrompt,
+		dataDir:           cfg.DataDir,
+		isRealtime:        cfg.IsRealtime,
+		logIdentity:       agentLogIdentity(cfg),
+		indexer:           cfg.Indexer,
+		tracker:           cfg.Tracker,
+		context:           rc,
+		systemPrompt:      cfg.SystemPrompt,
+		ctx:               ctx,
+		cancel:            cancel,
+		coldcontextStore:  cfg.DocStore,
+		knowledge:         cfg.Knowledge,
+		social:            cfg.SocialStore,
+		textMem:           cfg.TextMemory,
+		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
+		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
+		personality:       cfg.Personality,
+		personaStore:      cfg.PersonaStore,
+		allowedOutputs:    cfg.AllowedOutputs,
+		pluginReg:         cfg.PluginReg,
+		pluginDir:         cfg.PluginDir,
+		distillInterval:   cfg.DistillInterval,
+		archiveInterval:   cfg.ArchiveInterval,
+		reviewInterval:    cfg.ReviewInterval,
+		mergeInterval:     cfg.MergeInterval,
+		maxContextSize:    cfg.MaxContextSize,
+		ctxTuning:         cfg.CtxTuning,
+		stageHost:         cfg.StageHost,
+		eventBus:          cfg.EventBus,
+		selfInputCh:       make(chan selfInputMsg, 64),
+		childTasks:        make(map[string]*childTaskState),
+		sched:             newScheduler(256),
+		maxToolTurns:      cfg.MaxToolTurns,
+		offload:           cfg.Offload,
+		pluginHealth:      newPluginHealthTracker(),
+		thinkingEnabled:   cfg.ThinkingEnabled,
+		inputCfg:          cfg.InputProcessing,
+		embedder:          embedder,
+		multimodalSpace:   cfg.MultimodalSpace,
+		embeddingProvider: cfg.EmbeddingProvider,
+		embeddingError:    cfg.EmbeddingError,
+		fusionCfg:         cfg.FusionCfg,
+		// ★ 安全运行时在**构造期**落位（不再依赖事后 SetSecurity）。
+		//   为 nil 表示调用方显式不启用（独立工具/单测），不是"忘了接线"。
+		security:       cfg.Security,
+		noMergeMarkers: make(map[string]int),
+		lastInput:      make(map[string]time.Time),
+	}
+
+	// 变量库注入：context 的落盘前脱敏要用**本 agent** 的变量库，
+	// 而不是进程级单例（见 RelevanceContext.secretStore 的注释）。
+	if a.security != nil {
+		if a.context != nil {
+			a.context.SetSecretStore(a.security.Store())
+		}
+		if a.stageHost != nil {
+			a.stageHost.SetSecretStore(a.security.Store())
+		}
+		// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
+		// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。
+		if a.providerManager != nil {
+			a.providerManager.SetSecretStore(a.security.Store())
+		}
+	}
+
+	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
+	// （设计 §4.1「路由发生在进内核之前」）。io 层不认识 agent，所以在这里把路由器
+	// 注入进去：插件注入输入时先问它，被别的 agent 接管就不再进本内核队列。
+	if a.io != nil {
+		a.io.SetInputRouter(a.routeInputByOwner)
+	}
+	return a
+}
+
+func (a *Agent) Start() {
+	go a.schedulerLoop()
+	go a.interceptLoop()
+	go a.distillLoop()
+	go a.archiveLoop()
+	go a.mergeLoop()
+	go a.reviewLoop()
+	go a.offloadLoop()
+	a.reembedStaleMedia()
+	a.migrateLegacyGraphMedia()
+	a.Logf("%s started, waiting for IO interrupts", a.id)
+}
+
+func (a *Agent) Stop() {
+	// 父退出**必须**销毁全部驻留子（设计 §10 硬约束：子不得比父活得久、不留孤儿）。
+	a.StopResidents()
+	// ★ 释放本 agent 的策略执行视图（2026-10-31）。
+	//
+	// 视图里存着 **longtimeProfile**（跨轮保留的档位）。不释放的话，
+	// 同名 agent 重建会继承上一代的 long-time 档 —— 那时可能是
+	// "上一个任务留下的访客权限"被新一代默默沿用。
+	// 与主体策略撤销（revokeChildPolicy）同一纪律。
+	a.ReleaseSecurityScope()
+	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse
+	// 自然拿到终态，但**从未运行**（排队/待处理）与**已挂起**的任务不会有任何人
+	// 回它们；带 ResponseCh 的同步注入方（cli / clawhubadapter 均无超时）会永久挂起
+	// （设计 §7 I5、§11.3 X2/X4）。必须在 cancel 之前做：cancel 会让调度器直接 return。
+	a.drainPendingInterrupts("agent_stopped")
+	a.cancel()
+}
+
+// drainPendingInterrupts 给排队/待处理/已挂起任务中带同步回执通道的调用方补一条
+// skipped 终态（复用 emitSkippedReply：非阻塞写，不对外发 agent_output 事件）。
+func (a *Agent) drainPendingInterrupts(reason string) {
+	if a.sched == nil {
+		return
+	}
+	pending := a.sched.pendingEvents()
+	if len(pending) == 0 {
+		return
+	}
+	for _, evt := range pending {
+		a.emitSkippedReply(evt, reason)
+	}
+	a.Logf("%s: shutting down, filled skipped terminal state for %d pending task(s)", a.id, len(pending))
+}
+
+// graphMemoryOf 决定本 agent 的图记忆共同面实现。
+//
+//   - 轻量内核（给了 LightMemory）：用 LightMemory，**整理面保持 nil**；
+//   - 完整内核：直接用主图库（*memory.GraphDB 天然满足 GraphMemory）。
+func graphMemoryOf(cfg AgentConfig) GraphMemory {
+	if cfg.LightMemory != nil {
+		return cfg.LightMemory
+	}
+	if cfg.Memory == nil {
+		return nil
+	}
+	return cfg.Memory
+}
+
+// graphMem 返回本 agent 的图记忆**共同面**。
+//
+// `graph` 显式为 nil 时回落到 `memory` —— 这样"只设 memory 的构造"
+// （大量既有测试直接用 Agent 字面量）照常工作，不需要同时维护两个字段。
+// 轻量内核则显式设 graph=LightMemory 且 memory=nil：共同面走 LightMemory，
+// 整理面因 memory==nil 而全部不可达。
+func (a *Agent) graphMem() GraphMemory {
+	if a.graph != nil {
+		return a.graph
+	}
+	if a.memory == nil {
+		return nil
+	}
+	return a.memory
+}
+
+// agentLogIdentity 由 AgentConfig 推导日志身份。
+//
+// 三类执行者的判定依据（与 child.Kind 同源）：
+//
+//	IsRealtime       ⇒ rt（rtchild：单槽覆盖、丢现场）
+//	ParentID 非空    ⇒ resident（驻留子 / 转投驻留子）
+//	其余             ⇒ 主 agent（根）
+func agentLogIdentity(cfg AgentConfig) child.LogIdentity {
+	switch {
+	case cfg.IsRealtime:
+		return child.LogIdentity{Kind: child.KindRT, ID: string(cfg.ID)}
+	case cfg.ParentID != "":
+		return child.LogIdentity{Kind: child.KindResident, ID: string(cfg.ID)}
+	}
+	return child.LogIdentity{Kind: "", ID: ""}
+}
+
+// Logf 写一行带身份标签的日志。
+//
+// ★ 身份由基类（child.LogIdentity）自动补，**调用方不需要手动带标签**：
+//
+//	a.Logf("tool %s result: %s", name, res)
+//	⇒ [resident:res_3] tool files_read result: ...
+//	⇒ [rt:rt_1]        tool files_read result: ...
+//	⇒ [main]           tool files_read result: ...
+//
+// 之前每个调用点都要 `a.Logf("...", ...)`，
+// 新加一处忘了补就又没有身份，而且没人会发现 —— 那正是本仓反复栽的
+// "改一处漏一处"。收进方法后，写成 a.Logf 就必然有身份。
+func (a *Agent) Logf(format string, args ...any) {
+	if a == nil {
+		(&child.LogIdentity{}).Logf(format, args...)
+		return
+	}
+	a.logIdentity.Logf(format, args...)
+}
+
+func (a *Agent) ID() types.AgentID { return a.id }
+
+// IsOutputAllowed 报告某个输出通道是否被授权给本 agent。
+//
+// 默认（未配置白名单）= **完整授权**；这是"默认完整授权、父可收窄"的落点。
+func (a *Agent) IsOutputAllowed(channel string) bool {
+	if len(a.allowedOutputs) == 0 {
+		return true
+	}
+	for _, c := range a.allowedOutputs {
+		if c == channel {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveOutputTarget 解析输出通道的投递目标（agent + inputch）。
+//
+// ok=false 表示该输出通道由传输层（device 通道，如 qq/webui）自行处理。
+func (a *Agent) ResolveOutputTarget(channel string) (agentIO.OutputTarget, bool) {
+	if a.io == nil || a.io.ChannelRegistry() == nil {
+		return agentIO.OutputTarget{}, false
+	}
+	return a.io.ChannelRegistry().ResolveOutputTarget(channel)
+}
+
+// isDuplicateInput 判断是否为短窗口内的重复输入（防 webui/GUI 断线重连消息重放）。
+// key=source+"|"+content；窗口内重复返回 true 并刷新时间戳（持续轰炸时保持拦截）。
+const duplicateInputWindow = 10 * time.Second
+
+func (a *Agent) isDuplicateInput(source, content string) bool {
+	a.lastInputMu.Lock()
+	defer a.lastInputMu.Unlock()
+	now := time.Now()
+	key := source + "|" + content
+	if last, ok := a.lastInput[key]; ok && now.Sub(last) < duplicateInputWindow {
+		a.lastInput[key] = now
+		return true
+	}
+	a.lastInput[key] = now
+	// 顺带清理过期项，防止 map 无限增长
+	for k, t := range a.lastInput {
+		if now.Sub(t) > duplicateInputWindow {
+			delete(a.lastInput, k)
+		}
+	}
+	return false
+}
+
+// IsDuplicateInput 导出包装，供测试验证去重行为。
+func (a *Agent) IsDuplicateInput(source, content string) bool {
+	return a.isDuplicateInput(source, content)
+}
+
+// SelfInputChan 返回自循环输入通道（只读，供内部测试验证）
+func (a *Agent) SelfInputChan() <-chan selfInputMsg {
+	return a.selfInputCh
+}
+
+// injectSelf 向自循环通道发送记忆整理类内部任务（无记忆路径）。
+// 线程安全，不阻塞发送者（通道缓冲 64）。
+func (a *Agent) injectSelf(task string) {
+	a.injectSelfChannel(selfInputMsg{
+		text:    task,
+		channel: channelConsolidation,
+	})
+}
+
+// injectSelfChannel 向自循环通道发送一条带目标通道标志的消息。
+// channel == "_consolidation_" 走无记忆整理路径；其他值走正常处理路径。
+func (a *Agent) injectSelfChannel(msg selfInputMsg) {
+	select {
+	case a.selfInputCh <- msg:
+	default:
+		a.Logf("self input channel full, dropping task: %s", truncateStr(msg.text, 80))
+	}
+}
