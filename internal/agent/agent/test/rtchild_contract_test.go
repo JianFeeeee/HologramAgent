@@ -24,6 +24,7 @@ package test
 // 骨架判据（①）已存在；②与"装配失败不留半残"此前无人守。
 
 import (
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"

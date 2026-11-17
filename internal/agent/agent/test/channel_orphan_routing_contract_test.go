@@ -14,6 +14,7 @@ package test
 // 同一个状态、两种相反的预期。这条判据钉的是那个 `return false`。
 
 import (
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"testing"
 

@@ -19,6 +19,7 @@ package agenttypes
 // 想删字段要先确认没有类型模块在读它 —— 这也是为什么搬运时一个字段都没动。
 
 import (
+	"context"
 	"time"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
@@ -150,4 +151,39 @@ type Frame struct {
 	PrefixLen int
 	// InputBlocks 是本轮输入携带的多模态块；重建前缀时要重新挂回。
 	InputBlocks []agentAPI.ContentBlock
+}
+
+// ToolCall 是 model 的工具调用值（别名：agent/api 与 model 同源）。
+type ToolCall = agentAPI.ToolCall
+
+// BatchOpts 是一批工具执行的可变参数（声明点在这里：类型模块要传它）。
+type BatchOpts struct {
+	// Ctx 是本次批量的执行作用域（rt 传整轮 roundCtx，其余传自身 ctx）。
+	//
+	// ★ 为什么放进 opts 而不是 runner 的形参：`ToolRunner` 是槽位，
+	// 各类型注册的实现必须能接受"这一批属于哪个作用域"——rt 的取消域是
+	// 整轮，主 agent 是自身 ctx。让 runner 自己猜（读 a.ctx）会让 rt 的
+	// 取消域失效（实测会退化成"打断不了"）。
+	Ctx context.Context
+	// Channel 是本次批量要回的通道（进 StageContext.Extra，插件据此判权限）。
+	Channel string
+	// Scenes 是本轮的场景键（rt / 工作式子传 nil）。
+	Scenes []string
+	// StageCtx 是基底 StageContext；内部按 idx 拆分（Extra 逐份复制）。
+	StageCtx *sdk.StageContext
+	// NoBatch 为 true 时强制串行（工作式子历史上是逐条串行）。
+	NoBatch bool
+	// ToolFilter 可在执行前改写/拒绝单个工具（工作式子用它禁输出工具）。
+	//
+	// 返回非空字符串表示"拒绝并以此作为结果"，不回落到真实执行。
+	ToolFilter func(tc ToolCall) string
+}
+
+// BatchResult 是单条工具的执行结果（与入参**同序**返回）。
+type BatchResult struct {
+	CallID string
+	Name   string
+	Text   string
+	Raw    interface{}
+	Denied bool
 }

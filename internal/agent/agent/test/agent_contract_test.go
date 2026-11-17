@@ -5,6 +5,7 @@ package test
 // 不碰 a.sched、不读源码。
 
 import (
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"

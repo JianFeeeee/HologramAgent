@@ -20,6 +20,7 @@ package test
 
 import (
 	"context"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"strings"
 	"sync"
 	"testing"

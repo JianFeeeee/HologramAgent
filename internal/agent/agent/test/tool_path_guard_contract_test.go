@@ -23,6 +23,7 @@ package test
 // 等于判据侵入被测代码；而"拒绝理由出现在结果里"正是模型与用户看到的那个面。
 
 import (
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"os"
 	"path/filepath"
 	"strings"

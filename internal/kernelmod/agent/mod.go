@@ -39,6 +39,10 @@ import (
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 
 	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
+	// ★ 空白导入**主 agent 类型模块**：它的 init 把工厂登记进类型表，
+	//   内核启动时 `Instantiate("main", …)` 才有实例（用户裁定：
+	//   「没有被调用就没有这个 agent 的实例」）。装配点不需要知道它怎么装。
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 )
 
 // Module 提供主 Agent。

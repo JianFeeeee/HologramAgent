@@ -39,42 +39,16 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 )
 
 // BatchOpts 是批执行的可变部分（导出：类型模块经 Hooks.ToolRunner 传入）。
 // 其余全部共享。
-type BatchOpts struct {
-	// Ctx 是本次批量的执行作用域（rt 传整轮的 roundCtx，其余传 agent 的 ctx）。
-	//
-	// ★ 为什么放进 opts 而不是 runner 的形参：ToolRunner 是**槽位**，
-	// 各类型注册的实现必须能接受"这一批属于哪个作用域"——
-	// rt 的取消域是整轮，主 agent 是自身 ctx，工作式子同主 agent。
-	// 让 runner 自己猜（读 a.ctx）会让 rt 的取消域失效（实测会退化成"打断不了"）。
-	Ctx context.Context
-	// Channel 是本次批量要回的通道（进 StageContext.Extra，插件据此判权限）。
-	Channel string
-	// Scenes 是本轮的场景键（rt / 工作式子传 nil）。
-	Scenes []string
-	// StageCtx 是基底 StageContext；内部按 idx 拆分（Extra 逐份复制）。
-	// nil 时用一份空基底（仍然带 comefrom 戳）。
-	StageCtx *sdk.StageContext
-	// NoBatch 为 true 时强制串行（工作式子历史上是逐条串行）。
-	NoBatch bool
-	// ToolFilter 可在执行前改写/拒绝单个工具（工作式子用它禁 output_send__*）。
-	//
-	// 返回非空字符串表示"拒绝并以此作为结果"，不回落到真实执行。
-	ToolFilter func(tc agentAPI.ToolCall) string
-}
+type BatchOpts = agenttypes.BatchOpts
 
 // batchResult 是单条工具的结果。
 // BatchResult 是单条工具的结果（导出：同上）。
-type BatchResult struct {
-	CallID string
-	Name   string
-	Text   string
-	Raw    interface{}
-	Denied bool
-}
+type BatchResult = agenttypes.BatchResult
 
 // runToolBatch 执行一批工具，返回与 calls **同序**的结果。
 //

@@ -23,6 +23,7 @@ package test
 // 作者以为自己在保护，实际毫无作用，且不会有任何报错。
 
 import (
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"testing"
 
