@@ -20,12 +20,6 @@ package agent
 
 import "github.com/JianFeeeee/HologramAgent/internal/memory"
 
-// isLightKernel 报告本 agent 是不是**轻量内核**（驻留子）。
-//
-// 轻量内核 = 传统上下文 + 图记忆（作用域化）：它**没有**动态上下文能力
-// （预算裁剪 / 按相关度裁剪并向 doc 记忆归档），那些是父 agent 专属的。
-func (a *Agent) isLightKernel() bool { return a != nil && a.parentID != "" }
-
 // contextTokenBudget 返回拼装时间线时可用的 token 预算。
 //
 //	完整内核：用动态上下文算出来的 ContextTokens（按相关度/预算**策略性**裁时间线）
@@ -34,12 +28,14 @@ func (a *Agent) isLightKernel() bool { return a != nil && a.parentID != "" }
 //	          而且在撞到硬上限之前，contextfull（90% 窗口）已按 L4 上报父 agent
 //	          决策（压缩/回收/销毁）—— 丢事件的决定权在父，不在内核。
 func (a *Agent) contextTokenBudget(b TokenBudget) int {
-	if a.isLightKernel() {
-		if b.MaxContext > 0 {
-			return b.MaxContext
-		}
-		return defaultMaxContextTokens
+	// ★ 预算策略由**类型注册的钩子**决定（用户裁定：各类型通过回调注册
+	// 各自的管理方式）。此前基座自己按 isLightKernel 分支 —— 那是按类型
+	// 嵌合，每加一种类型就得回来加一条 if。
+	if a != nil && a.hooks.ContextBudget != nil {
+		return a.hooks.ContextBudget(a, b)
 	}
+	// 未注册 = 装配错误（Hooks.Validate 拦住），这里只是最后兜底：
+	// 退回策略裁剪型预算，绝不静默改成"整窗"（那会让裁剪能力凭空消失）。
 	return b.ContextTokens
 }
 

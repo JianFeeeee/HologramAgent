@@ -174,7 +174,10 @@ func (a *Agent) overflowRatioNow() float64 {
 //
 // 幂等：未超页时零开销（一次 token 估算 + 一次比较），可安全地在热路径调用。
 func (a *Agent) enforceContextBudget(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
-	light := a != nil && a.isLightKernel()
+	// ★ 超页处置是**类型注册的钩子**：整窗型（驻留/rt）不注册它
+	//   （它们靠 contextfull 上报父 agent 决策，见本文件顶部注释）。
+	//   基座不再按 isLightKernel 分支。
+	light := a != nil && a.hooks.EnforceOverflow == nil
 	noCtx := a == nil || a.context == nil
 	var ratio float64
 	if !noCtx {
@@ -196,7 +199,7 @@ func (a *Agent) enforceContextBudget(f *TaskFrame, query string, force bool) (ha
 		}
 	}
 	if noCtx || light {
-		// 轻量内核（驻留子）不做按相关度裁剪，见 pruneByQuery 的同款理由。
+		// 本类型不注册超页处置 ⇒ 不做（见上面 light 的来源）。
 		return false, 0
 	}
 	// 判据点：本地水位 OR 外部明确报错 OR **单帧自己就撑爆预算**。
@@ -308,8 +311,11 @@ func (a *Agent) enforceResumeContextBudget(f *TaskFrame) (handled bool, pruned i
 //
 // 命名带 Locked 是历史遗留，实际不加锁；调用方在调度器单线程上下文里使用。
 func (a *Agent) overBudgetLocked() bool {
-	if a == nil || a.context == nil || a.isLightKernel() {
+	if a == nil || a.context == nil {
 		return false
+	}
+	if a.hooks.OverBudget != nil {
+		return a.hooks.OverBudget(a)
 	}
 	return a.overflowRatioNow() >= overflowRatio
 }
@@ -527,7 +533,7 @@ func (a *Agent) contextLenSafe() int {
 // 用户输入的文本**作为相关性基准：裁剪要保留的正是与"刚才在做的事"相关的
 // 内容。取不到就退化为按时间保留（pruneByQuery 内部对空 query 的处理）。
 func (a *Agent) pruneForAirInterrupt() {
-	if a == nil || a.context == nil || a.isLightKernel() {
+	if a == nil || a.context == nil || a.hooks.Prune == nil {
 		return
 	}
 	before := a.context.Len()

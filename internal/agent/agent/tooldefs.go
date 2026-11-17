@@ -718,7 +718,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	tools = append(tools, toolDefWith("output_list_channels", "列出所有可用输出通道及其能力（如 text/file/image/audio）和对应的输出门工具名称。", map[string]interface{}{}, nil, parallelOpts()))
 
 	// 父侧：rtchild 控制面（实时通话子 agent，见 rtchild.go）。
-	if a.parentID == "" {
+	if !a.hooks.IsChild {
 		tools = append(tools, toolDefWith("rt_children",
 			"管理实时子 agent（rtchild，用于通话/视频通话）：list 列出 / "+
 				"create 创建（**必须成对**给 inputch + outputch）/ "+
@@ -754,7 +754,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 
 	// 父侧：rtchild 上下文交接（用户裁定 2026-10-30：走 contextfull 式中断，
 	// 主 agent **自行选择**保留哪些内容 —— 所以给一个按需拉取的读口）。
-	if a.parentID == "" {
+	if !a.hooks.IsChild {
 		tools = append(tools, toolDefWith("rt_transcript",
 			"取回实时子 agent（rtchild）的通话上下文原文。回收 rtchild 时你会收到一条中断，"+
 				"告知有多少条消息；**是否保留、保留哪些由你决定** —— 用本工具分段读取后再取舍，"+
@@ -769,7 +769,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	// 父侧：驻留子控制面（单工具多动作，见设计 §7）。
-	if a.parentID == "" {
+	if !a.hooks.IsChild {
 		tools = append(tools, toolDef("resident_agents", "管理驻留子 agent（长期派驻的下属）：list 列出 / create 创建（划入 inputch + "+
 			"授权输出通道 + 注入任务提示词）/ send 发送消息（对子而言是 L4 中断，取消其当前状态并插入新消息）"+
 			"/ inspect 查看其 inputch 处理表（不打断它）/ compress 压缩其上下文（保留语义，子继续存在）"+
@@ -823,7 +823,7 @@ func (a *Agent) buildToolDefs() []interface{} {
 	}
 
 	// 子侧（驻留子）：主动汇报（L3）与主动写处理表。
-	if a.parentID != "" {
+	if a.hooks.IsChild {
 		tools = append(tools, toolDef("notify_parent", "向主 agent 汇报（以 L3 中断投给它）。用于主动报告进展/结论，而不是等它来问。", map[string]interface{}{"text": map[string]interface{}{"type": "string", "description": "汇报内容"}}, "text"))
 		tools = append(tools, toolDef("inputch_note", "为**本轮** inputch 主动写入处理信息（主 agent 会查这张表判断你的进度）。"+
 			"写了就不会再被系统自动记录；不写则本轮结束时系统自动写。", map[string]interface{}{"text": map[string]interface{}{"type": "string", "description": "本轮处理信息摘要"}}, "text"))

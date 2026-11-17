@@ -64,6 +64,41 @@ type Entry interface {
 	// 但两个实现都没读它 —— 那是误导性签名（看签名以为这里会处理残余），
 	// 按"不留技术债"删掉。
 	Dispose() string
+
+	// Agent 返回本类型的载体 agent（骨架用它读写"这个子 agent 本身"）。
+	//
+	// ★ 之前骨架靠 `e.(*residentChild)` / `e.(*rtChild)` 断言拿到它，
+	// 于是每加一种类型就要回来改这些断言点（8 处）。改成接口方法后，
+	// 骨架不认识任何具体类型 —— 这正是"通过回调/接口注册，而非类型分支"。
+	Agent() any
+
+	// State 返回本类型的运行态短名（"running" / "contextfull" / "stopped" …）。
+	//
+	// 为什么用短名而不是枚举：它要出现在状态面与日志里，字符串直接可读，
+	// 新增类型不需要改中心枚举。
+	State() string
+
+	// Channels 返回本类型**持有的通道**（已划入的 inputch 名）。空 = 无通道。
+	//
+	// 骨架用它做统一的"销毁时通道怎么处置"（悬空 / 显式交接），
+	// 而不是去读具体类型自己的 inputchs 字段。
+	Channels() []string
+
+	// Disposition 返回本类型的**通道处置策略**（销毁时用）。
+	//
+	//	"orphan"   —— 悬空（通道不归还，输入进 stash）※ 驻留子默认 / rt 固定
+	//	"handover" —— 显式交接给指定目标（需要 target）
+	//	""         —— 无通道
+	//
+	// ★ 原先是 `ChannelDisposition` 常量 + 驻留子专属的类型断言；
+	// 现在每种类型自己回答，骨架不 import 任何类型知识。
+	Disposition() string
+
+	// OffloadOwned 报告本实例是否由**内核为转投而拉起**
+	// （见 offload 模块：会自动复用、也计入上限）。
+	//
+	// 非驻留类型恒为 false。
+	OffloadOwned() bool
 }
 
 // Add 登记一个已构造好的实例。

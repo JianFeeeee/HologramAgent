@@ -73,10 +73,10 @@ var ErrRTChannelNotPaired = errors.New("rt 通道必须成对（inputch + output
 // （New(AgentConfig) / SpawnResident / runChildTask），rt 的骨架要复用其中一部分。
 // 但**校验**不能因此变松：AssignRealtime 会读这个标记，未标记的 agent
 // 一律拒划 rt 通道（判据 TestAssignRealtimeRejectsNonRTAgent）。
-func (a *Agent) AsRealtime() { a.isRealtime = true }
+func (a *Agent) AsRealtime() { a.hooks.IsRealtime = true }
 
 // IsRealtime 报告本 agent 是否为 rtchild。
-func (a *Agent) IsRealtime() bool { return a != nil && a.isRealtime }
+func (a *Agent) IsRealtime() bool { return a != nil && a.hooks.IsRealtime }
 
 // AssignRealtime 把一个 **rt 通道**划给本 agent。
 //
@@ -123,7 +123,7 @@ func (a *Agent) AssignRealtime(name string) error {
 			agentIO.ErrChannelNotRealtime, name)
 	}
 	// ② agent 侧：本 agent 必须是 rtchild。
-	if !a.isRealtime {
+	if !a.IsRealtime() {
 		return fmt.Errorf("rt 通道划拨：%w（agent %q 不是 rtchild，只有 rtchild 可被划分 rt 通道）",
 			ErrAgentNotRealtime, a.id)
 	}
@@ -357,6 +357,34 @@ func (rc *rtChild) Base() *child.Child { return rc.Child }
 
 // Kind 返回类型标签。
 func (rc *rtChild) Kind() child.Kind { return child.KindRT }
+
+// ── child.Entry 的通用面（骨架不再按具体类型断言）──
+
+// Agent 返回载体 agent。
+func (rc *rtChild) Agent() any { return rc.agent }
+
+// State 返回运行态短名（rt 没有 contextfull 状态：撞窗口就丢最旧页）。
+func (rc *rtChild) State() string { return "running" }
+
+// Channels 返回本实例成对占用的通道（inputch + outputch）。
+func (rc *rtChild) Channels() []string {
+	var out []string
+	if rc.input != "" {
+		out = append(out, rc.input)
+	}
+	if rc.output != "" {
+		out = append(out, rc.output)
+	}
+	return out
+}
+
+// Disposition 返回通道处置策略：rt 的通道**固定悬空不归还**
+// （用户裁定 2026-10-30：主 agent 不持有 rt 能力，归还成"未分配"会让
+// 一个没有 rtSlot 的 agent 成为潜在持有方）。
+func (rc *rtChild) Disposition() string { return string(ChannelOrphan) }
+
+// OffloadOwned：rt 实例从不参与转投复用。
+func (rc *rtChild) OffloadOwned() bool { return false }
 
 // Dispose 是 rt 的销毁语义：**无残余**（契约 3）。
 //
@@ -1101,7 +1129,7 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// 临界区改为**覆盖整批**：语义不变（副作用仍不可被打断），
 		// 但不再需要"每个工具进一次"的计数抖动。
 		a.rtEnterCritical(rc)
-		results := a.runToolBatch(roundCtx, resp.ToolCalls, batchOpts{
+		results := a.runToolBatch(roundCtx, resp.ToolCalls, BatchOpts{
 			Channel: rc.output,
 			// rt 无场景（它不吃 RelevanceContext）。
 			Scenes: nil,

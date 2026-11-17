@@ -59,15 +59,13 @@ type Agent struct {
 	taskPrompt   string
 	dataDir      string
 
-	// isRealtime 标记本 agent 是 **rtchild**（实时子 agent，见 rtchild.go）。
+	// ★ 原先这里有 isRealtime 字段。它已改为 `hooks.IsRealtime`
+	// （用户裁定：类型身份走注册的钩子，不走字段 + 类型分支）。
 	//
-	// 它是 agent **类型标签**，与通道侧的 CapRT 是两个不同结构：
-	//   · CapRT      —— “这个**通道**能承载 rt 流”（插件声明）
-	//   · isRealtime —— “这个 **agent** 是 rtchild”（内核构造时定）
+	// 与通道侧的 CapRT 仍是两个不同结构：
+	//   · CapRT        —— “这个**通道**能承载 rt 流”（插件声明）
+	//   · hooks.IsRealtime —— “这个 **agent** 是 rtchild”（rt 模块注册）
 	// rt 通道的划拨要两侧都满足（见 Agent.AssignRealtime）。
-	//
-	// 与 kernelSource 同类：都是“这个 agent 在层级/类型上是谁”的不可变标记。
-	isRealtime bool
 
 	// children 是**全部类型**的子 agent 的唯一登记表（重构 R1 起）。
 	//
@@ -326,6 +324,13 @@ type Agent struct {
 	// 不是单次调用的属性，必须跨轮次、跨任务累积才有意义。
 	// 单次用量一直在 StageCtx 与 LLM chain 事件里，缺的正是这个落点。
 	usageLedger usageLedger
+
+	// hooks 是**类型行为注册表**（用户裁定：各类型通过回调注册自己的行为）。
+	//
+	// ★ 基座**不认识自己是哪一类 agent**：它只调这些钩子。
+	//   装配期由类型模块（main / resident / rtchild）通过 SetHooks 挂上；
+	//   未挂必填槽位是装配错误（见 Hooks.Validate）。
+	hooks Hooks
 }
 
 type AgentConfig struct {
@@ -544,7 +549,6 @@ func New(cfg AgentConfig) *Agent {
 		parentID:          cfg.ParentID,
 		taskPrompt:        cfg.TaskPrompt,
 		dataDir:           cfg.DataDir,
-		isRealtime:        cfg.IsRealtime,
 		logIdentity:       agentLogIdentity(cfg),
 		indexer:           cfg.Indexer,
 		tracker:           cfg.Tracker,
@@ -584,6 +588,15 @@ func New(cfg AgentConfig) *Agent {
 		embeddingProvider: cfg.EmbeddingProvider,
 		embeddingError:    cfg.EmbeddingError,
 		fusionCfg:         cfg.FusionCfg,
+		// ★ IsRealtime 现在是**钩子**（装配期由 rt 模块注册），不是字段。
+		//   这里只把 cfg 的意图带过去，保持构造点签名不变。
+		hooks: Hooks{
+			// ★ 类型身份从**构造参数**转成**钩子**（用户裁定：回调注册，
+			// 不按类型分支）。类型模块可在 SetHooks 里覆盖这两项。
+			IsRealtime: cfg.IsRealtime,
+			IsChild:    cfg.ParentID != "",
+			ComeFrom:   comeFromFor(cfg.ParentID),
+		},
 		// ★ 安全运行时在**构造期**落位（不再依赖事后 SetSecurity）。
 		//   为 nil 表示调用方显式不启用（独立工具/单测），不是"忘了接线"。
 		security:       cfg.Security,
@@ -807,4 +820,72 @@ func (a *Agent) injectSelfChannel(msg selfInputMsg) {
 	default:
 		a.Logf("self input channel full, dropping task: %s", truncateStr(msg.text, 80))
 	}
+}
+
+// SetHooks 挂上本类型的**行为回调**（装配期调用一次；用户裁定的机制）。
+//
+// 用法（类型模块自己的构造点）：
+//
+//	base := agent.NewBase(cfg)
+//	base.SetHooks(agent.Hooks{
+//	    ContextBudget: main.ContextBudget,       // 上下文管理
+//	    Loop:          standard.Loop,            // agent loop
+//	    ToolRunner:    standard.SynchronousRunner{},
+//	    RunStage:      standard.StageRunner,
+//	    GraphMemory:   db,                       // 可选记忆
+//	    SecurityGate:  gate,
+//	})
+//	if err := base.Validate(); err != nil { … }   // 缺槽位 ⇒ 装配期失败
+func (a *Agent) SetHooks(h Hooks) {
+	if a == nil {
+		return
+	}
+	a.hooks = h
+}
+
+// Validate 校验必填槽位（装配期在 SetHooks 之后调用）。
+func (a *Agent) Validate() error {
+	if a == nil {
+		return &MissingHookError{Agent: "", Slot: "agent", Hint: "agent 为 nil"}
+	}
+	return a.hooks.Validate(string(a.id))
+}
+
+// Hooks 返回当前已挂的行为回调（只读快照，供状态面与判据诊断）。
+func (a *Agent) HookReport() HooksReport {
+	if a == nil {
+		return HooksReport{}
+	}
+	return HooksReport{
+		IsChild:       a.hooks.IsChild,
+		IsRealtime:    a.hooks.IsRealtime,
+		ComeFrom:      a.hooks.ComeFrom,
+		MayOffload:    a.hooks.MayOffload,
+		HasBudget:     a.hooks.ContextBudget != nil,
+		HasPrune:      a.hooks.Prune != nil,
+		HasOverBudget: a.hooks.OverBudget != nil,
+		HasOverflow:   a.hooks.EnforceOverflow != nil,
+		HasLoop:       a.hooks.Loop != nil,
+		HasRunStage:   a.hooks.RunStage != nil,
+		HasToolRunner: a.hooks.ToolRunner != nil,
+		HasGraph:      a.hooks.GraphMemory != nil,
+		HasSecurity:   a.hooks.SecurityGate != nil,
+	}
+}
+
+// HooksReport 是槽位装配情况的可观察快照（状态面/判据用）。
+type HooksReport struct {
+	IsChild       bool
+	IsRealtime    bool
+	ComeFrom      string
+	MayOffload    bool
+	HasBudget     bool
+	HasPrune      bool
+	HasOverBudget bool
+	HasOverflow   bool
+	HasLoop       bool
+	HasRunStage   bool
+	HasToolRunner bool
+	HasGraph      bool
+	HasSecurity   bool
 }

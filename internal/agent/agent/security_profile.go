@@ -57,7 +57,7 @@ func (a *Agent) beginSecurityRound(payload map[string]interface{}, source string
 	rc, err := a.security.BeginRound(security.RoundInput{
 		AgentID: string(a.id),
 		// IsChild 是**事实**（有父就是子），不是类别结论。
-		IsChild: a.parentID != "",
+		IsChild: a.hooks.IsChild,
 		Payload: payload,
 		Source:  source,
 	})
@@ -114,7 +114,7 @@ func (a *Agent) securityScope() *security.AgentScope {
 		return nil
 	}
 	a.securityScopeOnce.Do(func() {
-		a.securityScopeView = a.security.ForAgent(string(a.id), a.parentID != "")
+		a.securityScopeView = a.security.ForAgent(string(a.id), a.hooks.IsChild)
 	})
 	return a.securityScopeView
 }
@@ -335,7 +335,7 @@ func (a *Agent) reviewToolResultContent(tool, text string) []security.Finding {
 		Tool:      tool,
 		AgentID:   string(a.id),
 	}
-	findings, _, _ := a.security.ScanContentForAgent(string(a.id), a.parentID != "", ins, text)
+	findings, _, _ := a.security.ScanContentForAgent(string(a.id), a.hooks.IsChild, ins, text)
 	if len(findings) > 0 {
 		var kinds []string
 		for _, f := range findings {

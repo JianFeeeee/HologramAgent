@@ -144,13 +144,19 @@ func (a *Agent) pruneByQuery(query string) int {
 	if a == nil || a.context == nil {
 		return 0
 	}
-	// **动态上下文**是父 agent 专属能力：轻量内核（驻留子）用传统上下文，
-	// 不做按相关度的裁剪与向 doc 记忆的归档（子也没有 doc 记忆）。
-	if a.isLightKernel() {
+	return a.pruneWithHook(query, a.effectiveProtectedCount())
+}
+
+// pruneWithHook 是裁剪的**唯一入口**：策略由类型注册的钩子决定。
+//
+// ★ 整窗型（驻留子 / rt）注册 nil ⇒ 这里视为 no-op。那是**明确的策略**
+// （整窗上下文不做相关性裁剪），不是漏接线 —— 与"必填槽位缺失"不同：
+// 前者由 Validate 允许，后者由 Validate 拦住。
+func (a *Agent) pruneWithHook(query string, protected int) int {
+	if a == nil || a.context == nil || a.hooks.Prune == nil {
 		return 0
 	}
-	topK := a.contextTopK()
-	return a.context.PruneWithProtected(query, topK, a.coldcontextStore, a.effectiveProtectedCount())
+	return a.hooks.Prune(a, query, protected)
 }
 
 // pruneForResume 是按「指定保护条数」执行的裁剪，供任务恢复入口使用。
@@ -164,7 +170,7 @@ func (a *Agent) pruneByQuery(query string) int {
 // 可能是一整批工具结果。若按全局末尾 N 条保护，那些结果可能落在保护范围外
 // 被归档——恢复后的任务引用的内容已不在上下文里，等于自相矛盾。
 func (a *Agent) pruneForResume(query string, protected int) int {
-	if a == nil || a.context == nil || a.isLightKernel() {
+	if a == nil || a.context == nil || a.hooks.Prune == nil {
 		return 0
 	}
 	if protected < 0 {

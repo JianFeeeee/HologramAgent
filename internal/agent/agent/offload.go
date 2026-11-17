@@ -395,7 +395,7 @@ func (a *Agent) offloadLoop() {
 	}
 	// 只让**根 agent** 做转投：驻留子自己也可能忙，但让子再去拉孙子会形成
 	// 无界增殖（每层都能拉 MAX 个），而积压的源头是根那一条调度链。
-	if a.parentID != "" {
+	if !a.hooks.MayOffload {
 		return
 	}
 

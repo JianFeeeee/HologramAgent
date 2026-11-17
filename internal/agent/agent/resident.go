@@ -151,6 +151,28 @@ func (rc *residentChild) Base() *childpkg.Child { return rc.Child }
 // Kind 返回类型标签。
 func (rc *residentChild) Kind() childpkg.Kind { return childpkg.KindResident }
 
+// ── child.Entry 的通用面（骨架不再按具体类型断言）──
+
+// Agent 返回载体 agent。
+func (rc *residentChild) Agent() any { return rc.agent }
+
+// State 返回运行态短名。
+func (rc *residentChild) State() string {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.state
+}
+
+// Channels 返回已划入的 inputch。
+func (rc *residentChild) Channels() []string { return rc.inputChs }
+
+// Disposition 返回通道处置策略：驻留子默认**悬空**（父可在销毁时显式指定
+// handover，那条路径由 DestroyResidentWithTarget 传入，不走本默认值）。
+func (rc *residentChild) Disposition() string { return string(ChannelOrphan) }
+
+// OffloadOwned 报告本实例是否由转投拉起。
+func (rc *residentChild) OffloadOwned() bool { return rc.offloadOwned }
+
 // Dispose 是驻留子的销毁语义：残余处置 + 通道处置 + 记忆句柄释放。
 //
 // ## 与 rt 的关键差别（不能统一）

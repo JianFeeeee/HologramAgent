@@ -40,8 +40,9 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-// batchOpts 是批执行的可变部分。其余全部共享。
-type batchOpts struct {
+// BatchOpts 是批执行的可变部分（导出：类型模块经 Hooks.ToolRunner 传入）。
+// 其余全部共享。
+type BatchOpts struct {
 	// Channel 是本次批量要回的通道（进 StageContext.Extra，插件据此判权限）。
 	Channel string
 	// Scenes 是本轮的场景键（rt / 工作式子传 nil）。
@@ -58,7 +59,8 @@ type batchOpts struct {
 }
 
 // batchResult 是单条工具的结果。
-type batchResult struct {
+// BatchResult 是单条工具的结果（导出：同上）。
+type BatchResult struct {
 	CallID string
 	Name   string
 	Text   string
@@ -80,7 +82,7 @@ type batchResult struct {
 // 不含同通道多次输出。这里额外允许 opts.NoBatch 强制串行 ——
 // 工作式子历史上是串行的，改成并发会改变它已上线行为的时序假设，
 // 不在本次重构范围内（判据 TestWorkerToolsStaySerial 钉住）。
-func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opts batchOpts) []batchResult {
+func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opts BatchOpts) []BatchResult {
 	if len(calls) == 0 {
 		return nil
 	}
@@ -117,11 +119,11 @@ func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opt
 		}
 	}
 
-	results := make([]batchResult, len(calls))
+	results := make([]BatchResult, len(calls))
 
 	runOne := func(i int) {
 		tc := calls[i]
-		res := batchResult{CallID: tc.ID, Name: tc.Name}
+		res := BatchResult{CallID: tc.ID, Name: tc.Name}
 
 		// ① 类型级过滤（工作式子禁 output_send__* / spawn_child 等）。
 		if opts.ToolFilter != nil {
@@ -229,7 +231,7 @@ func (a *Agent) batchParallelSafe(calls []agentAPI.ToolCall) bool {
 //
 // 现有实现本来就按索引写 results，这里提供它是因为"按完成顺序落消息"
 // 是本仓踩过的坑，留一个显式函数让纪律可见。
-func sortBatchByIndex(rs []batchResult, order []string) []batchResult {
+func sortBatchByIndex(rs []BatchResult, order []string) []BatchResult {
 	if len(order) == 0 {
 		return rs
 	}
@@ -237,7 +239,7 @@ func sortBatchByIndex(rs []batchResult, order []string) []batchResult {
 	for i, id := range order {
 		idx[id] = i
 	}
-	out := append([]batchResult(nil), rs...)
+	out := append([]BatchResult(nil), rs...)
 	sort.SliceStable(out, func(i, j int) bool { return idx[out[i].CallID] < idx[out[j].CallID] })
 	return out
 }

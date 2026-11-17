@@ -89,7 +89,18 @@ func (a *Agent) comefromForAgent() string {
 	if a == nil {
 		return comeFromUser
 	}
-	if a.parentID != "" {
+	if a.hooks.ComeFrom != "" {
+		return a.hooks.ComeFrom
+	}
+	return comeFromUser
+}
+
+// comeFromFor 由**层级事实**推导来源标签（基座不再按 parentID 分支）。
+//
+// 子在父的上下文里执行（转投保留原事件来源，但执行者变了），
+// 所以子一律是 internal；根是 user。
+func comeFromFor(parentID string) string {
+	if parentID != "" {
 		return comeFromInternal
 	}
 	return comeFromUser

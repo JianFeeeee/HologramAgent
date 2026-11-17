@@ -49,6 +49,14 @@ func newFake(id string, kind child.Kind) *fakeEntry {
 
 func (f *fakeEntry) Base() *child.Child { return f.base }
 func (f *fakeEntry) Kind() child.Kind   { return f.kind }
+
+// 通用面（Entry 接口 2026-11-17 补齐）：判据里的替身也实现，
+// 这样骨架可以只经接口操作实例、不按具体类型断言。
+func (f *fakeEntry) Agent() any          { return nil }
+func (f *fakeEntry) State() string       { return "running" }
+func (f *fakeEntry) Channels() []string  { return nil }
+func (f *fakeEntry) Disposition() string { return "orphan" }
+func (f *fakeEntry) OffloadOwned() bool  { return false }
 func (f *fakeEntry) Dispose() string {
 	f.disposed++
 	return f.disposeMsg

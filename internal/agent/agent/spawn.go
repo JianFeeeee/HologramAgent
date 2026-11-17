@@ -300,7 +300,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		//   ① 禁用输出工具与系统工具（子把结果回父，不直接回用户）
 		//   ② 强制串行（NoBatch）—— 子历史上是串行的，改并发会改变它已上线
 		//      行为的时序假设，不在本次重构范围内（判据 TestWorkerToolsStaySerial 钉住）
-		results := a.runToolBatch(a.ctx, resp.ToolCalls, batchOpts{
+		results := a.runToolBatch(a.ctx, resp.ToolCalls, BatchOpts{
 			Channel:    parentChannel,
 			NoBatch:    true,
 			ToolFilter: workerToolReject,
