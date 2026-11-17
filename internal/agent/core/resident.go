@@ -126,6 +126,21 @@ type residentChild struct {
 	// 两把锁各自保护自己的字段，避免一处加锁跨到另一处的字段）。
 	mu    sync.Mutex
 	state string // running | contextfull | stopped
+
+	// ── 创建参数（2026-11-17 新增：登记表持久化需要它们）──
+	//
+	// ★ 为什么在 residentChild 上再存一份（ResidentOptions 本来就在形参里）：
+	// 登记表要写回「重建这个子所需的全部参数」，而那些只在 SpawnResident
+	// 的形参里出现过 —— 子建起来之后就没了。运行态（轮次/处理表）可以由
+	// context.json 恢复，但**父的决定**（任务提示词、授权范围、工具白名单）
+	// 无法重算，必须留住。
+	//
+	// 这些字段只在创建时写一次、之后只读 ⇒ 不需要 mu 保护。
+	taskPrompt        string
+	capacity          int
+	preferredProvider string
+	allowedTools      []string
+	denyTools         []string
 }
 
 // ── childpkg.Entry 实现（骨架通过它管理生命周期） ──
@@ -160,9 +175,15 @@ func (rc *residentChild) Dispose() string {
 		_ = rc.mainRO.Close()
 		rc.mainRO = nil
 	}
-	if rc.dir != "" && strings.Contains(rc.tempPath, rc.Base().ID) {
-		_ = os.RemoveAll(rc.dir)
-	}
+	// ★ 这里**不删** temp 目录（2026-11-17 改）。
+	//
+	// 原先 Dispose 与 teardownResidentWith 两处都 RemoveAll —— 而 Dispose 是
+	// 骨架的通用清理钩子，**进程停机**时也会走到。于是在 teardown 那边加了
+	// "停机保留"之后，这里仍会把目录删掉，那处修复等于白做。
+	//
+	// 现在的分工：**Dispose 只关句柄，绝不删目录**；删不删目录由 Agent 侧
+	// 按 persistTemp 决定（显式销毁才删）。这样"保留"只有一个决定点，
+	// 不会出现两处各判一次而结论相反。
 	return ""
 }
 
@@ -267,11 +288,17 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		IO:                childIO,
 		StageHost:         a.stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
-		LightMemory:    light, // 轻量内核：只有图记忆共同面
-		AllowedOutputs: opts.AllowedOutputs,
-		KernelSource:   parentID, // 子的 L4 只属于父
-		ParentID:       parentID,
-		TaskPrompt:     opts.TaskPrompt,
+		// ★ 普通上下文也要落盘（2026-11-17）：与 temp 图记忆同一目录。
+		//
+		// 不接的后果：重启后子的 RelevanceContext 是空的 —— 它连「上一轮
+		// 聊到哪」都不知道，等于每次重启丢失全部对话现场（图记忆也一起丢，
+		// 见 teardownResidentWith 的保留语义）。
+		ContextSavePath: filepath.Join(filepath.Dir(opts.TempPath), "context.json"),
+		LightMemory:     light, // 轻量内核：只有图记忆共同面
+		AllowedOutputs:  opts.AllowedOutputs,
+		KernelSource:    parentID, // 子的 L4 只属于父
+		ParentID:        parentID,
+		TaskPrompt:      opts.TaskPrompt,
 		// ★ 安全运行时必须继承（2026-10-30 补）。
 		//
 		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、
@@ -297,6 +324,13 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		allowed:      append([]string(nil), opts.AllowedOutputs...),
 		state:        "running",
 		offloadOwned: opts.OffloadOwned,
+
+		// 创建参数：登记表要用它们重建（见 residentpersist.go）。
+		taskPrompt:        opts.TaskPrompt,
+		capacity:          opts.Capacity,
+		preferredProvider: opts.PreferredProvider,
+		allowedTools:      append([]string(nil), opts.AllowedTools...),
+		denyTools:         append([]string(nil), opts.DenyTools...),
 	}
 
 	// ★ 父为这个子**声明主体策略**（用户裁定 2026-10-30）。
@@ -359,6 +393,13 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 			map[string]interface{}{"content": opts.TaskPrompt})
 	}
 	registered = true
+
+	// 登记表持久化：创建成功后立刻落盘（否则重启后这个子不会被重建）。
+	// 放在 registered 之后：那时所有可能失败的步骤都已过，落盘记录的是
+	// "真建成了的子"，不是"建了一半的"。
+	if !opts.OffloadOwned {
+		a.persistResidents()
+	}
 	return rc.info(), nil
 }
 
@@ -395,7 +436,9 @@ func (a *Agent) DestroyResidentWith(id string, disp ChannelDisposition) error {
 	}
 	rc, _ := e.(*residentChild)
 	if rc != nil {
-		a.teardownResidentWith(rc, disp, nil)
+		a.teardownResidentWith(rc, disp, false, nil)
+		// 显式销毁 ⇒ 从登记表里去掉（否则重启会把它又建回来）。
+		a.persistResidents()
 	}
 	return nil
 }
@@ -656,12 +699,12 @@ const (
 )
 
 func (a *Agent) teardownResident(rc *residentChild) {
-	a.teardownResidentWith(rc, ChannelRelease, nil)
+	a.teardownResidentWith(rc, ChannelRelease, false, nil)
 }
 
 // teardownResidentWith 是 teardownResident 的完整版：额外决定**通道去向**，
 // 并在 takeover 时把释放出来的暂存任务转进父队列。
-func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition, onDrained func([]*agentIO.InputEvent)) {
+func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition, persistTemp bool, onDrained func([]*agentIO.InputEvent)) {
 	rc.mu.Lock()
 	rc.state = "stopped"
 	rc.mu.Unlock()
@@ -680,8 +723,18 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 	if rc.mainRO != nil {
 		_ = rc.mainRO.Close()
 	}
-	// temp 与子同生共死：连同目录一起丢弃（回收/销毁都不保留）。
-	if rc.dir != "" && strings.Contains(rc.tempPath, rc.ID) {
+	// ★ temp 目录的处置**分两种情况**（2026-11-17 改）。
+	//
+	// 原语义是「temp 与子同生共死，回收/销毁都丢弃」—— 那对**显式销毁**是对的
+	// （父决定不要这个子了，它的记忆也该没），但对**进程停机**是灾难：
+	// `Stop()` → `StopResidents()` → 这里 ⇒ 每次重启都把全部驻留子的
+	// 图记忆和上下文删掉。而重启后会按 registry 重建同名子 —— 于是它
+	// **记忆全空**地复活，用户看到的是"挂了一晚上的子醒来什么都不记得"。
+	//
+	// 现在的规则：
+	//	persist=false（显式 destroy / reclaim）⇒ 删（原语义）
+	//	persist=true （进程停机）              ⇒ 保留，供重启后重建复用
+	if !persistTemp && rc.dir != "" && strings.Contains(rc.tempPath, rc.ID) {
 		_ = os.RemoveAll(rc.dir)
 	}
 	// 处置划入的 inputch（按父的决定：释放 / 挂起 / 接回）。
@@ -738,7 +791,9 @@ func (a *Agent) StopResidents() int {
 	for _, e := range all {
 		a.children.Remove(e.Base().ID)
 		if rc, ok := e.(*residentChild); ok {
-			a.teardownResident(rc)
+			// ★ 进程停机 ⇒ 保留 temp（供重启后重建复用）。
+			// 显式 Destroy/Reclaim 走另一条路径，那里才删。
+			a.teardownResidentWith(rc, ChannelRelease, true, nil)
 		}
 	}
 	return len(all)
