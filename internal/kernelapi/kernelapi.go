@@ -49,6 +49,9 @@ const (
 	FacIO = "kernel-io"
 	// FacEventBus 是事件总线的**代理面**（安全模块注册；消费方唯一的取用入口）。
 	FacEventBus = "eventbus"
+	// FacEventDispatch 是**投递驱动者的注入点**（安全模块提供，
+	// 供运行期事件循环把 Dispatcher 挂上裸总线）。
+	FacEventDispatch = "eventbus.dispatch"
 	// FacEventBusRaw 是**裸总线**（kernel-io 模块创建；只有 security 取它，
 	// 用来挂闸门并把它挡在消费方可达面之外）。消费方**不得**使用本设施名。
 	//
@@ -350,6 +353,28 @@ type EventBus interface {
 	Subscribe(eventType model.EventType, handler model.Handler) func()
 	// SubscribeAs 以指定主体身份订阅；被拒返回错误与空退订函数。
 	SubscribeAs(p model.Publisher, eventType model.EventType, handler model.Handler) (func(), error)
+}
+
+// EventDispatcher 是**投递驱动者**（由事件循环实现）。
+//
+// ★ 为什么放在接口层：安全模块持有裸总线，而"投递由谁推动"是**运行期**
+//
+//	事件循环的决定，不是安全模块的决定。所以安全模块只提供**注入点**
+//	（EventDispatchSink），事件循环经它把自己的 Dispatcher 挂进去 ——
+//	裸总线始终不出 security 的手。
+type EventDispatcher interface {
+	// Dispatch 把一次**已过闸、已脱敏**的事件投给这批订阅者。
+	//
+	// 传进来的 evt/handlers 已经是可以被看见的东西：授权与脱敏都在
+	// 发布时刻完成了。实现只负责"什么时候投、按什么顺序投"。
+	Dispatch(evt *model.Event, handlers []model.Handler)
+}
+
+// EventDispatchSink 是**投递驱动者的注入点**（安全模块提供）。
+//
+// 只有运行期的事件循环会调它一次；消费方拿不到（也拿不到裸总线）。
+type EventDispatchSink interface {
+	SetDispatcher(d EventDispatcher)
 }
 
 // ───────────────────────── 安全闸门 ─────────────────────────

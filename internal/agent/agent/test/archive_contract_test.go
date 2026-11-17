@@ -104,13 +104,19 @@ func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// ★ 归档是**类型注册的定时任务**（2026-11-17 用户裁定：基座暴露定时器
-	// 回调接口，而不是在 Start 里硬编码五个循环）。
-	// ⇒ 判据必须显式注册主 agent 的维护任务全集；Start 只拉起已注册的。
-	//   （旧判据依赖"Start 隐含起归档循环"，那是被本次改造移除的内部结构。）
+	// ★ 归档是**类型声明的定时任务**，由**内核事件循环**刻度
+	// （2026-11-17 裁定：agentloop 归 agent，定时器归 eventloop）。
+	// ⇒ 判据必须显式推动那个任务体：它不再由 Start 隐含启动。
 	a.RegisterMaintenanceTasks()
 	a.Start()
 	defer a.Stop()
+
+	// 推动一次归档任务体（等价于事件循环的一次 tick）。
+	for _, t := range a.PeriodicForLoop() {
+		if t.Name == "archive" && t.Run != nil {
+			t.Run(a)
+		}
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -157,6 +163,12 @@ func TestArchiveKeepsDocumentWhenItHoldsNothing(t *testing.T) {
 	a.RegisterMaintenanceTasks()
 	a.Start()
 	defer a.Stop()
+
+	for _, t := range a.PeriodicForLoop() {
+		if t.Name == "archive" && t.Run != nil {
+			t.Run(a)
+		}
+	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

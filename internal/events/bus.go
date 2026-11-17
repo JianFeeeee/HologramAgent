@@ -214,10 +214,7 @@ type Bus struct {
 // ★ 它**不**负责授权与脱敏：那两步已在 publishAs 里完成，传进来的
 // handlers/evt 已经是"可以被看见的东西"。把闸门放进 Dispatcher 会让
 // "被拒"变成投递期才知道，而调用方那时早已返回。
-type Dispatcher interface {
-	// Dispatch 把事件投给这批订阅者。
-	Dispatch(evt *Event, handlers []Handler)
-}
+type Dispatcher = model.Dispatcher
 
 // SetDispatcher 注入投递驱动者（由事件循环在启动时调用一次）。
 //

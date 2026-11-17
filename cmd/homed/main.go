@@ -81,10 +81,10 @@ func main() {
 	// guard 侧另有启动宽限期兜底（shouldKillStaleHeartbeat），两层独立生效：
 	// worker 侧让 mtime 尽快变新（治本），guard 侧容忍旧 mtime（防御）。
 	//
-	// 用 context.Background()（而非 main 的 ctx）：心跳生命周期 = 进程，
-	// 与 agent 的 ctx 解耦；停止靠本函数返回的 hbStop（waitForShutdown 调它）。
-	stopHeartbeatEarly := startHeartbeat(opt.dataDir, context.Background())
-	defer stopHeartbeatEarly()
+	// ★ 心跳归**运行期事件循环**（用户裁定 2026-11-17「eventloop 维持健康心跳」）。
+	//   装配阶段不启动它：装配是装配，事件循环是事件循环。
+	//   心跳路径在这里算出来，由 startRuntime 登记为内核定时任务。
+	heartbeatPath := filepath.Join(opt.dataDir, "heartbeat")
 
 	if opt.cliSocket == "" {
 		opt.cliSocket = filepath.Join(opt.dataDir, "cli.sock")
@@ -313,8 +313,23 @@ func main() {
 	// 而 SQLite 的 DELETE 不会缩小文件。
 	compactConfigDB(cfgReg)
 
-	stopRuntime := startAgentRuntime(cfgReg, pluginReg, agent, logDir, ctx)
-	defer stopRuntime()
+	// ★★ 装配到此**结束**。以下是**运行期**：由事件循环把已装好的东西推动起来。
+	//
+	// 用户裁定：「装配是装配，事件循环是事件循环，本来就是不相干的两件事」。
+	// ⇒ agent.Start()（agentloop）、心跳、定时器、事件投递全部从这里开始，
+	//   不再散落在装配点。
+	stopAgent := startAgentRuntime(cfgReg, pluginReg, agent, logDir, ctx)
+	stopLoop, lerr := startRuntime(ks, logDir, ctx, heartbeatPath, nil, periodicOf(agent))
+	if lerr != nil {
+		log.Printf("[homed] runtime loop failed to start: %v", lerr)
+	}
+	stopAll := func() {
+		if stopLoop != nil {
+			stopLoop()
+		}
+		stopAgent()
+	}
+	defer stopAll()
 
 	_, closeIPC := startIPCServer(opt.dataDir, opt.boot, agent)
 	defer closeIPC()
@@ -335,10 +350,15 @@ func main() {
 
 	// ---- 等待退出信号 ----
 	//
-	// 心跳已在 main 早期启动（见文件头部 startHeartbeatEarly），此处不再重复启动。
+	// 心跳已由**运行期事件循环**登记（见上面的 startRuntime），停止它 = 停循环。
 	// stopKernelModules：热更新路径（os.Exit 跳过 defer）下也要跑模块关闭。
 	// CloseAll 幂等（第二次 Closers 已空）⇒ 与 defer 并存是安全的。
-	waitForShutdown(ctx, opt.dataDir, restartCh, stopHeartbeatEarly, pluginReg, trk, cfgReg, sup,
+	stopLoopFn := func() {
+		if stopLoop != nil {
+			stopLoop()
+		}
+	}
+	waitForShutdown(ctx, opt.dataDir, restartCh, stopLoopFn, pluginReg, trk, cfgReg, sup,
 		func() {
 			if err := ks.CloseAll(); err != nil {
 				log.Printf("[homed] module shutdown: %v", err)

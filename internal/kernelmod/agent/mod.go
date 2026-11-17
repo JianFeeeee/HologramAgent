@@ -329,13 +329,15 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	//   用户裁定：「基座不假设任何 agentloop 样式」⇒ 用哪个 loop、注册哪些
 	//   定时任务，是**该类型**的决定，不是装配点的追加，也不是基座的默认值。
 
-	// ★ 主 agent 的**后台维护任务**在这里注册（用户裁定 2026-11-17：
-	// 「agent 基类应该暴露一个定时器回调接口用于触发定时任务，而不是现在
-	// 这样硬编码」）。
+	// ★ 主 agent 的**后台维护任务**在这里**声明**（装配期只登记，不启动）。
 	//
-	// 为什么在装配点而不是基座：蒸馏/归档/合并/复审/转投是**主 agent 的职责**，
-	// 驻留子与 rtchild 不该跟着起这些 goroutine。基座只提供 RegisterPeriodic，
-	// 由类型模块决定注册什么、间隔多少。
+	// 用户裁定 2026-11-17：「agent 基类应该暴露一个定时器回调接口用于触发
+	// 定时任务，而不是现在这样硬编码」+「eventloop 维持定时器」。
+	// ⇒ 类型模块声明"我要哪些任务"，**刻度**由内核事件循环承担
+	//   （见 cmd/homed/runtime.go 的 startRuntime）。
+	//
+	// 为什么声明在装配点：蒸馏/归档/合并/复审/转投是**主 agent 的职责**，
+	// 驻留子与 rtchild 不该跟着起这些任务。基座只提供声明面。
 	agent.RegisterMaintenanceTasks()
 
 	return agent, nil

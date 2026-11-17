@@ -660,6 +660,15 @@ type Publisher struct {
 // IsKernel 报告该发布者是否内核内部。
 func (p Publisher) IsKernel() bool { return p.Name == "" }
 
+// Dispatcher 是投递驱动者的契约（声明点在值模型里，实现包做别名）。
+//
+// 「投给谁」由总线给出（handlers 已按通配/类型两轮合并），
+// 「什么时候投、按什么顺序投」由驱动者决定。授权与脱敏不在这里 ——
+// 它们在发布时刻已完成（见 events.Bus.publishAs 的注释）。
+type Dispatcher interface {
+	Dispatch(evt *Event, handlers []Handler)
+}
+
 // Handler 是事件订阅处理器（声明点与事件值类型同处，供接口层命名契约）。
 //
 // ★ 用**具名类型**而不是裸 func：接口方法集要能被叶子包逐字声明，

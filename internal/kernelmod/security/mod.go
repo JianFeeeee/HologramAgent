@@ -73,7 +73,7 @@ func setPreparedRuntime(rt *sec.Runtime) {
 // Module 提供安全防火墙设施。
 type Module struct{}
 
-func (Module) Name() string       { return "security" }
+func (Module) Name() string { return "security" }
 func (Module) Requires() []string {
 	// ★ 需要裸总线（FacEventBusRaw）才能劫持它、并把代理面注册到 FacEventBus。
 	// 这是**装配期的依赖**（新增一条边，属于装配语义的正常变化：安全模块
@@ -81,7 +81,7 @@ func (Module) Requires() []string {
 	return []string{kernelmod.FacConfig, kernelapi.FacEventBusRaw}
 }
 func (Module) Provides() []string {
-	return []string{kernelmod.FacSecurity, kernelapi.FacEventBus}
+	return []string{kernelmod.FacSecurity, kernelapi.FacEventBus, kernelapi.FacEventDispatch}
 }
 
 func (Module) Init(ks *kstate.State) error {
@@ -128,6 +128,11 @@ func (Module) Init(ks *kstate.State) error {
 		return fmt.Errorf("security: failed to register the event bus proxy")
 	}
 	ks.Provide(kernelapi.FacEventBus, proxy)
+	// ③ 提供**投递驱动者的注入点**：运行期事件循环经它把自己的 Dispatcher
+	//    挂到裸总线上（裸总线本身不出 security 的手）。
+	if sink := sec.AsEventDispatchSink(rawBus); sink != nil {
+		ks.Provide(kernelapi.FacEventDispatch, sink)
+	}
 	if rt.Enabled() {
 		rawBus.Publish(secReadyEvent(rt))
 	}

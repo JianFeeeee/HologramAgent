@@ -86,3 +86,40 @@ func (p *eventBusProxy) SubscribeAs(pub model.Publisher, eventType model.EventTy
 
 // 编译期确认：代理满足接口层的消费面。
 var _ kernelapi.EventBus = (*eventBusProxy)(nil)
+
+// ── 投递驱动者的注入点 ──
+
+// AsEventDispatchSink 返回**投递驱动者的注入点**。
+//
+// ★ 为什么注入点归安全模块（2026-11-17 第⑤次裁定）：裸总线不出 security
+//
+//	的手，而"投递由谁推动"是运行期事件循环的决定。两者要能连上，就必须
+//	有一个由 security 掌管的接口 —— 它就是本类型。事件循环只拿到这一个
+//	动作（SetDispatcher），拿不到总线本身，也拿不到 Guard。
+func AsEventDispatchSink(bus *events.Bus) kernelapi.EventDispatchSink {
+	if bus == nil {
+		return nil
+	}
+	return &eventDispatchSink{bus: bus}
+}
+
+type eventDispatchSink struct{ bus *events.Bus }
+
+func (s *eventDispatchSink) SetDispatcher(d kernelapi.EventDispatcher) {
+	if d == nil {
+		s.bus.SetDispatcher(nil)
+		return
+	}
+	s.bus.SetDispatcher(dispatchAdapter{d: d})
+}
+
+// dispatchAdapter 把接口层的驱动者适配成事件包的 Dispatcher。
+//
+// 两者的值类型是同一套（model 声明、events 别名），所以这里只有转发。
+type dispatchAdapter struct{ d kernelapi.EventDispatcher }
+
+func (a dispatchAdapter) Dispatch(evt *events.Event, handlers []events.Handler) {
+	a.d.Dispatch(evt, handlers)
+}
+
+var _ kernelapi.EventDispatchSink = (*eventDispatchSink)(nil)

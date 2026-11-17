@@ -38,7 +38,6 @@ package agent
 // 定时器驱动"后台维护"。两者都是类型注册的，基座都不认识具体内容。
 
 import (
-	"runtime/debug"
 	"time"
 )
 
@@ -82,6 +81,22 @@ func (a *Agent) PeriodicTasks() []PeriodicTask {
 	return append([]PeriodicTask(nil), a.periodic...)
 }
 
+// PeriodicForLoop 返回**交给内核事件循环**的定时任务清单。
+//
+// ★ 2026-11-17：定时器不再是 agent 自己的 goroutine，而是内核事件循环的刻度
+// （用户裁定「eventloop … 维持定时器」）。agent 只声明"我要什么任务、间隔多久"，
+// 由事件循环统一刻度、统一 panic 隔离、统一随 owner 注销。
+//
+// 为什么保留 RegisterPeriodic（而非直接删）：
+// 它是类型模块的**声明面**（各类型在装配点登记自己的任务）；真正的刻度者
+// 换成了事件循环。两者分工与"槽位"一致：类型声明，内核推动。
+func (a *Agent) PeriodicForLoop() []PeriodicTask {
+	if a == nil {
+		return nil
+	}
+	return append([]PeriodicTask(nil), a.periodic...)
+}
+
 // startPeriodic 拉起全部已注册的定时任务（Start 内部调用一次）。
 //
 // 每个任务一个 goroutine、自己的 ticker，互相独立：
@@ -89,42 +104,13 @@ func (a *Agent) PeriodicTasks() []PeriodicTask {
 //	· 一个任务 panic 不影响其他任务（各自 recover + 重启）
 //	· a.ctx 结束即全部退出（不发散）
 //	· 间隔取注册值，基座不做任何"业务上该多久跑一次"的判断
-func (a *Agent) startPeriodic() {
-	for _, t := range a.periodic {
-		task := t
-		go a.runPeriodic(task)
-	}
-}
-
-// runPeriodic 是单个定时任务的主循环（含 panic 隔离与重启）。
-func (a *Agent) runPeriodic(t PeriodicTask) {
-	defer func() {
-		if r := recover(); r != nil {
-			// ★ 与原先五个 loop 同一纪律：panic 不终止后台维护，
-			// 隔一秒重启（否则一次瞬态故障会让该任务永久停摆且无人知晓）。
-			a.Logf("periodic task %q panicked: %v\n%s", t.Name, r, debug.Stack())
-			select {
-			case <-a.ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			go a.runPeriodic(t)
-		}
-	}()
-
-	ticker := time.NewTicker(t.Interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			a.Logf("periodic tick: %s", t.Name)
-			t.Run(a)
-		case <-a.ctx.Done():
-			return
-		}
-	}
-}
+//
+// startPeriodic 已**不再启动任何 goroutine**。
+//
+// 保留函数是为了让 Start 的调用点保持形状；真正的刻度由内核事件循环承担
+// （见 PeriodicForLoop 的注释）。留着空实现比"删掉调用点"更安全 ——
+// 后者会让"谁负责刻度"这件事在代码里失去唯一落点。
+func (a *Agent) startPeriodic() {}
 
 // ───────────────────────── 内置定时任务（由装配点注册，基座不认识它们） ─────────────────────────
 //
