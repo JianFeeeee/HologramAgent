@@ -6,6 +6,7 @@ import (
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -293,12 +294,12 @@ func (a *Agent) contextTopK() int {
 // protectedContextCount 返回当前保护条数（最近 N 条永不换出）。
 func (a *Agent) protectedContextCount() int {
 	if a == nil || a.context == nil {
-		return defaultProtectedCount
+		return kit.DefaultProtectedCount
 	}
 	if n := a.context.protectedCount; n > 0 {
 		return n
 	}
-	return defaultProtectedCount
+	return kit.DefaultProtectedCount
 }
 
 // defaultAvgEventTokens 是「没有积累样本时」用于反推的事件平均 token。

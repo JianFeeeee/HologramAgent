@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 	sdkmeta "github.com/JianFeeeee/hologramagentsdk/meta"
@@ -56,7 +57,7 @@ func (a *Agent) buildMemoryContext(input string, maxTokens int, scenes []string)
 	}
 
 	if maxTokens > 0 {
-		s = TruncateByTokens(s, maxTokens)
+		s = kit.TruncateByTokens(s, maxTokens)
 	}
 	return s
 }

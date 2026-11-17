@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
@@ -642,7 +643,7 @@ func (a *Agent) buildMessages(sysPrompt, input string, ctxTokens int) []agentAPI
 // 原实现从最旧往新走，预算耗尽就 `return out` —— 保留的是**旧对话**，
 // 丢掉的是**最新几轮**。这与两处既定语义直接冲突：
 //
-//	① `ContextTuning.ProtectedCount` 说「裁剪时**无条件保留**的最近事件条数」
+//	① `kit.ContextTuning.ProtectedCount` 说「裁剪时**无条件保留**的最近事件条数」
 //	   （`PruneWithProtected` 保护的正是尾部 N 条）；
 //	② 本函数旧注释自己写着「更新的对话更重要」。
 //
@@ -686,9 +687,9 @@ func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
 		}
 		cost := 0
 		for _, m := range msgs {
-			cost += EstimateTokens(m.Content)
+			cost += kit.EstimateTokens(m.Content)
 			for _, tc := range m.ToolCalls {
-				cost += EstimateTokens(tc.Name) + EstimateTokens(tc.RawArguments)
+				cost += kit.EstimateTokens(tc.Name) + kit.EstimateTokens(tc.RawArguments)
 			}
 		}
 		groups = append(groups, l1Group{msgs: msgs, cost: cost})

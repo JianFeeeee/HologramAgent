@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -11,7 +12,7 @@ import (
 // 也不知道谁在用它。
 
 // ContextBudgetRelevance 是**策略裁剪型**的预算（主 agent）。
-func ContextBudgetRelevance(a *Agent, b TokenBudget) int {
+func ContextBudgetRelevance(a *Agent, b kit.TokenBudget) int {
 	return b.ContextTokens
 }
 

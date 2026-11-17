@@ -2,6 +2,7 @@ package agent
 
 import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
@@ -64,7 +65,7 @@ type Hooks struct {
 	//
 	//	策略裁剪型（主）：动态上下文算出的 ContextTokens
 	//	整窗型（驻留/rt）：整个模型窗口（只受硬上限约束）
-	ContextBudget func(a *Agent, b TokenBudget) int
+	ContextBudget func(a *Agent, b kit.TokenBudget) int
 	// Prune 按相关性裁剪上下文，返回裁掉的事件数；0 = 不做。
 	//
 	// 整窗型注册为 nil ⇒ 基座视为 no-op（这是**唯一**合法的空槽位：

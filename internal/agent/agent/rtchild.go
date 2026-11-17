@@ -1453,7 +1453,7 @@ func rtTrimToWindow(msgs []agentAPI.Message, window int) []agentAPI.Message {
 	}
 
 	// ② 总量估算 + 从旧到新丢组。
-	total := EstimateTokens(msgs[0].Content) + EstimateTokens(msgs[len(msgs)-1].Content)
+	total := kit.EstimateTokens(msgs[0].Content) + kit.EstimateTokens(msgs[len(msgs)-1].Content)
 	for _, g := range groups {
 		for _, m := range g.msgs {
 			total += rtMsgTokens(m)
@@ -1479,12 +1479,12 @@ func rtTrimToWindow(msgs []agentAPI.Message, window int) []agentAPI.Message {
 
 // rtMsgTokens 估算一条消息的 token（正文 + 工具调用参数 + 工具结果）。
 func rtMsgTokens(m agentAPI.Message) int {
-	n := EstimateTokens(m.Content)
+	n := kit.EstimateTokens(m.Content)
 	for _, tc := range m.ToolCalls {
-		n += EstimateTokens(tc.Name)
+		n += kit.EstimateTokens(tc.Name)
 		if tc.Arguments != nil {
 			for k, v := range tc.Arguments {
-				n += EstimateTokens(k) + EstimateTokens(fmt.Sprintf("%v", v))
+				n += kit.EstimateTokens(k) + kit.EstimateTokens(fmt.Sprintf("%v", v))
 			}
 		}
 	}

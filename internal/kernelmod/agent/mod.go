@@ -32,6 +32,7 @@ import (
 	"time"
 
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
@@ -199,7 +200,7 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		MaxToolTurns:    cfgReg.GetInt("core.agent.max_tool_turns", 10),
 		// 上下文管理的可调阈值。此前这些值全部硬编码在 ComputeTokenBudget 里，
 		// 界面改不了、不同窗口的实例也没法各自调优。
-		CtxTuning: agentCore.ContextTuning{
+		CtxTuning: kit.ContextTuning{
 			UtilizationPercent: cfgReg.GetInt("core.agent.context.utilization_percent", 80),
 			MaxTargetTokens:    cfgReg.GetInt("core.agent.context.max_target_tokens", 600000),
 			MemoryRatioPercent: cfgReg.GetInt("core.agent.context.memory_ratio_percent", 0),

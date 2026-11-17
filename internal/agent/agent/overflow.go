@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 )
 
 // 上下文超页（context overflow）处理。
@@ -108,7 +109,7 @@ func (a *Agent) hasOversizedFrame() bool {
 // ★ 判据口径：**统计视图必须等于渲染视图**。渲染不出的内容不该占预算，
 // 否则裁剪永远「裁不动」，这不是保守，是自相矛盾。
 func eventTokens(e ContextEvent) int {
-	n := EstimateTokens(e.Input) + EstimateTokens(e.Response)
+	n := kit.EstimateTokens(e.Input) + kit.EstimateTokens(e.Response)
 	if len(e.ToolResults) == 0 {
 		return n
 	}
@@ -120,7 +121,7 @@ func eventTokens(e ContextEvent) int {
 		if i < len(pageOf) && containsInt(e.InactivePages, pageOf[i]) {
 			continue
 		}
-		n += EstimateTokens(tr.Output)
+		n += kit.EstimateTokens(tr.Output)
 	}
 	return n
 }

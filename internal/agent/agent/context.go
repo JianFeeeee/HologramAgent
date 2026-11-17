@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
@@ -204,7 +205,7 @@ type RelevanceContext struct {
 	// 为何要可调：它决定「近处信息」与「向量检索」的权重 ——
 	// 条数大则不容易丢近处，小则更依赖检索准确度。不同窗口/不同用法
 	// （如长期助手 vs 短任务）适合的值不同，所以从 core.agent.context.* 传入。
-	// 零值 ⇒ defaultProtectedCount（与历史硬编码 10 一致）。
+	// 零值 ⇒ kit.DefaultProtectedCount（与历史硬编码 10 一致）。
 	//
 	// ★ 它现在是**上限**而非固定值：实际保护条数由 effectiveProtectedCount
 	// 按预算收紧（见该函数）。原因见那里。
@@ -231,7 +232,7 @@ type RelevanceContext struct {
 // 而 Prune 的 protected 切片是 `events[len-protected:]` —— 0 值会切出空切片
 // 后仍走 keep 逻辑，虽不panic，但等于放弃了近处保护的意义。
 func (a *Agent) effectiveProtectedCount() int {
-	cfgCap := defaultProtectedCount
+	cfgCap := kit.DefaultProtectedCount
 	if n := a.context.ProtectedCount(); n > 0 {
 		cfgCap = n
 	}
@@ -464,23 +465,23 @@ func estimateColdEventTokens(d *coldcontext.ColdDoc) int {
 	}
 	if len(d.Events) == 0 {
 		// 存量文档（无 Events）回灌成一条降级事件
-		return EstimateTokens(d.Content) + 40
+		return kit.EstimateTokens(d.Content) + 40
 	}
 	total := 0
 	for i := range d.Events {
 		ev := &d.Events[i]
 		input, response, _ := coldcontext.InOut(ev)
 		// 与 eventTokens 同构：input + response + 工具输出
-		n := EstimateTokens(input) + EstimateTokens(response) + 40
+		n := kit.EstimateTokens(input) + kit.EstimateTokens(response) + 40
 		for _, tr := range ev.ToolResults {
-			n += EstimateTokens(tr.Output)
+			n += kit.EstimateTokens(tr.Output)
 		}
 		// 工具页的 call 侧（参数）也要渲染
 		for _, tc := range ev.ToolCalls {
-			n += EstimateTokens(tc.Name)
+			n += kit.EstimateTokens(tc.Name)
 			if len(tc.Arguments) > 0 {
 				if b, err := json.Marshal(tc.Arguments); err == nil {
-					n += EstimateTokens(string(b))
+					n += kit.EstimateTokens(string(b))
 				}
 			}
 		}
@@ -635,21 +636,21 @@ func countPlanPages(evict map[string][]int) int {
 func pageTokens(ev *coldcontext.ColdEvent, page int) int {
 	if page == 1 {
 		in, resp, _ := coldcontext.InOut(ev)
-		return EstimateTokens(in) + EstimateTokens(resp)
+		return kit.EstimateTokens(in) + kit.EstimateTokens(resp)
 	}
 	idx := page - 2
 	if idx < 0 || idx >= len(ev.ToolCalls) {
 		return 0
 	}
 	tc := &ev.ToolCalls[idx]
-	n := EstimateTokens(tc.Name)
+	n := kit.EstimateTokens(tc.Name)
 	if len(tc.Arguments) > 0 {
 		if b, err := json.Marshal(tc.Arguments); err == nil {
-			n += EstimateTokens(string(b))
+			n += kit.EstimateTokens(string(b))
 		}
 	}
 	if res, ok := coldToolResult(ev, tc); ok {
-		n += EstimateTokens(res)
+		n += kit.EstimateTokens(res)
 	}
 	return n
 }
@@ -753,7 +754,7 @@ func containsInt(s []int, v int) bool {
 // ProtectedCount 返回配置给的保护条数**上限**（实际值见 effectiveProtectedCount）。
 func (c *RelevanceContext) ProtectedCount() int {
 	if c == nil || c.protectedCount <= 0 {
-		return defaultProtectedCount
+		return kit.DefaultProtectedCount
 	}
 	return c.protectedCount
 }
@@ -772,7 +773,7 @@ func NewRelevanceContext(savePath string, embedder Embedder) *RelevanceContext {
 	rc := &RelevanceContext{
 		embedder:       embedder,
 		savePath:       savePath,
-		protectedCount: defaultProtectedCount,
+		protectedCount: kit.DefaultProtectedCount,
 	}
 	if savePath != "" {
 		rc.load()

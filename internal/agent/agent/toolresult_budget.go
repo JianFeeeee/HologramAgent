@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 )
 
 // 本文件实现「工具结果**只统计不裁剪**」（方案 B）。
@@ -76,7 +77,7 @@ func (a *Agent) checkToolResultSize(tool, result string) bool {
 	if a == nil || result == "" {
 		return false
 	}
-	tokens := EstimateTokens(result)
+	tokens := kit.EstimateTokens(result)
 	limit := a.toolResultWarnLimit()
 	if tokens <= limit {
 		return false // 正常，不打扰

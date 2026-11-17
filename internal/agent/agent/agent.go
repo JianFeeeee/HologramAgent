@@ -174,7 +174,7 @@ type Agent struct {
 	//
 	// 从配置读入（core.agent.context.*），使不同窗口的实例可以各自调优，
 	// 而不是所有实例共用一套写死的 0.8 / 600000 / 1:3。
-	ctxTuning ContextTuning
+	ctxTuning kit.ContextTuning
 
 	// 当前请求的输出通道（mutex 保护，process() 内独占）
 
@@ -443,8 +443,8 @@ type AgentConfig struct {
 	// CtxTuning 是上下文预算的可调参数。零值 ⇒ 使用历史默认（与硬编码时代一致）。
 	//
 	// 为何必须能从配置传进来：这些阈值原本写死在 ComputeTokenBudget 里，
-	// 界面改不了、不同窗口的实例也没法各自调优（详见 ContextTuning 的注释）。
-	CtxTuning          ContextTuning
+	// 界面改不了、不同窗口的实例也没法各自调优（详见 kit.ContextTuning 的注释）。
+	CtxTuning          kit.ContextTuning
 	ContextSavePath    string // 上下文持久化路径，空则不持久化
 	EmbeddingModelPath string // 预训练词嵌入模型路径（word2vec 文本格式），空则不使用
 	Embedder           Embedder
