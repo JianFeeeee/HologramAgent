@@ -280,7 +280,7 @@ func (a *Agent) prepareToolBlocks(blocks []agentAPI.ContentBlock) ([]agentAPI.Co
 
 	res := a.transcribeBlocksForFallback(needFallback)
 	log.Printf("[agent] modal fallback: %d block(s) transcribed, %d skipped (provider=%s vision=%v audio=%v)",
-		res.Converted, res.Skipped, a.provider.Name(), canVision, canAudio)
+		res.Converted, res.Skipped, a.activeLLMSource(), canVision, canAudio)
 
 	// 部分能直视、部分需转写：把转写文字作为 text 块并入 native，
 	// 这样两部分内容同时到达模型。

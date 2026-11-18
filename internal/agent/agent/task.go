@@ -33,6 +33,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
@@ -712,8 +713,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		DisableThinking: !a.MainState().thinkingEnabled,
 	}
 
-	providers := a.ResolveProviders(req)
-	resp, llmErr := a.callLLMWithFallback(req, providers, f.OutputChannel)
+	resp, llmErr := a.completeLLM(a.ctx, req, f.OutputChannel)
 
 	if llmErr != nil {
 		// ★ 上下文超页（上游 ErrContextFull）必须在 provider fallback **之前**处理：
@@ -722,7 +722,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		// 这里**不另立路径**：上游报错只是「判定已被短路」的一种（force=true），
 		// 之后的恢复预算 / 裁剪 / raise L4 与本地预判完全相同，共用同一个函数。
 		// 区别仅在于：本地预判在发请求**之前**判，这里在**收到错误之后**判。
-		if agentAPI.IsContextFull(llmErr) {
+		if errors.Is(kernelapi.ClassifyLLMError(llmErr), kernelapi.ErrLLMContextFull) {
 			var handled bool
 			if h := a.hooks.OverflowHandler; h != nil {
 				handled, _ = h(a, f, agenttypes.OverflowRequest{Kind: agenttypes.OverflowLocal, Force: true})
@@ -766,7 +766,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 			f.Turn++
 			return outcomeContinue // 重跑 StepLLM
 		}
-		f.Err = fmt.Errorf("all %d providers failed, last error: %w", len(providers), llmErr)
+		f.Err = llmErr
 		return outcomeFailed
 	}
 
@@ -1419,186 +1419,30 @@ func (a *Agent) stepTurnEnd(f *TaskFrame) stepOutcome {
 	return outcomeContinue
 }
 
-// resolveProviders 按请求模型解析候选 provider（保持原语义）。
-func (a *Agent) ResolveProviders(req *agentAPI.CompletionRequest) []agentAPI.Provider {
-	var providers []agentAPI.Provider
-	if a.providerManager != nil {
-		var allProviders []agentAPI.Provider
-		if req.Model != "" && !strings.EqualFold(req.Model, "AUTO") {
-			allProviders = a.providerManager.ResolveForModel(req.Model)
-		} else {
-			allProviders = a.providerManager.OrderedProviders()
-		}
-		providers = make([]agentAPI.Provider, 0, len(allProviders))
-		for _, p := range allProviders {
-			if a.providerManager.IsAvailable(p.Name()) {
-				providers = append(providers, p)
-			}
-		}
+// completeLLM 走**内核的 LLM 设施**做一次补全（§3.2.1）。
+//
+// ★ 基座在这里只做转发：回退链、同源重试、可用性标记、活动源更新、
+//
+//	错误分类全在 `kernelapi.LLMClient` 内部。基座不认识"有两个源"这件事。
+//
+// 未装配设施（裸 agent / 单测）时回落到"单源直调"：没有回退链可走，
+// 行为与改造前逐字一致（那时 `a.provider` 就是唯一源）。
+func (a *Agent) completeLLM(ctx context.Context, req *agentAPI.CompletionRequest, channel string) (*agentAPI.CompletionResponse, error) {
+	if a.llm != nil {
+		return a.llm.Complete(ctx, &kernelapi.LLMRequest{
+			AgentID:   string(a.id),
+			Preferred: a.preferredProvider,
+			Request:   req,
+		})
 	}
-	if len(providers) == 0 {
-		providers = []agentAPI.Provider{a.provider}
+	if a.provider == nil {
+		return nil, fmt.Errorf("%w: no provider configured", kernelapi.ErrLLMAllFailed)
 	}
-	return a.preferProvider(providers)
-}
-
-// preferProvider 把本 agent 的**优先源**提到候选链最前面。
-//
-// ## 语义（用户 2026-10-30 要求）
-//
-// 「主 agent / 子 agent / 驻留子 / rt agent 可各自配置模型源，
-//
-//	默认使用总模型源（default）」。
-//
-// ## 为什么是"提前"而不是"只留它"
-//
-// 四类 agent 的负载不同（主 agent 要推理、rtchild 要首字低延迟、驻留子要省成本），
-// 所以各自该有自己的首选源。但**硬锁定会让"这个源挂了"直接变成"这个 agent
-// 彻底不工作"** —— 而多源回退链正是本仓为此建立的机制（callLLMWithFallback）。
-// 把它排到最前，两者兼得：正常情况走首选，首选不可用时照旧回退。
-//
-// ## 配置写错要能看见
-//
-// 优先源名不存在时**回退到默认源并记日志**，不静默 —— 拼错的配置如果悄悄
-// 无效，用户会以为"我配了但没生效"，而日志里一个字都没有。
-func (a *Agent) preferProvider(cands []agentAPI.Provider) []agentAPI.Provider {
-	name := strings.TrimSpace(a.preferredProvider)
-	if name == "" || len(cands) <= 1 {
-		return cands // 未配置：用总默认（providerManager 的排序本来就以默认源为先）
+	resp, err := a.provider.Chat(ctx, req)
+	if err != nil {
+		return nil, kernelapi.ClassifyLLMError(err)
 	}
-	for i, p := range cands {
-		if !strings.EqualFold(p.Name(), name) {
-			continue
-		}
-		if i == 0 {
-			return cands // 已经在最前
-		}
-		out := make([]agentAPI.Provider, 0, len(cands))
-		out = append(out, p)
-		out = append(out, cands[:i]...)
-		out = append(out, cands[i+1:]...)
-		return out
-	}
-	// 名字对不上：响亮回退（含可用源清单，便于一次改对）。
-	names := make([]string, 0, len(cands))
-	for _, p := range cands {
-		names = append(names, p.Name())
-	}
-	log.Printf("[agent] %s: preferred_provider %q 不在可用源里（%v），回退到默认源 %q",
-		a.id, name, names, cands[0].Name())
-	return cands
-}
-
-// callLLMWithFallback 在候选 provider 间回退，并把同源瞬时错误重试一次。
-// 逐行等价于原 process() 内的双层循环。
-func (a *Agent) callLLMWithFallback(req *agentAPI.CompletionRequest, providers []agentAPI.Provider, channel string) (*agentAPI.CompletionResponse, error) {
-	var resp *agentAPI.CompletionResponse
-	var llmErr error
-
-	for pi, fbProvider := range providers {
-		if pi > 0 {
-			log.Printf("[agent] LLM fallback: trying provider %q (fallback #%d/%d)",
-				fbProvider.Name(), pi, len(providers)-1)
-		}
-
-		// ★ 每个 provider 必须用**自己的** model 发请求（2026-10-27 真机）。
-		//
-		// 现场：默认源 deepseek(model=deepseek-flash) 402 → 回退 llmsproxy(model=AUTO)
-		// 时复用了同一个 req ⇒ llmsproxy 收到 model="deepseek-flash" ⇒ 403
-		// model_not_allowed ⇒ 两个源全挂，且 llmsproxy 被整源标记不可用(冷却)
-		// ⇒ 视觉回退跳过它 ⇒ 用户看到"配置了视觉却说没有视觉"。
-		//
-		// model 是 **provider 的属性**，不是请求的共享字段。
-		if rp, ok := fbProvider.(agentAPI.RoutableProvider); ok {
-			if m := rp.Model(); m != "" && m != req.Model {
-				if pi > 0 {
-					log.Printf("[agent] fallback provider %q uses its own model %q (was %q)",
-						fbProvider.Name(), m, req.Model)
-				}
-				req.Model = m
-			}
-		}
-
-		// 同源瞬时错误重试：网关瞬断（502/503/504/429/网络抖动）通常秒级恢复，
-		// 直接跳下一个 provider（或直接报错）会丢掉本可成功的请求。
-		// 凭证错误（401/403）与用户中断不重试。
-		const maxAttempts = 2
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			if attempt > 1 {
-				log.Printf("[agent] provider %q transient failure, retry %d/%d in 2s: %v",
-					fbProvider.Name(), attempt, maxAttempts, llmErr)
-				select {
-				case <-time.After(2 * time.Second):
-				case <-a.ctx.Done():
-					llmErr = a.ctx.Err()
-				}
-				if llmErr == nil || errors.Is(llmErr, context.Canceled) || errors.Is(llmErr, context.DeadlineExceeded) {
-					break
-				}
-			}
-
-			// opt-in 提示词抓包（HOMED_PROMPT_DUMP）：见 promptdump.go。
-			kit.DumpPrompt(channel, req)
-
-			fCtx, fCancel := context.WithCancel(a.ctx)
-			a.llmMu.Lock()
-			a.cancelLLM = fCancel
-			a.llmMu.Unlock()
-
-			resp, llmErr = chatStreamWithFallback(fCtx, fbProvider, req, a, channel)
-
-			a.llmMu.Lock()
-			a.cancelLLM = nil
-			a.llmMu.Unlock()
-			fCancel()
-
-			if llmErr == nil {
-				a.providerManager.ResetAvailability(fbProvider.Name())
-				if fbProvider != a.provider {
-					a.provider = fbProvider
-					log.Printf("[agent] switched active provider to %q after fallback", fbProvider.Name())
-				}
-				break
-			}
-
-			// 用户中断：立即终止，不重试也不换 provider
-			if errors.Is(llmErr, context.Canceled) {
-				break
-			}
-			// 凭证错误：重试无意义，跳出重试循环进入 provider 标记/切换
-			var pe *agentAPI.ProviderError
-			if errors.As(llmErr, &pe) && (pe.StatusCode == 401 || pe.StatusCode == 403) {
-				break
-			}
-			// 其余错误（含 5xx/429/网络）：还有重试机会则继续，否则跳出
-		}
-
-		if llmErr == nil {
-			break
-		}
-		if errors.Is(llmErr, context.Canceled) {
-			break
-		}
-		var pe *agentAPI.ProviderError
-		if errors.As(llmErr, &pe) && (pe.StatusCode == 401 || pe.StatusCode == 403) {
-			// 403 分两类：凭证/权限问题 ⇒ 整源不可用；**模型名不被该 key 允许**
-			// （model_not_allowed）⇒ 只是这个 model 不行，provider 仍可用于
-			// 其他 model，也包括视觉回退。混为一谈会让一次模型名不匹配把整源判死。
-			if isModelNotAllowed(llmErr) {
-				log.Printf("[agent] provider %q rejected model %q (HTTP %d) — "+
-					"model-level issue, provider stays available: %v",
-					fbProvider.Name(), req.Model, pe.StatusCode, llmErr)
-			} else {
-				a.providerManager.ReportStatus(fbProvider.Name(), pe.StatusCode)
-				log.Printf("[agent] provider %q marked unavailable (HTTP %d)", fbProvider.Name(), pe.StatusCode)
-			}
-		} else {
-			a.providerManager.MarkUnavailable(fbProvider.Name())
-		}
-		log.Printf("[agent] provider %q failed: %v", fbProvider.Name(), llmErr)
-	}
-
-	return resp, llmErr
+	return resp, nil
 }
 
 // buildToolContexts 为本批每个工具预建一份独立的 StageContext。

@@ -81,6 +81,11 @@ const (
 	FacLLM = "llm"
 	// FacLLMDefault 是默认 provider（llm 模块提供）。
 	FacLLMDefault = "llm.default"
+	// FacLLMClient 是 **LLM 设施**（重试/fallback/记账/活动源/分类错误，§3.2.1）。
+	//
+	// ★ 与 FacLLM（多源管理器）不同：管理器是"有哪些源"的**事实**，
+	//   本设施是"怎么用它们"的**策略**。基座只持本设施的句柄。
+	FacLLMClient = "llm.client"
 	// FacDocStore 是文档记忆（docmem 模块提供）。
 	FacDocStore = "docmem"
 	// FacMultimodal 是多模态向量空间（multimodal 模块提供）。

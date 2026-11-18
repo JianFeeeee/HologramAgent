@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"log"
@@ -407,7 +405,7 @@ func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) strin
 	salvageMsgs = append(salvageMsgs, msgs...)
 	salvageMsgs = append(salvageMsgs, agentAPI.Message{Role: "user", Content: childSalvagePrompt})
 
-	resp, err := a.provider.Chat(a.ctx, &agentAPI.CompletionRequest{
+	resp, err := a.completeLLMNoRetry(a.ctx, &agentAPI.CompletionRequest{
 		Messages:        salvageMsgs,
 		MaxTokens:       4096,
 		ToolChoice:      "none", // 不给工具，强制走文本产出
@@ -466,21 +464,6 @@ func (a *Agent) ExecuteLLMTool(tc agentAPI.ToolCall) string {
 // 与主 agent 的 `callLLMWithFallback` 的区别是这里不重试、不切 active provider：
 // 子任务是短生命周期，重试只会把一个已经抖动的时间窗拉长。
 func (a *Agent) chatWithProviderChain(req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
-	providers := a.ResolveProviders(req)
-	var lastErr error
-	for _, p := range providers {
-		resp, err := p.Chat(a.ctx, req)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-		// 取消/超时不再试下一个：那是调用方主动结束，不是"这个源坏了"。
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("没有可用的 LLM 源")
-	}
-	return nil, lastErr
+	// ★ 走内核设施（NoRetry：子任务短生命周期，重试只会把抖动的窗口拉长）。
+	return a.completeLLMNoRetry(a.ctx, req)
 }

@@ -184,6 +184,7 @@ type Agent struct {
 	// offload 是积压任务自动转投的参数（见 offload.go）。
 
 	// 进行中的 LLM 请求取消函数，interceptLoop 可调用以在请求中打断
+	llm       kernelapi.LLMClient
 	cancelLLM context.CancelFunc
 	llmMu     sync.Mutex
 
@@ -313,8 +314,22 @@ type AgentConfig struct {
 	//
 	// 名字不存在时**响亮回退到默认源并记日志**（不静默）：配置拼错要能看见。
 	PreferredProvider string
-	IO                *agentIO.IOManager
-	Memory            kernelapi.GraphMemory
+	// LLM 是**内核提供的 LLM 设施**（§3.2.1）：重试 / fallback / 可用性标记 /
+	// 活动源 / 分类错误全在它内部完成。
+	//
+	// ## 为什么基座只拿一个句柄
+	//
+	// 改造前基座自己写回退链（`callLLMWithFallback` 120 行）、自己重试、
+	// 自己切活动源（`a.provider = fbProvider`）。于是：
+	//   · 同一套语义在四个地方各写一遍（主 / rt / spawn / resident）
+	//   · 基座知道"有两个源"这件事 —— 它本该只知道"我要一次补全"
+	//   · "现在用哪个源"有两个来源（manager 的排序 + 基座字段）
+	//
+	// nil = 独立使用（单测）：基座回落到"单源直调 Provider"，
+	// 行为与改造前一致（没有回退链可走）。
+	LLM    kernelapi.LLMClient
+	IO     *agentIO.IOManager
+	Memory kernelapi.GraphMemory
 	// LightMemory 是**轻量内核**的图记忆装配（驻留子用；读 temp∪main，只写 temp）。
 	//
 	// 给了它就意味着这是轻量内核：`Memory` 必须为 nil，
@@ -458,6 +473,7 @@ func New(cfg AgentConfig) *Agent {
 	a := &Agent{
 		id:                cfg.ID,
 		provider:          cfg.Provider,
+		llm:               cfg.LLM,
 		preferredProvider: cfg.PreferredProvider,
 		providerManager:   cfg.ProviderManager,
 		io:                cfg.IO,

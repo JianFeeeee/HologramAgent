@@ -175,6 +175,9 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		SystemPrompt:    sysPrompt,
 		Provider:        provider,
 		ProviderManager: providerMgr,
+		// ★ LLM 设施（§3.2.1）：重试/回退/记账/活动源/分类错误全在它内部。
+		//   基座只持句柄并转发 —— 它不再认识"有两个源"这件事。
+		LLM: llmClientOf(k),
 		// 主 agent 的优先模型源（空 = 用总默认 core.llm.provider）。
 		PreferredProvider: cfgReg.GetString("core.agent.llm.main_provider", ""),
 		IO:                iom,
@@ -423,6 +426,16 @@ func agentregOf(k *kstate.State) kernelapi.AgentRegistry {
 	if impl, ok := k.Require(kernelapi.FacAgentRegistry); ok {
 		if reg, _ := impl.(kernelapi.AgentRegistry); reg != nil {
 			return reg
+		}
+	}
+	return nil
+}
+
+// llmClientOf 取 LLM 设施（未装配 ⇒ nil：基座回落到单源直调）。
+func llmClientOf(k *kstate.State) kernelapi.LLMClient {
+	if impl, ok := k.Require(kernelapi.FacLLMClient); ok {
+		if c, _ := impl.(kernelapi.LLMClient); c != nil {
+			return c
 		}
 	}
 	return nil

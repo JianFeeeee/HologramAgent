@@ -1312,7 +1312,9 @@ func (a *Agent) summarizeForCompaction(text string) (string, error) {
 		DisableThinking: true,
 	}
 	// 用本 agent 的 ctx：父退出/子被销毁时压缩自然中止（不留下悬空调用）。
-	resp, err := a.provider.Chat(a.ctx, req)
+	// ★ 走内核 LLM 设施（单次、不重试）：压缩是"已经顶着满上下文"时的
+	//   补救动作，重试只会让它更晚。
+	resp, err := a.completeLLMNoRetry(a.ctx, req)
 	if err != nil {
 		return "", err
 	}

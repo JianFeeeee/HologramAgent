@@ -26,6 +26,7 @@ const (
 	FacTracker       = kernelapi.FacTracker
 	FacTextMem       = kernelapi.FacTextMem
 	FacLLM           = kernelapi.FacLLM
+	FacLLMClient     = kernelapi.FacLLMClient
 	FacDocStore      = kernelapi.FacDocStore
 	FacMultimodal    = kernelapi.FacMultimodal
 	FacONNX          = kernelapi.FacONNX

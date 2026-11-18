@@ -1281,8 +1281,7 @@ func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []
 	//
 	// 判据 TestRTChild_PreferredProviderIsUsed / _ProviderFallsBackOnFailure /
 	// _InterruptDoesNotFallback 钉住这三条。
-	providers := a.ResolveProviders(req)
-	ch, err := a.streamWithFallback(ctx, req, providers)
+	ch, err := a.streamLLM(ctx, req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, false
@@ -1342,45 +1341,6 @@ func (a *Agent) rtStream(ctx context.Context, rc *rtChild, round uint64, msgs []
 // 不是「这个源坏了」。若把它当可回退错误，用户一插话就会把新请求打到
 // 第二个源上，而第一个源其实完全健康 —— 判据
 // TestRTChild_InterruptDoesNotFallback 钉住这条。
-func (a *Agent) streamWithFallback(ctx context.Context, req *agentAPI.CompletionRequest, providers []agentAPI.Provider) (<-chan agentAPI.StreamChunk, error) {
-	if len(providers) == 0 {
-		// resolveProviders 在 manager 为空时会兜底成 [a.provider]，
-		// 走到这里说明连 a.provider 都是 nil（装配错误）。
-		return nil, fmt.Errorf("rtchild 没有可用的 provider")
-	}
-	var lastErr error
-	for i, p := range providers {
-		if i > 0 {
-			log.Printf("[rtchild] stream fallback: trying provider %q (#%d/%d, previous error: %v)",
-				p.Name(), i, len(providers)-1, lastErr)
-		}
-		// 每次尝试一份浅拷贝，只改 Model：不污染调用方的 req，
-		// 也不让上一个源的 model 泄给下一个源。
-		attempt := *req
-		if rp, ok := p.(agentAPI.RoutableProvider); ok {
-			if m := rp.Model(); m != "" {
-				attempt.Model = m
-			}
-		}
-
-		ch, err := p.ChatStream(ctx, &attempt)
-		if err == nil {
-			if i > 0 && a.providerManager != nil {
-				// 首选源失败但回退成功：清掉它的不可用标记，避免它
-				// 因为一次抖动被永久降级。
-				a.providerManager.ResetAvailability(p.Name())
-			}
-			return ch, nil
-		}
-		// 取消/超时：用户中断（或整轮被停），**不换源**。
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		lastErr = err
-		log.Printf("[rtchild] provider %q stream failed: %v", p.Name(), err)
-	}
-	return nil, lastErr
-}
 
 // rtFlushToolCalls 把累积的 tool call 过滤掉 nil。
 func rtFlushToolCalls(acc []*agentAPI.ToolCall) []agentAPI.ToolCall {
