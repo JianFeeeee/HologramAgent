@@ -54,6 +54,18 @@ type EventPolicy struct {
 	MaxPayloadKeys int
 }
 
+// 子 agent 类型的动态注册/撤销事件名。
+//
+// ★ 定在 security 包（与 EventUpdateRequest 同理）：它们是**授权语义**的
+//
+//	一部分，读策略时不必跳包。公开 SDK 里有逐字一致的一份（CI 门禁守一致性）。
+const (
+	// EventTypeRegister 让内置插件登记一个新的子 agent 类型。
+	EventTypeRegister = "agent.type.register"
+	// EventTypeUnregister 撤销一个子 agent 类型（仍有存活实例时被拒）。
+	EventTypeUnregister = "agent.type.unregister"
+)
+
 // EventUpdateRequest 是内核升级请求的事件名。
 //
 // 定义在这里（而不是 import events 包）是为了让策略表自包含：
@@ -79,6 +91,25 @@ func DefaultEventPolicy() EventPolicy {
 			// PublisherAllow 列出的主体能发。意图不变（不是谁都能发），
 			// 而合法调用方终于能工作。
 			EventUpdateRequest,
+
+			// ── 子 agent 类型的动态注册/撤销（用户裁定 2026-11-18）──
+			//
+			// ## 为什么在 Publishable 里而不是 PublisherAllow 里
+			//
+			// 真正的边界**不是主体名**，而是「你是不是内置插件（线程化、同地址
+			// 空间）」。因为注册载荷携带的是**真正的 Go 函数值**（Construct /
+			// Admin / Help）—— 跨进程插件（lua/proc）在结构上就送不进函数值。
+			//
+			// 这是一个**静态策略表表达不了**的判据（它是运行期事实），所以：
+			//
+			//	本表：允许发布（不靠主体名收窄）
+			//	订阅侧（agent 类型注册表）：再查一次 IsBuiltinPlugin
+			//
+			// 两道闸串联。缺了下游那道，外部插件可以发一个只有字符串的载荷 ——
+			// 它注册不出类型（Construct 为空即被拒），但仍是一次无意义的越界；
+			// 缺了本表，内置插件连发都发不出去。
+			EventTypeRegister,
+			EventTypeUnregister,
 
 			// ── 内置插件的输出类事件（均**按主体授权**，见 PublisherAllow）──
 			//

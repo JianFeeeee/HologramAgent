@@ -20,6 +20,14 @@ package agent
 // 启动期媒体整理）。**只有主 agent 注册它**：rtchild 不吃队列，
 // 驻留子有自己的一份（见各自类型模块）。
 func (a *Agent) StartMainRuntime() {
+	// ★ 订阅**类型注册事件**（用户裁定 2026-11-18：内置插件经 EventBus
+	//   动态注册/撤销子 agent 类型）。位置在这里而不是 New：
+	//   总线在装配点才注入（AgentConfig.EventBus），而订阅要等它到位。
+	//
+	// 订阅之后，插件新注册的类型会立刻出现在 admin_child 的 type 枚举里
+	// （工具表每轮重建），不需要重启内核。
+	a.SubscribeTypeEvents()
+
 	// ★ 先恢复子 agent 再起自己的循环（用户裁定 2026-11-18 的持久化落点）。
 	//
 	// ## 顺序为什么必须这样（两个实测约束）

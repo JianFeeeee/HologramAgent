@@ -63,4 +63,27 @@ const (
 	EventNameSecurityReady = "security_ready"
 	// EventNameDeviceReady：工具/设备数据面就绪（只读订阅）。
 	EventNameDeviceReady = "device_ready"
+
+	// EventNameAgentTypeRegister：内置插件登记一个**新的子 agent 类型**（2026-11-18）。
+	//
+	// ## 只有内置插件能发（不是靠这份名单，而是结构决定的）
+	//
+	// 注册载荷携带的是**真正的 Go 函数值**（Construct / Admin / Help）——
+	// 内置插件与内核线程化运行、同一地址空间，所以能递函数；
+	// 跨进程插件（lua / proc）在结构上送不进来：它们只能发字符串。
+	//
+	// 所以这条事件的两道闸是：
+	//
+	//	① security.EventPolicy.Publishable（本仓默认表已含）
+	//	② 订阅侧再查 `PluginManager.IsBuiltinPlugin(publisher)` ——
+	//	   这一道是**运行期事实**，静态策略表表达不了
+	//
+	// 撤销同理（EventNameAgentTypeUnregister）：仍有存活实例时被拒并列出 id。
+	EventNameAgentTypeRegister = "agent.type.register"
+
+	// EventNameAgentTypeUnregister：内置插件撤销一个子 agent 类型。
+	//
+	// ★ 撤销仍有存活实例的类型会被**拒绝**：实例的管理动作与销毁实现都在
+	//   该类型里，撤掉后它们立刻变成悬空调用。要强制回收必须先销毁实例。
+	EventNameAgentTypeUnregister = "agent.type.unregister"
 )
