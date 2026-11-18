@@ -3,13 +3,12 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"sort"
 	"strings"
 	"unicode"
-
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // CrossModalHit 是跨模态检索融合后的一条候选。
@@ -21,11 +20,11 @@ import (
 // memory.RecallBlocks（读块自己的向量），因此不存在「召回已无处可归的
 // 内容」这回事——能召回的必然是被某层持有的块。
 type CrossModalHit struct {
-	Doc        *coldcontext.ColdDoc // 文本路命中的文档；视觉路命中时为 nil
-	Media      *model.MemoryBlock   // 视觉路命中的媒体块；文本路命中时也可能带关联块
-	MediaScore float64              // 视觉路原始 cosine（无则 0）
-	DocScore   float64              // 文本路原始 cosine（无则 0）
-	Fused      float64              // 归一化加权融合分，供最终排序
+	Doc        *model.ColdDoc     // 文本路命中的文档；视觉路命中时为 nil
+	Media      *model.MemoryBlock // 视觉路命中的媒体块；文本路命中时也可能带关联块
+	MediaScore float64            // 视觉路原始 cosine（无则 0）
+	DocScore   float64            // 文本路原始 cosine（无则 0）
+	Fused      float64            // 归一化加权融合分，供最终排序
 	// 该媒体同时被两路命中时 DoubleHit=true —— 双信号确认，应排在只被
 	// 一路命中的候选之前。
 	DoubleHit bool
@@ -264,7 +263,7 @@ func (a *Agent) CrossModalMarkdown(hits []CrossModalHit) string {
 
 		// 时间 + 来源：让模型知道"这是什么时候、谁的事"
 		if h.Doc != nil {
-			if coldcontext.HasEvents(h.Doc) {
+			if colddoc.HasEvents(h.Doc) {
 				first := h.Doc.Events[0].Timestamp
 				last := h.Doc.Events[len(h.Doc.Events)-1].Timestamp
 				if first.Equal(last) {
@@ -322,7 +321,7 @@ func (a *Agent) CrossModalMarkdown(hits []CrossModalHit) string {
 // firstRealSource 取事件里第一个非内部标记的来源。
 //
 // `context_archived` 是内核归档动作的标记，不是"谁说的"，对模型无意义。
-func firstRealSource(events []coldcontext.ColdEvent) string {
+func firstRealSource(events []model.ColdEvent) string {
 	for _, ev := range events {
 		if ev.Source != "" && ev.Source != "context_archived" && ev.Source != "cold_storage" {
 			return ev.Source
@@ -342,7 +341,7 @@ func firstRealSource(events []coldcontext.ColdEvent) string {
 // 顺序：事件正文（块里的文本）→ 工具回执 → 文档 Content。
 // 摘要行（"已回复…"）不在这里出现——它由 docHeadlineForPrompt 负责，
 // 两者互补：一个说"发生了什么"，一个说"内容是什么"。
-func docBodyExcerptForPrompt(d *coldcontext.ColdDoc, n int) string {
+func docBodyExcerptForPrompt(d *model.ColdDoc, n int) string {
 	if d == nil {
 		return ""
 	}
@@ -438,13 +437,13 @@ func collectJSONStrings(v interface{}, depth int) []string {
 	return out
 }
 
-func docHeadlineForPrompt(d *coldcontext.ColdDoc) string {
+func docHeadlineForPrompt(d *model.ColdDoc) string {
 	if d == nil {
 		return ""
 	}
-	if coldcontext.HasEvents(d) {
+	if colddoc.HasEvents(d) {
 		for _, ev := range d.Events {
-			in, resp, _ := coldcontext.InOut(&ev)
+			in, resp, _ := colddoc.InOut(&ev)
 			for _, cand := range []string{in, resp} {
 				if line := firstMeaningfulLineForPrompt(cand); line != "" {
 					return truncateRunesForPrompt(line, 60)

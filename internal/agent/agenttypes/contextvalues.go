@@ -10,8 +10,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 type ContextEvent struct {
@@ -141,7 +140,7 @@ type CompactPlan struct {
 // ColdRecallPlan 是 coldcontext 召回的执行计划：哪些整篇召回、哪些要剔页、剔哪些。
 type ColdRecallPlan struct {
 	// Docs 是本次要回灌的文档（按相关度降序）。
-	Docs []*coldcontext.ColdDoc
+	Docs []*model.ColdDoc
 	// Evict 记录每篇要剔除的页序号（key = 文档 ID）。
 	//
 	// 空 map 表示无需剔除（整批装得下）。

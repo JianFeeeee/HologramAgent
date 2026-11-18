@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"math"
@@ -18,8 +19,8 @@ import (
 	"unicode"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/tfidf"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // ChannelCleaner 按事件来源查找输入通道的 Cleaner 函数。
@@ -55,7 +56,8 @@ type ChannelCleaner = kernelapi.ChannelCleaner
 // ★ 它原本是 `ColdDoc` 的方法。DTO 声明已搬到 internal/kernelapi/model
 // （纯数据），而 Go 不允许跨包定义方法 ⇒ 按用户裁定（«funcs_in_memory»）
 // 降为本包的**包级函数**，行为逐字不变。
-func HasEvents(d *ColdDoc) bool { return d != nil && len(d.Events) > 0 }
+// HasEvents 转发 colddoc.HasEvents（规则住在叶子包，基座与本包共用一份）。
+func HasEvents(d *ColdDoc) bool { return colddoc.HasEvents(d) }
 
 // coldcontextVectorAlgoVersion 是**文档向量算法**的版本标记。
 //
@@ -943,14 +945,16 @@ func entryTextBlockID(evtTS time.Time, source, role, text string) string {
 // 正文各自一块（不是 Input+Response 合成一块），为的是两段内容能
 // **分别按自己的向量被检索**：用户的提问与模型的回答语义常常不同。
 const (
-	TextBlockRoleInput    = "input"
-	TextBlockRoleResponse = "response"
+	// ★ 取值声明点已搬到 internal/colddoc（基座与本包共用）；
+	//   这里是别名转发，既有 `coldcontext.TextBlockRoleInput` 写法不变。
+	TextBlockRoleInput    = colddoc.RoleInput
+	TextBlockRoleResponse = colddoc.RoleResponse
 	// TextBlockRoleReasoning 标记 llm_round 页里的**思考内容**块。
 	//
 	// 单独一类（而不是并进 response）的理由：回灌时要把它们放回不同字段
 	// （ContextEvent.ReasoningContent vs .Response）。合并后回灌会把思维链
 	// 当成正式回复发给模型。
-	TextBlockRoleReasoning = "reasoning"
+	TextBlockRoleReasoning = colddoc.RoleReasoning
 )
 
 // docBlocksForEntry 把一条上下文事件落成「文本块 + 媒体块」的块列表。
@@ -1294,7 +1298,7 @@ func contentFromEvents(events []ColdEvent) string {
 // 这是 blocksToEntry 的导出形态：L1（agent/core）需要它来回填 ContextEvent，
 // 而正文住在块里，所以必须由本包解读块的角色与归属。
 func InOut(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
-	return blocksToEntry(ev)
+	return colddoc.InOut(ev)
 }
 
 // InOutWithReasoning 与 InOut 相同，但额外读回思考内容。
@@ -1307,7 +1311,7 @@ func InOut(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
 // 需要思考内容。让另外 6 处跟着改，只会把"哪些地方真的关心思考"
 // 这个信号淹没在一堆样板修改里。
 func InOutWithReasoning(ev *ColdEvent) (input, response, reasoning string, held []memory.MemoryBlock) {
-	return blocksToEntryWithReasoning(ev)
+	return colddoc.InOutWithReasoning(ev)
 }
 
 // SetSecretStore 注入变量库（落盘前脱敏用；装配期由 agent 调用）。

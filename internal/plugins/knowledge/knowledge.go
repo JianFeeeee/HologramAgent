@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // MediaRef 是媒体在知识条目里的一等引用。Digest 是内容派生的媒体身份

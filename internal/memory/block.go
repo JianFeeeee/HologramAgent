@@ -34,7 +34,8 @@ const (
 	// PageLLMRound 是一次模型往返（input → output）。
 	PageLLMRound PageKind = "llm_round"
 	// PageToolRound 是一次工具往返（call → result），靠 CallID 配对。
-	PageToolRound PageKind = "tool_round"
+	// ★ 声明点已搬到 model；这里转发。
+	PageToolRound = model.PageToolRound
 )
 
 // BlockRole 是块在**页内**的角色。

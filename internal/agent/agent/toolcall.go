@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"runtime/debug"
@@ -13,8 +14,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/toolroute"
 )
@@ -794,7 +793,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		textRemoved := 0
 		if a.MainState().textMem != nil {
 			if subj, ok := criteria["subject_contains"]; ok && subj != "" {
-				textRemoved, _ = a.MainState().textMem.PurgeByFilter(func(evt text.Event) bool {
+				textRemoved, _ = a.MainState().textMem.PurgeByFilter(func(evt model.TextEvent) bool {
 					return strings.Contains(evt.Source, subj) || strings.Contains(evt.Input, subj) || strings.Contains(evt.Response, subj)
 				})
 			}
@@ -868,10 +867,10 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		textReplaced := 0
 		if a.MainState().textMem != nil && oldSubject != "" {
 			textReplaced, _ = a.MainState().textMem.ReplaceByFilter(
-				func(evt text.Event) bool {
+				func(evt model.TextEvent) bool {
 					return strings.Contains(evt.Input, oldSubject) || strings.Contains(evt.Response, oldSubject)
 				},
-				func(evt text.Event) text.Event {
+				func(evt model.TextEvent) model.TextEvent {
 					evt.Input = strings.ReplaceAll(evt.Input, oldSubject, newSubject)
 					evt.Response = strings.ReplaceAll(evt.Response, oldSubject, newSubject)
 					return evt
@@ -1112,7 +1111,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			summary = truncateStr(content, 100)
 		}
 
-		doc := &coldcontext.ColdDoc{
+		doc := &model.ColdDoc{
 			Summary: summary,
 			Content: content,
 			Source:  "manual",
@@ -1323,8 +1322,8 @@ func (a *Agent) currentFingerprint() string {
 // inactivePages 是本篇要**剔除**（标注不渲染）的页序号。
 // 传 nil 表示整篇完整回灌。剔除是标注而非删除：数据全在，
 // 清空 InactivePages 即可恢复渲染。
-func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) int {
-	if a == nil || a.context == nil || d == nil || !coldcontext.HasEvents(d) {
+func (a *Agent) restoreDocEvents(d *model.ColdDoc, inactivePages []int) int {
+	if a == nil || a.context == nil || d == nil || !colddoc.HasEvents(d) {
 		return 0
 	}
 
@@ -1333,7 +1332,7 @@ func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) in
 		// ★ 用 InOutWithReasoning：回灌要完整还原事件，包括思考内容。
 		// 只用 InOut 会让回填出的 ContextEvent 缺 ReasoningContent，
 		// 于是再次被裁下时思维链就永久丢了（而且 L1 里那份已经是唯一副本）。
-		input, response, reasoning, held := coldcontext.InOutWithReasoning(&ev)
+		input, response, reasoning, held := colddoc.InOutWithReasoning(&ev)
 		a.context.InsertByTimestamp(ContextEvent{
 			Timestamp:        ev.Timestamp, // ★ 原始时间戳：回到事件发生的位置
 			Source:           ev.Source,
@@ -1394,12 +1393,12 @@ func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) in
 // 为什么不用 Doc.Summary：那是 jieba 词袋（"来自 N 个来源的 M 条对话 涉及: ok"），
 // 零信息量。模型看到它无法判断这笔召回有没有用 —— 这正是 agent 几乎不用
 // coldcontext_query 的直接原因之一。
-func coldcontextRecallHeadline(d *coldcontext.ColdDoc, eventCount int) string {
+func coldcontextRecallHeadline(d *model.ColdDoc, eventCount int) string {
 	if d == nil {
 		return ""
 	}
 	var parts []string
-	if coldcontext.HasEvents(d) {
+	if colddoc.HasEvents(d) {
 		first := d.Events[0].Timestamp
 		last := d.Events[len(d.Events)-1].Timestamp
 		if first.Equal(last) {
@@ -1448,7 +1447,7 @@ func coldcontextRecallHeadline(d *coldcontext.ColdDoc, eventCount int) string {
 //
 // 只取前 maxLines 行、每行截短：完整原文已在对话时序里（restoreDocEvents 回填），
 // 这里只是"先给你看一眼是什么"，不是全文。
-func coldcontextRecallPreview(d *coldcontext.ColdDoc, eventCount, maxLines int) string {
+func coldcontextRecallPreview(d *model.ColdDoc, eventCount, maxLines int) string {
 	if d == nil || maxLines <= 0 {
 		return ""
 	}
@@ -1462,9 +1461,9 @@ func coldcontextRecallPreview(d *coldcontext.ColdDoc, eventCount, maxLines int) 
 		return len(out) < maxLines
 	}
 
-	if coldcontext.HasEvents(d) {
+	if colddoc.HasEvents(d) {
 		for _, ev := range d.Events {
-			in, resp, _ := coldcontext.InOut(&ev)
+			in, resp, _ := colddoc.InOut(&ev)
 			if in != "" && !add(in) {
 				return strings.Join(out, "\n")
 			}

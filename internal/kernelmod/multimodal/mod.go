@@ -10,7 +10,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 )
 

@@ -3,7 +3,7 @@ package nlp
 import (
 	"sort"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // Parser 依存句法分析器接口

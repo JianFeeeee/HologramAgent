@@ -158,11 +158,12 @@ func TestKnownUnfinishedImportsAreListed(t *testing.T) {
 	// ★ 进度：`internal/memory` 已归零（2026-11-18，值类型上移 model +
 	//   纯函数能力经 kernelapi.MemoryOps / GraphOpener 注入）。
 	//   剩下三个是**下一刀**的对象（见函数注释）。
-	known := map[string]bool{
-		"internal/memory/coldcontext": true,
-		"internal/memory/vector":      true,
-		"internal/memory/text":        true,
-	}
+	// ★ 2026-11-18：`internal/memory` / `coldcontext` / `text` / `vector`
+	//   全部归零（值类型上移 model、纯函数进 internal/colddoc 与
+	//   internal/vector 叶子包、能力经 kernelapi.MemoryOps / GraphOpener 注入）。
+	//
+	// 清单留空是**终态**：基座对记忆实现包的依赖应当是零。
+	known := map[string]bool{}
 	deps := internalDeps(goListDeps(t, "./internal/agent/agent"))
 	got := map[string]bool{}
 	for _, d := range deps {

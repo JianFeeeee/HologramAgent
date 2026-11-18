@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"
 	_ "github.com/JianFeeeee/HologramAgent/providers/qwen3vl"

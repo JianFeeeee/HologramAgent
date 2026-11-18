@@ -7,8 +7,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"strings"
-
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
 // L3 图库的媒体绑定。
@@ -295,7 +293,7 @@ func (a *Agent) mediaContextForInjectedEntities(injected *model.InjectedContext)
 }
 
 // blockLabelsForDoc 渲染文档持有块的标签（MIME + 短块 ID），供 coldcontext_query 展示。
-func (a *Agent) BlockLabelsForDoc(d *coldcontext.ColdDoc) string {
+func (a *Agent) BlockLabelsForDoc(d *model.ColdDoc) string {
 	if d == nil || len(d.Blocks) == 0 {
 		return ""
 	}

@@ -21,7 +21,7 @@ package agent
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 	"reflect"
 )
 

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 type Indexer struct {

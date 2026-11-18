@@ -8,8 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // 媒体与记忆块的生命周期辅助。

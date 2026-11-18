@@ -24,6 +24,7 @@ package test
 // 与图库，不需要 provider 回包。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 
 	// 一段「终端日志 / 工具回执」类正文：NLP 抽不出合法三元组。
 	// 用它构造文档，正是生产里那 702 篇的形态。
-	doc, err := store.ContextToColdContext("context_archived", []coldcontext.ContextEntry{{
+	doc, err := store.ContextToColdContext("context_archived", []model.ContextEntry{{
 		Source:  "agent",
 		Content: "adb devices\n2XT0219315005305 device\n" + strings.Repeat("screenshot {scale:60}\n", 20),
 	}}, nil, nil, nil, nil)
@@ -154,7 +155,7 @@ func TestArchiveKeepsDocumentWhenItHoldsNothing(t *testing.T) {
 		return agent.Instantiate(agent.TypeNameMain, cfg)
 	})
 
-	doc, err := store.ContextToColdContext("context_archived", []coldcontext.ContextEntry{{
+	doc, err := store.ContextToColdContext("context_archived", []model.ContextEntry{{
 		Source: "agent",
 		// 空正文 ⇒ 不产生任何文本块。
 	}}, nil, nil, nil, nil)

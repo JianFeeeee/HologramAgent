@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"github.com/JianFeeeee/HologramAgent/internal/scene"
 	"log"
@@ -10,8 +11,7 @@ import (
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 type ConsolidationTask struct {
@@ -118,7 +118,7 @@ func (a *Agent) toolDeclaresNoMemory(name string) bool {
 	return noMemoryOf(name)
 }
 
-func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats) {
+func (a *Agent) archiveOneColdDoc(coldDoc *model.ColdDoc, st *archiveStats) {
 	if coldDoc == nil || a.GraphDB() == nil {
 		return
 	}
@@ -232,7 +232,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 //
 // 「静默卡住」与「每小时重试一次、永远失败」都不可观测，两者都不是答案：
 // 前者丢数据，后者把问题推给日志量。所以到上限一律响亮记录，分层处置。
-func (a *Agent) noteArchiveFailureWith(coldDoc *coldcontext.ColdDoc, st *archiveStats, reason string, contentLanded bool) {
+func (a *Agent) noteArchiveFailureWith(coldDoc *model.ColdDoc, st *archiveStats, reason string, contentLanded bool) {
 	attempts := a.MainState().coldcontextStore.NoteArchiveFailure(coldDoc.ID, reason)
 	if attempts < maxArchiveAttempts {
 		st.Retried++
@@ -542,7 +542,7 @@ func entitySimilarity(a, b string) float64 {
 	return float64(intersect) / float64(union)
 }
 
-func coldDocToTriples(coldDoc *coldcontext.ColdDoc, extractor artifacts.Extractor, norm artifacts.Norm, toolNoMemory func(name string) bool) []model.Triple {
+func coldDocToTriples(coldDoc *model.ColdDoc, extractor artifacts.Extractor, norm artifacts.Norm, toolNoMemory func(name string) bool) []model.Triple {
 	var triples []model.Triple
 	if coldDoc == nil {
 		return triples
@@ -713,11 +713,11 @@ func (a *Agent) processConsolidation(evt *agentIO.InputEvent, input string) {
 //
 // 声明查询由调用方注入（toolNoMemory），因为它依赖 agent 的工具表；
 // nil 时按「无声明」处理（与 SDK 零值语义一致，保守参与）。
-func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc, toolNoMemory func(name string) bool) string {
+func coldcontextOriginalText(coldDoc *model.ColdDoc, toolNoMemory func(name string) bool) string {
 	if coldDoc == nil {
 		return ""
 	}
-	if !coldcontext.HasEvents(coldDoc) {
+	if !colddoc.HasEvents(coldDoc) {
 		return coldDoc.Content
 	}
 	var b strings.Builder
@@ -746,7 +746,7 @@ func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc, toolNoMemory func(nam
 		// "选了 A"，没有"为何不是 B"——而后者往往才是可复用的知识。
 		//
 		// 顺序按**时序**：输入 → 思考 → 回复。思考发生在回复之前。
-		in, resp, reasoning, _ := coldcontext.InOutWithReasoning(&ev)
+		in, resp, reasoning, _ := colddoc.InOutWithReasoning(&ev)
 		if in != "" {
 			b.WriteString(in)
 			b.WriteString("\n")

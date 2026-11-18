@@ -48,6 +48,9 @@ const (
 
 type PageKind string
 
+// PageToolRound 是一次工具往返（call → result），靠 CallID 配对。
+const PageToolRound PageKind = "tool_round"
+
 type BlockRole string
 
 type MemoryBlock struct {

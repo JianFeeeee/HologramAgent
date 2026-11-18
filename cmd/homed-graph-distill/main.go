@@ -45,7 +45,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/distill"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 	"github.com/JianFeeeee/HologramAgent/pkg/generation"
 	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"

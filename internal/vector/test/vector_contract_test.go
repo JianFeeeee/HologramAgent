@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // TestCosineSimilarity：同向=1、正交=0、零向量=0。

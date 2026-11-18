@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"io"
@@ -17,9 +18,8 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // ToolResultItem 是一条工具调用结果。
@@ -318,7 +318,7 @@ func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, q
 // 而 L2 的存储形态（块、字段）与它并不等长。
 // 按存储体积估算会系统性偏离 —— 归档压缩过的文档会被低估，
 // 于是"以为装得下、实际装不下"。
-func estimateColdEventTokens(d *coldcontext.ColdDoc) int {
+func estimateColdEventTokens(d *model.ColdDoc) int {
 	if d == nil {
 		return 0
 	}
@@ -329,7 +329,7 @@ func estimateColdEventTokens(d *coldcontext.ColdDoc) int {
 	total := 0
 	for i := range d.Events {
 		ev := &d.Events[i]
-		input, response, _ := coldcontext.InOut(ev)
+		input, response, _ := colddoc.InOut(ev)
 		// 与 eventTokens 同构：input + response + 工具输出
 		n := kit.EstimateTokens(input) + kit.EstimateTokens(response) + 40
 		for _, tr := range ev.ToolResults {
@@ -368,7 +368,7 @@ func estimateColdEventTokens(d *coldcontext.ColdDoc) int {
 //     剔掉这一帧就只剩工具流水，模型无法理解它在讲什么。
 //
 // 返回的计划由调用方执行（本函数**不改任何状态**，纯计算）。
-func (c *RelevanceContext) planColdRecall(docs []*coldcontext.ColdDoc, query string, budget int) ColdRecallPlan {
+func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, budget int) ColdRecallPlan {
 	plan := ColdRecallPlan{Docs: docs, Budget: budget, Evict: map[string][]int{}}
 
 	if len(docs) == 0 || budget <= 0 {
@@ -474,9 +474,9 @@ func countPlanPages(evict map[string][]int) int {
 }
 
 // pageTokens 估算一页渲染后的 token（call 侧 + result 侧）。
-func pageTokens(ev *coldcontext.ColdEvent, page int) int {
+func pageTokens(ev *model.ColdEvent, page int) int {
 	if page == 1 {
-		in, resp, _ := coldcontext.InOut(ev)
+		in, resp, _ := colddoc.InOut(ev)
 		return kit.EstimateTokens(in) + kit.EstimateTokens(resp)
 	}
 	idx := page - 2
@@ -497,7 +497,7 @@ func pageTokens(ev *coldcontext.ColdEvent, page int) int {
 }
 
 // coldToolResult 按 CallID（退化到名字）配对工具结果。
-func coldToolResult(ev *coldcontext.ColdEvent, tc *coldcontext.ToolCallItem) (string, bool) {
+func coldToolResult(ev *model.ColdEvent, tc *model.ToolCallItem) (string, bool) {
 	if tc.CallID != "" {
 		for i := range ev.ToolResults {
 			if ev.ToolResults[i].CallID == tc.CallID {
@@ -521,7 +521,7 @@ func coldToolResult(ev *coldcontext.ColdEvent, tc *coldcontext.ToolCallItem) (st
 //	多个事件的"第 2 页"被混成一个分数（跨事件串味）。判据实测：
 //	6 个工具页拿到完全相同的 0.5774 —— 那是第 1 页 llm_round 的分数
 //	反复覆盖的结果，页与页之间完全没有区分度，剔除变成随机。
-func coldPageSimilarity(c *RelevanceContext, d *coldcontext.ColdDoc, eventIdx, page int,
+func coldPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page int,
 	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
 
 	if d == nil || eventIdx < 0 || eventIdx >= len(d.Events) {
@@ -546,7 +546,7 @@ func coldPageSimilarity(c *RelevanceContext, d *coldcontext.ColdDoc, eventIdx, p
 		}
 	}
 	if page == 1 {
-		in, resp, _ := coldcontext.InOut(ev)
+		in, resp, _ := colddoc.InOut(ev)
 		score(in)
 		score(resp)
 	} else {
@@ -830,7 +830,7 @@ func (c *RelevanceContext) inputChannelClean(source, input string) string {
 }
 
 // channelCleanerForDoc 返回 ChannelCleaner，使 document 包在存档时能按来源查找 Cleaner。
-func (c *RelevanceContext) channelCleanerForDoc() coldcontext.ChannelCleaner {
+func (c *RelevanceContext) channelCleanerForDoc() kernelapi.ChannelCleaner {
 	if c.channelDefLookup == nil {
 		return nil
 	}
@@ -1103,9 +1103,9 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 	// （2026-11-04：这里原先是一个**空 if 块**，条件与下面的 if 完全相同。
 	//   空块只有注释、没有语句 ⇒ staticcheck SA9003。注释移到真实分支上方。）
 	if coldcontextStore != nil && len(archive) > 0 {
-		entries := make([]coldcontext.ContextEntry, len(archive))
+		entries := make([]model.ContextEntry, len(archive))
 		for i, s := range archive {
-			entries[i] = coldcontext.ContextEntry{
+			entries[i] = model.ContextEntry{
 				Timestamp: s.event.Timestamp,
 				Source:    s.event.Source,
 				Content:   s.event.Input,
@@ -1250,13 +1250,13 @@ func (c *RelevanceContext) tokenAt(i int) (int, bool) {
 //
 // 必须逐字段搬运（而不是忽略）：L2 缺参数的话，回灌后「这一页的 call 侧
 // 是空的」，段页式的配对校验与页化都失效。
-func toolCallItemsToDoc(in []ToolCallItem) []coldcontext.ToolCallItem {
+func toolCallItemsToDoc(in []ToolCallItem) []model.ToolCallItem {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]coldcontext.ToolCallItem, len(in))
+	out := make([]model.ToolCallItem, len(in))
 	for i, tc := range in {
-		out[i] = coldcontext.ToolCallItem{
+		out[i] = model.ToolCallItem{
 			CallID:       tc.CallID,
 			Name:         tc.Name,
 			Arguments:    tc.Arguments,
@@ -1276,13 +1276,13 @@ func toolCallItemsToDoc(in []ToolCallItem) []coldcontext.ToolCallItem {
 //
 // 这类错误的共同点是「加字段时只改结构、不改搬运函数」——
 // 结构体里字段看起来都在，真跑一遍才发现在某一段路上被丢了。
-func convertToolResults(items []ToolResultItem) []coldcontext.ToolResultItem {
+func convertToolResults(items []ToolResultItem) []model.ToolResultItem {
 	if items == nil {
 		return nil
 	}
-	result := make([]coldcontext.ToolResultItem, len(items))
+	result := make([]model.ToolResultItem, len(items))
 	for i, item := range items {
-		result[i] = coldcontext.ToolResultItem{
+		result[i] = model.ToolResultItem{
 			CallID: item.CallID,
 			Name:   item.Name,
 			Output: item.Output,
