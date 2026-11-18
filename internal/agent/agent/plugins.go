@@ -72,13 +72,11 @@ var builtinToolOwner = map[string]string{
 	"persona_set": "core",
 	// 通道 / 调度 / 驻留子
 	"output_send__": "core", "output_list_channels": "core",
-	"input_channels": "core", "inputch_note": "core",
-	"spawn_child": "core", "child_result": "core", "notify_parent": "core",
-	"resident_agents": "core",
-	// rtchild 上下文交接的拉取入口（用户裁定 2026-10-30：走 contextfull 式中断，
-	// 主 agent 自行选择保留哪些内容）。归 core：它是内核原语，不是插件能力。
-	"rt_transcript": "core",
-	"rt_children":   "core",
+	"input_channels": "core",
+	// ★ 子 agent 相关工具（admin_child* / spawn_child / child_result /
+	//   notify_parent / inputch_note / rt_*）**不再手抄在这张表里**：
+	//   它们的归属由注册时声明（registry.Tool.Owner），查询走 ToolOwner。
+	//   这张表只管"没有注册者、但确实归 core 的内核原语"。
 	// LLM 源 / 插件管理
 	"llm_list_sources": "core", "llm_set_source": "core", "llm_current_source": "core",
 	"plgreload": "core", "get_plugin_tools": "core", "list_devices": "core",
@@ -94,8 +92,14 @@ func (a *Agent) ResolveToolPlugin(name string) string {
 			return plugin
 		}
 	}
-	// ★ 显式归属表优先于「按下划线猜」。
-	//   未登记的内置工具归 core，而不是编出一个可能不存在的插件名。
+	// ★ 注册表优先：谁登记了这个工具，谁就是它的归属。
+	//   这样加工具时**不必回来改这张表**（原先的形态是四处手抄，漏一处
+	//   就会出现"工具能用但归属查不到"）。
+	if owner := toolPluginOf(name); owner != "" {
+		return owner
+	}
+	// 显式归属表优先于「按下划线猜」。
+	// 未登记的内置工具归 core，而不是编出一个可能不存在的插件名。
 	if owner, ok := builtinToolOwner[name]; ok {
 		return owner
 	}

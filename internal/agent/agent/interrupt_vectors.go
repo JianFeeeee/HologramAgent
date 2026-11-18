@@ -149,7 +149,7 @@ var interruptVectors = map[VectorID]interruptVector{
 			// "全都要"的决定，且会把几十万字符直接顶进它的上下文。正文由
 			// RTTranscript 按需拉取（"推信号 + 拉状态"），与驻留子同一套协议。
 			return fmt.Sprintf("内核事件：实时子 agent %s 已回收，本次通话共 %d 条消息（约 %d 字符）。"+
-				"如需复盘，可调用 rt_transcript 取回原文并按需选取保留内容。", a.RTID, a.RTCount, a.RTChars)
+				"如需复盘，可调用 admin_child(type=rt, action=transcript) 取回原文并按需选取保留内容。", a.RTID, a.RTCount, a.RTChars)
 		},
 	},
 

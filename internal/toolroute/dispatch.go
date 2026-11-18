@@ -57,12 +57,10 @@ func Dispatch(h api.BuiltinToolHandlers, tc api.ToolCall, turnScenes []string) (
 		return h.ExecuteOutputListChannels(), true
 	case tc.Name == "input_channels":
 		return h.ExecuteInputChannels(tc), true
-	case tc.Name == "resident_agents":
-		return h.ExecuteResidentAgents(tc), true
-	case tc.Name == "notify_parent":
-		return h.ExecuteNotifyParent(tc), true
-	case tc.Name == "inputch_note":
-		return h.ExecuteInputchNote(tc), true
+	// ★ 子 agent 管理面与 spawn_child / notify_parent / inputch_note 等
+	//   **都不在这张表里**：它们由各自的注册者登记到 registry，
+	//   分发由 registry.DispatchTool 完成（见 agent/toolcall.go）。
+	//   本模块只保留"device 拥有的族"—— 记忆/知识/文档/人格/安全/输出通道。
 	case tc.Name == "plgreload":
 		return h.ExecutePluginReload(), true
 	case tc.Name == "get_plugin_tools":

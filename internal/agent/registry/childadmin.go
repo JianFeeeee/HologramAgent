@@ -28,19 +28,20 @@ import (
 	"strings"
 )
 
-// ToolDefs 生成 admin_child 三件套的工具声明。
+// ChildAdminTools 生成 admin_child 三件套的工具声明。
 //
-// 返回的 map 与 `toolDef(...)` 的形状一致（type/function/name/description/parameters），
-// 因为基座的工具表就是那个形状 —— 本包不 import agent 包，只产出纯数据。
-func ToolDefs() []map[string]interface{} {
+// ★ 返回**结构化** ToolDef 而不是 map：调用方要读 Side/Owner/Parallel 等
+//
+//	声明项，map 形态只能靠字符串键猜（且拼错不报错）。
+func ChildAdminTools() []ToolDef {
 	types := Types()
 	if len(types) == 0 {
 		return nil
 	}
 
-	var out []map[string]interface{}
+	var out []ToolDef
 
-	// ① admin_child：type + action + meta + arg
+	// ① admin_child：type + action + （id/text/residual/arg/meta）
 	actionEnum := []string{}
 	typeEnum := []string{}
 	var typeDocs []string
@@ -70,83 +71,65 @@ func ToolDefs() []map[string]interface{} {
 	}
 	sort.Strings(actionEnum)
 
-	out = append(out, map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name": "admin_child",
-			"description": "管理子 agent（全参数化入口）。type 选择子 agent 类型，action 选择动作，" +
-				"meta/arg 是该动作的参数。\n" +
-				"可用类型：" + strings.Join(typeDocs, "；") + "\n" +
-				"通用动作：list（列出实例）/ create（按该类型的参数创建）/ inspect（查看单个）/" +
-				"send（向实例注入输入，会打断它当前处理）/ destroy（销毁单个，可用 residual 决定残余任务）/" +
-				"destroy_all（销毁该类型全部）/ restart（重启单个，用于强行停止跑飞的实例）。\n" +
-				"类型独有动作见 admin_child_help(type)。",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"type": map[string]interface{}{
-						"type":        "string",
-						"enum":        typeEnum,
-						"description": "子 agent 类型（留空 = 全部类型，仅 list/destroy_all 可用）",
-					},
-					"action": map[string]interface{}{
-						"type":        "string",
-						"enum":        actionEnum,
-						"description": "要执行的动作",
-					},
-					"id":   map[string]interface{}{"type": "string", "description": "实例 id（inspect/send/destroy/restart 必填）"},
-					"text": map[string]interface{}{"type": "string", "description": "send：要注入的内容"},
-					"residual": map[string]interface{}{
-						"type": "string", "enum": []string{"keep", "drop"},
-						"description": "destroy：残余任务处置（keep=转回你的队列，默认 / drop=明确丢弃）",
-					},
-					"arg": map[string]interface{}{
-						"type":        "object",
-						"description": "动作参数（create 与类型独有动作用；键见 admin_child_help）",
-					},
-					"meta": map[string]interface{}{
-						"type":        "object",
-						"description": "附加元数据（透传给该类型的 Admin，内核不解释）",
-					},
-				},
-				"required": []string{"action"},
+	out = append(out, ToolDef{
+		Name: "admin_child",
+		Description: "管理子 agent（全参数化入口）。type 选择子 agent 类型，action 选择动作。" +
+			"可用类型：" + strings.Join(typeDocs, "；") + "。" +
+			"通用动作：list / create / inspect / send / destroy / destroy_all / restart。" +
+			"类型独有动作见 admin_child_help(type)。",
+		Parallel: false,
+		Properties: map[string]interface{}{
+			"type": map[string]interface{}{
+				"type":        "string",
+				"enum":        typeEnum,
+				"description": "子 agent 类型（留空 = 全部类型，仅 list/destroy_all 可用）",
+			},
+			"action": map[string]interface{}{
+				"type":        "string",
+				"enum":        actionEnum,
+				"description": "要执行的动作",
+			},
+			"id":   map[string]interface{}{"type": "string", "description": "实例 id（inspect/send/destroy/restart 必填）"},
+			"text": map[string]interface{}{"type": "string", "description": "send：要注入的内容"},
+			"residual": map[string]interface{}{
+				"type": "string", "enum": []string{"keep", "drop"},
+				"description": "destroy / reclaim：残余任务处置（keep=转回你的队列，默认 / drop=明确丢弃）",
+			},
+			"arg": map[string]interface{}{
+				"type":        "object",
+				"description": "动作参数（create 与类型独有动作用；键见 admin_child_help）",
+			},
+			"meta": map[string]interface{}{
+				"type":        "object",
+				"description": "附加元数据（透传给该类型的 Admin，内核不解释）",
 			},
 		},
+		Required: []string{"action"},
 	})
 
 	// ② admin_child_help：技术细节收敛在这里（不进主工具描述）
 	helpTypeEnum := append([]string(nil), typeEnum...)
 	helpTypeEnum = append(helpTypeEnum, "")
-	out = append(out, map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name": "admin_child_help",
-			"description": "查看某个子 agent 类型的完整用法：创建参数、类型独有动作、" +
-				"以及该类型的注意事项。留空 type 列出全部类型的一行摘要。",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"type": map[string]interface{}{
-						"type":        "string",
-						"enum":        helpTypeEnum,
-						"description": "要查看的类型（留空 = 全部摘要）",
-					},
-				},
+	out = append(out, ToolDef{
+		Name: "admin_child_help",
+		Description: "查看某个子 agent 类型的完整用法：创建参数、类型独有动作、注意事项。" +
+			"留空 type 列出全部类型的一行摘要。",
+		Parallel: true,
+		Properties: map[string]interface{}{
+			"type": map[string]interface{}{
+				"type":        "string",
+				"enum":        helpTypeEnum,
+				"description": "要查看的类型（留空 = 全部摘要）",
 			},
 		},
 	})
 
 	// ③ admin_child_list：列出类型与实例
-	out = append(out, map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        "admin_child_list",
-			"description": "列出已注册的子 agent 类型及其存活实例（等价于 admin_child(action=list)）。",
-			"parameters": map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
+	out = append(out, ToolDef{
+		Name:        "admin_child_list",
+		Description: "列出已注册的子 agent 类型及其存活实例（等价于 admin_child(action=list)）。",
+		Parallel:    true,
+		Properties:  map[string]interface{}{},
 	})
 
 	return out

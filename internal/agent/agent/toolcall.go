@@ -11,6 +11,7 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
@@ -347,6 +348,21 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		}
 	}
 
+	// ★★ **注册表驱动的工具分发**（用户 2026-11-18 质问的修法）。
+	//
+	// 每一族能力自己登记工具（名字 + schema + 侧别 + 归属 + 执行体），
+	// 基座在这里只做一次查表。于是这里不再有 `rt_children` /
+	// `resident_agents` / `spawn_child` / `notify_parent` 之类的字面量，
+	// 加一类子 agent 或换一组管理动作都不必回来改这个 switch。
+	//
+	// ★ 只处理"注册表里有"的工具；未登记的一律 handled=false 往下走，
+	//   绝不吞掉未知工具（插件/设备工具会消失）。
+	if text, handled := registry.DispatchTool(registry.ToolCtx{
+		Host: a, Channel: channel, TurnScenes: turnScenes,
+	}, tc); handled {
+		return toolOutcome{Text: text}
+	}
+
 	switch {
 	case tc.Name == "persona_set":
 		return toolOutcome{Text: a.executePersonaTool(tc)}
@@ -366,28 +382,11 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		return toolOutcome{Text: a.executeOutputListChannels()}
 	case tc.Name == "input_channels":
 		return toolOutcome{Text: a.ExecuteInputChannels(tc)}
-	case tc.Name == "resident_agents":
-		return toolOutcome{Text: a.ExecuteResidentAgents(tc)}
-	// ★ rt_transcript：rtchild 上下文交接的**拉取**入口（用户裁定 2026-10-30）。
-	// 交接协议是「推信号 + 拉状态」：回收时只推一条 L4（带条数），
-	// 正文由主 agent 用本工具按需取回并**自行选择**保留哪些。
-	case tc.Name == "rt_transcript":
-		return toolOutcome{Text: a.ExecuteRTTranscript(tc)}
-	case tc.Name == "rt_children":
-		return toolOutcome{Text: a.ExecuteRTChildren(tc)}
-	case tc.Name == "notify_parent":
-		return toolOutcome{Text: a.ExecuteNotifyParent(tc)}
-	case tc.Name == "inputch_note":
-		return toolOutcome{Text: a.ExecuteInputchNote(tc)}
 	case tc.Name == "plgreload":
 		return toolOutcome{Text: a.executePluginReload()}
 	case tc.Name == "get_plugin_tools":
 		pluginName, _ := tc.Arguments["plugin_name"].(string)
 		return toolOutcome{Text: a.ExecuteGetPluginTools(pluginName)}
-	case tc.Name == "spawn_child":
-		return toolOutcome{Text: a.ExecuteSpawnChild(tc, channel)}
-	case tc.Name == "child_result":
-		return toolOutcome{Text: a.ExecuteChildResultTool(tc)}
 	case strings.HasPrefix(tc.Name, "llm_"):
 		return toolOutcome{Text: a.ExecuteLLMTool(tc)}
 	case strings.HasPrefix(tc.Name, "secret_"):

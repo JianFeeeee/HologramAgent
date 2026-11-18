@@ -290,3 +290,29 @@ func (m *InstanceManager) Restore() (int, []string) {
 }
 
 // Records 返回创建参数快照（按 id 排序）。
+
+// Instances 返回实例管理器（未装配时 nil）。
+func (a *Agent) Instances() *InstanceManager {
+	if a == nil {
+		return nil
+	}
+	return a.instances
+}
+
+// InstallInstanceManager 装入实例管理器（根 agent 装配期一次）。
+func (a *Agent) InstallInstanceManager(m *InstanceManager) {
+	if a != nil {
+		a.instances = m
+	}
+}
+
+// EnsureInstanceManager 返回实例管理器，必要时创建（幂等）。
+func (a *Agent) EnsureInstanceManager() *InstanceManager {
+	if a == nil {
+		return nil
+	}
+	if a.instances == nil {
+		a.instances = NewInstanceManager(a)
+	}
+	return a.instances
+}

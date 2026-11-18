@@ -143,15 +143,6 @@ func (h builtinHandlers) ExecuteOutputListChannels() string {
 func (h builtinHandlers) ExecuteInputChannels(tc api.ToolCall) string {
 	return h.a.ExecuteInputChannels(tc)
 }
-func (h builtinHandlers) ExecuteResidentAgents(tc api.ToolCall) string {
-	return h.a.ExecuteResidentAgents(tc)
-}
-func (h builtinHandlers) ExecuteNotifyParent(tc api.ToolCall) string {
-	return h.a.ExecuteNotifyParent(tc)
-}
-func (h builtinHandlers) ExecuteInputchNote(tc api.ToolCall) string {
-	return h.a.ExecuteInputchNote(tc)
-}
 func (h builtinHandlers) ExecutePluginReload() string {
 	return h.a.executePluginReload()
 }

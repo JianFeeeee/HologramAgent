@@ -1,0 +1,212 @@
+package registry
+
+// tools.go —— **工具注册表**（与类型注册表并列的第二张表）。
+//
+// ## 为什么需要它（用户 2026-11-18 质问）
+//
+// > 「为什么还是有硬编码的 rt，现有的回调注册式接口还不够用吗？」
+//
+// 答：接口够用，是我**没把它用在这些地方**。上一轮只把「子 agent 类型」
+// 注册掉了，工具名/schema/归属/分派仍然是手抄字面量，于是残留：
+//
+//	tooldefs.go      spawn_child / child_result / notify_parent / inputch_note
+//	toolcall.go      同名四个分支
+//	toolroute/dispatch.go   resident_agents / notify_parent / inputch_note
+//	plugins.go       rt_transcript / rt_children / resident_agents / …
+//
+// 每一份都是「再打一遍类型名」，加一类子 agent 就要回来改四处。这正是
+// 本设计要消灭的嵌合：**谁拥有那个能力，谁就注册那个工具**。
+//
+// ## 三张表的分工
+//
+//	类型注册表（registry.go）      type → Descriptor（Construct/Admin/Help）
+//	工具注册表（本文件）            工具名 → Tool（schema + 侧别 + 归属 + handler）
+//	实例管理器（agent/instances）   id → 存活实例
+//
+// 工具表是**数据 + 一个函数值**，因此：
+//
+//	· tooldefs 不再写 if，而是 `ToolDefsFor(side)` 拿表渲染
+//	· toolroute 不再写 case，而是 `DispatchTool(...)` 先问表
+//	· plugins.go 的归属不再写 string，而是 `ToolOwner(name)`
+//
+// ## 侧别（Side）为什么是工具属性
+//
+// 同一个类型在父侧贡献工具（admin_child 的入口、spawn_child），在子侧
+// 贡献另一些（notify_parent、inputch_note）。若把"谁能看到什么工具"
+// 写成基座里的 `if a.hooks.IsChild`，基座又认识了类型语义。
+// 侧别是**注册时声明的事实**，基座只做「按我的侧别取表」。
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
+)
+
+// Side 是工具在**哪一侧**可见。
+type Side int
+
+const (
+	// SideAny 两侧都可见（内核通用工具）。
+	SideAny Side = iota
+	// SideParent 只在父侧可见（管理子 agent 的入口）。
+	SideParent
+	// SideChild 只在子侧可见（向上汇报、写处理表）。
+	SideChild
+)
+
+// ToolCtx 是工具执行时随调用一起传下来的上下文。
+//
+// ★ 为什么不是 (host, channel, turnScenes) 三个裸参数：三个裸参数在不同
+//
+//	工具间用法不同（只有 spawn_child 用 channel），位置参数会让"第几个
+//	是什么"变成隐性约定。结构体让未用字段显式为 nil/空。
+type ToolCtx struct {
+	// Host 是执行宿主。由**注册者与调用方**约定具体类型（registry 不解释）：
+	// 内置工具注册者拿到的是 `*agent.Agent`。
+	Host any
+	// Channel 是本次工具调用的输出通道名（spawn_child 需要它授权子）。
+	Channel string
+	// TurnScenes 是本轮场景标签（记忆族工具用，其余忽略）。
+	TurnScenes []string
+}
+
+// ToolHandler 执行一个工具，返回给模型看的文本。
+type ToolHandler func(c ToolCtx, tc api.ToolCall) string
+
+// Tool 是工具注册表的一项。
+type Tool struct {
+	// Name 是工具名（对模型可见，也是分派键）。
+	Name string
+	// Description 是给模型的说明（**一句话**；技术细节进 `_help` 或 skill）。
+	Description string
+	// Side 声明该工具在哪一侧可见（默认 SideAny）。
+	Side Side
+	// Owner 是归属的插件名（内置工具一律 "core"；插件工具由插件注册）。
+	Owner string
+	// Properties 是 JSON Schema properties。
+	Properties map[string]interface{}
+	// Required 是必填参数名。
+	Required []string
+	// Parallel 声明该工具可被并发执行（已核实只读、无共享写）。
+	Parallel bool
+	// NoMemory 声明该工具的输出不参与记忆计算。
+	NoMemory bool
+	// Timeout 声明单次执行的最长时长（如 "3m"；留空 = 内核默认）。
+	Timeout string
+	// Handle 是执行体。
+	Handle ToolHandler
+}
+
+var (
+	toolMu    sync.RWMutex
+	toolTable = map[string]Tool{}
+)
+
+// RegisterTool 登记一个工具（装配期一次，通常在包 init 里）。
+//
+// 同名重复登记被拒：两个模块声称同一工具名意味着"到底哪个生效"取决于
+// 调用顺序 —— 与类型注册表同一纪律。
+func RegisterTool(t Tool) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return errf("registry: 工具名不能为空")
+	}
+	if t.Handle == nil {
+		return errf("registry: 工具 %q 缺少 Handle", t.Name)
+	}
+	if t.Owner == "" {
+		t.Owner = "core"
+	}
+	toolMu.Lock()
+	defer toolMu.Unlock()
+	if _, dup := toolTable[t.Name]; dup {
+		return errf("registry: 工具 %q 已注册", t.Name)
+	}
+	toolTable[t.Name] = t
+	return nil
+}
+
+// LookupTool 按名字取工具项。
+func LookupTool(name string) (Tool, bool) {
+	toolMu.RLock()
+	defer toolMu.RUnlock()
+	t, ok := toolTable[name]
+	return t, ok
+}
+
+// ToolsFor 返回某一侧可见的全部工具（按名字排序，输出稳定）。
+//
+// side=SideAny 的过滤语义：**父侧看得到 SideAny+SideParent**，
+// **子侧看得到 SideAny+SideChild**。返回值不含"对方那一侧"的工具。
+func ToolsFor(side Side) []Tool {
+	toolMu.RLock()
+	defer toolMu.RUnlock()
+	out := make([]Tool, 0, len(toolTable))
+	for _, t := range toolTable {
+		switch t.Side {
+		case SideAny:
+			out = append(out, t)
+		default:
+			if t.Side == side {
+				out = append(out, t)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// ToolOwner 返回工具的归属（未注册 ⇒ 空，调用方决定兜底）。
+func ToolOwner(name string) string {
+	toolMu.RLock()
+	defer toolMu.RUnlock()
+	if t, ok := toolTable[name]; ok {
+		return t.Owner
+	}
+	return ""
+}
+
+// DispatchTool 尝试用注册表执行一个工具。
+//
+// 返回 (结果, 是否已处理)。handled=false 表示"不是注册表里的工具"，
+// 调用方必须继续走自己的路径 —— **绝不吞掉未知工具**（插件工具会消失）。
+func DispatchTool(c ToolCtx, tc api.ToolCall) (string, bool) {
+	t, ok := LookupTool(tc.Name)
+	if !ok {
+		return "", false
+	}
+	return t.Handle(c, tc), true
+}
+
+// ToolNames 返回全部已注册工具名（判据与状态面用）。
+func ToolNames() []string {
+	toolMu.RLock()
+	defer toolMu.RUnlock()
+	out := make([]string, 0, len(toolTable))
+	for n := range toolTable {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// errf 是本文件内部用的错误构造（避免为了一个 fmt.Errorf 反复 import）。
+func errf(format string, args ...any) error { return fmt.Errorf(format, args...) }
+
+// ToolDef 是**工具声明的纯数据形态**（生成 schema 用，不含执行体）。
+//
+// ★ 与 Tool 的分工：Tool 是注册表项（含 Handle，执行侧用）；
+// ToolDef 是"要发给模型的那份声明"（渲染侧用）。分开是因为有一批工具
+// 的声明由**表生成**（admin_child 三件套随类型增删而变），它们不该
+// 被当成静态注册项 —— 否则类型撤销后那条声明还挂着。
+type ToolDef struct {
+	Name        string
+	Description string
+	Properties  map[string]interface{}
+	Required    []string
+	Parallel    bool
+	NoMemory    bool
+	Timeout     string
+}

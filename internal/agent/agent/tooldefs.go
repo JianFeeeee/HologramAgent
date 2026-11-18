@@ -627,23 +627,6 @@ func (a *Agent) BuildToolDefs() []interface{} {
 		"plugin_name": map[string]interface{}{"type": "string", "description": "插件名，如 qq / remotedevice / weather", "default": ""},
 	}, nil, parallelOpts()))
 
-	tools = append(tools, toolDef("spawn_child", "启动一个异步子 Agent 执行独立任务。子 Agent 后台运行，不阻塞当前对话。完成后系统会自动通知你，届时请调用 child_result 工具查看输出。\n使用时机：多个互不依赖的子任务（如同时查三个网站、分别处理多个文件）可以在**同一轮**里一次 spawn 多个子 Agent——同轮调用默认并行，子 Agent 会各自后台启动（是否真正并发取决于工具的并发安全声明）。长耗时任务（批量处理、多轮搜索）也应交给子 Agent，避免阻塞对话。注意：一次 spawn 只是一个启动动作；要立刻拿到结果仍需另一次 `child_result` 调用。", map[string]interface{}{
-		"task": map[string]interface{}{
-			"type":        "string",
-			"description": "要子 Agent 完成的任务描述。请描述清晰、完整，包含所有必要背景。",
-		},
-		"max_turns": map[string]interface{}{
-			"type":        "integer",
-			"description": "子 Agent 最大工具轮数（默认 5，范围 1-30）。复杂任务可调高。",
-		},
-	}, "task"))
-	tools = append(tools, toolDef("child_result", "查询异步子 Agent 的执行结果。当收到'子任务已完成'的通知后，调用此工具获取输出。", map[string]interface{}{
-		"task_id": map[string]interface{}{
-			"type":        "string",
-			"description": "spawn_child 返回的任务 ID，如 child_1",
-		},
-	}, "task_id"))
-
 	if a.providerManager != nil {
 		tools = append(tools, toolDefWith("llm_list_sources", "列出所有可用的 LLM 源（如 deepseek、openai、ollama），每个源有对应的 Lua 适配器和配置。如需切换 LLM 源，请使用 llm_set_source。", map[string]interface{}{}, nil, parallelOpts()))
 		tools = append(tools, toolDef("llm_set_source", "切换当前 LLM 源到指定名称。变更立即生效，后续对话将使用新的 LLM 源。源名称可通过 llm_list_sources 查看。", map[string]interface{}{
@@ -718,117 +701,14 @@ func (a *Agent) BuildToolDefs() []interface{} {
 
 	tools = append(tools, toolDefWith("output_list_channels", "列出所有可用输出通道及其能力（如 text/file/image/audio）和对应的输出门工具名称。", map[string]interface{}{}, nil, parallelOpts()))
 
-	// 父侧：rtchild 控制面（实时通话子 agent，见 rtchild.go）。
-	if !a.hooks.IsChild {
-		tools = append(tools, toolDefWith("rt_children",
-			"管理实时子 agent（rtchild，用于通话/视频通话）：list 列出 / "+
-				"create 创建（**必须成对**给 inputch + outputch）/ "+
-				"send 注入一条新输入（**会立即打断它当前轮**，不排队）/ "+
-				"stop 回收（先交给你全部上下文，是否保留由你决定，用 rt_transcript 取回）。"+
-				"注意：rt 通道必须由插件声明（ChannelDef.Realtime=true）；"+
-				"没有 rt 能力的 agent 不能持有 rt 通道。", map[string]interface{}{
-				"action": map[string]interface{}{
-					"type": "string",
-					"enum": []string{"list", "create", "send", "stop"},
-				},
-				"id":            map[string]interface{}{"type": "string", "description": "rtchild 的 id"},
-				"inputch":       map[string]interface{}{"type": "string", "description": "create：rt inputch 名（采集侧灌入；成对的一半）"},
-				"outputch":      map[string]interface{}{"type": "string", "description": "create：rt outputch 名（内核把文本写进它；成对的另一半）"},
-				"system_prompt": map[string]interface{}{"type": "string", "description": "create：系统提示词（留空用内置的实时通话提示词）"},
-				"max_tools":     map[string]interface{}{"type": "number", "description": "create：单轮最多几批工具调用（0=不限，rt 默认不限）"},
-				"text":          map[string]interface{}{"type": "string", "description": "send：要注入的输入（会打断当前轮）"},
-				// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
-				//
-				// 描述里必须说清“这是限制”而不是“这是授权”：模型很容易把
-				// allowed_tools 误读成“额外授予”。留空 = 不作额外限制（沿用全局策略）。
-				"allowed_tools": map[string]interface{}{
-					"type":        "string",
-					"description": "create：**你为它声明**的工具白名单（逗号分隔，支持 cmd_* 这类通配）。留空=不额外限制（沿用全局策略）。只能收窄，不能扩大。",
-				},
-				"deny_tools": map[string]interface{}{
-					"type":        "string",
-					"description": "create：**你为它声明**的追加禁止（逗号分隔，支持通配）。你能用但不给它用的工具写这里。与 allowed_tools 同时给时两者同时生效（deny 优先）。",
-				},
-			},
-			[]string{"action"}, parallelOpts()))
-	}
-
-	// 父侧：rtchild 上下文交接（用户裁定 2026-10-30：走 contextfull 式中断，
-	// 主 agent **自行选择**保留哪些内容 —— 所以给一个按需拉取的读口）。
-	if !a.hooks.IsChild {
-		tools = append(tools, toolDefWith("rt_transcript",
-			"取回实时子 agent（rtchild）的通话上下文原文。回收 rtchild 时你会收到一条中断，"+
-				"告知有多少条消息；**是否保留、保留哪些由你决定** —— 用本工具分段读取后再取舍，"+
-				"不要把整段塞进自己的上下文（一条通话可能有几百条消息）。",
-			map[string]interface{}{
-				"id":     map[string]interface{}{"type": "string", "description": "rtchild 的 id"},
-				"offset": map[string]interface{}{"type": "number", "description": "从第几条消息开始（0 = 从头）"},
-				"limit":  map[string]interface{}{"type": "number", "description": fmt.Sprintf("最多返回多少条（默认 %d）", rtTranscriptDefaultLimit)},
-				"format": map[string]interface{}{"type": "string", "enum": []string{"text", "raw"}, "description": "text=可读渲染（默认）/ raw=原始消息"},
-			},
-			[]string{"id"}, parallelOpts()))
-	}
-
-	// 父侧：驻留子控制面（单工具多动作，见设计 §7）。
-	if !a.hooks.IsChild {
-		tools = append(tools, toolDef("resident_agents", "管理驻留子 agent（长期派驻的下属）：list 列出 / create 创建（划入 inputch + "+
-			"授权输出通道 + 注入任务提示词）/ send 发送消息（对子而言是 L4 中断，取消其当前状态并插入新消息）"+
-			"/ inspect 查看其 inputch 处理表（不打断它）/ compress 压缩其上下文（保留语义，子继续存在）"+
-			"/ reclaim 回收（父选哪些纳入主记忆，然后取消该子）/ destroy 立刻销毁并移除。"+
-			"reclaim/destroy 时它手头**尚未处理的消息**（残余任务）由你用 residual 决定："+
-			"keep=转回你自己的队列（默认）/ drop=明确丢弃，两者都会逐条记日志。", map[string]interface{}{
-			"action": map[string]interface{}{
-				"type": "string",
-				"enum": []string{"list", "create", "send", "inspect", "compress", "reclaim", "destroy"},
-			},
-			"id":              map[string]interface{}{"type": "string", "description": "驻留子 id"},
-			"task_prompt":     map[string]interface{}{"type": "string", "description": "create：在固定提示词之上注入的任务提示词"},
-			"input_chs":       map[string]interface{}{"type": "string", "description": "create：划入的 inputch（逗号分隔）"},
-			"allowed_outputs": map[string]interface{}{"type": "string", "description": "create：授权的输出通道（逗号分隔；留空=完整授权）"},
-			"capacity":        map[string]interface{}{"type": "number", "description": "create：划入 inputch 的队列容量"},
-			"temp_path":       map[string]interface{}{"type": "string", "description": "create：temp 图记忆路径（留空则用 data_dir/residents/<id>/graph.db）"},
-			// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
-			// 描述必须点明“声明限制”而非“授予”：模型很容易把白名单误读成授权。
-			"allowed_tools": map[string]interface{}{
-				"type":        "string",
-				"description": "create：**你为它声明**的工具白名单（逗号分隔，支持 cmd_* 这类通配）。留空=不额外限制（沿用全局策略）。只能收窄，不能扩大。",
-			},
-			"deny_tools": map[string]interface{}{
-				"type":        "string",
-				"description": "create：**你为它声明**的追加禁止（逗号分隔，支持通配）。你能用但不给它用的工具写这里。与 allowed_tools 同时给时两者同时生效（deny 优先）。",
-			},
-			"text": map[string]interface{}{"type": "string", "description": "send：要发给子 agent 的消息"},
-			// ★ 通道处置（2026-11-17 收敛为两种真语义）。
-			"channels": map[string]interface{}{
-				"type": "string",
-				"enum": []string{"orphan", "handover", "suspend", "takeover"},
-				"description": "reclaim/destroy：划入的 inputch 怎么处置。" +
-					"orphan（默认）=**悬空** —— 归属清空，期间输入暂存等显式接回或划拨；" +
-					"handover=**显式交接**给 channel_target（缺省父），并交出暂存任务。" +
-					"（suspend/takeover 是旧名，现在分别等价于 orphan/handover）",
-			},
-			"channel_target": map[string]interface{}{
-				"type":        "string",
-				"description": "handover 的目标 agent id（留空=父自己；可写另一个驻留子的 id 表示划拨给它）",
-			},
-			"residual": map[string]interface{}{
-				"type": "string",
-				"description": "reclaim/destroy：该子手头**未处理消息**的处置。" +
-					"keep=转回你自己的队列（默认）/ takeover=同 keep 但语义明确为「我接手」/" +
-					"stash=暂存到它各自的原通道，等该通道被接回时再放出（你暂时忙但活不能丢时用）/" +
-					"drop=丢弃（已确认不要）。" +
-					"四者都会逐条记日志；异步通道（如 qq）被 drop 时用户收不到任何回复，请慎重。",
-				"enum": []string{"keep", "takeover", "stash", "drop"},
-			},
-		}, "action"))
-	}
-
-	// 子侧（驻留子）：主动汇报（L3）与主动写处理表。
-	if a.hooks.IsChild {
-		tools = append(tools, toolDef("notify_parent", "向主 agent 汇报（以 L3 中断投给它）。用于主动报告进展/结论，而不是等它来问。", map[string]interface{}{"text": map[string]interface{}{"type": "string", "description": "汇报内容"}}, "text"))
-		tools = append(tools, toolDef("inputch_note", "为**本轮** inputch 主动写入处理信息（主 agent 会查这张表判断你的进度）。"+
-			"写了就不会再被系统自动记录；不写则本轮结束时系统自动写。", map[string]interface{}{"text": map[string]interface{}{"type": "string", "description": "本轮处理信息摘要"}}, "text"))
-	}
+	// ★★ **注册表驱动的工具**（用户 2026-11-18 质问的修法）。
+	//
+	// 这里不再写任何 `if a.hooks.IsChild` + 工具名字面量：
+	// 每条工具的 schema/侧别/归属/执行体都在 registry 里登记过，
+	// 基座只按"我的侧别"取表渲染。
+	//
+	// 于是加一类子 agent、或换一组管理动作，**不需要回来改这里**。
+	tools = append(tools, a.registryToolDefs()...)
 
 	tools = append(tools, toolDefWith("input_channels", "查看 inputch（最基本的输入路由单位）：哪些已注册、谁注册的、"+
 		"各自划给了哪个 agent、容量与记忆策略。单工具多视图。", map[string]interface{}{

@@ -42,15 +42,6 @@ func (h *recordingHandlers) ExecuteOutputListChannels() string        { return h
 func (h *recordingHandlers) ExecuteInputChannels(tc api.ToolCall) string {
 	return h.hit("input_channels")
 }
-func (h *recordingHandlers) ExecuteResidentAgents(tc api.ToolCall) string {
-	return h.hit("resident")
-}
-func (h *recordingHandlers) ExecuteNotifyParent(tc api.ToolCall) string {
-	return h.hit("notify_parent")
-}
-func (h *recordingHandlers) ExecuteInputchNote(tc api.ToolCall) string {
-	return h.hit("inputch_note")
-}
 func (h *recordingHandlers) ExecutePluginReload() string { return h.hit("plgreload") }
 func (h *recordingHandlers) ExecuteGetPluginTools(name string) string {
 	return h.hit("get_plugin_tools:" + name)
@@ -72,9 +63,6 @@ func TestDispatchRoutesEachPrefix(t *testing.T) {
 		{"output_send__qq_help", "output_help"},
 		{"output_list_channels", "output_list"},
 		{"input_channels", "input_channels"},
-		{"resident_agents", "resident"},
-		{"notify_parent", "notify_parent"},
-		{"inputch_note", "inputch_note"},
 		{"plgreload", "plgreload"},
 	}
 	for _, c := range cases {
@@ -116,5 +104,24 @@ func TestDispatchUnknownIsNotSwallowed(t *testing.T) {
 func TestDispatchNilHandlers(t *testing.T) {
 	if _, handled := toolroute.Dispatch(nil, api.ToolCall{Name: "stablemem_commit"}, nil); handled {
 		t.Fatal("★ nil handlers 却报告 handled")
+	}
+}
+
+// TestSubAgentToolsLiveInRegistry：子 agent 管理面的工具**不在 device 路由表里**。
+//
+// 它们由各自的注册者登记到 registry（谁拥有那个能力，谁注册那个工具），
+// 分发走 registry.DispatchTool。本判据钉住"device 不许把它们吞回去" ——
+// 一旦有人把 `resident_agents` / `rt_children` 之类塞回 Dispatch，
+// 模型看得到的两处事实就会再次分叉（这正是 2026-11-18 修掉的形态）。
+func TestSubAgentToolsLiveInRegistry(t *testing.T) {
+	for _, name := range []string{
+		"admin_child", "admin_child_help", "admin_child_list",
+		"spawn_child", "child_result", "notify_parent", "inputch_note",
+		"rt_children", "rt_transcript", "resident_agents",
+	} {
+		h := newHandlers()
+		if _, handled := toolroute.Dispatch(h, api.ToolCall{Name: name}, nil); handled {
+			t.Fatalf("★ %q 被 device 路由表接管了 —— 它应当由 registry 分发", name)
+		}
 	}
 }

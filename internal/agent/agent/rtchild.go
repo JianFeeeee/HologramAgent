@@ -36,7 +36,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -187,7 +186,7 @@ func newRTSlot() *rtSlot {
 // 东西会被当成这一代的。两个具体的串线点（都有判据钉住）：
 //
 //	① rtClosedTranscripts[id] —— CloseRTChild 写入，读侧原本"先查留档、
-//	   命中即返回" ⇒ 同名重建后新实例的 rt_transcript 返回上一代已回收的原文。
+//	   命中即返回" ⇒ 同名重建后新实例的 transcript 动作返回上一代已回收的原文。
 //	   修法：RTTranscript 改为**在跑实例优先**（留档只在没有活实例时才用）。
 //	② inboundChannelName(id) —— StopRTChildren（复数）漏了注销，
 //	   与 StopRTChild（单数）不对称。
@@ -1615,7 +1614,7 @@ const rtTranscriptToolMaxRunes = 500
 // 所以回收**不**把通话原文推进主 agent 的上下文，而只推一条 L4 中断：
 //
 //	内核事件：实时子 agent <id> 已回收，共 N 条消息（约 M 字符）。
-//	如需复盘，可调用 rt_transcript 取回原文并按需选取保留内容。
+//	如需复盘，可调用 admin_child(type=rt, action="transcript") 取回原文并按需选取保留内容。
 //
 // 这与驻留子的 contextfull 是**同一套协议**（"推信号 + 拉状态"）：
 //   - 推：raiseVector 出一条 L4，只带规模，不带正文
@@ -1674,7 +1673,7 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 // ## 读顺序（2026-10-30 修：留档不得遮蔽**在跑的新一代**）
 //
 // 原实现是「先查留档，有就返回」，于是同名重建后**新实例的对话永远读不到**：
-// 留档一直命中，`rt_transcript` 返回的是上一代已回收的原文（实测复现：
+// 留档一直命中，`transcript` 动作返回的是上一代已回收的原文（实测复现：
 // 新实例读出的第一条是上一通的对话）。现在按**在跑实例优先**：
 //
 //	在跑实例存在  ⇒ 返回它的 history（通话进行中也能看）
@@ -1708,59 +1707,7 @@ func (a *Agent) RTTranscript(id string) ([]agentAPI.Message, bool) {
 	return nil, false
 }
 
-// ── rt_transcript：主 agent 按需拉取 rtchild 的完整上下文 ──
-
-// executeRTTranscript 是主 agent 侧的 `rt_transcript` 工具实现。
-//
-// 它是 CloseRTChild 那一半"拉状态"的入口 —— 交接协议是「推信号 + 拉状态」：
-//
-//	推：回收时一条 L4（"已回收，共 N 条，要复盘请调 rt_transcript"）
-//	拉：本工具，返回原文，**由主 agent 自己决定保留哪些**
-//
-// 为什么不让内核直接选：见 CloseRTChild 的文档 —— "哪些值得留"是业务判断，
-// 内核无从替父决定（与 resident-subagent-design.md §7 同一原则）。
-//
-// 参数：
-//
-//	id        rtchild 标识（必填）
-//	offset    从第几条消息开始（0 = 从头）—— 让父能分段读大记录
-//	limit     最多返回多少条（0 = 默认 rtTranscriptDefaultLimit）
-//	format    "text"（默认，给人/模型读的渲染）/ "raw"（原始消息 JSON 风格逐条）
-func (a *Agent) ExecuteRTTranscript(tc agentAPI.ToolCall) string {
-	id := strArg(tc, "id")
-	if id == "" {
-		return "请提供 id 参数（rtchild 标识）"
-	}
-	msgs, ok := a.RTTranscript(id)
-	if !ok {
-		return fmt.Sprintf("rtchild %s 不存在，且没有已回收的留档", id)
-	}
-
-	offset := rtIntArg(tc, "offset", 0)
-	limit := rtIntArg(tc, "limit", rtTranscriptDefaultLimit)
-	if limit <= 0 {
-		limit = rtTranscriptDefaultLimit
-	}
-	if offset >= len(msgs) {
-		return fmt.Sprintf("rtchild %s 共 %d 条消息，offset=%d 越界", id, len(msgs), offset)
-	}
-	end := offset + limit
-	if end > len(msgs) {
-		end = len(msgs)
-	}
-	page := msgs[offset:end]
-
-	if strings.EqualFold(strArg(tc, "format"), "raw") {
-		b, err := json.MarshalIndent(page, "", "  ")
-		if err != nil {
-			return fmt.Sprintf("序列化失败：%v", err)
-		}
-		return fmt.Sprintf("【rtchild %s 原文 %d-%d / 共 %d 条】\n%s", id, offset, end, len(msgs), string(b))
-	}
-
-	return fmt.Sprintf("【rtchild %s 上下文 %d-%d / 共 %d 条】\n%s",
-		id, offset, end, len(msgs), FormatRTTranscript(page))
-}
+// ── transcript 动作：主 agent 按需拉取 rtchild 的完整上下文 ──
 
 // rtIntArg 取一个整数参数，**同时兼容 JSON 数值与 Go int**。
 //
@@ -1788,107 +1735,13 @@ func rtIntArg(tc agentAPI.ToolCall, key string, def int) int {
 	}
 }
 
-// rtTranscriptDefaultLimit 是 rt_transcript 一次返回的默认消息条数。
+// rtTranscriptDefaultLimit 是 transcript 动作一次返回的默认消息条数。
 //
 // 不一次全给：一条 10 分钟通话有几百条，整段返回会把调用方自己的上下文顶爆。
 // 分段读 + offset 续读，让主 agent 按需决定读到哪儿。
 const rtTranscriptDefaultLimit int = 40
 
 // ── rt_children：主 agent 的 rtchild 控制面（单工具多动作） ──
-
-// executeRTChildren 是父对 rtchild 的控制面。
-//
-// 形状刻意与 `resident_agents` 同构（单工具多动作），但**动作集更小**：
-// rtchild 没有任务队列、没有残余回灌、没有 contextfull 三处置
-// （它自己的上下文按窗口裁，交接走 contextfull 式中断，见 CloseRTChild）。
-//
-// 所以只有四个动作：
-//
-//	list    列出全部 rtchild 与其规模
-//	create  创建（**必须成对**给 input + output）
-//	send    向 rtchild 注入一条新输入（= 打断当前轮，契约 1）
-//	stop    回收（先推交接信号，再停；正文由 rt_transcript 按需拉）
-func (a *Agent) ExecuteRTChildren(tc agentAPI.ToolCall) string {
-	switch action := strArg(tc, "action"); action {
-	case "", "list":
-		ids := a.RTChildren()
-		if len(ids) == 0 {
-			return "当前没有实时子 agent（rtchild）。"
-		}
-		sort.Strings(ids)
-		var b strings.Builder
-		fmt.Fprintf(&b, "实时子 agent（rtchild，%d 个）:", len(ids))
-		for _, id := range ids {
-			if st, ok := a.RTChildStats(id); ok {
-				fmt.Fprintf(&b, "\n  - %s 轮次=%d 最新输入seq=%d 覆盖丢弃=%d",
-					id, st.Rounds, st.LastSeq, st.Dropped)
-				if st.Pending {
-					b.WriteString("  ⏳ 有待处理输入")
-				}
-			}
-		}
-		b.WriteString("\n（rt 通道：新输入会**打断**当前轮，不排队；回收后原文可用 rt_transcript 取回）")
-		return b.String()
-
-	case "create":
-		id := strArg(tc, "id")
-		input := strArg(tc, "inputch")
-		output := strArg(tc, "outputch")
-		if input == "" || output == "" {
-			// 提示要**可操作**：直接列出当前登记表里哪些通道带 rt 能力。
-			return fmt.Sprintf("创建 rtchild 必须成对给出 inputch 与 outputch（当前 inputch=%q outputch=%q）。\n%s",
-				input, output, a.listRTChannels())
-		}
-		got, err := a.SpawnRTChild(RTChildOptions{
-			ID:           id,
-			Input:        input,
-			Output:       output,
-			SystemPrompt: strArg(tc, "system_prompt"),
-			MaxTools:     rtIntArg(tc, "max_tools", 0),
-			// ★ 父为子声明工具策略（用户裁定 2026-10-30）。
-			AllowedTools: splitArg(strArg(tc, "allowed_tools")),
-			DenyTools:    splitArg(strArg(tc, "deny_tools")),
-		})
-		if err != nil {
-			return fmt.Sprintf("创建 rtchild 失败: %v\n%s", err, a.listRTChannels())
-		}
-		return fmt.Sprintf("已创建实时子 agent: %s（inputch=%s，outputch=%s）。"+
-			"现在往 %s 投递的输入会**立即打断**它的当前轮；它说出的文本会写进 %s。",
-			got, input, output, input, output)
-
-	case "send":
-		id := strArg(tc, "id")
-		text := strArg(tc, "text")
-		if id == "" || text == "" {
-			return "send 需要 id 与 text"
-		}
-		seq, err := a.PushRTInput(id, text)
-		if err != nil {
-			return fmt.Sprintf("发送失败: %v", err)
-		}
-		return fmt.Sprintf("已投递（seq=%d）。这是**打断式**输入：rtchild 当前的轮次会被取消，"+
-			"它会用这条新输入重开一轮。", seq)
-
-	case "stop":
-		id := strArg(tc, "id")
-		if id == "" {
-			return "stop 需要 id"
-		}
-		n, err := a.CloseRTChild(id)
-		if err != nil {
-			return fmt.Sprintf("回收失败: %v", err)
-		}
-		if n == 0 {
-			return fmt.Sprintf("已回收 rtchild %s（本次通话没有上下文需要交接）。", id)
-		}
-		return fmt.Sprintf("已回收 rtchild %s。本次通话共 %d 条消息，已作为一条中断交给你；"+
-			"**是否保留、保留哪些由你决定** —— 用 rt_transcript(id=%s, offset, limit) 分段取回，不要把整段塞进上下文。",
-			id, n, id)
-
-	default:
-		return fmt.Sprintf("未知 action %q（可用：list / create / send / stop）", action)
-	}
-}
 
 // listRTChannels 列出登记表里带 CapRT 的通道，供 create 失败的提示用。
 //

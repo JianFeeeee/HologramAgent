@@ -94,6 +94,13 @@ type Agent struct {
 	//   消息进子自己的队列（父收不到）。
 	callParent CallParentFunc
 
+	// instances 是**内核侧的实例管理器**（管理本内核下所有子 agent）。
+	//
+	// ★ 挂在根 agent 上，但语义上不属于它：创建/销毁/注入/恢复都是
+	//   实例管理，主 agent 只是调用方（用户裁定 2026-11-18：
+	//   「创建子 agent 执行在主 agent？不应该在内核吗？」）。
+	instances *InstanceManager
+
 	// cfg 是**归一化后的**构造参数。类型模块的初始化回调要用它
 	// （例如归档间隔 ≤0 时继承蒸馏间隔 —— 归一化只该有一处）。
 	cfg AgentConfig

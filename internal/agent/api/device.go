@@ -65,9 +65,6 @@ type BuiltinToolHandlers interface {
 	ExecuteOutputSend(tc ToolCall) string
 	ExecuteOutputListChannels() string
 	ExecuteInputChannels(tc ToolCall) string
-	ExecuteResidentAgents(tc ToolCall) string
-	ExecuteNotifyParent(tc ToolCall) string
-	ExecuteInputchNote(tc ToolCall) string
 	ExecutePluginReload() string
 	ExecuteGetPluginTools(pluginName string) string
 }
