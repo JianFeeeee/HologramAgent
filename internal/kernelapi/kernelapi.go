@@ -446,6 +446,19 @@ type SecurityGate interface {
 	//
 	// 未装配安全模块时调用方应视为放行 —— 但那是"未装配"，不是"授权通过"。
 	CheckOutput(agentID string, channel string) model.Decision
+	// ClampPriority 把注入方声明的中断级别**收到允许的范围**。
+	//
+	// ★ 这是一个**授权**判定，不是调度判定（用户裁定 2026-11-18）：
+	//   L4 是"只有编译期内置插件可声明"的级别；外部插件/普通来源拿到它
+	//   就能抢占全部执行且父无从分辨来源。所以夹取必须发生在**注入路径**
+	//   （闸门这一侧），而不是让每个 agent 在投递时各夹一次 ——
+	//   那样任何 agent 收到的 L4 都不可信。
+	//
+	// 语义：
+	//   特权来源（内置插件 / 父 agent）⇒ 原样返回
+	//   其余来源                      ⇒ 夹到 L3（LevelInteractive）
+	//   未知字符串                    ⇒ 返回 fallback（"L1"），呼叫方据此降级
+	ClampPriority(declared string, privileged bool) string
 	// Store 返回变量库（明文 ↔ 别名）。
 	Store() SecretStore
 }

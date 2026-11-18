@@ -80,13 +80,6 @@ type Hooks struct {
 	//	策略裁剪型（主）：动态上下文算出的 ContextTokens
 	//	整窗型（驻留/rt）：整个模型窗口（只受硬上限约束）
 	ContextBudget func(a *Agent, b kit.TokenBudget) int
-	// Prune 按相关性裁剪上下文，返回裁掉的事件数；0 = 不做。
-	//
-	// 整窗型注册为 nil ⇒ 基座视为 no-op（这是**唯一**合法的空槽位：
-	// "我不做裁剪"是一个明确的策略，不是漏接线）。
-	Prune func(a *Agent, query string, protected int) int
-	// OverBudget 是"是否已超出窗口预算"的纯判据。nil ⇒ 恒 false。
-	OverBudget func(a *Agent) bool
 	// EnforceOverflow 执行超页处置，返回是否已处置与裁掉的事件数。
 	//
 	// ★ 这是**唯一的超页决策点**（用户 2026-11-18：「overflow 里不应该有具体
@@ -135,10 +128,10 @@ type Hooks struct {
 //
 // 这里刻意区分"必填"与"合法为空"：
 //
-// 必填：ContextBudget / OverBudget / Loop / SecurityGate / Runtime
+// 必填：ContextBudget / Loop / SecurityGate / Runtime
 // Tool execution is a base/kernel service and is not a hook.
 //
-//	合法为空：Prune / EnforceOverflow（整窗策略明确不做裁剪与超页处置）
+//	合法为空：OverflowHandler（整窗策略由「上报父」处置）
 //	        GraphMemory（图记忆是可选配置）
 //	        RunStage（无插件阶段时基座退化为直通）
 //
@@ -151,7 +144,6 @@ func (h Hooks) Validate(who string) error {
 	}
 	slots := []slot{
 		{"ContextBudget", h.ContextBudget != nil, "由类型模块注册（主：RelevanceContext；驻留/rt：整窗）"},
-		{"OverBudget", h.OverBudget != nil, "由类型模块注册（主：按窗口预算判定；驻留/rt：恒 false）"},
 		{"Loop", h.Loop != nil, "由类型模块注册（kit.Loop 或 rt 的 Asyncloop）"},
 		{"Runtime", h.Runtime.Initialize != nil && h.Runtime.Start != nil && h.Runtime.Stop != nil, "由类型模块注册完整 runtime 生命周期对象"},
 		{"SecurityGate", h.SecurityGate != nil, "由类型模块在装配点从 kernelapi.FacSecurity 取"},

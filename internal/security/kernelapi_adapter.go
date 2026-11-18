@@ -87,6 +87,10 @@ func (g gateAdapter) CheckOutput(agentID string, channel string) model.Decision 
 	return g.rt.CheckOutput(agentID, channel)
 }
 
+func (g gateAdapter) ClampPriority(declared string, privileged bool) string {
+	return g.rt.ClampPriority(declared, privileged)
+}
+
 func (g gateAdapter) Store() kernelapi.SecretStore {
 	st := g.rt.Store()
 	if st == nil {

@@ -29,86 +29,131 @@ func (a *Agent) InterceptLoop() {
 			go a.InterceptLoop()
 		}
 	}()
+	// ★ 本循环现在只服务**没有队列的类型**（rt：单槽覆盖，只处理"停止/打断"）。
+	//
+	// 主 agent / 驻留子有自己的 `schedulerLoop` 消费同一个 inputCh，
+	// 并在那里按 `priority` 标签分流（排队 vs 抢占）。两条循环同时读一个
+	// channel 会互相抢事件，所以**类型自己选**起哪一条 —— 这正是
+	// "分拣归类型的投递口"的落点。
 	for {
 		select {
-		case evt := <-a.io.InputInterruptChan():
-			text, _ := evt.Payload["content"].(string)
-			stop, _ := evt.Payload["stop"].(bool)
-			if text == "" && !stop {
-				// 没有内容也不是停止指令：没有可处理的东西（旧行为）。
-				//
-				// 注意：**不能**把“空内容”一律当成空操作。客户端停止按钮
-				// 本来就不带消息（/chat/interrupt 收 body 空的 {}），
-				// 旧代码在这里 continue 掉，于是停止按钮毫无反应，
-				// 而且接口还回 200 骗调用方——已实测：HTTP 200 但内核零日志、
-				// 生成继续跑到自然结束。
-				continue
-			}
-			if stop {
-				// 停止：①立即结束当前 LLM 推理；②登记短路配额。
-				//
-				// 注意这里**只 arm、不 take**：takeStop 必须由 stepLLM 去消费，
-				// 它才是决定“取消后不重跑”的那个人。曾经写成
-				//
-				//	if n := armStop(); n > 0 || takeStop() { ... }
-				//
-				// 这个 `||` 在 queued=0 时会短路到 takeStop()，把标记先消费掉，
-				// 于是 stepLLM 永远看不到它 → 取消后照样重跑一轮。
-				// 实测：停止被正确记录（`stop requested ... queued=0`）但生成仍跑到自然结束。
-				// pending 必须算上**停在输入 channel 里**的那一段：停止时
-				// 调度器多在半路忙当前任务，其余消息还没被 pumpInbox 搬进队列，
-				// 只数 sched.queue 会得到 0，配额随之失效（实测过）。
-				pending := 0
-				if a.io != nil {
-					pending = a.io.PendingInputs()
-				}
-				n := a.sched.armStop(pending)
-				log.Printf("[agent] stop requested by %s/%s (queued=%d will be short-circuited at pre-action)",
-					evt.Source, evt.OutputChannel, n)
-				a.CancelCurrentLLM()
-				// ★ 同时停掉正在跑的工具：否则长阻塞工具会把整轮堵到它自己超时
-				// （实测 browser_start 夹到 10m），用户看到的就是「停止没反应」。
-				// 只在这里调（显式停止），不在下方 requestPreempt 分支调（R5）。
-				a.cancelRunningTools()
-				if text == "" {
-					// 纯停止：不进中断队列、不产生新任务。旧实现把空停止当成一条
-					// 中断入队，取消后会以空内容重跑一轮，停下之后又“活着”。
+		case evt := <-a.io.InputChan():
+			if !a.isInterruptEvent(evt) {
+				// 无标签 = 排队输入。rt 没有队列（它的输入走 rtSlot），
+				// 这里如实记账并丢弃，不假装处理。
+				if a.sched == nil {
+					a.Logf("input dropped: this type has no queue (rt uses its own slot), source=%s", evt.Source)
 					continue
 				}
-				// 带注释的停止（/stop 说句话）：注释本身仍作为中断处理，
-				// 走下面的正常路径——用户想看模型对被停下话题的回应。
+				if !a.sched.enqueue(newInputTask(evt)) {
+					a.EmitSkippedReply(evt, "queue_full")
+				}
+				continue
 			}
-			log.Printf("[agent] interrupt from %s/%s: %s", evt.Source, evt.OutputChannel, truncateStr(text, 80))
-
-			clone := &agentIO.InputEvent{
-				RequestID:     evt.RequestID,
-				Source:        evt.Source,
-				Type:          evt.Type,
-				Payload:       map[string]interface{}{},
-				OutputChannel: evt.OutputChannel,
-			}
-			for k, v := range evt.Payload {
-				clone.Payload[k] = v
-			}
-			clone.Payload["interrupt"] = true
-			clone.Payload["interrupt_source"] = evt.Source
-			clone.Payload["interrupt_channel"] = evt.OutputChannel
-
-			// 决策交给调度器：requestPreempt 总会登记中断（进中断队列或 immediate，
-			// 因而不会丢），仅当它会真抢占时才告诉我“该取消可取消的步骤”。
-			// 本 goroutine 不碰任何帧——只写中断队列与让位信号。
-			//
-			// 级别由来源声明（InjectOptions.Priority → payload["priority"]）；
-			// 未声明一律 L1。L4（“立即打断”）只有内核级插件能声明，
-			// 外部插件即便报了 L4 也会被夹到 L3；内核自身另有 raiseKernelInterrupt。
-			level := interruptLevel(evt, a.IsKernelLevelSource(evt.Source))
-			if a.sched.requestPreempt(clone, level) {
-				a.CancelCurrentLLM()
-			}
+			a.handleInterruptEvent(evt)
 
 		case <-a.ctx.Done():
 			return
 		}
+	}
+}
+
+// isInterruptEvent 判定一个输入事件是否**声明了自己是中断**。
+//
+// ★ 判据是**标签**，不是载体：
+//   - `payload["priority"]`（InjectOptions.Priority → L1..L4 纯数据）
+//   - 或显式 `payload["interrupt"] == true`
+//
+// 解读这些标签**是类型的自由**（用户裁定：L1–L4 的行为契约完全归类型）。
+// 基座/内核只负责把标签送到，不替类型判断"这是不是中断"。
+func (a *Agent) isInterruptEvent(evt *agentIO.InputEvent) bool {
+	if evt == nil {
+		return false
+	}
+	if v, _ := evt.Payload["interrupt"].(bool); v {
+		return true
+	}
+	p, _ := evt.Payload["priority"].(string)
+	return p != ""
+}
+
+// handleInterruptEvent 是**类型侧**的中断处置（原 InterceptLoop 的函数体）。
+//
+// 它读标签决定级别、取消当前的 LLM/工具、把任务登记进中断队列。
+// 这些都是主 agent 的排队语义；rt 的"最新者胜"不经过这里（它走 rtSlot）。
+func (a *Agent) handleInterruptEvent(evt *agentIO.InputEvent) {
+	text, _ := evt.Payload["content"].(string)
+	stop, _ := evt.Payload["stop"].(bool)
+	if text == "" && !stop {
+		// 没有内容也不是停止指令：没有可处理的东西（旧行为）。
+		//
+		// 注意：**不能**把“空内容”一律当成空操作。客户端停止按钮
+		// 本来就不带消息（/chat/interrupt 收 body 空的 {}），
+		// 旧代码在这里 continue 掉，于是停止按钮毫无反应，
+		// 而且接口还回 200 骗调用方——已实测：HTTP 200 但内核零日志、
+		// 生成继续跑到自然结束。
+		return
+	}
+	if stop {
+		// 停止：①立即结束当前 LLM 推理；②登记短路配额。
+		//
+		// 注意这里**只 arm、不 take**：takeStop 必须由 stepLLM 去消费，
+		// 它才是决定“取消后不重跑”的那个人。曾经写成
+		//
+		//	if n := armStop(); n > 0 || takeStop() { ... }
+		//
+		// 这个 `||` 在 queued=0 时会短路到 takeStop()，把标记先消费掉，
+		// 于是 stepLLM 永远看不到它 → 取消后照样重跑一轮。
+		// 实测：停止被正确记录（`stop requested ... queued=0`）但生成仍跑到自然结束。
+		// pending 必须算上**停在输入 channel 里**的那一段：停止时
+		// 调度器多在半路忙当前任务，其余消息还没被 pumpInbox 搬进队列，
+		// 只数 sched.queue 会得到 0，配额随之失效（实测过）。
+		pending := 0
+		if a.io != nil {
+			pending = a.io.PendingInputs()
+		}
+		n := a.sched.armStop(pending)
+		log.Printf("[agent] stop requested by %s/%s (queued=%d will be short-circuited at pre-action)",
+			evt.Source, evt.OutputChannel, n)
+		a.CancelCurrentLLM()
+		// ★ 同时停掉正在跑的工具：否则长阻塞工具会把整轮堵到它自己超时
+		// （实测 browser_start 夹到 10m），用户看到的就是「停止没反应」。
+		// 只在这里调（显式停止），不在下方 requestPreempt 分支调（R5）。
+		a.cancelRunningTools()
+		if text == "" {
+			// 纯停止：不进中断队列、不产生新任务。旧实现把空停止当成一条
+			// 中断入队，取消后会以空内容重跑一轮，停下之后又“活着”。
+			return
+		}
+		// 带注释的停止（/stop 说句话）：注释本身仍作为中断处理，
+		// 走下面的正常路径——用户想看模型对被停下话题的回应。
+	}
+	log.Printf("[agent] interrupt from %s/%s: %s", evt.Source, evt.OutputChannel, truncateStr(text, 80))
+
+	clone := &agentIO.InputEvent{
+		RequestID:     evt.RequestID,
+		Source:        evt.Source,
+		Type:          evt.Type,
+		Payload:       map[string]interface{}{},
+		OutputChannel: evt.OutputChannel,
+	}
+	for k, v := range evt.Payload {
+		clone.Payload[k] = v
+	}
+	clone.Payload["interrupt"] = true
+	clone.Payload["interrupt_source"] = evt.Source
+	clone.Payload["interrupt_channel"] = evt.OutputChannel
+
+	// 决策交给调度器：requestPreempt 总会登记中断（进中断队列或 immediate，
+	// 因而不会丢），仅当它会真抢占时才告诉我“该取消可取消的步骤”。
+	// 本 goroutine 不碰任何帧——只写中断队列与让位信号。
+	//
+	// 级别由来源声明（InjectOptions.Priority → payload["priority"]）；
+	// 未声明一律 L1。L4（“立即打断”）只有内核级插件能声明，
+	// 外部插件即便报了 L4 也会被夹到 L3；内核自身另有 raiseKernelInterrupt。
+	level := interruptLevel(evt)
+	if a.sched.requestPreempt(clone, level) {
+		a.CancelCurrentLLM()
 	}
 }
 

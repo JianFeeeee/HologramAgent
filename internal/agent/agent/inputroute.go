@@ -21,7 +21,7 @@ import (
 // 已知边界：路由只在本 agent 的**直接**驻留子里找。若孙辈的 inputch 由子划拨，
 // 而插件注入打在根 io 上，根解析不到那个 owner ⇒ 兜底给根处理（有日志）。
 // 这一层要等"孙辈 + 根可见的 agent 表"再收口，此处不静默丢输入。
-func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) bool {
+func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent) bool {
 	if evt == nil || evt.OutputChannel == "" || a.io == nil {
 		return false
 	}
@@ -75,7 +75,7 @@ func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	// 判据 TestRTChannel_PluginInputReachesRTSlot 钉它。
 	// rt 实例从**统一登记表**取（不再是专用表 + 专用锁）。
 	if rt := a.RTChildOf(entry.Owner); rt != nil {
-		// 不区分 isInterrupt：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
+		// 不看 priority：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
 		// 这正是"rt 输入不进四级中断阶梯"的落点（rt 单槽 vs 四级阶梯是两套目标
 		// 函数相反的设计，见 rtchild.go 开头的取舍说明）。
 		rt.slot.Push(evt)
@@ -104,22 +104,22 @@ func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 	// ★ 投递的**推动者**是内核循环：按 agentID 查它登记的投递口。
 	//   本函数只做归属判定（读通道登记表），不做"谁该收到"的裁定。
 	//   循环没装（单测/独立工具）时退回直投，与改造前行为一致。
-	if delivered(entry.Owner, evt, isInterrupt) {
+	if delivered(entry.Owner, evt) {
 		return true
 	}
-	rc.agent.io.DeliverRouted(evt, isInterrupt)
+	rc.agent.io.DeliverRouted(evt)
 	return true
 }
 
 // delivered 经内核循环把事件交给 owner 登记的投递口。
 //
 // 返回 false 表示循环未装配（单测/独立工具），调用方退回直投。
-func delivered(owner string, evt *agentIO.InputEvent, isInterrupt bool) bool {
+func delivered(owner string, evt *agentIO.InputEvent) bool {
 	l := kernelloop.Current()
 	if l == nil {
 		return false
 	}
-	return l.RouteInput(owner, evt, isInterrupt)
+	return l.RouteInput(owner, evt)
 }
 
 // inputSink 是本 agent 在内核循环里登记的投递口。
@@ -129,7 +129,7 @@ func delivered(owner string, evt *agentIO.InputEvent, isInterrupt bool) bool {
 // 那些是各类型 agentloop 自己的语义。
 type inputSink struct{ a *Agent }
 
-func (s inputSink) Deliver(evt any, isInterrupt bool) {
+func (s inputSink) Deliver(evt any) {
 	if s.a == nil || s.a.io == nil {
 		return
 	}
@@ -137,5 +137,5 @@ func (s inputSink) Deliver(evt any, isInterrupt bool) {
 	if !ok || e == nil {
 		return
 	}
-	s.a.io.DeliverRouted(e, isInterrupt)
+	s.a.io.DeliverRouted(e)
 }

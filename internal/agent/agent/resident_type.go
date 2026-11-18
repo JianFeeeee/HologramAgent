@@ -295,11 +295,6 @@ func installResidentHooks(a *Agent) {
 	if h.ContextBudget == nil {
 		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
 	}
-	if h.OverBudget == nil {
-		// 整窗型不做本地超页判定：它的处置是"撞窗口就上报父"，
-		// 由父决定（见 overflow 的 contextfull 路径）。
-		h.OverBudget = func(*Agent) bool { return false }
-	}
 	// ★ 驻留子的 OverflowHandler = **上报父**（不急裁）。
 	//
 	// 整窗型不做相关性裁剪，撞窗口时交给父决定（压缩 / 回收 / 销毁）——

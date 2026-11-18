@@ -148,16 +148,20 @@ func (a *Agent) PruneByQuery(query string) int {
 	return a.pruneWithHook(query, a.EffectiveProtectedCount())
 }
 
-// pruneWithHook 是裁剪的**唯一入口**：策略由类型注册的钩子决定。
+// pruneWithHook 是**声明式裁剪**的唯一入口（按通道声明触发，不是超页）。
 //
-// ★ 整窗型（驻留子 / rt）注册 nil ⇒ 这里视为 no-op。那是**明确的策略**
-// （整窗上下文不做相关性裁剪），不是漏接线 —— 与"必填槽位缺失"不同：
-// 前者由 Validate 允许，后者由 Validate 拦住。
+// ★ 它与超页处置是两件不同的事：
+//
+//	声明式裁剪   `context_policy=prune` 声明的输入/工具触发 —— 业务策略
+//	超页处置     OverflowHandler（水位/上游报错/空中断）—— 容量保护
+//
+// 用户裁定「Prune 并入 OverflowHandler」指的是后者那条路径；声明式裁剪
+// 在这里，用基座的裁剪**原语**直接执行（它不再是一个 Hooks 槽位）。
 func (a *Agent) pruneWithHook(query string, protected int) int {
-	if a == nil || a.context == nil || a.hooks.Prune == nil {
+	if a == nil || a.context == nil {
 		return 0
 	}
-	return a.hooks.Prune(a, query, protected)
+	return a.PruneContext(query, protected)
 }
 
 // pruneForResume 是按「指定保护条数」执行的裁剪，供任务恢复入口使用。
@@ -171,7 +175,7 @@ func (a *Agent) pruneWithHook(query string, protected int) int {
 // 可能是一整批工具结果。若按全局末尾 N 条保护，那些结果可能落在保护范围外
 // 被归档——恢复后的任务引用的内容已不在上下文里，等于自相矛盾。
 func (a *Agent) PruneForResume(query string, protected int) int {
-	if a == nil || a.context == nil || a.hooks.Prune == nil {
+	if a == nil || a.context == nil {
 		return 0
 	}
 	if protected < 0 {

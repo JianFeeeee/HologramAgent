@@ -45,7 +45,8 @@ func (a *Agent) StartMainRuntime() {
 	a.RestoreChildren()
 
 	go a.schedulerLoop()
-	go a.InterceptLoop()
+	// ★ 不再起 InterceptLoop：中断分拣已并入 schedulerLoop 的 acceptInput
+	//   （单输入通道 + 类型侧标签解释）。两条循环同时读一个 channel 会抢事件。
 	a.startPeriodic()
 	a.ReembedStaleMedia()
 	a.MigrateLegacyGraphMedia()

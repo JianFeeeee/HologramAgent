@@ -101,8 +101,11 @@ type PeriodicTask struct {
 // ★ 它只说一句话：**把这条输入交给这个 agent**。至于那个 agent 之后
 // 怎么处理（排队/抢占/覆盖/丢现场），全是该类型 agentloop 的事。
 type InputSink interface {
-	// Deliver 把一条输入交给该 agent（isInterrupt 区分中断与排队）。
-	Deliver(evt any, isInterrupt bool)
+	// Deliver 把一条输入交给该 agent。
+	//
+	// ★ 没有"中断还是排队"这个参数：**那是接收方的语义**。标签在
+	//   `evt.Payload["priority"]`（L1..L4 纯数据），由该类型的投递口自己解释。
+	Deliver(evt any)
 }
 
 // DefaultBacklog 是投递队列的默认容量。
@@ -228,7 +231,7 @@ func (l *Loop) Sink(agentID string) (InputSink, bool) {
 // ★ 路由只做一件事：**按归属转发**。悬空（orphaned）与暂存（stash）的语义
 // 在通道登记表里（`io.ChannelRegistry`），不在这里 —— 本函数不认识它们，
 // 只按调用方给出的 owner 查表。
-func (l *Loop) RouteInput(agentID string, evt any, isInterrupt bool) bool {
+func (l *Loop) RouteInput(agentID string, evt any) bool {
 	if l == nil || agentID == "" {
 		return false
 	}
@@ -238,7 +241,7 @@ func (l *Loop) RouteInput(agentID string, evt any, isInterrupt bool) bool {
 		// **不吞输入** —— 返回 false 让根内核兜底，并由调用方留痕。
 		return false
 	}
-	s.Deliver(evt, isInterrupt)
+	s.Deliver(evt)
 	return true
 }
 

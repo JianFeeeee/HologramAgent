@@ -341,8 +341,5 @@ func installRTHooks(a *Agent) {
 	if h.ContextBudget == nil {
 		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
 	}
-	if h.OverBudget == nil {
-		h.OverBudget = func(*Agent) bool { return false }
-	}
 	a.SetHooks(h)
 }

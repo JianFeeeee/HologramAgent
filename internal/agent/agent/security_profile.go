@@ -380,3 +380,21 @@ func (a *Agent) SecretStore() kernelapi.SecretStore {
 	}
 	return g.Store()
 }
+
+// clampPriority 是**注入侧**的中断级别夹取（装配点接进 IOManager）。
+//
+// 判据在安全模块（`SecurityGate.ClampPriority`），这里只提供两件事实：
+// 声明的级别、注入来源是否有资格声明 L4。
+//
+// ★ 为什么"谁有资格"由本 agent 回答而不是 io：资格是**本 agent 的层级知识**
+// （它的父是谁、哪些插件是内置的）。io 层不认识 agent，也不该认识。
+func (a *Agent) clampPriority(declared, source string) string {
+	if a == nil {
+		return declared
+	}
+	g := a.Gate()
+	if g == nil {
+		return declared // 未装配闸门：不夹（单测/独立工具）
+	}
+	return g.ClampPriority(declared, a.IsKernelLevelSource(source))
+}

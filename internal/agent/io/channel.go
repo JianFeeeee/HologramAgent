@@ -142,13 +142,12 @@ type OutputEvent struct {
 }
 
 type IOManager struct {
-	mu          sync.RWMutex
-	devices     map[string]Device
-	inputCh     chan *InputEvent
-	interruptCh chan *InputEvent
-	outputCh    chan *OutputEvent
-	nextReqID   int64
-	channelReg  *ChannelRegistry
+	mu         sync.RWMutex
+	devices    map[string]Device
+	inputCh    chan *InputEvent
+	outputCh   chan *OutputEvent
+	nextReqID  int64
+	channelReg *ChannelRegistry
 
 	// parent 是"上级 IOManager"（驻留子的轻量内核指向父的内核）。
 	//
@@ -163,6 +162,15 @@ type IOManager struct {
 	// 以分钟计），复制出来的表转瞬就过期。授权由各自的 AllowedOutputs 白名单把关，
 	// 回退只解决"看得见"，不解决"能不能用"。
 	parent *IOManager
+
+	// priorityClamp 是**注入侧的授权夹取**（由装配点注入安全闸门）。
+	//
+	// ★ 为什么在 io 而不是 agent 的投递路径：夹取是"外部来源有没有 L4 这个
+	//   能力"的**授权**判定。放在投递路径上会变成"每个类型各夹一次"，
+	//   漏一处就是提权面；而所有注入都必经这里。
+	//
+	// nil ⇒ 不夹取（单测/独立工具；生产装配期由 kernelmod/agent 注入）。
+	priorityClamp func(declared, source string) string
 
 	// inputRouter 决定一条输入是否被"别的 agent"接管（返回 true = 已接管）。
 	//
@@ -189,7 +197,6 @@ func NewIOManager() *IOManager {
 	return &IOManager{
 		devices:           make(map[string]Device),
 		inputCh:           make(chan *InputEvent, 256),
-		interruptCh:       make(chan *InputEvent, 64),
 		outputCh:          make(chan *OutputEvent, 256),
 		channelReg:        NewChannelRegistry(),
 		toolPendingBlocks: make(map[string][]interface{}),
@@ -199,9 +206,18 @@ func NewIOManager() *IOManager {
 // InputRouter 是输入路由器的签名。
 //
 //	evt        待投递的输入事件（OutputChannel 即它的 inputch）
-//	isInterrupt 该输入是中断还是排队（两者都要按归属路由）
 //	返回 true  = 已被别的 agent 接管，本内核不再处理
-type InputRouter func(evt *InputEvent, isInterrupt bool) bool
+//
+// ★ 没有"这是中断还是排队"这个参数：那是**接收方的排队语义**
+// （见 kernelapi.InputEvent 的 priority 标签），路由只按归属搬运。
+type InputRouter func(evt *InputEvent) bool
+
+// SetPriorityClamp 注入优先级夹取（装配期一次；nil = 不夹取）。
+func (m *IOManager) SetPriorityClamp(fn func(declared, source string) string) {
+	m.mu.Lock()
+	m.priorityClamp = fn
+	m.mu.Unlock()
+}
 
 // SetInputRouter 注入输入路由器（nil = 不路由，行为与以前完全一致）。
 func (m *IOManager) SetInputRouter(r InputRouter) {
@@ -213,27 +229,29 @@ func (m *IOManager) SetInputRouter(r InputRouter) {
 // deliverInput 是**本内核**接收一条外部输入的收口：先按 inputch 归属路由，
 // 被别的 agent 接管就不进本内核队列（划给子的 inputch，父不再收到 —— 这是「划拨」
 // 的语义，不是"父也顺便看一眼"）。
-func (m *IOManager) deliverInput(evt *InputEvent, isInterrupt bool) {
+func (m *IOManager) deliverInput(evt *InputEvent) {
 	m.mu.RLock()
 	router := m.inputRouter
 	m.mu.RUnlock()
-	if router != nil && router(evt, isInterrupt) {
+	if router != nil && router(evt) {
 		return
 	}
-	m.pushLocal(evt, isInterrupt)
+	m.pushLocal(evt)
 }
 
 // DeliverRouted 把**已被路由**的事件放进本内核队列（不再二次路由）。
 // 由路由器实现调用：父把输入交给持有该 inputch 的子。
-func (m *IOManager) DeliverRouted(evt *InputEvent, isInterrupt bool) {
-	m.pushLocal(evt, isInterrupt)
+func (m *IOManager) DeliverRouted(evt *InputEvent) {
+	m.pushLocal(evt)
 }
 
-func (m *IOManager) pushLocal(evt *InputEvent, isInterrupt bool) {
-	if isInterrupt {
-		m.interruptCh <- evt
-		return
-	}
+// pushLocal 把所有输入放进**同一个通道**。
+//
+// ★ 这里曾经分 `interruptCh` / `inputCh` 两条：那是**主 agent 的排队语义**
+// （中断要抢占、普通输入要排队），不是基座概念 —— rt 连队列都没有、
+// worker 什么都没有。现在只有一条入口，`priority` 标签随事件走，
+// 由**接收方**的投递口自己分拣（用户裁定：内核只带标签，不分拣）。
+func (m *IOManager) pushLocal(evt *InputEvent) {
 	m.inputCh <- evt
 }
 
@@ -341,7 +359,7 @@ func (m *IOManager) InjectInput(source string, eventType string, payload map[str
 		Type:          eventType,
 		Payload:       payload,
 		OutputChannel: source,
-	}, false)
+	})
 }
 
 func (m *IOManager) InjectInputSync(source string, eventType string, payload map[string]interface{}) *OutputEvent {
@@ -353,7 +371,7 @@ func (m *IOManager) InjectInputSync(source string, eventType string, payload map
 		Payload:       payload,
 		ResponseCh:    ch,
 		OutputChannel: source,
-	}, false)
+	})
 	// 被路由走时，回答由持有该 inputch 的 agent 写进同一个 ResponseCh
 	//（§4.3：同步输入的回程是事前定好的）——所以这里照常等待。
 	return <-ch
@@ -367,7 +385,7 @@ func (m *IOManager) InjectInputTo(source, outputChannel, eventType string, paylo
 		Type:          eventType,
 		Payload:       payload,
 		OutputChannel: outputChannel,
-	}, false)
+	})
 }
 
 // InjectInputSyncTo 注入输入事件（同步等待）并指定输出通道
@@ -380,7 +398,7 @@ func (m *IOManager) InjectInputSyncTo(source, outputChannel, eventType string, p
 		Payload:       payload,
 		ResponseCh:    ch,
 		OutputChannel: outputChannel,
-	}, false)
+	})
 	return <-ch
 }
 
@@ -507,7 +525,33 @@ func (m *IOManager) InjectInputSyncToOpts(source, outputChannel, eventType strin
 
 func (m *IOManager) InjectInterruptOpts(source, channel string, payload map[string]interface{}, opts InjectOptions) {
 	applyInjectOpts(payload, opts)
+	m.clampInterruptPriority(source, payload)
 	m.InjectInterrupt(source, channel, payload)
+}
+
+// clampInterruptPriority 在**注入时刻**把声明的级别夹到允许范围。
+//
+// 特权来源（编译期内置插件 / 父 agent）由装配点给的判据决定；
+// 判据本身在安全模块（ClampPriority），io 只把"谁在注入"这一事实递过去。
+//
+// ★ 失败方向是收紧：夹取函数缺失时**不夹**（单测/独立工具无闸门），
+//
+//	但生产装配必然注入它 —— 与"安全模块未加载 ⇒ 恒放行"同一口径。
+func (m *IOManager) clampInterruptPriority(source string, payload map[string]interface{}) {
+	if m == nil || payload == nil {
+		return
+	}
+	raw, ok := payload["priority"].(string)
+	if !ok || raw == "" {
+		return
+	}
+	m.mu.RLock()
+	clamp := m.priorityClamp
+	m.mu.RUnlock()
+	if clamp == nil {
+		return
+	}
+	payload["priority"] = clamp(raw, source)
 }
 
 func (m *IOManager) InjectText(source string, text string) {
@@ -557,7 +601,7 @@ func (m *IOManager) InjectInterrupt(source, channel string, payload map[string]i
 		Type:          evtType,
 		Payload:       payload,
 		OutputChannel: channel,
-	}, true)
+	})
 }
 
 func (m *IOManager) InjectInterruptText(source, channel, text string) {
@@ -587,8 +631,6 @@ func (m *IOManager) InjectTextSyncOpts(source, outputChannel, text string, opts 
 		"content": text,
 	}, opts)
 }
-
-func (m *IOManager) InputInterruptChan() <-chan *InputEvent { return m.interruptCh }
 
 // InjectTextSyncTo 注入文本输入（同步等待）并指定输出通道
 func (m *IOManager) InjectTextSyncTo(source, outputChannel, text string) *OutputEvent {

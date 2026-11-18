@@ -27,6 +27,8 @@ package security
 //   改造前都是放行。改语义会让现网插件集体失效，因此这里**只搬位置不改语义**。
 
 import (
+	"strings"
+
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
@@ -81,5 +83,41 @@ func (r *Runtime) CheckOutput(agentID string, channel string) model.Decision {
 		Allowed: false,
 		Reason: "agent " + agentID + " is not authorized for output channel " + channel +
 			" (see output_list_channels for the channels this agent may use)",
+	}
+}
+
+// ───────────────────── 中断级别的授权夹取 ─────────────────────
+
+// ClampPriority 把注入方声明的中断级别收到允许的范围（**授权**判定）。
+//
+// ## 为什么在安全模块，而不在 agent 的投递路径
+//
+// L4（"立即打断"）只有编译期内置插件与父 agent 可以声明。外部插件若拿到它，
+// 就能抢占全部执行，而被打断方**无从分辨来源**。所以夹取必须是**注入侧的
+// 授权**，与工具/通道授权同一层；放在每个 agent 的投递路径上会变成
+// "每个实现各夹一次"，漏一处就是一个提权面。
+//
+// ## 语义
+//
+//	privileged=true  原样返回（内置插件 / 父 agent）
+//	privileged=false 夹到 L3；L1/L2/L3 原样
+//	未知字符串        返回 fallback "L1"（拼错不该被静默当成高级别）
+func (r *Runtime) ClampPriority(declared string, privileged bool) string {
+	if privileged {
+		return declared
+	}
+	switch strings.ToUpper(strings.TrimSpace(declared)) {
+	case "", "L1":
+		return "L1"
+	case "L2":
+		return "L2"
+	case "L3":
+		return "L3"
+	case "L4":
+		// ★ 外部来源声明的 L4 一律夹到 L3：这不是"降级执行"，而是
+		//   "它本来就没有 L4 这个能力"。
+		return "L3"
+	default:
+		return "L1"
 	}
 }

@@ -230,7 +230,7 @@ func (a *Agent) forwardInputToResident(residentID string, evt *agentIO.InputEven
 	evt.Payload["offloaded_from"] = string(a.id)
 	evt.Payload["offloaded_at"] = time.Now().Format(time.RFC3339)
 
-	rc.agent.io.DeliverRouted(evt, false)
+	rc.agent.io.DeliverRouted(evt)
 	return nil
 }
 

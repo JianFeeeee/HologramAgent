@@ -858,7 +858,7 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 						if rcTarget, ok := a.residentEntryOf(target); ok && rcTarget.agent != nil {
 							for _, evt := range drained {
 								if evt != nil {
-									rcTarget.agent.io.DeliverRouted(evt, false)
+									rcTarget.agent.io.DeliverRouted(evt)
 								}
 							}
 							log.Printf("[resident] %s 交接的 %d 条任务已投给 %s", rc.ID, len(drained), target)

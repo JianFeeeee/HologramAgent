@@ -17,7 +17,7 @@ func (a *Agent) StartResidentRuntime() {
 		return
 	}
 	go a.schedulerLoop()
-	go a.InterceptLoop()
+	// ★ 同主 agent：中断分拣在 acceptInput 里（单输入通道）。
 }
 
 // StopResidentRuntime 停驻留子：回收它自己拉起的驻留子（孙不得比子活得久）。

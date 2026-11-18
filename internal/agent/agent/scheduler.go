@@ -205,16 +205,6 @@ func canPreempt(incoming, running *Task) bool {
 	return effectiveLevel(incoming) > effectiveLevel(running)
 }
 
-func clampPluginLevel(l Level) Level {
-	if l > LevelInteractive {
-		return LevelInteractive
-	}
-	if l < LevelBackground {
-		return LevelBackground
-	}
-	return l
-}
-
 // ── 中断队列操作（归调度器）──
 
 func (s *scheduler) highestInterruptLocked() (*Task, Level) {
@@ -1110,7 +1100,12 @@ func (s *scheduler) done(t *Task) {
 //   - privileged=false → 夹到 L1..L3；空/非法一律降级为 DefaultLevel（L1）
 //
 // 另有完全绕过本函数的 L4 来源：内核自身的 raiseKernelInterrupt（panic / selfip）。
-func interruptLevel(evt *agentIO.InputEvent, privileged bool) Level {
+// interruptLevel 把**已授权**的优先级标签解析成调度级别。
+//
+// ★ 夹取（L4→L3）**不在这里**：那是注入侧的授权判定（安全闸门的
+// `ClampPriority`），发生在事件进内核之前。到了本类型手里的标签已经可信，
+// 这里只做"字符串→数字"的解析。
+func interruptLevel(evt *agentIO.InputEvent) Level {
 	if evt == nil || evt.Payload == nil {
 		return DefaultLevel
 	}
@@ -1119,10 +1114,7 @@ func interruptLevel(evt *agentIO.InputEvent, privileged bool) Level {
 	if !ok {
 		return DefaultLevel
 	}
-	if privileged {
-		return l
-	}
-	return clampPluginLevel(l)
+	return l
 }
 
 // isKernelLevelSource 报告某来源是否是**内核级插件**（编译期内置插件）。

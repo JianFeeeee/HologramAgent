@@ -491,6 +491,12 @@ func New(cfg AgentConfig) *Agent {
 	// 注入进去：插件注入输入时先问它，被别的 agent 接管就不再进本内核队列。
 	if a.io != nil {
 		a.io.SetInputRouter(a.RouteInputByOwner)
+		// ★ 注入侧的**授权夹取**（L4→L3）：判据在安全模块，接线在这里。
+		//
+		// 这是"任何 agent 收到的 L4 都可信"的实现点：所有注入必经 io，
+		// 而夹取发生在事件进内核之前。未装配闸门 ⇒ 不夹（与"安全未加载
+		// ⇒ 恒放行"同口径）。
+		a.io.SetPriorityClamp(a.clampPriority)
 	}
 	return a
 }
