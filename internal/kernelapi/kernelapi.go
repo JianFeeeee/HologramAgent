@@ -438,6 +438,15 @@ type SecurityGate interface {
 	//
 	// 未装配安全模块时调用方应视为放行 —— 但那是"未装配"，不是"授权通过"。
 	CheckOutput(agentID string, channel string) model.Decision
+	// Archive 是**写前留档**：受保护路径被写之前先备份一份（供 L1 还原）。
+	//
+	// ★ 为什么它属于闸门而不是"另一个设施"：它是**写路径上的数据面动作**，
+	//   与 CheckPath/CheckOutput 同一层（同一个边界、同一份配置、同一套目录）。
+	//   放在这里让基座只经闸门调用它 —— 于是 `internal/agent/**` 对
+	//   `internal/security` 的 import 可以是**零**（§8 判据 3）。
+	//
+	// 返回 archived=true 表示真的留了一份（调用方据此记日志）。
+	Archive(dataDir, path string) (archived bool, err error)
 	// ClampPriority 把注入方声明的中断级别**收到允许的范围**。
 	//
 	// ★ 这是一个**授权**判定，不是调度判定（用户裁定 2026-11-18）：

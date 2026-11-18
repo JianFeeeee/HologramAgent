@@ -17,7 +17,6 @@ import (
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -350,7 +349,7 @@ type AgentConfig struct {
 	FusionCfg         CrossModalFusionConfig // 跨模态融合权重；零值用默认
 	Personality       *agentPkg.Personality
 	PersonaStore      PersonaStore // 人格设定的读写面（首启门禁 + persona_set 工具）
-	PluginReg         *plugin.Registry
+	PluginReg         kernelapi.PluginHost
 	// KernelSource 是本 agent 的"上级"（驻留子的父）。
 	//
 	// 设计 §6.1：某个 agent 的 L4 只属于它的**内核** —— 根 agent 的内核是内核自身与

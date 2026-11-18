@@ -43,7 +43,6 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
-	"github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
 // guardToolPaths 检查本次工具调用声明的路径参数。
@@ -167,7 +166,7 @@ func (a *Agent) archiveProtectedPath(path string) {
 	if a.dataDir == "" {
 		return
 	}
-	if archived, err := security.ArchiveBeforeWrite(a.dataDir, path); err != nil {
+	if archived, err := a.archiveBeforeWrite(path); err != nil {
 		log.Printf("[security] write-ahead archive %s failed (write proceeds): %v", path, err)
 	} else if archived {
 		log.Printf("[security] write-ahead archived %s (baseline for L1 restore)", path)

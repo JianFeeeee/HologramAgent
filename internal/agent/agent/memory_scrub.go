@@ -28,7 +28,7 @@ package agent
 import (
 	"log"
 
-	"github.com/JianFeeeee/HologramAgent/internal/security"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
 // scrubEventSecrets 就地清洗一条待持久化事件里的明文。
@@ -156,7 +156,7 @@ func (a *Agent) ScrubMemoryCandidate(payload map[string]interface{}) {
 	}
 }
 
-func logEvtHits(where string, evts []security.Evt) {
+func logEvtHits(where string, evts []model.Evt) {
 	for _, e := range evts {
 		log.Printf("[security] %s blocked %s (pattern %s, %d bytes, merged=%v)",
 			where, e.Alias, e.Kind, e.Len, e.Merged)
