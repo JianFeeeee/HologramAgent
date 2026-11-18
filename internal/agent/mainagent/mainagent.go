@@ -62,7 +62,7 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	}
 	if h.Prune == nil {
 		h.Prune = PruneByQuery
-		h.EnforceOverflow = EnforceOverflowStandard
+		h.OverflowHandler = EnforceOverflowStandard
 	}
 
 	// ── 槽位 6：agent loop（主 agent 用**标准同步**实现）──

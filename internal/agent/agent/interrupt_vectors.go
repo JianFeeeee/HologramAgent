@@ -42,8 +42,6 @@ type VectorID string
 const (
 	// VectorTaskPanic：任务 panic。带递归保护（见 interruptVectors）。
 	VectorTaskPanic VectorID = "task_panic"
-	// VectorContextOverflow：上下文超页，需要提示模型"内容被移走了"。
-	VectorContextOverflow VectorID = "ctx_overflow"
 	// VectorChildContextFull：驻留子上下文已满，父据此决定压缩/回收/销毁。
 	VectorChildContextFull VectorID = "child_ctxfull"
 	// VectorRTChildClosed：rtchild 回收，父据此**自行选择**要保留哪些上下文。
@@ -112,26 +110,6 @@ var interruptVectors = map[VectorID]interruptVector{
 			return fmt.Sprintf("内核事件：任务 #%d 发生 panic：%v（该任务已被丢弃，调度器存活）",
 				a.Task.ID, a.Panic)
 		},
-	},
-
-	VectorContextOverflow: {
-		ID:     VectorContextOverflow,
-		Level:  LevelCritical,
-		Source: func(vectorArgs) string { return "kernel/overflow" },
-		Guard:  func(vectorArgs) bool { return true },
-		// ★ 空中断：**不携带任何消息**（2026-10-25 按原始设计修正）。
-		//
-		// 原始设计里这个 L4 的用途是「**触发**语义相关性裁剪」——它本身
-		// 只是一次调度信号，不是一条给模型的通知。此前的实现把它变成了
-		// 「裁剪完事后发一条回执」（先在 raise 之前 pruneByQuery，再让
-		// Build 生成「已裁剪 N 条…」的说明文本），顺序与语义都反了。
-		//
-		// 现在：Build 返回空串 ⇒ payload 里没有 content ⇒ 任务是空中断；
-		// 裁剪由任务真正被调度执行时（rebalanceFrameContextPrefix）触发。
-		//
-		// 为什么必须带空串而不是省略 Build：lookupVector 的契约要求 Build
-		// 存在（否则调用方 nil panic），"没有正文"要显式表达成 ""。
-		Build: func(vectorArgs) string { return "" },
 	},
 
 	VectorRTChildClosed: {

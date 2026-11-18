@@ -332,6 +332,24 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 必须在 processConsolidation 之前设置——它就在下面同步执行。
 	a.sched.setCritical(isCriticalChannel(outputChannelOf(evt)))
 
+	if in.selfKind != "" {
+		// ★ 标签**优先于通道**判定：带标签的自输入不是"整理任务"，
+		//   也不是普通对话 —— 它走类型注册的 handler。
+		//
+		// ★ 自循环输入的标签由**类型**解释：基座只把它交给该类型注册的
+		//   OverflowHandler（未注册 ⇒ 什么都不做，那是明确的策略）。
+		//
+		// 此前这里写着"按最后一条用户输入裁剪"—— 那是主 agent 的策略，
+		// 而基座不认识主 agent。现在：标签 → handler → 类型自己决定裁不裁、
+		// 用哪个 query 裁。
+		if h := a.hooks.OverflowHandler; h != nil {
+			// Query 留空：相关性基准是**策略的知识**（主 agent 取"最后一条
+			// 用户输入"，别的类型可能不同），基座不替它推导。
+			h(a, nil, agenttypes.OverflowRequest{Kind: agenttypes.OverflowAir})
+		}
+		return nil, terminalSkipped
+	}
+
 	if evt.OutputChannel == channelConsolidation {
 		a.processConsolidation(evt, in.text)
 		return nil, terminalConsolidation
@@ -369,17 +387,6 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	//
 	// 因此这里：裁剪 → 结束本轮，**不进 LLM、不写上下文、不发回复**。
 	// 用 terminalSkipped（不是 terminalError）：这是正常完成，不是故障。
-	if in.airInterrupt {
-		// ★ 裁剪策略由**类型注册的 Prune 钩子**决定（基座只做"按最后一条
-		//   用户输入当相关性基准"这一件事实推导，然后问钩子）。
-		//
-		// 此前基座自己写了"裁多少条、裁不动时记什么统计"的整套逻辑 ——
-		// 那是策略，不是基座知识（用户 2026-11-18 指出："overflow 里不应该
-		// 有具体逻辑，它应该是一个预定义的钩子"）。
-		a.PruneForQuery(a.LastUserQueryForPrune())
-		return nil, terminalSkipped
-	}
-
 	// 工具提醒/中断（terminal_watch、timer 等）不是用户发言：
 	// 以 system 角色注入 LLM，且不写入用户对话履历。
 	isInterrupt, _ := evt.Payload["interrupt"].(bool)

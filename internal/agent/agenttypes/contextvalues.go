@@ -198,4 +198,8 @@ type ChildTaskState struct {
 type SelfInputMsg struct {
 	Text    string
 	Channel string
+	// Kind 是**注入方声明的标签**（与 L1..L4 同性质）：基座只透传，不解释。
+	//
+	// 谁投它、投了之后做什么，全在类型侧（例：主 agent 的空中断投 "air"）。
+	Kind string
 }

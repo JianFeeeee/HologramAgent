@@ -166,6 +166,24 @@ func EnforceOverflowWith(a *agent.Agent, f *agenttypes.Frame, req agenttypes.Ove
 		return false, 0
 	}
 	query, force := req.Query, req.Force
+
+	// ★ 空中断被打断后**在任务边界**做的那次裁剪。
+	//
+	// 它不走水位判定：它本身就是"上一次判定已经决定要裁"的落实。
+	// 相关性基准在这里推导（最后一条真实用户输入）—— 这是主 agent 的
+	// 策略知识，基座不替它猜（投空中断时 Query 留空）。
+	if req.Kind == agenttypes.OverflowAir {
+		if query == "" {
+			query = a.LastUserQueryForPrune()
+		}
+		if pruned := a.PruneContext(query, a.ContextTopK()); pruned > 0 {
+			log.Printf("[agent] air interrupt: pruned %d event(s) at task boundary", pruned)
+			led.Pruned(pruned)
+			return true, pruned
+		}
+		return false, 0
+	}
+
 	ratio := a.OverflowRatioNow()
 	checked := led.Check()
 	// Diagnostic trace: this predicate runs at every injection point and rarely
@@ -293,12 +311,13 @@ func handleContextOverflow(a *agent.Agent, query string, ratio float64, led *Ove
 	// "pruning already done" — the order was inverted.
 	//
 	// Returning 0 here is truthful: this round **has not** pruned yet; pruning happens
-	// when the air-interrupt task is scheduled (see task.go's airInterrupt branch).
+	// when the air-interrupt task is scheduled (见基座 prepareInputTask 的 self_kind=="air").
 	// Callers judging "did we free space" must look at the next round's water line,
 	// not this return value.
-	log.Printf("[agent] context overflow: ratio=%.2f events=%d — raising L4 air interrupt "+
+	log.Printf("[agent] context overflow: ratio=%.2f events=%d — enabling air interrupt "+
 		"(prune happens at task boundary)", ratio, a.ContextLen())
-	a.RaiseContextOverflow()
+	led.PruneRequested()
+	InjectSelfAirInterrupt(a)
 	return 0
 }
 

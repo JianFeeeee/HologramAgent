@@ -995,8 +995,8 @@ func sourceOf(t *Task, f *TaskFrame) string {
 		return t.Event.OutputChannel
 	}
 	if t != nil && t.Kind == TaskKindSelf {
-		if t.Self.channel != "" {
-			return "self:" + t.Self.channel
+		if t.Self.Channel != "" {
+			return "self:" + t.Self.Channel
 		}
 		return "self"
 	}

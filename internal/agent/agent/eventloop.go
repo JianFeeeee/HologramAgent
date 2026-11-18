@@ -180,25 +180,27 @@ func (a *Agent) cancelRunningTools() {
 // 不写入对话上下文、不向任何输出通道 emit 响应。
 const channelConsolidation = "_consolidation_"
 
-// selfInputMsg 自循环输入消息。channel 决定处理路径：
-//   - channelConsolidation：记忆整理，无记忆（不污染上下文/知识库）
-//   - 其他值（如 "cli"、"webui"）：正常输入路径，写入上下文并 emit 响应
-//     （典型场景：子 Agent 完成通知，需让父 Agent 感知并可回复用户）
-type selfInputMsg struct {
-	text    string
-	channel string
-}
+// SelfKindAir 是"空中断"这个标签（**只有标签，没有语义解释**）。
+//
+// 谁投它、投了之后做什么，全在类型侧（见 mainagent 的 airinterrupt.go）。
+const SelfKindAir = "air"
 
 // selfEvent 把内核自循环消息归一成输入事件。
 func selfEvent(msg selfInputMsg) *agentIO.InputEvent {
-	if msg.channel == "" {
-		msg.channel = channelConsolidation // 兼容空值：默认走整理路径
+	ch := msg.Channel
+	if ch == "" {
+		ch = channelConsolidation // 兼容空值：默认走整理路径
+	}
+	payload := map[string]interface{}{"content": msg.Text}
+	if msg.Kind != "" {
+		// ★ 标签透传：基座不解释它，只让类型能认出来（标签订阅方 = 类型）。
+		payload["self_kind"] = msg.Kind
 	}
 	return &agentIO.InputEvent{
 		Source:        "system",
 		Type:          "text",
-		Payload:       map[string]interface{}{"content": msg.text},
-		OutputChannel: msg.channel,
+		Payload:       payload,
+		OutputChannel: ch,
 	}
 }
 
@@ -238,11 +240,10 @@ type inputPayload struct {
 	mediaType string
 	// captureTool 是媒体落进 CAS 时记录的来源标签。
 	captureTool string
-	// airInterrupt 表示这是一次**空中断**：内核发的 L4，没有正文。
+	// selfKind 是自循环输入的**标签**（`payload["self_kind"]`，可能为空）。
 	//
-	// 它的唯一用途是触发一次语义相关性裁剪（contextoverflow 的原始设计）。
-	// 空正文的普通输入不是空中断（见 isAirInterrupt）。
-	airInterrupt bool
+	// ★ 基座只透传，不解释。谁投的、投了之后做什么，全在类型侧。
+	selfKind string
 }
 
 // resolveInput 把 InputEvent 归一成 inputPayload。
@@ -271,17 +272,11 @@ func (a *Agent) ResolveInput(evt *agentIO.InputEvent) (inputPayload, bool) {
 	text, _ := evt.Payload["content"].(string)
 	blocks, mediaType := injectedBlocks(evt.Payload)
 
-	// ★ 空中断（kernel/overflow）：**没有正文也要算有效输入**。
-	//
-	// 这是 contextoverflow 的原始设计：L4 中断本身不携带任何消息，
-	// 它唯一的用途是"把当前任务抢占下来，让语义相关性裁剪发生"。
-	// 空 content 在这里曾被判成无效输入直接丢弃 —— 于是那个 L4 变成了
-	// 一条什么也不做的空转任务。
-	//
-	// 判定条件刻意窄：必须是内核发出的中断，且确实无正文、无媒体。
-	// 普通输入的空内容仍然算无效（否则客户端空包会白白唤醒一轮）。
-	if text == "" && len(blocks) == 0 && isAirInterrupt(evt) {
-		return inputPayload{text: "", airInterrupt: true}, true
+	// 自循环输入带标签时，**空正文也是有效输入**（空中断就是这种）：
+	// 标签本身是语义载体，类型据此决定做什么。
+	selfKind, _ := evt.Payload["self_kind"].(string)
+	if selfKind != "" {
+		return inputPayload{text: text, blocks: blocks, selfKind: selfKind}, true
 	}
 	// 文本与媒体都空才算无效输入：只带图不带字是合法的（插件注入常这样）。
 	if text == "" && len(blocks) == 0 {
@@ -631,24 +626,4 @@ func (a *Agent) cleanInputFor(evt *agentIO.InputEvent, input string) string {
 		return chDef.Cleaner(input)
 	}
 	return input
-}
-
-// isAirInterrupt 判定一个输入事件是否为「空中断」。
-//
-// 空中断 = 内核发起、type=interrupt、payload 里没有 content。
-// 用途见 contextoverflow 的中断向量（VectorContextOverflow）：
-// 它只是一次调度信号，用来把当前任务抢占下来，好在任务边界做语义相关性裁剪。
-//
-// 为什么必须由内核来源限定：插件也能注入 interrupt，但插件的中断**总是**
-// 带正文（"某设备上线了""某任务失败了"）。把它们的空包也当空中断，
-// 会让"插件发了个没内容的中断"变成一次无声的裁剪，行为不可预测。
-func isAirInterrupt(evt *agentIO.InputEvent) bool {
-	if evt == nil || evt.Type != "interrupt" {
-		return false
-	}
-	if v, _ := evt.Payload["kernel"].(bool); !v {
-		return false
-	}
-	text, _ := evt.Payload["content"].(string)
-	return text == ""
 }

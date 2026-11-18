@@ -24,6 +24,9 @@ type (
 	TaskTerminal = agenttypes.Terminal
 	Outcome      = agenttypes.Outcome
 	SelfInputMsg = agenttypes.SelfInputMsg
+
+	// selfInputMsg 是包内别名（既有调用点逐字不变）。
+	selfInputMsg = agenttypes.SelfInputMsg
 )
 
 const (

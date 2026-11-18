@@ -339,8 +339,8 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 
 	notification := fmt.Sprintf("子任务 %s 已完成。请用 child_result 工具查看输出（只需查询一次；重复查询不会返回失败）。", taskID)
 	a.InjectSelfChannel(selfInputMsg{
-		text:    notification,
-		channel: parentChannel, // 回到父对话通道，正常处理（写入上下文 + emit 响应）
+		Text:    notification,
+		Channel: parentChannel, // 回到父对话通道，正常处理（写入上下文 + emit 响应）
 	})
 }
 

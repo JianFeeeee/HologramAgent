@@ -134,10 +134,10 @@ func (a *Agent) OverflowRatioNow() float64 {
 func (a *Agent) EnforceContextBudget(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
 	// ★ 超页处置是**类型注册的钩子**：未注册 ⇒ 本类型不做（整窗型靠
 	//   contextfull 上报父 agent 决策，见本文件顶部注释）。
-	if a == nil || a.hooks.EnforceOverflow == nil {
+	if a == nil || a.hooks.OverflowHandler == nil {
 		return false, 0
 	}
-	return a.hooks.EnforceOverflow(a, f, agenttypes.OverflowRequest{
+	return a.hooks.OverflowHandler(a, f, agenttypes.OverflowRequest{
 		Kind: agenttypes.OverflowLocal, Query: query, Force: force,
 	})
 }
@@ -176,10 +176,10 @@ func (a *Agent) EnforceResumeContextBudget(f *TaskFrame) (handled bool, pruned i
 	//   因为不同类型的策略对 "query 取什么" 的判断不同（恢复场景要用
 	//   本帧最新上下文，不是 f.Input）。传 f 与 query 两者都给策略，
 	//   策略自己决定用哪个（standard 用 query，整窗型根本不看）。
-	if a == nil || a.hooks.EnforceOverflow == nil || f == nil {
+	if a == nil || a.hooks.OverflowHandler == nil || f == nil {
 		return false, 0
 	}
-	return a.hooks.EnforceOverflow(a, f, agenttypes.OverflowRequest{
+	return a.hooks.OverflowHandler(a, f, agenttypes.OverflowRequest{
 		Kind: agenttypes.OverflowResume, Query: resumeQueryFrom(f),
 	})
 }
@@ -196,33 +196,6 @@ func resumeQueryFrom(f *TaskFrame) string {
 		}
 	}
 	return f.Input
-}
-
-// raiseContextOverflow 通过 **L4 唯一入口**发起一次上下文超页中断。
-//
-// 与 panic / child_contextfull 并列，是 L4 的第三个来源。
-//
-// ★ **它是一次空中断：不带任何消息**（2026-10-25 按原始设计修正）。
-//
-// 用途是把当前任务抢占下来，好在任务边界做一次**语义相关性裁剪**——
-// 中断是触发源，裁剪是它引发的动作，两者不是同一步。
-//
-// ## 此前为什么被写成了"带文本的通知"（记录一下这个偏移，避免再犯）
-//
-// 当时的推理是：L4 任务按调度器设计拿不到被打断者的上下文（suspend 的
-// D1=B），所以"已裁剪了什么、查不到不等于不存在"必须显式写进 payload，
-// 否则模型会把「没检索到」推断成「不存在」（v4 实测过这类回答）。
-//
-// 那个**观察**是真的，但**结论**错了：它把"补偿 L4 看不到上下文"当成了
-// 中断该带正文的理由，于是裁剪被挪到了 raise 之前（先裁完再发一条回执），
-// 中断本身退化成一个通知任务——既晚了一步，又给模型塞了它不需要的说明。
-//
-// 正确的分工是：中断只负责抢占（空），裁剪由任务真正执行时做
-// （见 pruneForAirInterrupt）。模型不需要知道"有内容被移走"这件事本身，
-// 它需要的是**保留下来的内容与当前问题相关**——那由裁剪质量保证。
-func (a *Agent) RaiseContextOverflow() {
-	// 空中断：不带任何正文。中断只负责**抢占**，裁剪由任务边界处的策略做。
-	a.RaiseVector(VectorContextOverflow, vectorArgs{})
 }
 
 // isUpstreamContextFull 判定上游错误是否表示「上下文装不下」。

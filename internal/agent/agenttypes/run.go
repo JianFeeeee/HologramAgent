@@ -176,6 +176,13 @@ const (
 	OverflowLocal OverflowKind = iota
 	// OverflowResume 是任务恢复后的重新装配入口。
 	OverflowResume
+
+	// OverflowAir 是**类型自己投给自己的空中断**被调度时的入口。
+	//
+	// 与上面两者同一格钩子：主 agent 超页时投一条无正文自输入，
+	// 该任务被调度时回到这里 —— 于是"抢占"与"裁剪"仍是同一条策略的两步，
+	// 而不是基座替它发中断（用户裁定：「空中断由内核发是妥协」）。
+	OverflowAir
 )
 
 // OverflowRequest 是一次超页处置请求（钩子的入参）。

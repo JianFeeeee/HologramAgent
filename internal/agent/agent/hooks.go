@@ -101,7 +101,7 @@ type Hooks struct {
 	//
 	// nil ⇒ 本类型不做超页处置。那是**明确的策略**（整窗型靠 contextfull
 	// 上报父 agent 决策，父来决定压缩/回收/销毁），不是漏接线。
-	EnforceOverflow func(a *Agent, f *TaskFrame, req agenttypes.OverflowRequest) (handled bool, pruned int)
+	OverflowHandler func(a *Agent, f *TaskFrame, req agenttypes.OverflowRequest) (handled bool, pruned int)
 
 	// ── 槽位 6：agent loop ──
 

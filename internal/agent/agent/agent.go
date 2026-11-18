@@ -704,8 +704,8 @@ func (a *Agent) SelfInputChan() <-chan selfInputMsg {
 // 线程安全，不阻塞发送者（通道缓冲 64）。
 func (a *Agent) InjectSelf(task string) {
 	a.InjectSelfChannel(selfInputMsg{
-		text:    task,
-		channel: channelConsolidation,
+		Text:    task,
+		Channel: channelConsolidation,
 	})
 }
 
@@ -715,7 +715,7 @@ func (a *Agent) InjectSelfChannel(msg selfInputMsg) {
 	select {
 	case a.selfInputCh <- msg:
 	default:
-		a.Logf("self input channel full, dropping task: %s", truncateStr(msg.text, 80))
+		a.Logf("self input channel full, dropping task: %s", truncateStr(msg.Text, 80))
 	}
 }
 
@@ -767,7 +767,7 @@ func (a *Agent) HookReport() HooksReport {
 		HasBudget:     a.hooks.ContextBudget != nil,
 		HasPrune:      a.hooks.Prune != nil,
 		HasOverBudget: a.hooks.OverBudget != nil,
-		HasOverflow:   a.hooks.EnforceOverflow != nil,
+		HasOverflow:   a.hooks.OverflowHandler != nil,
 		HasLoop:       a.hooks.Loop != nil,
 		HasRuntime:    a.hooks.Runtime.Start != nil && a.hooks.Runtime.Stop != nil,
 		HasRunStage:   a.hooks.RunStage != nil,

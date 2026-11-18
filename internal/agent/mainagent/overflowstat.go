@@ -85,6 +85,19 @@ func (l *OverflowLedger) Aborted(ratio float64, events int) {
 	l.mu.Unlock()
 }
 
+// PruneRequested 记一次"发出了空中断、裁剪将在任务边界发生"。
+//
+// ★ 与 Pruned 的区别：Pruned 是"已经裁掉 N 条"，这里是"已请求、还没裁"。
+// 分开记是因为两者回答不同问题：前者看效果，后者看触发。
+func (l *OverflowLedger) PruneRequested() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.st.Triggered++
+	l.mu.Unlock()
+}
+
 // Upstream 记一次"上游明确报 context_full"。
 func (l *OverflowLedger) Upstream() {
 	if l == nil {
