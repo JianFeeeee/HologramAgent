@@ -52,6 +52,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
 // AgentScope 是**一个 agent 的策略执行视图**。
@@ -260,4 +263,33 @@ func (sc *AgentScope) CheckTool(tool string) Decision {
 	}
 	return sc.rt.checkToolForWithProfile(sc.rt.classifyScopePrincipal(sc.agentID, sc.isChild),
 		sc.EffectiveProfile(), tool)
+}
+
+// ───────────────── 记录表接入（§3.2.2 五表合一） ─────────────────
+
+// SetAgentIndex 注入 agent 记录表（装配期一次；nil = 不接入）。
+//
+// ★ 为什么可选：安全模块必须能在"没有记录表"的场合工作（裸 Runtime 单测、
+//
+//	裁剪版内核）。那时判定退化为 fail-open —— 与改造前"agent 未声明授权
+//	⇒ 放行"逐字一致，所以缺表不改变任何既有行为。
+func (r *Runtime) SetAgentIndex(idx kernelapi.AgentIndex) {
+	if r == nil {
+		return
+	}
+	r.agentIndex = idx
+}
+
+// agentFacts 取某 agent 的事实（无记录表 ⇒ 零值 + false）。
+func (r *Runtime) agentFacts(agentID string) (model.AgentFacts, bool) {
+	if r == nil || r.agentIndex == nil {
+		return model.AgentFacts{}, false
+	}
+	return r.agentIndex.Facts(agentID)
+}
+
+// factsFor 取事实；nil Runtime 时返回零值（fail-open 的入口）。
+func (r *Runtime) factsFor(agentID string) model.AgentFacts {
+	f, _ := r.agentFacts(agentID)
+	return f
 }

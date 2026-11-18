@@ -800,3 +800,46 @@ type Knowledge struct {
 type SecretPattern struct {
 	Name string
 }
+
+// ───────────────────────── agent 登记（C+D，§3.2.2） ─────────────────────────
+
+// AgentFacts 是**父为子声明的全部事实**（纯数据，与 Decision/RoundInput 同层）。
+//
+// ## 为什么集中成一个值（用户裁定：五表合一）
+//
+// 改造前这些事实散在四张表里，各有各的清理点：
+//
+//	outputsByAgent[agentID]   security/outputs.go     输出通道白名单
+//	scopesByAgent[agentID]    security/agentscope.go  档位（session/longtime）
+//	principals.byID[agentID]  security/principal.go   工具 allow/deny
+//	InstanceManager.recs[id]  agent/instances.go      创建参数
+//	child.Registry            agent/child/           存活实例
+//
+// 同一个事件（"某个 agent 实例不在了"）要触发四处清理，散在三个包、三条
+// 路径。漏一处就是残留：同名重建继承上一代的 longtime 档（**提权**）、
+// 继承上一代的输出授权、表单调增长。今天的正确性**靠人记得**。
+//
+// 现在：一张记录表，事实只有一份。判据是「删掉任何一处清理点，同名重建
+// 必须立刻红」。
+type AgentFacts struct {
+	// AllowedOutputs 是输出通道白名单（空 = 完整授权，存量 fail-open 契约）。
+	AllowedOutputs []string
+	// AllowedTools / DenyTools 是父为子声明的工具策略（deny 优先）。
+	AllowedTools []string
+	DenyTools    []string
+	// LongtimeProfile 是本 agent 的跨轮安全档位（空 = 未设置）。
+	LongtimeProfile string
+}
+
+// AgentRecord 是**一条** agent 记录（身份 + 创建参数 + 事实 + 生命周期）。
+type AgentRecord struct {
+	ID       string                 `json:"id"`
+	Type     string                 `json:"type"`
+	ParentID string                 `json:"parent_id,omitempty"`
+	Arg      map[string]interface{} `json:"arg,omitempty"`
+	Facts    AgentFacts             `json:"facts"`
+	// Lifecycle 是运行态（running / contextfull / stopped）。
+	Lifecycle string `json:"lifecycle"`
+	// Created 是创建时刻（软重启与持久化共用）。
+	Created string `json:"created,omitempty"`
+}

@@ -25,6 +25,8 @@ package security
 import (
 	"fmt"
 	"sync"
+
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
 // Runtime 是安全运行时。
@@ -95,6 +97,15 @@ type Runtime struct {
 
 	scopesByAgent map[string]*AgentScope
 	scopeMu       sync.Mutex
+
+	// agentIndex 是 **agent 记录表**的只读视图（§3.2.2 五表合一）。
+	//
+	// ★ 为什么安全模块只读它：输出授权、子工具策略、长期档位都成了**同一条
+	//   记录**上的字段。安全模块不再自己维护三张表 ⇒ 清理点只剩一处
+	//   （记录消失），"同名重建继承上一代授权"这类残留从结构上不可能。
+	//
+	// nil = 未接入（裸 Runtime / 单测）⇒ fail-open，与改造前逐字一致。
+	agentIndex kernelapi.AgentIndex
 }
 
 // NewRuntime 用已装好的变量库构造运行时。

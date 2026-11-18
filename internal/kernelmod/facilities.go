@@ -18,19 +18,21 @@ import (
 // 那是插件的对外契约（`requires_facilities`）。CI 门禁守这个一致性。
 const (
 	// ── 插件可依赖的设施（与公开 SDK 的 sdk.Facility* 逐字一致） ──
-	FacConfig     = kernelapi.FacConfig
-	FacKernelIO   = kernelapi.FacKernelIO
-	FacMemory     = kernelapi.FacMemory
-	FacLua        = kernelapi.FacLua
-	FacSupervisor = kernelapi.FacSupervisor
-	FacTracker    = kernelapi.FacTracker
-	FacTextMem    = kernelapi.FacTextMem
-	FacLLM        = kernelapi.FacLLM
-	FacDocStore   = kernelapi.FacDocStore
-	FacMultimodal = kernelapi.FacMultimodal
-	FacONNX       = kernelapi.FacONNX
-	FacStageHost  = kernelapi.FacStageHost
-	FacAgent      = kernelapi.FacAgent
+	FacConfig        = kernelapi.FacConfig
+	FacKernelIO      = kernelapi.FacKernelIO
+	FacMemory        = kernelapi.FacMemory
+	FacLua           = kernelapi.FacLua
+	FacSupervisor    = kernelapi.FacSupervisor
+	FacTracker       = kernelapi.FacTracker
+	FacTextMem       = kernelapi.FacTextMem
+	FacLLM           = kernelapi.FacLLM
+	FacDocStore      = kernelapi.FacDocStore
+	FacMultimodal    = kernelapi.FacMultimodal
+	FacONNX          = kernelapi.FacONNX
+	FacStageHost     = kernelapi.FacStageHost
+	FacAgent         = kernelapi.FacAgent
+	FacAgentRegistry = kernelapi.FacAgentRegistry
+	FacAgentIndex    = kernelapi.FacAgentIndex
 
 	// ── 内核**内部**顺序标记（**不是**给插件的设施）──
 	//

@@ -111,6 +111,13 @@ const (
 	FacUpdateCapabilities = "update.capabilities"
 	// FacAgent 是主 agent（agent 模块提供）。
 	FacAgent = "agent"
+	// FacAgentRegistry 是 **agent 记录表**（唯一事实来源，见 model.AgentRecord）。
+	//
+	// ★ 与 FacAgent（主 agent 实例）不同：登记表描述"这台内核下有哪些 agent
+	//   以及父为它们声明了什么"，与"主 agent 是谁"无关。安全模块只读它。
+	FacAgentRegistry = "agent.registry"
+	// FacAgentIndex 是登记表的**只读视图**（安全模块/基座渲染用）。
+	FacAgentIndex = "agent.index"
 	// FacSyncBus 是内核就绪状态总线（kernelboot 提供）。
 	FacSyncBus = "kernel.syncbus"
 	// FacMigrationPreflight 是数据目录迁移体检（migration 模块提供，可空）。
@@ -637,3 +644,43 @@ type PromptSections interface {
 //
 // 它们存在只是为了省去每个 mod.go 里重复的"Require + 断言"三行样板；
 // 判据在 `ok==false` 时必须失败（装配契约），不许当默认值用。
+
+// ───────────────────────── agent 登记（C+D，§3.2.2） ─────────────────────────
+
+// AgentIndex 是 agent 记录的**只读视图**（叶子层，安全模块与基座都用它）。
+//
+// ## 为什么只读接口放这里
+//
+// 安全模块**不能** import `internal/agent/agent`（那是把墙焊到基座上），
+// 而它需要知道"这个 agent 被授权了什么"。所以：
+//
+//	internal/kernelapi/model   AgentFacts / AgentRecord（纯数据）
+//	internal/kernelapi         AgentIndex（只读接口，本类型）
+//	内核（Group 0 之后的装配）  AgentRegistry 实现，Provide(FacAgentIndex, …)
+//	kernelmod/security         Requires(FacAgentIndex)，Runtime 持只读句柄
+//
+// ## 契约（改语义就是改安全行为）
+//
+//   - **fail-open**：记录缺失（裸 agent / 单测）或 AllowedOutputs 为空 ⇒ 放行。
+//     fail-open 是存量契约：`device_id` 缺失、agent 未声明授权，改造前都是放行。
+//   - **deny 优先**：全局 policy deny 先判，再判父声明的 allow，顺序不变。
+//   - **profiles 校验不变**：未声明的档位名照样**响亮报错**。
+type AgentIndex interface {
+	// Facts 返回某 agent 的父声明事实（不存在 ⇒ ok=false）。
+	Facts(agentID string) (model.AgentFacts, bool)
+	// Present 报告某 agent 是否有记录（存活或已知）。
+	Present(agentID string) bool
+}
+
+// AgentRegistry 是 agent 记录的**写面**（只有实例生命周期写它）。
+type AgentRegistry interface {
+	AgentIndex
+	// Register 登记一个新 agent（覆盖同 ID 的旧记录）。
+	Register(rec model.AgentRecord) error
+	// Update 就地改一条记录（fn 返回后落库）。
+	Update(agentID string, fn func(*model.AgentRecord))
+	// Remove 删除一条记录（**唯一**的清理点）。
+	Remove(agentID string)
+	// Records 返回全部记录（状态面与持久化用）。
+	Records() []model.AgentRecord
+}

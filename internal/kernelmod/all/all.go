@@ -25,6 +25,7 @@ import (
 	// ★ 顺序**无关**：模块注册顺序由 init() 决定，而注册表刻意乱序
 	// （见 kernelmod/core.go）。真正的先后只由 Requires/Provides 决定。
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agentreg"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/config"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/device"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/docstore"
