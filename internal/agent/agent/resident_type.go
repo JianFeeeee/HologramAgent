@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 )
@@ -299,8 +300,25 @@ func installResidentHooks(a *Agent) {
 		// 由父决定（见 overflow 的 contextfull 路径）。
 		h.OverBudget = func(*Agent) bool { return false }
 	}
-	// Prune / EnforceOverflow 保持 nil：整窗型明确不做相关性裁剪，
-	// 也不做超页处置 —— 那是父的决定（用户裁定：丢事件的决定权在父）。
+	// ★ 驻留子的 OverflowHandler = **上报父**（不急裁）。
+	//
+	// 整窗型不做相关性裁剪，撞窗口时交给父决定（压缩 / 回收 / 销毁）——
+	// 丢事件的决定权在父（用户裁定）。所以它注册的不是"什么都不做"，
+	// 而是"把事实交给能决定的人"。
+	if h.OverflowHandler == nil {
+		h.OverflowHandler = func(x *Agent, _ *TaskFrame, req agenttypes.OverflowRequest) (bool, int) {
+			// 只看本地水位：`OverflowLocal` 且未 force 时才判；
+			// resume / air 两种时机对整窗型没有意义（它不裁）。
+			if req.Kind != agenttypes.OverflowLocal || req.Force {
+				return false, 0
+			}
+			if x.ContextLen() == 0 {
+				return false, 0
+			}
+			x.CheckContextFull()
+			return false, 0
+		}
+	}
 
 	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现。
 	if h.Loop == nil {

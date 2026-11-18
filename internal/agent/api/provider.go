@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -359,3 +360,18 @@ type ToolOutput struct {
 }
 
 func (t ToolOutput) String() string { return t.Text }
+
+// IsContextFull 报告一个 provider 错误是否表示「上下文装不下」。
+//
+// ## 归属：识别在上游调用的发出者，处置在类型
+//
+// `ErrContextFull` 是 provider 回给**发请求那一方**的事实。判定本身是纯协议
+// 事实（错误码 → 类别），与任何 agent 类型无关，所以它住在 `api` 这个叶子包，
+// 由内核的 LLM 设施与基座共用同一份实现 —— 不允许两处各写一遍。
+//
+// 处置（裁/剔页/抢占/终止/上报父/什么都不做）一律由该类型注册的
+// `OverflowHandler` 决定。
+func IsContextFull(err error) bool {
+	var pe *ProviderError
+	return errors.As(err, &pe) && pe.Kind == ErrContextFull
+}

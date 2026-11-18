@@ -332,8 +332,10 @@ func childKindRT() childpkg.Kind { return childpkg.KindRT }
 //	              由父决定保留哪些（父用 transcript 动作按需取回）。
 //	异步 loop     rtLoop 是 rt 自己的驱动（不经 RunTaskSteps）。
 //
-// 所以这里注册 ContextBudget（整窗）与 OverBudget（恒 false），
-// Prune / EnforceOverflow 保持 nil（明确的策略：不做）。
+// 所以这里注册 ContextBudget（整窗）、OverBudget（恒 false）与
+// **OverflowHandler = 滑窗**（见 rtchild.go 的 rtTrimToWindow /
+// rtReportContextFull）。rt **不是"不处置"**：它的处置是滑动窗口，
+// 滑无可滑时由 rtReportContextFull 上报父（CallParent L2, contextfull）。
 func installRTHooks(a *Agent) {
 	h := a.HooksValue()
 	if h.ContextBudget == nil {

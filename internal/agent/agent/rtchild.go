@@ -309,7 +309,12 @@ type rtChild struct {
 	mainRO *memory.GraphDB
 	slot   *rtSlot // 唯一输入入口：单槽覆盖
 	input  string  // inputch(rt) 的名字（采集侧灌入；成对的一半）
-	output string  // outputch(rt) 的设备名（内核把文本写进去）
+	// contextFullReported 保证"滑无可滑"只上报父一次（同一通电话里）。
+	//
+	// 滑无可滑是**持续状态**：不做得重去重会每轮往父的队列灌一条，
+	// 把父的上下文也顶满 —— 那就从"r t 装不下"变成"父也装不下"。
+	contextFullReported bool
+	output              string // outputch(rt) 的设备名（内核把文本写进去）
 
 	// createArg 是**创建它的原始参数**（admin_child 的 arg 原样留一份）。
 	//
@@ -1105,7 +1110,15 @@ func (a *Agent) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 	rc.mu.Lock()
 	history := append([]agentAPI.Message(nil), rc.history...)
 	rc.mu.Unlock()
-	msgs := a.buildRTContext(rc, history, input)
+	msgs, overflowed := a.buildRTContext(rc, history, input)
+	if overflowed {
+		// ★ 滑无可滑：窗口策略已失效（system + 本轮输入自己就装不下）。
+		//
+		// 这是 rt 的 `OverflowHandler` 应该做的事 —— 上报父，由父决定
+		// （缩短本轮 / 丢弃 / 回收这通电话）。此前这里**静默**把超窗请求
+		// 发出去，让上游返回 400，而父完全不知道发生了什么。
+		a.rtReportContextFull(rc, len(msgs))
+	}
 	tools := a.BuildToolDefs()
 	// 裁掉 output_send__*：rtchild 的输出走 outputch(rt)，不走主动输出门
 	// （那张门会要求模型显式点名通道，与"流式连续输出"是两套语义）。
@@ -1466,7 +1479,7 @@ func (a *Agent) rtSuperseded(rc *rtChild, seq uint64) bool {
 // 实现上靠"copy 一份再裁"保证：history 是入参的拷贝（调用方已 append 出
 // 新切片），rtTrimToWindow 只对这个临时切片动手。任何"就地裁 history"的
 // 改法都会让回收时的上下文残缺 —— 判据 TestRTChild_HistoryIsNeverTrimmed 钉它。
-func (a *Agent) buildRTContext(rc *rtChild, history []agentAPI.Message, input string) []agentAPI.Message {
+func (a *Agent) buildRTContext(rc *rtChild, history []agentAPI.Message, input string) ([]agentAPI.Message, bool) {
 	msgs := make([]agentAPI.Message, 0, len(history)+2)
 	msgs = append(msgs, agentAPI.Message{Role: "system", Content: rc.agent.systemPrompt})
 	msgs = append(msgs, history...)
@@ -1484,9 +1497,9 @@ func (a *Agent) buildRTContext(rc *rtChild, history []agentAPI.Message, input st
 //  1. msgs[0]（system）永不裁
 //  2. 最后一条（本轮 user 输入）永远保留 —— 它是这一轮要回答的东西
 //  3. 其余按组从旧到新丢，直到总量进窗口
-func rtTrimToWindow(msgs []agentAPI.Message, window int) []agentAPI.Message {
+func rtTrimToWindow(msgs []agentAPI.Message, window int) ([]agentAPI.Message, bool) {
 	if len(msgs) <= 2 || window <= 0 {
-		return msgs
+		return msgs, false
 	}
 
 	// ① 先按「组」切分（不含首尾两条）。
@@ -1521,6 +1534,10 @@ func rtTrimToWindow(msgs []agentAPI.Message, window int) []agentAPI.Message {
 		}
 		drop++
 	}
+	// ★ 滑无可滑：所有历史组都丢完了仍然超窗（system + 本轮输入自己就装不下）。
+	//   这是**策略失效**，不是"暂时超一点" —— 必须让调用方上报父，
+	//   而不是把这份超窗请求原样发出去等上游 400（此前就是那样静默失效的）。
+	unsatisfiable := drop == len(groups) && total > window
 
 	// ③ 组装：system + 剩余组 + 本轮输入。
 	out := make([]agentAPI.Message, 0, len(msgs)-drop)
@@ -1529,7 +1546,42 @@ func rtTrimToWindow(msgs []agentAPI.Message, window int) []agentAPI.Message {
 		out = append(out, g.msgs...)
 	}
 	out = append(out, msgs[len(msgs)-1])
-	return out
+	return out, unsatisfiable
+}
+
+// rtReportContextFull 是 rt 的 **overflow 上报**（滑无可滑时）。
+//
+// ## 为什么 rt 也有 overflow 处置，而不是"不处置"
+//
+// rt 的上下文管理是**滑动窗口**：视图按组丢最旧、`history` 永不裁。
+// 但滑窗有失效边界 —— 所有历史组都丢完、`system + 本轮输入`仍超窗时，
+// 滑窗什么也做不了。那时必须上报父（L2，与驻留子同一套协议），
+// 让父决定缩短本轮 / 丢弃 / 回收这通电话。
+//
+// 此前这条路径是**静默**的：把超窗请求原样发出去，让上游 400 ——
+// 父不知道、用户不知道、只有一行上游错误。这正是"策略失效却无人知晓"。
+//
+// ## 为什么不新开通道
+//
+// 走 `CallParent(L2, contextfull)`：父的入站 inputch + `InjectOptions.Priority`，
+// 与驻留子的 contextfull 同一套设施（用户裁定「复用现有基础设施，不另开一套」）。
+func (a *Agent) rtReportContextFull(rc *rtChild, msgCount int) {
+	if a == nil || rc == nil {
+		return
+	}
+	// 去重：同一通电话里滑无可滑是**持续状态**，每轮都报会把父的队列打满。
+	rc.mu.Lock()
+	already := rc.contextFullReported
+	rc.contextFullReported = true
+	rc.mu.Unlock()
+	if already {
+		return
+	}
+	log.Printf("[rt] %s: window unsatisfiable (%d msgs) — reporting contextfull to parent "+
+		"(sliding window strategy exhausted)", rc.ID, msgCount)
+	_ = rc.agent.CallParent(CallLevelMessage, CallKindContextFull, "", map[string]interface{}{
+		"callparent_msgs": msgCount,
+	})
 }
 
 // rtMsgTokens 估算一条消息的 token（正文 + 工具调用参数 + 工具结果）。

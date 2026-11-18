@@ -1,26 +1,30 @@
 package agent
 
+// overflow.go —— **基座只给数字与原语**（策略全部在类型侧）。
+//
+// ## 这个文件里有什么
+//
+//	ContextLen                条数
+//	TokenOf(i)                第 i 条的 token 成本
+//	AccumulatedTokens         积累量（未裁剪）
+//	ContextWindowTokens       窗口上限
+//	OverflowRatioNow          积累量 / 窗口
+//	EvictOversizedPages       页级剔除原语
+//	PruneForQuery             裁剪原语（按 query 走注册的 Prune）
+//
+// ## 这里**没有**什么（全部搬走了，别再搬回来）
+//
+//	阈值 1.25 / 恢复预算 2         → mainagent（主 agent 的上下文哲学）
+//	HasOversizedFrame             → mainagent（"frame/水页"是 TaskFrame 的抽象）
+//	SingleEventFitsBudget         → mainagent
+//	OverflowStat / NoteOverflow*  → mainagent.OverflowLedger（记的是"我的策略做了什么"）
+//	RaiseContextOverflow / 空中断 → mainagent（类型自己投 self input，基座只透传标签）
+//	"超页入口的薄封装"那一族      → 已删（task.go 三处调用点直调 OverflowHandler）
+//	"上游错误是不是超页"的判定    → api.IsContextFull（识别归上游调用的发出者）
+//
 import (
-	"errors"
-	"strings"
-
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
-	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 )
-
-// 上下文超页（context overflow）处理。
-//
-// 背景（2026-10-01 记忆召回跑分 v4 实测）：HA 的 prompt 是锯齿波，峰值达
-// 窗口的 7 倍，每轮都在「远超窗口 → 紧急修剪」。根因之一是超页的三条触发
-// 路径没有统一出口：
-//
-//	① 上游 context_full 错误 —— 完全没接，整轮 outcomeFailed（用户在报错里看到它）
-//	② 本地积累超限       —— 只在轮首 checkContextFull，且根 agent no-op、一次性
-//	③ 子 agent contextfull —— 已在用 L4 上报，但只推信号不携带动作
-//
-// 本文件把三条路径收敛到 L4 唯一入口（raiseKernelInterrupt），并把「裁剪」
-// 做成同步动作 —— 详见 docs/zh/context-overflow-l4-design.md。
 
 // accumulatedTokens 估算**未裁剪**的积累上下文 token 数。
 //
@@ -100,113 +104,6 @@ func (a *Agent) OverflowRatioNow() float64 {
 		return 0
 	}
 	return float64(a.AccumulatedTokens()) / float64(max)
-}
-
-// enforceContextBudget 是**上下文容量保护**的唯一实现（基础设施）。
-//
-// ## 为什么它是基础设施，而不是某个组件的功能
-//
-// 上下文会在**每个注入点**增长：新消息、中断注入、任务恢复（中断任务的结果
-// 已提交进 a.context，重建出的前缀更大）、以及轮内工具回灌。因此"装不下就裁"
-// 必须在这些入口都成立，而不是只在某一条路径上碰巧被调用。
-//
-// ��史（2026-10-25 前的三个半成品入口，现已全部收敛到这里）：
-//
-//	task.go 发 LLM 前   maybeHandleContextOverflow（有恢复预算）
-//	task.go 上游报错     handleUpstreamContextFull（**直调内部，绕过预算**）
-//	resident.go 轮首     checkContextFull（只对驻留子生效，根 agent no-op）
-//
-// 三个入口、三套判据、三份防护差异 —— 这就是"额外造的一套机制"。
-//
-// ## force 的语义
-//
-// force 不是"另一条路径"，只是**判定已被外部短路**：
-//
-//	force=false  本地水位判定：积累量 > ratio × 窗口
-//	force=true   外部已确认超页（如 provider 返回 ErrContextFull）
-//
-// 之后的一切（恢复预算、裁剪、raise L4）完全相同 —— 这正是"复用语义"的落点。
-//
-// 返回 handled 表示本帧需要重跑（f.Msgs 已过期，必须重建）；
-// 若 f.Terminal == terminalError 则表示恢复预算耗尽，调用方应直接终止。
-//
-// 幂等：未超页时零开销（一次 token 估算 + 一次比较），可安全地在热路径调用。
-func (a *Agent) EnforceContextBudget(f *TaskFrame, query string, force bool) (handled bool, pruned int) {
-	// ★ 超页处置是**类型注册的钩子**：未注册 ⇒ 本类型不做（整窗型靠
-	//   contextfull 上报父 agent 决策，见本文件顶部注释）。
-	if a == nil || a.hooks.OverflowHandler == nil {
-		return false, 0
-	}
-	return a.hooks.OverflowHandler(a, f, agenttypes.OverflowRequest{
-		Kind: agenttypes.OverflowLocal, Query: query, Force: force,
-	})
-}
-
-// maybeHandleContextOverflow 保留为发 LLM 请求前的薄封装（历史调用点）。
-//
-// 它现在只是 enforceContextBudget 的一个调用点，不再持有独立判据。
-func (a *Agent) MaybeHandleContextOverflow(f *TaskFrame, query string) (handled bool, pruned int) {
-	return a.EnforceContextBudget(f, query, false)
-}
-
-// enforceResumeContextBudget 是**任务恢复**入口的容量保护。
-//
-// 与通用 enforceContextBudget 的区别只有两点，但都很关键：
-//
-//  1. **query 取任务帧的最新有效上下文**，不是 f.Input。
-//     被恢复的任务可能已挂起很久，它的 f.Input 与当前对话早已不同步；
-//     拿旧 Input 去算相关性，会裁掉"对该任务重要、但字面上不匹配旧输入"
-//     的事件——恢复出来的任务反而失去了它自己的现场。
-//     这里的做法是取该帧**尾部最后一条有内容的消息**（f.Msgs 的末条），
-//     那才是它此刻真正要继续做的东西。
-//
-//  2. **保护范围是该任务帧自己的尾部**，不是全局上下文的末尾 N 条。
-//     PruneWithProtected 默认保护的 c.events 末 N 条是"最近的对话"，
-//     而被挂起的任务在现场里可能攒了整批工具结果——那些必须一起保住，
-//     否则恢复后 f.Msgs[PrefixLen:] 引用的内容已被归档，任务自相矛盾。
-//
-// 判据仍是容量（不看声明）：声明式裁剪归 pruneOnInput / stepToolAfter，
-// 那是业务策略；这里是"装不下就得裁"的基础设施。
-func (a *Agent) EnforceResumeContextBudget(f *TaskFrame) (handled bool, pruned int) {
-	// ★ 与 EnforceContextBudget 同理：**决策由类型注册的钩子做**，基座只转发。
-	//   「恢复时怎么处置」是类型策略（整窗型靠 contextfull 上报父，
-	//   策略裁剪型在 standard 里有一份标准实现）。
-	//
-	// ★★ 这里**必须先判空 f**，且把 query 的推导也一起传下去 ——
-	//   因为不同类型的策略对 "query 取什么" 的判断不同（恢复场景要用
-	//   本帧最新上下文，不是 f.Input）。传 f 与 query 两者都给策略，
-	//   策略自己决定用哪个（standard 用 query，整窗型根本不看）。
-	if a == nil || a.hooks.OverflowHandler == nil || f == nil {
-		return false, 0
-	}
-	return a.hooks.OverflowHandler(a, f, agenttypes.OverflowRequest{
-		Kind: agenttypes.OverflowResume, Query: resumeQueryFrom(f),
-	})
-}
-
-// resumeQueryFrom 取任务帧的**最新有效上下文**作为相关性查询。
-//
-// 从尾部往回找第一条有实质内容的消息：恢复时 f.Msgs 的最后一条
-// 可能是 tool 结果、continuation 占位或空的 assistant 消息，
-// 直接拿它算相关性会退化成无意义查询。
-func resumeQueryFrom(f *TaskFrame) string {
-	for i := len(f.Msgs) - 1; i >= 0; i-- {
-		if c := strings.TrimSpace(f.Msgs[i].Content); c != "" {
-			return c
-		}
-	}
-	return f.Input
-}
-
-// isUpstreamContextFull 判定上游错误是否表示「上下文装不下」。
-//
-// 它只做**判定**，不做处理：处理一律交给 EnforceContextBudget(force=true)。
-// 此前这里叫 handleUpstreamContextFull，自己又调了一遍 handleContextOverflow ——
-// 那等于在中断语义之外另造一套裁剪，绕过恢复预算，且与 raise L4 抢占的
-// 任务互相抢跑（2026-10-25 实测）。
-func isUpstreamContextFull(llmErr error) bool {
-	var pe *agentAPI.ProviderError
-	return errors.As(llmErr, &pe) && pe.Kind == agentAPI.ErrContextFull
 }
 
 // ContextLen 是 nil 安全的上下文条数（基座的**纯读数字**之一）。

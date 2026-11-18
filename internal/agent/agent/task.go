@@ -297,10 +297,38 @@ func (a *Agent) RebaseFramePrefix(f *TaskFrame) {
 	// 闸门补救——而那时已经付过一次超限请求的代价。
 	//
 	// 用的是**恢复专用**入口：相关性按本帧最新上下文算、保护范围是本帧自己的
-	// 现场（f.Msgs[PrefixLen:]），而不是全局末尾 N 条。见 enforceResumeContextBudget。
-	if handled, _ := a.EnforceResumeContextBudget(f); handled && f.Terminal == agenttypes.TerminalError {
-		return // 预算耗尽：f.Err 已写明，调用方据此终止
+	// 现场（f.Msgs[PrefixLen:]），而不是全局末尾 N 条。
+	//
+	// ★ Query 由基座**推导**（"本帧最新一条有内容的消息"是帧的事实，不是策略），
+	//   但"恢复时怎么处置"由类型注册的 handler 决定。
+	if h := a.hooks.OverflowHandler; h != nil {
+		if handled, _ := h(a, f, agenttypes.OverflowRequest{
+			Kind: agenttypes.OverflowResume, Query: resumeQueryFrom(f),
+		}); handled && f.Terminal == agenttypes.TerminalError {
+			return // 预算耗尽：f.Err 已写明，调用方据此终止
+		}
 	}
+}
+
+// resumeQueryFrom 取任务帧的**最新有效上下文**作为相关性查询。
+//
+// 从尾部往回找第一条有实质内容的消息：恢复时 f.Msgs 的最后一条
+// 可能是 tool 结果、continuation 占位或空的 assistant 消息，
+// 直接拿它算相关性会退化成无意义查询。
+//
+// ★ 它住基座而不是类型：这是**帧的事实推导**（只读 f.Msgs），与
+//
+//	"用哪种 context 实现"无关，也不摸任何实现句柄。
+func resumeQueryFrom(f *TaskFrame) string {
+	if f == nil {
+		return ""
+	}
+	for i := len(f.Msgs) - 1; i >= 0; i-- {
+		if c := strings.TrimSpace(f.Msgs[i].Content); c != "" {
+			return c
+		}
+	}
+	return f.Input
 }
 
 // prepareInputTask 执行 processInput 的前半段（去重、通道解析、阶段、裁剪、
@@ -632,19 +660,23 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 // 取消（context.Canceled 且 agent 未退出）时**留在本 step 并 Turn++**——等价于
 // 原实现的 `continue`：重新排空中断、补占位、重新请求。抢占挂起将在 M3 从这里接管。
 func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
-	// ★ 本地超页预判：每次发 LLM 请求**之前**检查积累上下文，覆盖轮内 tool 回环。
-	//   轮内工具回灌会把积累量推到窗口数倍，而现状只在轮首检查
-	//   （checkContextFull，且根 agent no-op）—— 等轮首才发现时，
-	//   整轮工具调用的代价已经付掉了。
-	//   必须在这里做而不能更早：f.Msgs 在上一行之前已经拼好，
-	//   而本次裁剪会让它过期。
-	if handled, _ := a.MaybeHandleContextOverflow(f, ""); handled {
-		if f.Terminal == terminalError {
-			return outcomeFailed // 恢复预算耗尽，f.Err 已写明
+	// ★ 类型自己的**策略巡检**：每次发 LLM 请求**之前**问一次。
+	//
+	//   · 这是"我要在付代价之前处置我的上下文"——只有类型知道该在哪些时刻问
+	//     （拼消息后、工具回灌后、恢复重建后），所以它留在这里；
+	//   · 内核那两次触发（把请求交给 provider 之前 / 收到 ErrContextFull 之后）
+	//     是另一条来源，内核调的是同一个 handler。
+	//
+	// 未注册 handler ⇒ 什么都不做（那是明确的策略：整窗类型靠上报父）。
+	if h := a.hooks.OverflowHandler; h != nil {
+		if handled, _ := h(a, f, agenttypes.OverflowRequest{Kind: agenttypes.OverflowLocal}); handled {
+			if f.Terminal == terminalError {
+				return outcomeFailed // 恢复预算耗尽，f.Err 已写明
+			}
+			// 已处置：f.Msgs 必须在 stepPrepare 重建，这里那份就是超限那份。
+			f.Step = StepPrepare
+			return outcomeContinue
 		}
-		// 已裁剪：f.Msgs 必须在 stepPrepare 重建，这里那份就是超限那份。
-		f.Step = StepPrepare
-		return outcomeContinue
 	}
 
 	// zen 兼容网关要求请求的最后一条消息必须是 user(thinking 续写模式校验),
@@ -690,8 +722,11 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 		// 这里**不另立路径**：上游报错只是「判定已被短路」的一种（force=true），
 		// 之后的恢复预算 / 裁剪 / raise L4 与本地预判完全相同，共用同一个函数。
 		// 区别仅在于：本地预判在发请求**之前**判，这里在**收到错误之后**判。
-		if isUpstreamContextFull(llmErr) {
-			handled, _ := a.EnforceContextBudget(f, "", true)
+		if agentAPI.IsContextFull(llmErr) {
+			var handled bool
+			if h := a.hooks.OverflowHandler; h != nil {
+				handled, _ = h(a, f, agenttypes.OverflowRequest{Kind: agenttypes.OverflowLocal, Force: true})
+			}
 			if handled {
 				if f.Terminal == terminalError {
 					return outcomeFailed // 恢复预算耗尽，f.Err 已写明
