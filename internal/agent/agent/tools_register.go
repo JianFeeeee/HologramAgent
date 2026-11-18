@@ -100,7 +100,7 @@ func init() {
 
 	// ── 子侧：向上汇报 + 写处理表 ──
 	//
-	// 侧别由**注册声明**，不是基座里的 `if a.hooks.IsChild` ——
+	// 侧别由**注册声明**，不是基座里的 `if a.isChildAgent()` ——
 	// 后者会让基座重新认识"谁是子"这个类型结论。
 	registerTool("notify_parent",
 		"向主 agent 汇报（以 L3 中断投给它）。用于主动报告进展/结论，而不是等它来问。",
@@ -169,9 +169,9 @@ func toolPluginOf(name string) string {
 //
 // ★ 这是唯一一处"基座把层级事实翻译成侧别"的地方，而且它读的是
 //
-//	hooks.IsChild（层级事实），不是类型名。类型模块自己不再参与。
+//	`isChildAgent()`（层级数据事实），不是类型名。类型模块自己不再参与。
 func (a *Agent) sideOf() registry.Side {
-	if a.hooks.IsChild {
+	if a.isChildAgent() {
 		return registry.SideChild
 	}
 	return registry.SideParent
@@ -192,7 +192,7 @@ func (a *Agent) registryToolDefs() []interface{} {
 		out = append(out, toolDefWith(t.Name, t.Description, t.Properties, t.Required, opts))
 	}
 	// 表生成型声明（随类型增删而变，不能当静态注册项）。
-	if !a.hooks.IsChild {
+	if !a.isChildAgent() {
 		for _, d := range registry.ChildAdminTools() {
 			opts := toolDefOptions{parallel: d.Parallel, noMemory: d.NoMemory, timeout: d.Timeout}
 			out = append(out, toolDefWith(d.Name, d.Description, d.Properties, d.Required, opts))

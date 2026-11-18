@@ -51,24 +51,12 @@ type RuntimeHooks struct {
 }
 
 type Hooks struct {
-	// ── 类型身份（**数据事实**，不是类型结论）──
+	// ── 类型身份：**不占槽位**（用户裁定 2026-11-18）──
 	//
-	// IsChild 回答"我是不是某个父下的子 agent"。它是**层级事实**
-	// （`parentID != ""`），不是类别判断 —— 驻留子与 rtchild 都是子，
-	// 但它们的上下文/loop/toolcall 完全不同，那些差异走下面的槽位。
-	IsChild bool
-	// IsRealtime 回答"我是不是实时通话子 agent"（rt 的语义：单槽覆盖、
-	// 最新者胜、一切接口异步）。由 rt 模块注册为 true。
-	IsRealtime bool
-	// ComeFrom 给出本 agent 发起工具调用时的来源标签
-	// （`comefrom.go` 用它让插件判定"这次调用是谁发起的"）。
-	// 子 agent 是 internal（转投保留原事件来源，但执行者变了）；根是 user。
-	ComeFrom string
-	// MayOffload 回答"本 agent 允不允许把积压任务转投给驻留子"。
-	//
-	// 只有主 agent 注册为 true：让子再去拉孙子会形成无界增殖
-	// （每层都能拉 MAX 个），而积压的源头是根那一条调度链。
-	MayOffload bool
+	// IsChild / ComeFrom 是**数据事实**（层级 → `AgentConfig.ParentID`），
+	// 不是行为回调；IsRealtime 是 rt 自己知道的事（自我 set/get 的循环已删）；
+	// MayOffload 是**类型能力**，归 `registry.Descriptor.Meta`。
+	// 数据和能力都走"声明"，不走"槽位"。
 
 	// Runtime is the single lifecycle registration for this type.
 	Runtime RuntimeHooks
@@ -107,20 +95,14 @@ type Hooks struct {
 	// RunStage 执行某个阶段的插件处理器。nil ⇒ 基座退化为"无插件阶段"。
 	RunStage func(a *Agent, stage string, ctx any) bool
 
-	// GraphMemory 是本 agent 的图记忆面（可 nil = 没有图记忆）。
+	// ── 这里**没有**什么（用户裁定 2026-11-18）──
 	//
-	// ★ 它是**可选槽位**（用户 2026-11-17 纠正：图记忆是可选配置）：
-	//   主 agent 装 `*memory.GraphDB`；驻留/rt 装 `*memory.LightMemory`；
-	//   工作式子与独立工具装 nil。
-	GraphMemory GraphMemory
-
-	// ── 槽位 3：内核服务（安全等）──
-
-	// SecurityGate 是安全防火墙的数据面闸门（可 nil = 未启用）。
-	//
-	// 其余内核能力（插件注册表、文档记忆、知识库…）**不进 Agent 字段**：
-	// 类型模块在自己的装配点经 `kstate.Require` 取，基座一个都不持有。
-	SecurityGate SecurityGate
+	//	GraphMemory   图记忆是**类型内部实现**（三形态 + 一无：主 `*GraphDB` /
+	//	              驻留·rt `*LightMemory` / worker 无）。一个槽位表达不了，
+	//	              已改为类型自己持有，句柄经 `AgentConfig` 落到 `Agent.graph`。
+	//	SecurityGate  安全判定归**安全模块**；配置事实进 `AgentConfig.Security`。
+	//	              基座只被查询（`Gate()`），未装配时运行态是 `Unguarded`。
+	//	Prune / OverBudget  已并入 `OverflowHandler` 的策略内部。
 }
 
 // Tool execution is a base/kernel service and is not a hook. The tool-request
@@ -132,7 +114,6 @@ type Hooks struct {
 // Tool execution is a base/kernel service and is not a hook.
 //
 //	合法为空：OverflowHandler（整窗策略由「上报父」处置）
-//	        GraphMemory（图记忆是可选配置）
 //	        RunStage（无插件阶段时基座退化为直通）
 //
 // 返回值是**给装配点看的错误文案**，说明缺哪个槽位以及该由谁注册。
@@ -146,7 +127,6 @@ func (h Hooks) Validate(who string) error {
 		{"ContextBudget", h.ContextBudget != nil, "由类型模块注册（主：RelevanceContext；驻留/rt：整窗）"},
 		{"Loop", h.Loop != nil, "由类型模块注册（kit.Loop 或 rt 的 Asyncloop）"},
 		{"Runtime", h.Runtime.Initialize != nil && h.Runtime.Start != nil && h.Runtime.Stop != nil, "由类型模块注册完整 runtime 生命周期对象"},
-		{"SecurityGate", h.SecurityGate != nil, "由类型模块在装配点从 kernelapi.FacSecurity 取"},
 	}
 	for _, s := range slots {
 		if !s.set {

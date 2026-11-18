@@ -146,7 +146,7 @@ func (a *Agent) ReviewTask() PeriodicTask {
 
 // OffloadTask 返回"积压任务转投"（未启用或本类型不转投时返回零值，注册被拒）。
 func (a *Agent) OffloadTask() PeriodicTask {
-	if !a.MainState().offload.Enabled || !a.hooks.MayOffload {
+	if !a.MainState().offload.Enabled || !a.cfg.Offload.Enabled {
 		return PeriodicTask{}
 	}
 	interval := a.MainState().offload.BusyAfter / 5

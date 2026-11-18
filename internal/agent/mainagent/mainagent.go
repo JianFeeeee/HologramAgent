@@ -73,8 +73,6 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 		Start:      func(a *agent.Agent) { a.StartMainRuntime() },
 		Stop:       func(a *agent.Agent) { a.StopMainRuntime() },
 	}
-	// ── 类型身份（数据事实，不是行为）──
-	h.ComeFrom = ComeFrom
 
 	a.SetHooks(h)
 

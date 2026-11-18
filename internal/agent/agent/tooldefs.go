@@ -703,7 +703,7 @@ func (a *Agent) BuildToolDefs() []interface{} {
 
 	// ★★ **注册表驱动的工具**（用户 2026-11-18 质问的修法）。
 	//
-	// 这里不再写任何 `if a.hooks.IsChild` + 工具名字面量：
+	// 这里不再写任何 `if isChild` + 工具名字面量：
 	// 每条工具的 schema/侧别/归属/执行体都在 registry 里登记过，
 	// 基座只按"我的侧别"取表渲染。
 	//

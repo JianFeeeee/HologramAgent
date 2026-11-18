@@ -44,15 +44,18 @@ import (
 
 // gate 返回安全闸（**强制的透明层**，用户裁定 2026-11-17）。
 //
-// ★ 它是 hooks.SecurityGate，不是 security.Runtime 字段：
-// 基座不认识安全模块的实现类型，只经 kernelapi 的接口调用。
-// 语义上"未启用"不是 nil —— 装配点会装 Disabled Runtime（判定零成本透传）。
-// nil 只在单测/独立工具里出现（它们不跑整机装配）。
+// ★ 它**不是 Hooks 槽位**（用户裁定 2026-11-18：安全判定归安全模块，
+//
+//	配置事实进 `AgentConfig`）。基座不认识安全模块的实现类型，只经
+//	`kernelapi.SecurityGate` 调用。
+//
+// 语义上"未启用"不是 nil —— 装配点会装 Disabled Runtime（判定零成本透传）；
+// nil 只在单测/独立工具里出现，那时运行态是 `Unguarded`（见 posture.go）。
 func (a *Agent) Gate() kernelapi.SecurityGate {
 	if a == nil {
 		return nil
 	}
-	return a.hooks.SecurityGate
+	return a.cfg.Security
 }
 
 // beginSecurityRound 在一条输入开始处理时调用：
@@ -72,7 +75,7 @@ func (a *Agent) BeginSecurityRound(payload map[string]interface{}, source string
 	rc, err := g.BeginRound(model.RoundInput{
 		AgentID: string(a.id),
 		// IsChild 是**事实**（有父就是子），不是类别结论。
-		IsChild: a.hooks.IsChild,
+		IsChild: a.isChildAgent(),
 		Payload: payload,
 		Source:  source,
 	})
@@ -131,7 +134,7 @@ func (a *Agent) securityScope() kernelapi.SecurityScope {
 		return nil
 	}
 	a.securityScopeOnce.Do(func() {
-		a.securityScopeView = g.ForAgent(string(a.id), a.hooks.IsChild)
+		a.securityScopeView = g.ForAgent(string(a.id), a.isChildAgent())
 	})
 	return a.securityScopeView
 }
@@ -185,7 +188,7 @@ func (a *Agent) SetSecurity(g kernelapi.SecurityGate) {
 	if a == nil {
 		return
 	}
-	a.hooks.SecurityGate = g
+	a.cfg.Security = g
 }
 
 // ───────────────────── 判据专用探针（非生产接口） ─────────────────────
@@ -349,7 +352,7 @@ func (a *Agent) ReviewToolResultContent(tool, text string) []model.Finding {
 		Tool:      tool,
 		AgentID:   string(a.id),
 	}
-	findings, _, _ := g.ScanContentForAgent(string(a.id), a.hooks.IsChild, ins, text)
+	findings, _, _ := g.ScanContentForAgent(string(a.id), a.isChildAgent(), ins, text)
 	if len(findings) > 0 {
 		var kinds []string
 		for _, f := range findings {

@@ -74,10 +74,12 @@ var ErrRTChannelNotPaired = errors.New("rt 通道必须成对（inputch + output
 // （New(AgentConfig) / SpawnResident / runChildTask），rt 的骨架要复用其中一部分。
 // 但**校验**不能因此变松：AssignRealtime 会读这个标记，未标记的 agent
 // 一律拒划 rt 通道（判据 TestAssignRealtimeRejectsNonRTAgent）。
-func (a *Agent) AsRealtime() { a.hooks.IsRealtime = true }
+// AsRealtime 曾是 rt 自己 set、自己 get 的槽位循环（用户裁定：直接删）。
+// rt 的身份由它自己的包知道（它注册自己的 Loop / 槽位），不需要在基座留标记。
+func (a *Agent) AsRealtime() {}
 
 // IsRealtime 报告本 agent 是否为 rtchild。
-func (a *Agent) IsRealtime() bool { return a != nil && a.hooks.IsRealtime }
+func (a *Agent) IsRealtime() bool { return a != nil && a.cfg.IsRealtime }
 
 // AssignRealtime 把一个 **rt 通道**划给本 agent。
 //

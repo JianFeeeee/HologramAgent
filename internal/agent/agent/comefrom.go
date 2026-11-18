@@ -89,10 +89,8 @@ func (a *Agent) ComefromForAgent() string {
 	if a == nil {
 		return comeFromUser
 	}
-	if a.hooks.ComeFrom != "" {
-		return a.hooks.ComeFrom
-	}
-	return comeFromUser
+	// ★ 来源标签是**构造期数据事实**（有没有父），不占槽位。
+	return comeFromFor(a.cfg.ParentID)
 }
 
 // comeFromFor 由**层级事实**推导来源标签。

@@ -51,8 +51,9 @@ type Agent struct {
 	taskPrompt   string
 	dataDir      string
 
-	// ★ 原先这里有 isRealtime 字段。它已改为 `hooks.IsRealtime`
-	// （用户裁定：类型身份走注册的钩子，不走字段 + 类型分支）。
+	// ★ 原先是 `isRealtime` 字段 → `hooks.IsRealtime` 槽位 → 现在两者都没有：
+	// rt 的身份由它自己的包知道（它注册自己的 Loop 与槽位），
+	// 基座不留标记，更不按标记分支。
 	//
 	// 与通道侧的 CapRT 仍是两个不同结构：
 
@@ -470,17 +471,8 @@ func New(cfg AgentConfig) *Agent {
 		maxToolTurns:   cfg.MaxToolTurns,
 		// ★ IsRealtime 现在是**钩子**（装配期由 rt 模块注册），不是字段。
 		//   这里只把 cfg 的意图带过去，保持构造点签名不变。
-		cfg: cfg,
-		hooks: Hooks{
-			// ★ 类型身份从**构造参数**转成**钩子**（用户裁定：回调注册，
-			// 不按类型分支）。类型模块可在 SetHooks 里覆盖这两项。
-			IsRealtime: cfg.IsRealtime,
-			IsChild:    cfg.ParentID != "",
-			ComeFrom:   comeFromFor(cfg.ParentID),
-			// ★ 安全闸→钩子（强制的透明层）：类型模块经 kernelapi 取到实现后
-			//   断言成 SecurityGate 传进来，基座只经接口调用，不认识实现类型。
-			SecurityGate: cfg.Security,
-		},
+		cfg:       cfg,
+		hooks:     Hooks{},
 		publisher: agentEventBus{bus: cfg.EventBus, who: string(cfg.ID)},
 		lastInput: make(map[string]time.Time),
 	}
@@ -675,6 +667,14 @@ func (a *Agent) Logf(format string, args ...any) {
 }
 
 func (a *Agent) ID() types.AgentID { return a.id }
+
+// isChildAgent 报告本 agent 是不是某个父下的子（**层级数据事实**）。
+//
+// ★ 它不是槽位、不是类型结论：就是"有没有父"这个构造期事实
+// （用户裁定 2026-11-18：IsChild 是数据事实，不该占行为钩子）。
+func (a *Agent) isChildAgent() bool {
+	return a != nil && a.cfg.ParentID != ""
+}
 
 // IsOutputAllowed 是**渲染判据**：决定某个输出通道要不要出现在工具表里。
 //

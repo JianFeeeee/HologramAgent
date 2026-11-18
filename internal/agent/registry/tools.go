@@ -33,7 +33,7 @@ package registry
 //
 // 同一个类型在父侧贡献工具（admin_child 的入口、spawn_child），在子侧
 // 贡献另一些（notify_parent、inputch_note）。若把"谁能看到什么工具"
-// 写成基座里的 `if a.hooks.IsChild`，基座又认识了类型语义。
+// 写成基座里的 `if isChildAgent()`，基座又认识了类型语义。
 // 侧别是**注册时声明的事实**，基座只做「按我的侧别取表」。
 
 import (

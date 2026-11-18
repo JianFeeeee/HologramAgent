@@ -97,11 +97,8 @@ func (a *Agent) NormalizeNilServices() {
 	if a.graph != nil && isNilValue(a.graph) {
 		a.graph = nil
 	}
-	if a.hooks.SecurityGate != nil && isNilValue(a.hooks.SecurityGate) {
-		a.hooks.SecurityGate = nil
-	}
-	if a.hooks.GraphMemory != nil && isNilValue(a.hooks.GraphMemory) {
-		a.hooks.GraphMemory = nil
+	if a.cfg.Security != nil && isNilValue(a.cfg.Security) {
+		a.cfg.Security = nil
 	}
 }
 
