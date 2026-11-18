@@ -161,25 +161,6 @@ func (r *principalRegistry) RemoveByID(id string) {
 	r.mu.Unlock()
 }
 
-// lookup 取出与主体相关的全部策略（ID + 每个标签）。
-func (r *principalRegistry) lookup(p Principal) []PrincipalPolicy {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var out []PrincipalPolicy
-	if pol, ok := r.byID[p.ID]; ok {
-		out = append(out, pol)
-	}
-	for _, tag := range p.Tags {
-		if pol, ok := r.byTag[tag]; ok {
-			out = append(out, pol)
-		}
-	}
-	return out
-}
-
 // DeclarePrincipalPolicy 是**插件声明主体策略**的入口（SDK 转发到这里）。
 //
 // scope 语义：
@@ -253,7 +234,7 @@ func (r *Runtime) checkToolForWithProfile(p Principal, profileName, tool string)
 	if d := r.checkToolWithProfile(p, profileName, tool); !d.Allowed {
 		return d
 	}
-	pols := r.principals.lookup(p)
+	pols := r.lookup(p)
 	if len(pols) == 0 {
 		return allowed()
 	}

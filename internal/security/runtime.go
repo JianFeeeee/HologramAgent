@@ -45,12 +45,10 @@ type Runtime struct {
 	policy Policy
 	// content 是内容审查策略（敏感词 + 注入检测）。
 	content ContentPolicy
-	// outputsByAgent / outputsMu 是**输出授权**的登记表（declare → check）。
-	//
-	// ★ 2026-11-17：设备/通道授权判定从 agent 字段搬到本模块（用户裁定
-	// 「设备是否授权不应该安全模块负责吗？」）。语义不变（空 = 完整授权）。
-	outputsMu      sync.RWMutex
-	outputsByAgent map[string][]string
+	// 输出授权（2026-11-17 从 agent 字段搬到本模块）现在住在**agent 记录**上：
+	// `AgentRecord.Facts.AllowedOutputs`（§3.2.2 五表合一）。
+	// 判定仍是本模块（CheckOutput），但**不再自己维护一张表** ——
+	// 清理点只剩"记录消失"一处。
 
 	// scopes 是插件可声明的轮次作用域（内核持有，deny 优先）。
 	scopes *ScopeRegistry
@@ -106,6 +104,8 @@ type Runtime struct {
 	//
 	// nil = 未接入（裸 Runtime / 单测）⇒ fail-open，与改造前逐字一致。
 	agentIndex kernelapi.AgentIndex
+	// agentRegistry 是同一张表的**写面**（授权/子策略声明转写到它）。
+	agentRegistry kernelapi.AgentRegistry
 }
 
 // NewRuntime 用已装好的变量库构造运行时。

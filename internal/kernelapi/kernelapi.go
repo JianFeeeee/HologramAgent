@@ -684,3 +684,22 @@ type AgentRegistry interface {
 	// Records 返回全部记录（状态面与持久化用）。
 	Records() []model.AgentRecord
 }
+
+// AgentRegistryOf 从闸门取出记录表的**写面**（未装配 ⇒ nil）。
+//
+// ★ 为什么挂在闸门上而不是单独注入：记录表与安全模块是**同一组装配事实**
+//
+//	（记录描述"谁被授权了什么"，闸门执行判定）。让 agent 只接一个字段，
+//	就不会出现"登记表接了、闸门没接"这种半装状态。
+//
+// 语义：nil = 该部署没有记录表（裸 agent / 裁剪版内核）⇒ 调用方跳过登记，
+// 判定侧 fail-open（与改造前逐字一致）。
+func AgentRegistryOf(g SecurityGate) AgentRegistry {
+	if g == nil {
+		return nil
+	}
+	if p, ok := g.(interface{ Registry() AgentRegistry }); ok {
+		return p.Registry()
+	}
+	return nil
+}

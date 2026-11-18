@@ -87,6 +87,9 @@ func (g gateAdapter) CheckOutput(agentID string, channel string) model.Decision 
 	return g.rt.CheckOutput(agentID, channel)
 }
 
+// Registry 暴露记录表的写面（agent 登记/删除用；未注入 ⇒ nil）。
+func (g gateAdapter) Registry() kernelapi.AgentRegistry { return g.rt.agentRegistry }
+
 func (g gateAdapter) ClampPriority(declared string, privileged bool) string {
 	return g.rt.ClampPriority(declared, privileged)
 }

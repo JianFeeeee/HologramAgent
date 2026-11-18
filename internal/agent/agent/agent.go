@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"log"
 	"sync"
 	"time"
+
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 
 	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
@@ -471,6 +474,28 @@ func New(cfg AgentConfig) *Agent {
 
 	// ★ 授权事实声明给**安全模块**（用户裁定 2026-11-17）。
 	//   agent 只提供事实（谁被委派了什么），判定由安全模块做。
+	//
+	// ★ 2026-11-18（§3.2.2）：事实现在落在 **agent 记录表**上
+	//   （`AgentRecord.Facts`），安全模块判定时读它。所以这里先登记记录：
+	//   一条记录同时承载输出授权、工具策略、长期档位 —— 清理点只剩 Remove。
+	//
+	// 无记录表（裸 agent 单测）⇒ 跳过：判定侧 fail-open，行为与改造前一致。
+	if reg := kernelapi.AgentRegistryOf(a.Gate()); reg != nil {
+		rec := model.AgentRecord{
+			ID:        string(a.id),
+			ParentID:  a.cfg.ParentID,
+			Lifecycle: "running",
+			Arg:       map[string]interface{}{},
+			Facts: model.AgentFacts{
+				AllowedOutputs: a.allowedOutputs,
+				AllowedTools:   a.cfg.AllowedTools,
+				DenyTools:      a.cfg.DenyTools,
+			},
+		}
+		if err := reg.Register(rec); err != nil {
+			log.Printf("[agent] register agent record %q failed: %v", a.id, err)
+		}
+	}
 	if g := a.Gate(); g != nil {
 		g.DeclareOutputs(string(a.id), a.allowedOutputs)
 	}
@@ -548,9 +573,12 @@ func (a *Agent) Stop() {
 		l.UnregisterInputSink(string(a.id))
 	}
 	a.ReleaseSecurityScope()
-	// 授权事实也一起撤销（防同名重建继承旧授权，与主体策略同纪律）。
-	if g := a.Gate(); g != nil {
-		g.ReleaseOutputs(string(a.id))
+	// ★ 删除记录 ⇒ 一次性清掉全部父声明事实（输出授权 / 工具策略 / 长期档位）。
+	//   这是 §3.2.2 的收益：原先四处清理点（ReleaseOutputs / ReleaseAgent /
+	//   RevokeChildPolicy / forget）合并成这一处。漏一处就是残留（同名重建
+	//   继承上一代授权是**提权**），现在从结构上不可能漏。
+	if reg := kernelapi.AgentRegistryOf(a.Gate()); reg != nil {
+		reg.Remove(string(a.id))
 	}
 	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse
 	// 自然拿到终态，但**从未运行**（排队/待处理）与**已挂起**的任务不会有任何人

@@ -293,3 +293,27 @@ func (r *Runtime) factsFor(agentID string) model.AgentFacts {
 	f, _ := r.agentFacts(agentID)
 	return f
 }
+
+// writableRegistry 取记录表的**写面**（同一次 Provide 挂的两个名字之一）。
+func (r *Runtime) writableRegistry() (kernelapi.AgentRegistry, bool) {
+	if r == nil || r.agentRegistry == nil {
+		return nil, false
+	}
+	return r.agentRegistry, true
+}
+
+// SetAgentRegistry 注入记录表的写面（装配期一次；与 SetAgentIndex 同源）。
+//
+// ★ 为什么写面也进安全模块：授权/子策略的"声明"动作发生在父 agent 创建子
+//
+//	的时刻，而那一刻正是安全模块被调用的时刻（DeclareOutputs /
+//	DeclareChildPolicy）。让安全模块转写到记录表，调用点就不用认识登记表。
+func (r *Runtime) SetAgentRegistry(reg kernelapi.AgentRegistry) {
+	if r == nil {
+		return
+	}
+	r.agentRegistry = reg
+	if idx, ok := reg.(kernelapi.AgentIndex); ok {
+		r.agentIndex = idx
+	}
+}

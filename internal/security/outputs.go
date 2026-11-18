@@ -33,29 +33,36 @@ import (
 )
 
 // DeclareOutputs 登记某 agent 被授权使用的输出通道（父在创建子时声明）。
+//
+// ★ 2026-11-18（§3.2.2 五表合一）：**不再有 outputsByAgent 表**。
+//
+//	授权是 `AgentRecord.Facts.AllowedOutputs` 的一个字段，清理点只有
+//	"记录消失"一处。本方法保留同名入口（调用方表达的是"声明这件事"），
+//	落点改到记录表。
+//
+// 无记录表（裸 Runtime / 单测）⇒ 静默不做：判定侧同样 fail-open，
+// 行为与改造前"未声明 = 完整授权"逐字一致。
 func (r *Runtime) DeclareOutputs(agentID string, outputs []string) {
 	if r == nil || agentID == "" {
 		return
 	}
-	r.outputsMu.Lock()
-	defer r.outputsMu.Unlock()
-	if r.outputsByAgent == nil {
-		r.outputsByAgent = map[string][]string{}
+	if reg, ok := r.writableRegistry(); ok {
+		cp := make([]string, len(outputs))
+		copy(cp, outputs)
+		reg.Update(agentID, func(rec *model.AgentRecord) {
+			rec.Facts.AllowedOutputs = cp
+		})
 	}
-	// 拷贝一份：调用方后续改动切片不应该影响已声明的授权。
-	cp := make([]string, len(outputs))
-	copy(cp, outputs)
-	r.outputsByAgent[agentID] = cp
 }
 
-// ReleaseOutputs 撤销某 agent 的授权声明（销毁时调用，防同名重建继承）。
+// ReleaseOutputs 撤销某 agent 的授权声明。
+//
+// ★ 现在它**什么都不用做**：记录被删除时授权随之消失（单一事实来源）。
+//
+//	保留入口是为了不动调用点语义（一处 Remove 覆盖全部事实）。
 func (r *Runtime) ReleaseOutputs(agentID string) {
-	if r == nil || agentID == "" {
-		return
-	}
-	r.outputsMu.Lock()
-	defer r.outputsMu.Unlock()
-	delete(r.outputsByAgent, agentID)
+	// 授权随记录走：见 AgentRegistry.Remove（唯一清理点）。
+	_ = agentID
 }
 
 // CheckOutput 判定某 agent 能否使用某个输出通道。
@@ -66,9 +73,7 @@ func (r *Runtime) CheckOutput(agentID string, channel string) model.Decision {
 	if r == nil {
 		return model.Decision{Allowed: true}
 	}
-	r.outputsMu.RLock()
-	allowed := r.outputsByAgent[agentID]
-	r.outputsMu.RUnlock()
+	allowed := r.factsFor(agentID).AllowedOutputs
 
 	// 空集合 = 完整授权（存量契约：默认完整授权、父可收窄）。
 	if len(allowed) == 0 {

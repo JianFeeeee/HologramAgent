@@ -42,7 +42,6 @@ package security
 // （guest 的收窄误伤后续输入；方向相反就是提权）。
 
 import (
-	"fmt"
 	"log"
 	"strings"
 )
@@ -243,44 +242,25 @@ func (rc *Round) End() {
 	rc.rt.active.Clear()
 }
 
-// DeclareChildPolicy 让**父**为刚创建的子执行体声明主体策略。
+// DeclareChildPolicy 让**父**为刚创建的子执行体声明工具策略。
 //
-// ## 为什么这个入口也在 security 里（而不是 agent 组装结构体）
+// ★ 落点已从"主体表 byID"改到 **agent 记录**（§3.2.2 五表合一）：
 //
-// 收敛前 `agent/core` 自己拼 `PrincipalPolicy{AllowTools: …, DenyTools: …}`
-// 字面量 —— 那是策略结构，属于 security 的领域。调用方只该说
-// “这个子允许这些、禁止那些”，由 security 负责把语义落到正确的作用域。
-//
-// 语义约束（security 保证）：声明只能**收窄**。`CheckToolFor` 内部先跑
-// `CheckTool`（全局 deny 优先），所以父的黑名单对子依然有效，子无法提权。
+//	声明与其它父声明事实（输出授权、长期档位）住同一条记录，
+//	清理点因此只剩"记录消失"一处。
 func (r *Runtime) DeclareChildPolicy(childID string, allow, deny []string) error {
 	if r == nil {
 		return nil // 未装配 security：不为子声明，保持无限制（与之前一致）
 	}
-	childID = strings.TrimSpace(childID)
-	if childID == "" {
-		return fmt.Errorf("security: declare child policy requires a non-empty child id")
-	}
-	if len(allow) == 0 && len(deny) == 0 {
-		return nil // 父选择不给额外限制
-	}
-	return r.DeclarePrincipalPolicy("id", childID, PrincipalPolicy{
-		AllowTools: allow,
-		DenyTools:  deny,
-	})
+	return r.declareChildFacts(childID, allow, deny)
 }
 
-// RevokeChildPolicy 在子执行体销毁时撤销父为它声明的策略。
-//
-// ★ 必须撤销：主体 ID 是调用方给的名字，子回收后**同名重建**是常规操作。
-// 旧策略留着 ⇒ 新一代用上一代父留的约束运行（且那个父可能已不存在），
-// 主体表还会随 create/destroy 单调增长。
-// 这与 rtchild 留档串线（`rtClosedTranscripts` 以模型给的名字为键）同一形态。
+// RevokeChildPolicy 撤销子策略（**由记录消失完成**，见 revokeChildFacts）。
 func (r *Runtime) RevokeChildPolicy(childID string) {
-	if r == nil || strings.TrimSpace(childID) == "" {
+	if r == nil {
 		return
 	}
-	_ = r.RevokePrincipalPolicy("id", strings.TrimSpace(childID))
+	r.revokeChildFacts(childID)
 }
 
 // classifyScopePrincipal 按 per-agent 视图的事实判定主体类别。
