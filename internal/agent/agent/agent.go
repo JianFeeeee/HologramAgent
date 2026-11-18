@@ -515,6 +515,9 @@ func (a *Agent) Stop() {
 	// 自然拿到终态，但**从未运行**（排队/待处理）与**已挂起**的任务不会有任何人
 	// 回它们；带 ResponseCh 的同步注入方（cli / clawhubadapter 均无超时）会永久挂起
 	// （设计 §7 I5、§11.3 X2/X4）。必须在 cancel 之前做：cancel 会让调度器直接 return。
+	//
+	// ★ 这是**通用**收尾（任何有队列的类型都要它），所以留在基座；
+	//   类型回调里不再重复做同一件事。
 	a.drainPendingInterrupts("agent_stopped")
 	a.cancel()
 }

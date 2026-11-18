@@ -27,9 +27,9 @@ func (a *Agent) StartMainRuntime() {
 	a.MigrateLegacyGraphMedia()
 }
 
-// StopMainRuntime 停主 agent 的运行期：先回收驻留子（子不得比父活得久），
-// 再给待办任务补终态。
+// StopMainRuntime 停主 agent 的运行期：回收驻留子（子不得比父活得久）。
+//
+// 待办任务的终态由基座 Stop 统一补（任何有队列的类型都需要，不该各写一遍）。
 func (a *Agent) StopMainRuntime() {
 	a.StopResidents()
-	a.drainPendingInterrupts("agent_stopped")
 }

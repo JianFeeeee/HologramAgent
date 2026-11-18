@@ -20,7 +20,9 @@ func (a *Agent) StartResidentRuntime() {
 	go a.InterceptLoop()
 }
 
-// StopResidentRuntime 停驻留子：把自己的驻留子也回收（孙不得比子活得久）。
+// StopResidentRuntime 停驻留子：回收它自己拉起的驻留子（孙不得比子活得久）。
+//
+// 待办任务终态由基座统一补。
 func (a *Agent) StopResidentRuntime() {
 	if a == nil {
 		return
