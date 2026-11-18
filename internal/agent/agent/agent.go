@@ -128,6 +128,20 @@ type Agent struct {
 	// 被授权的输出通道集合（空 = 完整授权，见 AgentConfig.AllowedOutputs）。
 	allowedOutputs []string
 
+	// toolAllow / toolDeny 是**父为本 agent 声明的工具白/黑名单**。
+	//
+	// ★ 从 `residentChild` 提到基座（用户裁定 2026-11-18）：
+	//   **渲染**发生在 `*Agent` 上（工具表按 agent 生成），而子的载体原先
+	//   拿不到自己的白名单 ⇒ 模型看得见父禁用的工具，执行时才被拒。
+	//
+	// 语义（与安全模块的闸门一致）：deny 优先；allow 非空 ⇒ 只允许命中项；
+	// 两者都空 ⇒ 不额外限制（沿用全局策略）。
+	toolAllow []string
+	toolDeny  []string
+	// toolAllowSet / toolDenySet 是切分后的匹配形式（支持 "cmd_*" 通配）。
+	toolAllowSet []string
+	toolDenySet  []string
+
 	// 插件注册表（用于 plgreload）
 
 	// 定期心跳蒸馏
@@ -328,6 +342,13 @@ type AgentConfig struct {
 	DataDir string
 	// TaskPrompt 是在固定提示词之上注入的**任务提示词**（驻留子创建时给定）。
 	TaskPrompt string
+	// AllowedTools / DenyTools 是**父为本 agent 声明的工具白/黑名单**。
+	//
+	// ★ 渲染要读 ⇒ 数据必须在基座（原先是 `residentChild` 的字段，渲染侧拿不到）。
+	// 语义与安全模块的主体策略一致：deny 优先，allow 非空则只允许命中项。
+	AllowedTools []string
+	DenyTools    []string
+
 	// AllowedOutputs 是本 agent **被授权的输出通道集合**（设计 §4.4 / R2）。
 	//
 	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
@@ -441,6 +462,10 @@ func New(cfg AgentConfig) *Agent {
 		// mediaStore 已随 CAS 淘汰：块自带负载。知识层的媒体也已自带字节
 		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
 		allowedOutputs: cfg.AllowedOutputs,
+		toolAllow:      cfg.AllowedTools,
+		toolDeny:       cfg.DenyTools,
+		toolAllowSet:   splitToolPatterns(cfg.AllowedTools),
+		toolDenySet:    splitToolPatterns(cfg.DenyTools),
 		selfInputCh:    make(chan selfInputMsg, 64),
 		maxToolTurns:   cfg.MaxToolTurns,
 		// ★ IsRealtime 现在是**钩子**（装配期由 rt 模块注册），不是字段。
@@ -508,6 +533,13 @@ func (a *Agent) Start() {
 	if l := kernelloop.Current(); l != nil {
 		l.RegisterInputSink(string(a.id), &inputSink{a: a})
 	}
+	// ★ 安全运行态**响亮**显现（未装配即 unguarded，不能沉默）。
+	a.logPosture()
+	// ★ "security" 段由基座注册：它是纯内核事实（与任何 agent 类型无关）。
+	a.RegisterStatusSection(StatusSection{Key: "security", Payload: func() any {
+		return a.securitySectionValue()
+	}})
+
 	// 跑起来是**类型**的事（它注册 Runtime.Start）；基座只负责通用登记。
 	if r := a.hooks.Runtime; r.Start != nil {
 		r.Start(a)

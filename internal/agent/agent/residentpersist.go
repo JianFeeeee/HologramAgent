@@ -200,11 +200,12 @@ func (rc *residentChild) toAdminArg() map[string]interface{} {
 	if rc.preferredProvider != "" {
 		arg["preferred_provider"] = rc.preferredProvider
 	}
-	if len(rc.allowedTools) > 0 {
-		arg["allowed_tools"] = strings.Join(rc.allowedTools, ",")
+	// ★ 白/黑名单的事实源在**基座**（渲染侧要读），子不再各存一份副本。
+	if cfg := rc.agent.Config(); len(cfg.AllowedTools) > 0 {
+		arg["allowed_tools"] = strings.Join(cfg.AllowedTools, ",")
 	}
-	if len(rc.denyTools) > 0 {
-		arg["deny_tools"] = strings.Join(rc.denyTools, ",")
+	if cfg := rc.agent.Config(); len(cfg.DenyTools) > 0 {
+		arg["deny_tools"] = strings.Join(cfg.DenyTools, ",")
 	}
 	return arg
 }

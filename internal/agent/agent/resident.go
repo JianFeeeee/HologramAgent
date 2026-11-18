@@ -141,8 +141,6 @@ type residentChild struct {
 	taskPrompt        string
 	capacity          int
 	preferredProvider string
-	allowedTools      []string
-	denyTools         []string
 }
 
 // ── childpkg.Entry 实现（骨架通过它管理生命周期） ──
@@ -326,9 +324,13 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		ContextSavePath: filepath.Join(filepath.Dir(opts.TempPath), "context.json"),
 		LightMemory:     light, // 轻量内核：只有图记忆共同面
 		AllowedOutputs:  opts.AllowedOutputs,
-		KernelSource:    parentID, // 子的 L4 只属于父
-		ParentID:        parentID,
-		TaskPrompt:      opts.TaskPrompt,
+		// ★ 白/黑名单进 AgentConfig（基座渲染侧要读；原先只存在子载体上，
+		//   于是模型看得见父禁用的工具，执行时才被拒）。
+		AllowedTools: opts.AllowedTools,
+		DenyTools:    opts.DenyTools,
+		KernelSource: parentID, // 子的 L4 只属于父
+		ParentID:     parentID,
+		TaskPrompt:   opts.TaskPrompt,
 		// ★ 安全运行时必须继承（2026-10-30 补）。
 		//
 		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、
@@ -379,8 +381,6 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		taskPrompt:        opts.TaskPrompt,
 		capacity:          opts.Capacity,
 		preferredProvider: opts.PreferredProvider,
-		allowedTools:      append([]string(nil), opts.AllowedTools...),
-		denyTools:         append([]string(nil), opts.DenyTools...),
 	}
 
 	// ★ 父为这个子**声明主体策略**（用户裁定 2026-10-30）。

@@ -687,6 +687,8 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		StageHost:         a.MainState().stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
 		AllowedOutputs: []string{opts.Output},
+		AllowedTools:   opts.AllowedTools,
+		DenyTools:      opts.DenyTools,
 		KernelSource:   string(a.id),
 		ParentID:       string(a.id),
 		// ★ 安全运行时**必须继承父的**（2026-10-30 补）。

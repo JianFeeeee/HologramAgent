@@ -738,7 +738,12 @@ func (a *Agent) BuildToolDefs() []interface{} {
 	// ⇒ describe_image / transcribe_audio / ocr_image 现在由插件注册，
 	//   不再出现在这里。pendingMedia 的清理在本次一并处理。
 
-	return tools
+	// ★ **渲染侧**白/黑名单过滤（用户裁定 2026-11-18）。
+	//
+	// 生成逻辑保持零类型分支（每个 agent 都要走）；这里只按"父为本 agent
+	// 声明的事实"决定**看不看得见**。此前这一步缺失 ⇒ 模型看得见父禁用的
+	// 工具，调一次被拒一次（执行侧的闸门另在安全模块，两者是两张表）。
+	return a.filterToolDefsForRender(tools)
 }
 
 // builtinDefRegistry 汇总内置工具的声明项。
