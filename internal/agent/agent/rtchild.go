@@ -453,7 +453,7 @@ func (a *Agent) RTChildOf(id string) *rtChild {
 	if !ok {
 		return nil
 	}
-	rc, _ := e.Agent().(*rtChild)
+	rc, _ := e.(*rtChild)
 	return rc
 }
 

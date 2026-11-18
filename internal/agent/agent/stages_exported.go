@@ -43,9 +43,6 @@ func (a *Agent) RunToolBatch(calls []agenttypes.ToolCall, opts agenttypes.BatchO
 	return a.runToolBatch(ctx, calls, opts)
 }
 
-// OverBudgetRatio 报告"上下文是否已超出窗口预算"（纯判据，无副作用）。
-func (a *Agent) OverBudgetRatio() bool { return a.OverflowRatioNow() >= overflowRatio }
-
 // PruneContext 是**裁剪原语**：按相关度裁一次，返回裁掉的事件数。
 //
 // ★ 与 `PruneByQuery`（入口）的分工：入口把裁剪交给**注册的钩子**（策略），
@@ -63,11 +60,6 @@ func (a *Agent) PruneContext(query string, protected int) int {
 		return a.context.PruneWithProtected(query, a.ContextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
 	}
 	return a.context.PruneWithProtected(query, a.ContextTopK(), a.MainState().coldcontextStore, a.EffectiveProtectedCount())
-}
-
-// EnforceOverflowStandard 执行标准超页处置（裁剪 + 上报），返回是否已处置。
-func (a *Agent) EnforceOverflowStandard(f *agenttypes.Frame, query string, force bool) (bool, int) {
-	return a.EnforceContextBudgetDefault(f, query, force)
 }
 
 // RunStageStandard 执行插件阶段（before_toolcall / after_output …）。

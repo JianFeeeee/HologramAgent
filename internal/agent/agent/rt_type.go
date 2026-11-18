@@ -82,6 +82,11 @@ func rtDescriptor() registry.Descriptor {
 				Description: "列出当前可用的 rt 通道（哪些 inputch/outputch 带实时能力），创建前的必查",
 			},
 		},
+		// rt 不装调度器：它不吃队列（单槽覆盖式输入，最新者胜）。
+		// ★ 但必须显式注册一个 no-op Initialize 之外的"不需要"：
+		//   基座不替它猜，所以这里什么都不做 —— 有这一行是为了让读者
+		//   看见"rt 明确不装"，而不是"忘了装"。
+		Initialize: func(instance any) error { return nil },
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
 			if !ok || a == nil || a.root == nil {
@@ -284,7 +289,7 @@ func (a *Agent) PersistRTChildren() {
 	}
 	seen := map[string]bool{}
 	for _, e := range a.children.ByKind(childKindRT()) {
-		rc, ok := e.Agent().(*rtChild)
+		rc, ok := e.(*rtChild)
 		if !ok {
 			continue
 		}

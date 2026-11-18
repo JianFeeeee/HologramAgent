@@ -87,9 +87,21 @@ type Hooks struct {
 	Prune func(a *Agent, query string, protected int) int
 	// OverBudget 是"是否已超出窗口预算"的纯判据。nil ⇒ 恒 false。
 	OverBudget func(a *Agent) bool
-	// EnforceOverflow 执行超页处置（裁剪 + 上报 L4），返回是否需要重跑。
-	// nil ⇒ 不做（整窗型依赖 contextfull 上报父 agent，见 overflow.go 的注释）。
-	EnforceOverflow func(a *Agent, f *TaskFrame, query string, force bool) (handled bool, pruned int)
+	// EnforceOverflow 执行超页处置，返回是否已处置与裁掉的事件数。
+	//
+	// ★ 这是**唯一的超页决策点**（用户 2026-11-18：「overflow 里不应该有具体
+	// 逻辑，它应该是一个预定义的钩子，各个子 agent 注册这个钩子来定义各自的
+	// overflow 行为」）。基座只提供事实与原语：
+	//
+	//	OverflowRatioNow / AccumulatedTokens / HasOversizedFrame   看得见什么
+	//	EvictOversizedPages / PruneContext / RaiseContextOverflow   能做什么
+	//	NoteOverflow*                                              记账
+	//
+	// 「水位多少该裁、先剔页还是先归档、恢复时保护多少条」全是策略 ⇒ 在类型侧。
+	//
+	// nil ⇒ 本类型不做超页处置。那是**明确的策略**（整窗型靠 contextfull
+	// 上报父 agent 决策，父来决定压缩/回收/销毁），不是漏接线。
+	EnforceOverflow func(a *Agent, f *TaskFrame, req agenttypes.OverflowRequest) (handled bool, pruned int)
 
 	// ── 槽位 6：agent loop ──
 

@@ -298,7 +298,7 @@ func (a *Agent) RebaseFramePrefix(f *TaskFrame) {
 	//
 	// 用的是**恢复专用**入口：相关性按本帧最新上下文算、保护范围是本帧自己的
 	// 现场（f.Msgs[PrefixLen:]），而不是全局末尾 N 条。见 enforceResumeContextBudget。
-	if handled, _ := a.EnforceResumeContextBudget(f); handled && f.Terminal == terminalError {
+	if handled, _ := a.EnforceResumeContextBudget(f); handled && f.Terminal == agenttypes.TerminalError {
 		return // 预算耗尽：f.Err 已写明，调用方据此终止
 	}
 }
@@ -370,7 +370,13 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 因此这里：裁剪 → 结束本轮，**不进 LLM、不写上下文、不发回复**。
 	// 用 terminalSkipped（不是 terminalError）：这是正常完成，不是故障。
 	if in.airInterrupt {
-		a.PruneForAirInterrupt()
+		// ★ 裁剪策略由**类型注册的 Prune 钩子**决定（基座只做"按最后一条
+		//   用户输入当相关性基准"这一件事实推导，然后问钩子）。
+		//
+		// 此前基座自己写了"裁多少条、裁不动时记什么统计"的整套逻辑 ——
+		// 那是策略，不是基座知识（用户 2026-11-18 指出："overflow 里不应该
+		// 有具体逻辑，它应该是一个预定义的钩子"）。
+		a.PruneForQuery(a.LastUserQueryForPrune())
 		return nil, terminalSkipped
 	}
 

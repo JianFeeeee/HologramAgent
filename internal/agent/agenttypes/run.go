@@ -153,6 +153,43 @@ type Frame struct {
 	InputBlocks []agentAPI.ContentBlock
 }
 
+// OverflowKind 是超页处置的**触发形态**。
+//
+// ★ 为什么需要它（用户 2026-11-18：「overflow 应该是一个预定义的钩子，
+// 各个子 agent 注册这个钩子来定义各自的 overflow 行为」）：
+//
+// 同一个钩子会被**两个不同时机**调用，而两者的正确处置不同：
+//
+//	OverflowLocal   发请求前的水位判定 / 收到上游 context_full 之后
+//	                ⇒ 策略裁剪型发空中断，让裁剪在任务边界发生
+//	OverflowResume  被挂起任务恢复、前缀被重建之后
+//	                ⇒ **必须保护本帧自己的现场**（f.Msgs[PrefixLen:]）后裁剪，
+//	                  因为那批工具轮产物是"这个任务刚做完的事"，
+//	                  归档掉它等于恢复出一个自相矛盾的任务
+//
+// 把"时机"作为参数传进钩子，比让基座写两套分支好：类型模块一处实现、
+// 一处决策，基座只剩转发。
+type OverflowKind int
+
+const (
+	// OverflowLocal 是常规入口（发请求前的水位判定 / 上游报错）。
+	OverflowLocal OverflowKind = iota
+	// OverflowResume 是任务恢复后的重新装配入口。
+	OverflowResume
+)
+
+// OverflowRequest 是一次超页处置请求（钩子的入参）。
+type OverflowRequest struct {
+	// Kind 说明这是哪个时机触发的。
+	Kind OverflowKind
+	// Query 是相关性基准。**由基座推导、类型决定是否采信**：
+	// OverflowLocal 时调用方给的可能是空串（由策略自己用最后一条用户输入兜底）；
+	// OverflowResume 时基座已按"本帧最新上下文"推导好。
+	Query string
+	// Force 表示上游已**明确**报过 context_full（判定已被外部短路）。
+	Force bool
+}
+
 // ToolCall 是 model 的工具调用值（别名：agent/api 与 model 同源）。
 type ToolCall = agentAPI.ToolCall
 

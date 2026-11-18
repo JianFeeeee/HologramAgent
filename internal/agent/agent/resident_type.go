@@ -71,6 +71,20 @@ func residentDescriptor() registry.Descriptor {
 				Required: []string{"id"},
 			},
 		},
+		// Initialize 由**类型自己**装配运行时所需的服务（用户裁定：基座不替
+		// 任何类型决定它需要什么）。
+		//
+		// ★ 驻留子有队列 ⇒ 必须有调度器。原先只注册了 Start/Stop，
+		//   于是子 Start 之后 `schedulerLoop` 撞到 nil 调度器（实测 panic：
+		//   `(*scheduler).hasRoom(0x0?)`，被 recover 吞掉后子永远不处理输入）。
+		Initialize: func(instance any) error {
+			a, _ := instance.(*Agent)
+			if a == nil {
+				return fmt.Errorf("resident: 实例不是 *Agent（装配错误）")
+			}
+			a.InstallScheduler()
+			return nil
+		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
 			if !ok || a == nil || a.root == nil {

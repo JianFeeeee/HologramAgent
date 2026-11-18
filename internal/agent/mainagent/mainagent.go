@@ -118,11 +118,21 @@ func InitRuntime(a *agent.Agent) error {
 		return fmt.Errorf("main: nil base")
 	}
 	cfg := a.Config()
+	// ★ 内核侧实例管理器（管理本内核下全部子 agent）。
+	//
+	// 装在这里而不是在 `New` 里：它是**主 agent 作为内核宿主**时才需要的东西
+	// （子 agent 自己不是任何实例的宿主）。用户裁定 2026-11-18：
+	// 「创建子 agent 执行在主 agent？不应该在内核吗？」—— 归属是内核，
+	// 而内核在装配图上就是主 agent 这一层。
+	a.InstallInstanceManager(agent.NewInstanceManager(a))
 	a.InstallMainRuntime(cfg)
 	a.InstallScheduler()
 	a.InstallMainState(cfg)
 	a.NormalizeNilServices()
 	a.InjectSecretStore()
+	// ★ 子 agent 的恢复**不在这里**：它在 StartMainRuntime 的最前面
+	//   （恢复要 Assign inputch ⇒ 必须在调度循环起来之前，且插件已就绪）。
+	//   这里只声明维护任务。
 	a.RegisterMaintenanceTasks()
 	return nil
 }

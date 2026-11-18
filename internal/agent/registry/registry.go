@@ -78,6 +78,22 @@ type Descriptor struct {
 	// ★ 内核不在这里替类型做事：它只负责"按 type 找到这个函数并调用"。
 	Construct func(host Host, arg map[string]interface{}) (string, error)
 
+	// Initialize 装配**本类型实例**的运行时服务（基座不替任何类型决定它需要什么）。
+	//
+	// ## 为什么签名是 any 而不是具体 agent 类型
+	//
+	// registry 是纯注册表，**不 import agent 包**（那会让注册表变成基座的一部分）。
+	// 所以实例以 `any` 传入，由**类型模块自己断言**回它的载体类型 ——
+	// 与基座的 `impl any` 同一纪律：契约边界上不出现具体实现类型。
+	//
+	// ## 为什么它与 Construct 分开
+	//
+	// Construct 回答"怎么把一个实例装配出来"（父的决定 + 通道划拨 + 登记），
+	// Initialize 回答"这个实例跑起来需要哪些服务"。两者失败点不同、时机不同：
+	// Construct 失败 ⇒ 实例没建起来；Initialize 失败 ⇒ 实例建起来了但跑不了，
+	// 必须回滚掉（否则留下一个静默待机的僵尸）。
+	Initialize func(instance any) error
+
 	// Admin 执行**类型独有**动作（Actions 里声明的那些）。
 	// 通用动作由内核直接处理，不会走到这里。
 	Admin func(host Host, action string, arg map[string]interface{}) (string, error)

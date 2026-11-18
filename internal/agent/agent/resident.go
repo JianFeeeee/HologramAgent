@@ -26,6 +26,7 @@ import (
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -225,7 +226,7 @@ func (a *Agent) residentEntryOf(id string) (*residentChild, bool) {
 	if e.Kind() != childpkg.KindResident {
 		return nil, false
 	}
-	rc, _ := e.Agent().(*residentChild)
+	rc, _ := e.(*residentChild)
 	return rc, true
 }
 
@@ -339,6 +340,18 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	// ★ 注册**驻留子自己**的 runtime 回调（用户裁定：类型注册自己的运行行为）。
 	//   基座只持有一个槽位；主 agent 填 main 版，这里填 resident 版。
 	//   漏了这一步的后果是"子 Start 之后什么都不跑"，而基座不会替它猜。
+	// ★ Initialize 必须一起注册：驻留子有队列，调度器由**它的类型**装配。
+	//   只给 Start/Stop 的后果是 `schedulerLoop` 撞 nil 调度器（子起来但
+	//   永远不处理输入，且 panic 被 recover 吞掉，现场没有任何报错）。
+	if d, ok := registry.Lookup(kindResident); ok && d.Initialize != nil {
+		if err := d.Initialize(child); err != nil {
+			child.Stop()
+			_ = light.Close()
+			_ = mainRO.Close()
+			_ = os.RemoveAll(filepath.Dir(opts.TempPath))
+			return ResidentInfo{}, fmt.Errorf("驻留子 %s 运行时初始化失败: %w", opts.ID, err)
+		}
+	}
 	child.SetHooks(withRuntimeHooks(child.HooksValue(), RuntimeHooks{
 		Start: func(x *Agent) { x.StartResidentRuntime() },
 		Stop:  func(x *Agent) { x.StopResidentRuntime() },
@@ -482,7 +495,7 @@ func (a *Agent) DestroyResidentWithTarget(id string, disp ChannelDisposition, ha
 	if e == nil {
 		return fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	rc, _ := e.Agent().(*residentChild)
+	rc, _ := e.(*residentChild)
 	if rc != nil {
 		a.teardownResidentWith(rc, disp, handoverTarget, false, nil)
 		// 显式销毁 ⇒ 从登记表里去掉（否则重启会把它又建回来）。
@@ -885,7 +898,7 @@ func (a *Agent) StopResidents() int {
 	all := a.children.ByKind(childpkg.KindResident)
 	for _, e := range all {
 		a.children.Remove(e.Base().ID)
-		if rc, ok := e.Agent().(*residentChild); ok {
+		if rc, ok := e.(*residentChild); ok {
 			// ★ 进程停机 ⇒ 保留 temp（供重启后重建复用）。
 			// 显式 Destroy/Reclaim 走另一条路径，那里才删。
 			a.teardownResidentWith(rc, ChannelOrphan, "", true, nil)
@@ -899,7 +912,7 @@ func (a *Agent) Residents() []ResidentInfo {
 	entries := a.children.ByKind(childpkg.KindResident)
 	out := make([]ResidentInfo, 0, len(entries))
 	for _, e := range entries {
-		if rc, ok := e.Agent().(*residentChild); ok {
+		if rc, ok := e.(*residentChild); ok {
 			out = append(out, rc.info())
 		}
 	}

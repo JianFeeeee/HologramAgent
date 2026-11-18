@@ -40,19 +40,6 @@ func Loop(a *agent.Agent, f *agenttypes.Frame) agenttypes.Outcome {
 // 由驻留子/rt 注册。
 func ContextBudgetRelevance(a *agent.Agent, b kit.TokenBudget) int { return b.ContextTokens }
 
-// OverBudgetRatio 是"已超出窗口预算"的判据（策略裁剪型）。
-func OverBudgetRatio(a *agent.Agent) bool { return a.OverBudgetRatio() }
-
-// PruneByQuery 按相关度裁剪（策略裁剪型）。
-func PruneByQuery(a *agent.Agent, query string, protected int) int {
-	return a.PruneContext(query, protected)
-}
-
-// EnforceOverflowStandard 是标准超页处置（策略裁剪型）。
-func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, query string, force bool) (bool, int) {
-	return a.EnforceOverflowStandard(f, query, force)
-}
-
 // RunStageStandard 执行插件阶段。
 func RunStageStandard(a *agent.Agent, stage string, ctx any) bool {
 	return a.RunStageStandard(stage, ctx)

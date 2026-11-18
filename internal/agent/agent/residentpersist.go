@@ -152,7 +152,7 @@ func (a *Agent) PersistResidents() {
 	}
 	seen := map[string]bool{}
 	for _, e := range a.children.ByKind(childpkg.KindResident) {
-		rc, ok := e.Agent().(*residentChild)
+		rc, ok := e.(*residentChild)
 		if !ok {
 			continue
 		}
