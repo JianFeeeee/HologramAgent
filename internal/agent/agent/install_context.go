@@ -19,10 +19,6 @@ func (a *Agent) InstallMainRuntime(cfg AgentConfig) {
 			"(assembly should Provide(kernelapi.FacEmbedder, *memory.StaticEmbedder))")
 	}
 	// DocStore 无需处理：TF-IDF 内置为 fallback，不需要外部注入向量器。
-	if cfg.Knowledge != nil {
-		cfg.Knowledge.SetVectorizer(embedder)
-		cfg.Knowledge.ReindexWithVectorizer(embedder)
-	}
 
 	rc := NewRelevanceContext(cfg.ContextSavePath, cfg.Embedder)
 	// 裁剪保留条数：从配置传入（0 时保持 NewRelevanceContext 的历史默认）。
@@ -48,23 +44,6 @@ func (a *Agent) InstallMainRuntime(cfg AgentConfig) {
 		if cfg.DocStore != nil {
 			cfg.DocStore.SetDenseSpace(cfg.MultimodalSpace)
 			cfg.DocStore.BuildDenseIndex(cfg.MultimodalSpace)
-		}
-		// 知识库接入同一多模态空间：媒体作为一等节点参与稠密召回，
-		// 于是「按图搜知识」「按文搜含图知识」成立。
-		//
-		// 稀疏两路（词向量 + TF-IDF）**保持启用**且仍是主召回路径：多模态
-		// 空间未配置时知识库行为与此前逐字一致（退化为 0.5/0.5 两路融合）。
-		if cfg.Knowledge != nil {
-			// 顺序要紧：先接线再重建。ReindexDense 会尝试从 .dense.json 缓存恢复，
-			// 恢复不了才重算，最后把结果落盘。若先重建后接线，首次启动算出的
-			// 向量会被丢掉而不落盘。
-			cfg.Knowledge.SetDenseSpace(cfg.MultimodalSpace)
-			// 媒体字节随知识条目自带（CAS 淘汰后）：denseFor 直接读条目目录里的
-			// 媒体文件，无需 mediaGet/mediaPut 接线。
-			built, skipped := cfg.Knowledge.ReindexDense()
-			if built > 0 || skipped > 0 {
-				log.Printf("[knowledge] multimodal dense index: built %d, skipped %d (rest hit cache)", built, skipped)
-			}
 		}
 	}
 	a.context = rc

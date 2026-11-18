@@ -83,8 +83,6 @@ const (
 	FacLLMDefault = "llm.default"
 	// FacDocStore 是文档记忆（docmem 模块提供）。
 	FacDocStore = "docmem"
-	// FacKnowledge 是知识库（knowledge 模块提供）。
-	FacKnowledge = "knowledge"
 	// FacMultimodal 是多模态向量空间（multimodal 模块提供）。
 	FacMultimodal = "multimodal"
 	// FacMultimodalStatus 是多模态空间的启用状态（provider 名 / 失败原因）。
@@ -274,24 +272,6 @@ type DocStore interface {
 }
 
 // Knowledge 是知识库（文档树 + 检索 + 导入）。
-type Knowledge interface {
-	SearchIn(query, category string, topK int) []*model.Knowledge
-	AddWithMedia(name, content string, media []model.KnowledgeMediaRef) error
-	ImportDir(opts model.ImportOptions) (model.ImportStats, error)
-	Remove(name string) error
-	BuildTree() *model.TreeIndex
-	List() []string
-	Start() error
-	Stop()
-	// SetDenseSpace / ReindexDense 是装配期接线（多模态空间）。
-	SetDenseSpace(space MultimodalSpace)
-	ReindexDense() (built, skipped int)
-	// SetVectorizer / ReindexWithVectorizer 是稀疏词嵌入接线。
-	// 参数用 any：接口包不能 import vector 实现包（`vector.Vectorizer` 是接口，
-	// 由实现在收到后自己断言）。
-	SetVectorizer(v any)
-	ReindexWithVectorizer(v any)
-}
 
 // ───────────────────────── LLM ─────────────────────────
 

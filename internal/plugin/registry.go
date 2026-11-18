@@ -26,7 +26,6 @@ import (
 	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin/proc"
-	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -111,7 +110,6 @@ type Registry struct {
 	coldcontextStore *coldcontext.Store
 	// CAS 已淘汰（块自带负载）。本注册表不保留媒体存储字段：
 	// 留着会诱导后来者再接线，走回头路。媒体字节走 sdk.Memory().MediaBytes。
-	ks      *knowledge.Store
 	mgr     *agentProvider.ProviderManager
 	cfgReg  *internalConfig.ConfigRegistry
 	plgDir  string
@@ -125,12 +123,13 @@ type Registry struct {
 
 	toolCleaner PluginToolCleaner
 
-	status    sdk.StatusAPI
-	sup       sdk.SupervisorAPI
-	trk       *tracker.Tracker
-	cfg       *types.Config
-	stageHost sdk.ToolSource
-	idx       *memory.Indexer
+	status     sdk.StatusAPI
+	multimodal kernelapi.MultimodalSpace
+	sup        sdk.SupervisorAPI
+	trk        *tracker.Tracker
+	cfg        *types.Config
+	stageHost  sdk.ToolSource
+	idx        *memory.Indexer
 
 	// deviceAuth 回答"设备 deviceID 是否已授权给当前 agent"（D4）。
 	//
@@ -262,11 +261,14 @@ func (r *Registry) SetDocStore(ds *coldcontext.Store) {
 	defer r.mu.Unlock()
 	r.coldcontextStore = ds
 }
-func (r *Registry) SetKnowledge(ks *knowledge.Store) {
+
+// SetMultimodal 注入统一多模态向量空间（插件经 s.Multimodal() 取用）。
+func (r *Registry) SetMultimodal(space kernelapi.MultimodalSpace) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ks = ks
+	r.multimodal = space
 }
+
 func (r *Registry) SetProviderManager(mgr *agentProvider.ProviderManager) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -589,7 +591,6 @@ type sdkDeps struct {
 	memDB            *memory.GraphDB
 	textMem          *text.Memory
 	coldcontextStore *coldcontext.Store
-	ks               *knowledge.Store
 	mgr              *agentProvider.ProviderManager
 	lua              *luaVM.VM
 	baseKey          string
@@ -597,6 +598,7 @@ type sdkDeps struct {
 	regStage         sdk.StageRegistrar
 	regAPI           sdk.APIRegistrar
 	status           sdk.StatusAPI
+	multimodal       kernelapi.MultimodalSpace
 	sup              sdk.SupervisorAPI
 	trk              *tracker.Tracker
 	cfg              *types.Config
@@ -621,7 +623,6 @@ func (r *Registry) snapshotDeps() sdkDeps {
 		memDB:            r.memDB,
 		textMem:          r.textMem,
 		coldcontextStore: r.coldcontextStore,
-		ks:               r.ks,
 		mgr:              r.mgr,
 		lua:              r.lua,
 		baseKey:          r.baseKey,
@@ -629,6 +630,7 @@ func (r *Registry) snapshotDeps() sdkDeps {
 		regStage:         r.regStage,
 		regAPI:           r.regAPI,
 		status:           r.status,
+		multimodal:       r.multimodal,
 		sup:              r.sup,
 		trk:              r.trk,
 		cfg:              r.cfg,
@@ -804,10 +806,10 @@ func (r *Registry) buildSDK(name string) *sdk.PluginSDK {
 		EventBus:  deps.evBus,
 		// 块自带负载（媒体字节在块的 Data），不再需要独立的媒体存储句柄。
 		// 插件名仅用于日志溯源（哪个插件写的块）。
+		Multimodal: deps.multimodal,
 		Memory:     sdk.NewGraphMemoryWithPlugin(name, deps.memDB),
 		TextMemory: sdk.NewTextMemoryWithPlugin(name, deps.textMem),
 		DocMemory:  sdk.NewDocMemoryWithPlugin(name, deps.coldcontextStore),
-		Knowledge:  sdk.NewKnowledge(deps.ks),
 		LLM:        sdk.NewLLM(deps.mgr, deps.cfgReg, deps.lua, deps.baseKey),
 		Settings:   sett,
 		// ★ 变量库：桥接到**注入的** Store（不另建存储）。

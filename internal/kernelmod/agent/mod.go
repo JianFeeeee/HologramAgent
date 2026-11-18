@@ -23,7 +23,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
-	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"log"
@@ -51,7 +50,7 @@ type Module struct{}
 func (Module) Name() string { return "agent" }
 func (Module) Requires() []string {
 	return []string{kernelmod.FacLLM, kernelmod.FacMemory, kernelmod.FacTracker,
-		kernelmod.FacDocStore, kernelmod.FacKnowledge, kernelmod.FacTextMem,
+		kernelmod.FacDocStore, kernelmod.FacTextMem,
 		kernelmod.FacStageHost,
 		// ★ FacSecurity（2026-10-30 补）：这是**真实存在**的依赖，
 		// 之前只是没在图上声明。
@@ -137,7 +136,6 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	memIdx := kernelmod.MustValue[*memory.Indexer](k, kernelapi.FacMemoryIndexer)
 	trk := kernelmod.MustValue[*tracker.Tracker](k, kernelapi.FacTracker)
 	coldcontextStore := kernelmod.MustValue[*coldcontext.Store](k, kernelapi.FacDocStore)
-	ksStore := kernelmod.MustValue[*knowledge.Store](k, kernelapi.FacKnowledge)
 	socialStore := kernelmod.MustValue[*social.SocialStore](k, kernelapi.FacMemorySocial)
 	textMem := kernelmod.MustValue[*text.Memory](k, kernelapi.FacTextMem)
 	pluginReg := kernelmod.MustValue[*plugin.Registry](k, kernelapi.FacPluginRegistry)
@@ -184,7 +182,6 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		Indexer:           memIdx,
 		Tracker:           trk,
 		DocStore:          coldcontextStore,
-		Knowledge:         ksStore,
 		SocialStore:       socialStore,
 		TextMemory:        textMem,
 		// MediaStore 已随 CAS 淘汰：块自带负载。

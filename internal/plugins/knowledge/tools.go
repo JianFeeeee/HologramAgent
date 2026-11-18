@@ -27,6 +27,7 @@ package knowledgeplugin
 
 import (
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -34,7 +35,7 @@ import (
 //
 // 返回注册了多少个（供启动日志）。单个注册失败不掩盖其余 —— 注册表的错误
 // 会原样返回给调用方，由插件决定是否致命。
-func RegisterTools(reg ToolRegistrar, store *Store) (int, error) {
+func RegisterTools(reg ToolRegistrar, media MediaSource, store *Store) (int, error) {
 	if reg == nil || store == nil {
 		return 0, fmt.Errorf("knowledge: 工具注册需要 ToolRegistrar 与 Store")
 	}
@@ -129,7 +130,7 @@ func RegisterTools(reg ToolRegistrar, store *Store) (int, error) {
 		if name == "" || content == "" {
 			return nil, fmt.Errorf("name and content are required")
 		}
-		media := mediaRefs(stringSlice(args, "media_digests"))
+		media := mediaRefsFrom(media, stringSlice(args, "media_digests"))
 		if err := store.AddWithMedia(name, content, media); err != nil {
 			return nil, fmt.Errorf("knowledge create failed: %w", err)
 		}
@@ -257,16 +258,30 @@ func stringSlice(args map[string]interface{}, key string) []string {
 	return nil
 }
 
-// mediaRefs 把 digest 字符串转成媒体引用（Store.AttachMedia 认这个形状）。
-func mediaRefs(digests []string) []KnowledgeMediaRef {
-	if len(digests) == 0 {
+// mediaRefsFrom 把块引用（ID 或唯一前缀）解析成知识条目的媒体引用。
+//
+// 与冷上下文写入同一套约定：引用可以是前缀，解析不了的**跳过而不失败**
+// （模型偶尔记错 ID，不该让整次写入失败）。MIME 与字节一并取回 ——
+// 嵌入需要 MIME 判模态，字节随条目落盘（CAS 淘汰后条目仍自带）。
+func mediaRefsFrom(src MediaSource, refs []string) []KnowledgeMediaRef {
+	if len(refs) == 0 {
 		return nil
 	}
-	out := make([]KnowledgeMediaRef, 0, len(digests))
-	for _, d := range digests {
-		if d = strings.TrimSpace(d); d != "" {
-			out = append(out, KnowledgeMediaRef{Digest: d})
+	out := make([]KnowledgeMediaRef, 0, len(refs))
+	for _, r := range refs {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
 		}
+		ref := KnowledgeMediaRef{Digest: r}
+		if src != nil {
+			if data, mime, ok, err := src.MediaBytes(r); err == nil && ok {
+				ref.Data, ref.MIME = data, mime
+			} else if err != nil {
+				log.Printf("[knowledge] media block ref %s lookup failed: %v", r, err)
+			}
+		}
+		out = append(out, ref)
 	}
 	return out
 }

@@ -73,9 +73,6 @@ func (a *Agent) NormalizeNilServices() {
 	if a.MainState().coldcontextStore != nil && isNilValue(a.MainState().coldcontextStore) {
 		a.MainState().coldcontextStore = nil
 	}
-	if a.MainState().knowledge != nil && isNilValue(a.MainState().knowledge) {
-		a.MainState().knowledge = nil
-	}
 	if a.MainState().social != nil && isNilValue(a.MainState().social) {
 		a.MainState().social = nil
 	}

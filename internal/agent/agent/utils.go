@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"fmt"
 	"strings"
 	"unicode/utf8"
-
-	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
 func getString(m map[string]interface{}, key string) string {
@@ -86,29 +83,4 @@ func truncateStr(s string, max int) string {
 		truncated++
 	}
 	return s
-}
-
-func formatTree(node *knowledge.TreeIndex, depth int) string {
-	var sb strings.Builder
-	indent := strings.Repeat("  ", depth)
-	for _, child := range node.Children {
-		sb.WriteString(fmt.Sprintf("%s%s/\n", indent, child.Name))
-		sb.WriteString(formatTree(child, depth+1))
-	}
-	for _, item := range node.Items {
-		preview := item.Preview
-		if len([]rune(preview)) > 60 {
-			preview = string([]rune(preview)[:60]) + "..."
-		}
-		tags := ""
-		if len(item.Tags) > 0 {
-			tags = " [" + strings.Join(item.Tags, ", ") + "]"
-		}
-		sb.WriteString(fmt.Sprintf("%s· %s%s\n", indent, item.Name, tags))
-		sb.WriteString(fmt.Sprintf("%s  %s\n", indent, preview))
-	}
-	if sb.Len() == 0 {
-		sb.WriteString("(空)")
-	}
-	return sb.String()
 }

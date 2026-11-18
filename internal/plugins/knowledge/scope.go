@@ -1,10 +1,6 @@
-package kbtree
+package knowledgeplugin
 
-import (
-	"strings"
-
-	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
-)
+import "strings"
 
 // scope 是知识库对外暴露范围。
 //
@@ -68,7 +64,7 @@ func (s *scope) allows(category string) bool {
 //
 // 就地改而不是重建：TreeView 是内核生成的，字段多（含 Media 切片），
 // 重建容易漏字段导致"裁剪后条目信息变空"。
-func (s *scope) filterTree(t *sdk.KnowledgeTreeView) {
+func (s *scope) filterTree(t *TreeView) {
 	if t == nil || s == nil || len(s.paths) == 0 {
 		return
 	}
@@ -115,11 +111,11 @@ func (s *scope) filterNames(names []string) []string {
 }
 
 // filterCounts 过滤分类计数，并按范围重算 total。
-func (s *scope) filterCounts(counts []sdk.KnowledgeCategoryCount) ([]sdk.KnowledgeCategoryCount, int) {
+func (s *scope) filterCounts(counts []CategoryCount) ([]CategoryCount, int) {
 	if s == nil || len(s.paths) == 0 {
 		return counts, totalLeafCount(counts)
 	}
-	out := make([]sdk.KnowledgeCategoryCount, 0, len(counts))
+	out := make([]CategoryCount, 0, len(counts))
 	for _, c := range counts {
 		if s.allows(c.Category) {
 			out = append(out, c)
@@ -129,7 +125,7 @@ func (s *scope) filterCounts(counts []sdk.KnowledgeCategoryCount) ([]sdk.Knowled
 }
 
 // totalLeafCount 只数叶子分类，避免中间层重复计数（与未过滤时的口径一致）。
-func totalLeafCount(counts []sdk.KnowledgeCategoryCount) int {
+func totalLeafCount(counts []CategoryCount) int {
 	total := 0
 	for _, c := range counts {
 		if !isParentCategory(counts, c.Category) {
@@ -137,4 +133,14 @@ func totalLeafCount(counts []sdk.KnowledgeCategoryCount) int {
 		}
 	}
 	return total
+}
+
+// isParentCategory 报告某分类是否是其它分类的父（按路径分段）。
+func isParentCategory(counts []CategoryCount, c string) bool {
+	for _, o := range counts {
+		if o.Category != c && strings.HasPrefix(o.Category, c+"/") {
+			return true
+		}
+	}
+	return false
 }

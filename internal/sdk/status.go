@@ -5,7 +5,20 @@ import "encoding/json"
 // StatusAPI provides a snapshot of the kernel runtime status.
 type StatusAPI interface {
 	GetKernelStatus() *KernelStatus
+	// RegisterSection 让插件把**自己持有的**运行事实挂进状态快照。
+	//
+	// 归属：谁持有数据谁注册（见 KernelStatus.Sections 的说明）。
+	// provider 在读取时调用，因此拿到的是当下事实。
+	RegisterSection(key string, provider func() any)
 }
+
+// RegisterSection 实现 StatusAPI。
+func (s *PluginSDK) RegisterSection(key string, provider func() any) {
+	RegisterStatusSection(key, provider)
+}
+
+// UnregisterSection 撤销本插件注册的段（插件 Stop 时调用；幂等）。
+func (s *PluginSDK) UnregisterSection(key string) { UnregisterStatusSection(key) }
 
 // KernelStatus is the aggregated runtime snapshot of all kernel subsystems.
 type KernelStatus struct {

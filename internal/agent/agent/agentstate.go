@@ -99,7 +99,6 @@ type mainState struct {
 	indexer          kernelapi.MemoryIndexer
 	tracker          kernelapi.Tracker
 	coldcontextStore kernelapi.DocStore
-	knowledge        kernelapi.Knowledge
 	social           kernelapi.SocialStore
 	textMem          kernelapi.TextMemory
 	// 嵌入与多模态空间

@@ -3,7 +3,6 @@ package proc
 import (
 	"encoding/json"
 	"fmt"
-	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -217,7 +216,7 @@ func (h *coreHandler) handleDocMemory(method string, params json.RawMessage) (in
 // 形成循环（CoreSDK 的注释已说明这一点）。断言失败时返回"能力不可用"，
 // 而不是静默退化成不写媒体——后者会让调用方以为媒体已入库。
 type knowledgeMediaAdder interface {
-	AddWithMedia(name, content string, media []knowledge.KnowledgeMediaRef) error
+	AddWithMedia(name, content string, media []procMediaRef) error
 }
 
 // handleKnowledge 处理知识库：search / add / list。
@@ -292,11 +291,11 @@ func (h *coreHandler) handleKnowledge(method string, params json.RawMessage) (in
 			return nil, errUnavailable("knowledge")
 		}
 		var p struct {
-			Name       string                        `json:"name"`
-			Content    string                        `json:"content,omitempty"`
-			Media      []knowledge.KnowledgeMediaRef `json:"media,omitempty"`
-			ContentRef SharedRef                     `json:"content_ref,omitempty"`
-			MediaRef   SharedRef                     `json:"media_ref,omitempty"`
+			Name       string         `json:"name"`
+			Content    string         `json:"content,omitempty"`
+			Media      []procMediaRef `json:"media,omitempty"`
+			ContentRef SharedRef      `json:"content_ref,omitempty"`
+			MediaRef   SharedRef      `json:"media_ref,omitempty"`
 		}
 		if err := unmarshal(params, &p); err != nil {
 			return nil, err
@@ -367,4 +366,16 @@ func (h *coreHandler) handleTextMemory(method string, params json.RawMessage) (i
 	// 组内不应到达：Handle 的分派表与本函数的 case 标签同源，
 	// 出现即说明两处不同步。
 	return nil, fmt.Errorf("未知 method: %s", method)
+}
+
+// procMediaRef 是插件侧媒体引用（与 knowledge.MediaRef 的 JSON 形状一致）。
+//
+// ★ 为什么不在 proc 包引 knowledge 包：那会让 `internal/plugin/proc` →
+//
+//	`internal/plugins/knowledge` → `internal/plugin` 成环（插件要注册自己）。
+//	跨进程桥只需要**线上的形状**，不需要对方的 Go 类型 —— 这正是插件边界。
+type procMediaRef struct {
+	Digest string `json:"digest,omitempty"`
+	Name   string `json:"name,omitempty"`
+	MIME   string `json:"mime,omitempty"`
 }

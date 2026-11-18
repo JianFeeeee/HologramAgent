@@ -123,3 +123,13 @@ func encodeSection(key string, s StatusSection) (raw json.RawMessage) {
 	}
 	return b
 }
+
+// RegisterSection 实现 sdk.StatusAPI：把 agent 的状态段也挂到 SDK 的口上。
+//
+// ★ 为什么两处都要有：agent 侧一条（本 agent 自己的段，随实例走），
+//
+//	SDK 侧一条（**插件**注册的段，全局）。`GetKernelStatus` 把两者合进
+//	同一份快照，消费方无从察觉差异 —— 那正是"谁持有数据谁注册"的效果。
+func (a *Agent) RegisterSection(key string, provider func() any) {
+	a.RegisterStatusSection(StatusSection{Key: key, Payload: provider})
+}

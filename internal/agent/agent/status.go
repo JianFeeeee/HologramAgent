@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"path/filepath"
@@ -320,6 +321,16 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 
 	// ★ 类型注册的段：谁持有数据谁注册（主 agent 在它自己的 Initialize 里注册）。
 	ks.Sections = a.CollectStatusSections()
+	// ★ 插件注册的段（知识库条目数、索引状态…）：插件不是 agent，
+	//   走 sdk 的全局段注册表，在这里合进同一份快照。
+	for k, v := range sdk.CollectPluginStatusSections() {
+		if ks.Sections == nil {
+			ks.Sections = map[string]json.RawMessage{}
+		}
+		if _, dup := ks.Sections[k]; !dup {
+			ks.Sections[k] = v
+		}
+	}
 	return ks
 }
 

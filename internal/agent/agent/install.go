@@ -43,7 +43,7 @@ func (a *Agent) InstallMainState(cfg AgentConfig) {
 	if a == nil {
 		return
 	}
-	if cfg.Memory == nil && cfg.Indexer == nil && cfg.DocStore == nil && cfg.Knowledge == nil &&
+	if cfg.Memory == nil && cfg.Indexer == nil && cfg.DocStore == nil &&
 		cfg.PluginReg == nil && cfg.StageHost == nil {
 		return
 	}
@@ -51,7 +51,6 @@ func (a *Agent) InstallMainState(cfg AgentConfig) {
 	m.indexer = cfg.Indexer
 	m.tracker = cfg.Tracker
 	m.coldcontextStore = cfg.DocStore
-	m.knowledge = cfg.Knowledge
 	m.social = cfg.SocialStore
 	m.textMem = cfg.TextMemory
 	m.pluginReg = cfg.PluginReg

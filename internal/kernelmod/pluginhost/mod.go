@@ -46,7 +46,7 @@ func (Module) Requires() []string {
 	return []string{
 		kernelmod.FacConfig, kernelmod.FacKernelIO, kernelmod.FacMemory,
 		kernelmod.FacLua, kernelmod.FacSupervisor, kernelmod.FacTracker,
-		kernelmod.FacTextMem, kernelmod.FacDocStore, kernelmod.FacKnowledge,
+		kernelmod.FacTextMem, kernelmod.FacDocStore,
 		kernelmod.FacStageHost,
 	}
 }

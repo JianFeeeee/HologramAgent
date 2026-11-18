@@ -16,7 +16,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
-	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	"log"
 	"strings"
 
@@ -38,7 +37,7 @@ type Module struct{}
 func (Module) Name() string { return "stage-host" }
 func (Module) Requires() []string {
 	return []string{kernelmod.FacKernelIO, kernelmod.FacMemory, kernelmod.FacTextMem,
-		kernelmod.FacDocStore, kernelmod.FacKnowledge, kernelmod.FacLLM}
+		kernelmod.FacDocStore, kernelmod.FacLLM}
 }
 func (Module) Provides() []string { return []string{kernelmod.FacStageHost} }
 
@@ -49,7 +48,6 @@ func (Module) Init(ks *kstate.State) error {
 	// ★ 取的是**代理面**（FacEventBus），不是裸总线（第⑥次裁定）。
 	evBus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(kernelapi.EventBus)
 	docStore := kernelmod.MustValue[*coldcontext.Store](ks, kernelapi.FacDocStore)
-	knowledgeStore := kernelmod.MustValue[*knowledge.Store](ks, kernelapi.FacKnowledge)
 	textMem := kernelmod.MustValue[*text.Memory](ks, kernelapi.FacTextMem)
 	memDB := kernelmod.MustValue[*memory.GraphDB](ks, kernelapi.FacMemory)
 	providerMgr := kernelmod.MustValue[*agentProvider.ProviderManager](ks, kernelapi.FacLLM)
@@ -70,7 +68,13 @@ func (Module) Init(ks *kstate.State) error {
 	pluginReg.SetMemory(memDB)
 	pluginReg.SetTextMemory(textMem)
 	pluginReg.SetDocStore(docStore)
-	pluginReg.SetKnowledge(knowledgeStore)
+	// 多模态向量空间：知识库插件要用它建稠密索引（经 s.Multimodal()）。
+	// 未启用时 Require 拿不到 ⇒ 传 nil ⇒ 插件回落到词法路（行为不变）。
+	if impl, ok := ks.Require(kernelapi.FacMultimodal); ok {
+		if mm, _ := impl.(kernelapi.MultimodalSpace); mm != nil {
+			pluginReg.SetMultimodal(mm)
+		}
+	}
 	pluginReg.SetProviderManager(providerMgr)
 	pluginReg.SetConfigRegistry(ks.CfgReg)
 	pluginReg.SetPluginDir(ks.Cfg.Plugin.Dir)

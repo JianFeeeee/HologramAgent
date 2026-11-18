@@ -186,13 +186,14 @@ type PluginSDK struct {
 	// ★ 为何必须存下来：总线闸门要判断“这个插件能不能发这个事件”，
 	// 而之前三条路径（Publish / Subscribe / EventBus）都不带身份 ——
 	// 不带身份会被当成内核内部而一律放行，等于给所有插件开了伪造后门。
-	name     string
-	settings SettingsAPI
-	memory   MemoryAPI
-	textMem  TextMemoryAPI
-	docMem   DocMemoryAPI
-	know     KnowledgeAPI
-	llm      LLMAPI
+	name       string
+	settings   SettingsAPI
+	memory     MemoryAPI
+	textMem    TextMemoryAPI
+	docMem     DocMemoryAPI
+	know       KnowledgeAPI
+	multimodal kernelapi.MultimodalSpace
+	llm        LLMAPI
 
 	iom       *agentIO.IOManager
 	eventBus  kernelapi.EventBus
@@ -226,7 +227,23 @@ func (s *PluginSDK) Events() pubsdk.EventsAPI  { return s.events }
 func (s *PluginSDK) Memory() MemoryAPI         { return s.memory }
 func (s *PluginSDK) TextMemory() TextMemoryAPI { return s.textMem }
 func (s *PluginSDK) DocMemory() DocMemoryAPI   { return s.docMem }
-func (s *PluginSDK) Knowledge() KnowledgeAPI   { return s.know }
+
+// Knowledge 返回知识库能力。
+//
+// ★ 知识库是**内部插件**（用户裁定 2026-11-18），内核不持有它的句柄。
+//
+//	provider 由插件在 Start 时发布（见 internal/sdk/knowledge_provider.go）；
+//	插件没加载时这里返回 nil —— 那是对的，能力确实不存在。
+//
+// Multimodal 返回统一多模态向量空间（未启用时为 nil）。
+func (s *PluginSDK) Multimodal() kernelapi.MultimodalSpace { return s.multimodal }
+
+func (s *PluginSDK) Knowledge() KnowledgeAPI {
+	if s.know != nil {
+		return s.know
+	}
+	return KnowledgeProvider()
+}
 
 // LLM 返回大模型源。媒体字节请走 Memory().MediaBytes(ref)（CAS 已淘汰）。
 func (s *PluginSDK) LLM() LLMAPI { return s.llm }
@@ -389,13 +406,18 @@ type SDKConfig struct {
 	// sdk 不能 import kstate（kstate 依赖 plugin → 依赖 sdk，成环），
 	// 所以由 plugin.Registry 从 ks.PromptSections 取出来传进来。
 	PromptSections *promptsec.Registry
-	Memory         MemoryAPI
-	TextMemory     TextMemoryAPI
-	DocMemory      DocMemoryAPI
-	Knowledge      KnowledgeAPI
-	LLM            LLMAPI
-	Settings       SettingsAPI
-	Secrets        pubsdk.SecretsAPI
+	// Multimodal 是统一多模态向量空间（memory 与 knowledge 共用同一份）。
+	//
+	// ★ 为什么经 SDK 给：向量空间是**共享基础设施**，插件要用它不该知道
+	//   内核怎么装配（onnx 模块 / 配置键 / 关闭时机都在内核侧）。
+	Multimodal kernelapi.MultimodalSpace
+	Memory     MemoryAPI
+	TextMemory TextMemoryAPI
+	DocMemory  DocMemoryAPI
+	Knowledge  KnowledgeAPI
+	LLM        LLMAPI
+	Settings   SettingsAPI
+	Secrets    pubsdk.SecretsAPI
 	// Security 是**策略声明面**（插件声明安全档位；判定由内核执行）。
 	//
 	// ★ 只声明、不判定：本接口没有 CheckTool 之类的方法 —— 那属于内核。
@@ -466,14 +488,15 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 		base.SetKernelControlAPI(cfg.KernelControl)
 	}
 	return &PluginSDK{
-		PluginSDK: base,
-		name:      name,
-		settings:  cfg.Settings,
-		memory:    cfg.Memory,
-		textMem:   cfg.TextMemory,
-		docMem:    cfg.DocMemory,
-		know:      cfg.Knowledge,
-		llm:       cfg.LLM,
+		PluginSDK:  base,
+		name:       name,
+		settings:   cfg.Settings,
+		memory:     cfg.Memory,
+		textMem:    cfg.TextMemory,
+		docMem:     cfg.DocMemory,
+		know:       cfg.Knowledge,
+		multimodal: cfg.Multimodal,
+		llm:        cfg.LLM,
 
 		iom:       cfg.IOManager,
 		eventBus:  cfg.EventBus,

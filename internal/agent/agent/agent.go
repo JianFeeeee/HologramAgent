@@ -318,7 +318,6 @@ type AgentConfig struct {
 	Tracker     kernelapi.Tracker
 
 	DocStore    kernelapi.DocStore
-	Knowledge   kernelapi.Knowledge
 	SocialStore kernelapi.SocialStore
 	TextMemory  kernelapi.TextMemory
 	// 媒体存储句柄已随 CAS 淘汰（块自带负载）。
@@ -436,13 +435,6 @@ func New(cfg AgentConfig) *Agent {
 	}
 	if cfg.MaxContextSize <= 0 {
 		cfg.MaxContextSize = 30
-	}
-
-	// 05. 依赖注入前的准备（知识库向量器）留在基座：它只动 cfg 里的服务，
-	// 与"用哪种上下文实现"无关。
-	if cfg.Knowledge != nil {
-		cfg.Knowledge.SetVectorizer(cfg.Embedder)
-		cfg.Knowledge.ReindexWithVectorizer(cfg.Embedder)
 	}
 
 	a := &Agent{

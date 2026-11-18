@@ -27,7 +27,6 @@ const (
 	FacTextMem    = kernelapi.FacTextMem
 	FacLLM        = kernelapi.FacLLM
 	FacDocStore   = kernelapi.FacDocStore
-	FacKnowledge  = kernelapi.FacKnowledge
 	FacMultimodal = kernelapi.FacMultimodal
 	FacONNX       = kernelapi.FacONNX
 	FacStageHost  = kernelapi.FacStageHost
@@ -41,9 +40,6 @@ const (
 	//
 	// 混在一起会让"内核内部标记"被误当成"插件可选设施"
 	// ⇒ 插件可能声明它（然后永远等不到 —— 因为它的就绪时机是装配中途）。
-
-	// FacMigrated 标记"知识库目录迁移已完成"（用于让 store 排在迁移之后）。
-	FacMigrated = "knowledge-migrated"
 
 	// FacVersion 标记"内核版本自检与升级回滚判定已完成"（update 模块提供）。
 	//

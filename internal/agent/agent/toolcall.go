@@ -15,7 +15,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
-	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/toolroute"
 )
@@ -984,32 +983,6 @@ func (a *Agent) executeSocialTool(tc agentAPI.ToolCall) string {
 	default:
 		return fmt.Sprintf("unknown person tool: %s", tc.Name)
 	}
-}
-
-// knowledgeMediaRefs 把模型给的块引用（ID 或其唯一前缀）解析成知识条目的媒体引用。
-//
-// Reuses the coldcontext_commit convention: references may be prefixes; unresolved ones are skipped.
-// 模型偶尔会把 ID 记错，不该让整次写入失败。MIME 从块回读，嵌入时需要
-// （EmbedImageDense 靠它判定模态）。字节随条目落盘（writeMediaFiles）。
-func (a *Agent) knowledgeMediaRefs(refs []string) []knowledge.KnowledgeMediaRef {
-	if a.GraphDB() == nil || len(refs) == 0 {
-		return nil
-	}
-	var out []knowledge.KnowledgeMediaRef
-	for _, r := range refs {
-		b, ok, err := a.GraphDB().BlockByIDPrefix(r)
-		if err != nil || !ok {
-			log.Printf("[knowledge] media block ref %s could not be resolved uniquely, skipping", r)
-			continue
-		}
-		out = append(out, knowledge.KnowledgeMediaRef{
-			Digest: b.ID,
-			MIME:   b.MIME,
-			Kind:   string(b.Modality),
-			Data:   b.Data,
-		})
-	}
-	return out
 }
 
 func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
