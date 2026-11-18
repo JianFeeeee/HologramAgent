@@ -198,86 +198,6 @@ func resumeQueryFrom(f *TaskFrame) string {
 	return f.Input
 }
 
-// OverflowStat 是超页处置的**观测快照**（供类型策略与状态面共用）。
-//
-// ★ 为什么计数留在基座、判定搬去类型：计数是"发生了什么"的**事实**，
-//
-//	任何类型都可能想观测；而"什么水位该裁、裁不动怎么办"是**策略**。
-//	两者混在一个函数里，就是用户 2026-11-18 指出的
-//	「overflow 里不应该有具体逻辑」。
-type OverflowStat struct {
-	Checked    int
-	Triggered  int
-	Aborted    int
-	Upstream   int
-	LastPruned int
-	LastRatio  float64
-	LastEvents int
-}
-
-// OverflowStats 读一份观测快照。
-func (a *Agent) OverflowStats() OverflowStat {
-	if a == nil {
-		return OverflowStat{}
-	}
-	st := &a.MainState().overflowStat
-	st.Lock()
-	defer st.Unlock()
-	return OverflowStat{
-		Checked: st.Checked, Triggered: st.Triggered, Aborted: st.Aborted,
-		Upstream: st.Upstream, LastPruned: st.LastPruned,
-		LastRatio: st.LastRatio, LastEvents: st.LastEvents,
-	}
-}
-
-// NoteOverflowCheck 记一次"做了超页判定"（无论结论）。
-func (a *Agent) NoteOverflowCheck() int {
-	if a == nil {
-		return 0
-	}
-	st := &a.MainState().overflowStat
-	st.Lock()
-	defer st.Unlock()
-	st.Checked++
-	return st.Checked
-}
-
-// NoteOverflowPruned 记一次"触发并裁掉 N 条"。
-func (a *Agent) NoteOverflowPruned(pruned int) {
-	if a == nil {
-		return
-	}
-	st := &a.MainState().overflowStat
-	st.Lock()
-	st.Triggered++
-	st.LastPruned = pruned
-	st.Unlock()
-}
-
-// NoteOverflowAborted 记一次「超页但裁不出东西」的终止。
-func (a *Agent) NoteOverflowAborted(ratio float64, events int) {
-	if a == nil {
-		return
-	}
-	st := &a.MainState().overflowStat
-	st.Lock()
-	st.Aborted++
-	st.LastRatio = ratio
-	st.LastEvents = events
-	st.Unlock()
-}
-
-// NoteOverflowUpstream 记一次"上游明确报 context_full"。
-func (a *Agent) NoteOverflowUpstream() {
-	if a == nil {
-		return
-	}
-	st := &a.MainState().overflowStat
-	st.Lock()
-	st.Upstream++
-	st.Unlock()
-}
-
 // raiseContextOverflow 通过 **L4 唯一入口**发起一次上下文超页中断。
 //
 // 与 panic / child_contextfull 并列，是 L4 的第三个来源。
@@ -342,8 +262,6 @@ func (a *Agent) TokenOf(i int) int {
 	}
 	return n
 }
-
-// overflowStat 字段定义在 Agent 上（见 agent.go），此处只做访问辅助。
 
 // lastUserQueryForPrune 取最后一条非中断用户输入作为裁剪的相关性基准。
 //

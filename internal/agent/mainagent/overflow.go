@@ -1,23 +1,33 @@
-// Package standard is the reusable implementation library for agentloop and
-// context management (user ruling 2026-11-17).
+// overflow.go —— **主 agent 的上下文超页策略**（原本住在 `standard`，那是错的）。
 //
-// ## Positioning: a library, not a module
+// ## 为什么它必须住 mainagent
 //
-// It does not register a `kernelmod`, does not create dependency-graph edges, and
-// is not constructed by any `Init`. It is a **reusable set of implementations**
-// that main / resident (and, in the future, other synchronous types) compose.
+// 这个文件里没有一件东西是"多个类型共用的标准实现"：
 //
-//	type module → standard → agent (stage primitives) → agenttypes / kit
+//	overflowRatio = 1.25          主 agent 的水位（它自己的上下文哲学）
+//	overflowRecoverBudget = 2     主 agent 的恢复预算（它的重试纪律）
+//	HasOversizedFrame             "frame / 水页" 是 TaskFrame 的抽象，只主 agent 有
+//	SingleEventFitsBudget         同样是它的裁剪无解判定
+//	OverflowLedger                记的是"我的策略做了什么"
+//	handleContextOverflow         剔页 → 裁剪 → 终止 的具体顺序
 //
-// ## Division of labour with kit
+// 驻留子是整窗不裁、撞窗口上报父；rt 子是滑动窗口、滑无可滑上报父。
+// 它们**一条都用不上**这里的任何东西 —— 所以它从来就不是"standard"。
 //
-//	kit        stateless parts (error values, usage ledger, output shell, StageHost, budget math…)
-//	standard   standard implementations tied to the Agent lifecycle/bind (loop, context, runner, stage)
+// ## 与基座的分工（唯一判据）
 //
-// ## What is deliberately NOT here
+//	基座    5 个纯读数字（ContextLen / TokenOf / AccumulatedTokens /
+//	        ContextWindowTokens / OverflowRatioNow）+ 两个上下文原语
+//	        （PruneContext / EvictOversizedPages）
+//	本文件  阈值、预算、判定、处置顺序、记账 —— 全部是**策略**
 //
-// Event routing, output delivery, timer ticks, heartbeats, tool execution —
-package standard
+// ## 与内核的分工
+//
+// 内核在两处触发（把请求交给 provider 之前 / 收到 ErrContextFull 之后）；
+// 主 agent 另外**自主巡检**（拼消息后、工具回灌后、恢复重建后），因为它要在
+// "付代价之前"处置。一个 handler，两种来源。
+
+package mainagent
 
 import (
 	"fmt"
@@ -25,6 +35,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 )
 
 // overflowRatio is the local pre-judgement water line: prune when accumulated
@@ -61,6 +72,12 @@ func OverBudgetRatio(a *agent.Agent) bool { return a.OverflowRatioNow() >= overf
 func PruneByQuery(a *agent.Agent, query string, protected int) int {
 	return a.PruneContext(query, protected)
 }
+
+// ContextBudgetRelevance 是**策略裁剪型**的预算 —— 只有主 agent 用它。
+//
+// 与整窗型的区别：整窗型直接返回 `b.MaxContext`（只受模型硬上限约束），
+// 由驻留子 / rt 各自注册。所以它不能住"共用实现库"。
+func ContextBudgetRelevance(_ *agent.Agent, b kit.TokenBudget) int { return b.ContextTokens }
 
 // HasOversizedFrame 报告是否存在「单条事件自己就超过上下文预算」的帧（主 agent 的策略概念）。
 //
@@ -136,12 +153,21 @@ func SingleEventFitsBudget(a *agent.Agent) bool {
 // the preemption — lives in this package, because it is the type's policy.
 // HasOversizedFrame / SingleEventFitsBudget / OverflowStat all moved here.
 func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes.OverflowRequest) (bool, int) {
+	// 无账本 ⇒ 用进程内默认账本（主 agent 在 Initialize 里注入自己的那份）。
+	return EnforceOverflowWith(a, f, req, defaultLedger)
+}
+
+// EnforceOverflowWith 是带**策略账本**的版本（类型模块注入自己的 `OverflowLedger`）。
+//
+// ★ 账本属于策略：`Checked/Triggered/Aborted/Upstream` 每一项都在回答
+// "我的策略做了什么"，基座连水位阈值都不知道，无从记这些。
+func EnforceOverflowWith(a *agent.Agent, f *agenttypes.Frame, req agenttypes.OverflowRequest, led *OverflowLedger) (bool, int) {
 	if a == nil {
 		return false, 0
 	}
 	query, force := req.Query, req.Force
 	ratio := a.OverflowRatioNow()
-	checked := a.NoteOverflowCheck()
+	checked := led.Check()
 	// Diagnostic trace: this predicate runs at every injection point and rarely
 	// fires in production. Without this line "did not fire" and "did not run" are
 	// indistinguishable (the 2026-10-01 T10 incident took 10 tool rounds to pin down).
@@ -178,7 +204,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 			if pruned := a.PruneContext(query, protected); pruned > 0 {
 				log.Printf("[agent] resume overflow: pruned=%d, protected=%d frame tail msgs",
 					pruned, protected)
-				a.NoteOverflowPruned(pruned)
+				led.Pruned(pruned)
 				return true, pruned
 			}
 		}
@@ -191,7 +217,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 		// An upstream error is an **independent report** (counted separately from
 		// the local water line); counting here rather than in the caller because it
 		// is part of the predicate, not a caller side effect.
-		a.NoteOverflowUpstream()
+		led.Upstream()
 	}
 
 	// Recovery budget: if the frame is still over after pruning, then topK and the
@@ -202,7 +228,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 			log.Printf("[agent] context overflow: recover budget exhausted (%d/%d), "+
 				"terminating this frame instead of looping",
 				f.OverflowRecover, overflowRecoverBudget)
-			a.NoteOverflowAborted(ratio, a.ContextLen())
+			led.Aborted(ratio, a.ContextLen())
 			f.Err = fmt.Errorf("上下文超限：已裁剪 %d 次仍超出窗口，"+
 				"本轮终止（请检查 core.agent.max_context_size 与窗口是否匹配）",
 				f.OverflowRecover)
@@ -211,7 +237,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 		}
 		f.OverflowRecover++
 	}
-	return true, handleContextOverflow(a, query, ratio)
+	return true, handleContextOverflow(a, query, ratio, led)
 }
 
 // handleContextOverflow executes "remedy + L4 interrupt" for the strategic-pruning type.
@@ -227,7 +253,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 // "it actually fit" yet overflow was reported — that is a bug in the predicate, not a
 // recoverable state. In that case save the scene and terminate explicitly, never
 // trigger an interrupt again.
-func handleContextOverflow(a *agent.Agent, query string, ratio float64) int {
+func handleContextOverflow(a *agent.Agent, query string, ratio float64, led *OverflowLedger) int {
 	// ★ Page-based: try the **lightest tier** first — page-level eviction (P5, 2026-10-29).
 	//
 	// Eviction is a mark (InactivePages), not a delete and not a cross-layer migration:
@@ -254,7 +280,7 @@ func handleContextOverflow(a *agent.Agent, query string, ratio float64) int {
 		avg := a.AccumulatedTokens() / max(a.ContextLen(), 1)
 		log.Printf("[agent] context overflow: single event (%d tok) exceeds budget (%d tok) — "+
 			"pruning cannot help, terminating", avg, a.ComputeTokenBudget().ContextTokens)
-		a.NoteOverflowAborted(ratio, a.ContextLen())
+		led.Aborted(ratio, a.ContextLen())
 		return 0
 	}
 

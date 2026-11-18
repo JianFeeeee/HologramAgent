@@ -23,7 +23,6 @@ package standard
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 )
 
 // Loop 是**标准同步 agentloop**（主 agent / 驻留子的实现）。
@@ -33,12 +32,6 @@ import (
 func Loop(a *agent.Agent, f *agenttypes.Frame) agenttypes.Outcome {
 	return agent.LoopStandard(a, f)
 }
-
-// ContextBudgetRelevance 是**策略裁剪型**的预算（主 agent）。
-//
-// 与整窗型的区别：整窗型直接返回 `b.MaxContext`（只受硬上限约束），
-// 由驻留子/rt 注册。
-func ContextBudgetRelevance(a *agent.Agent, b kit.TokenBudget) int { return b.ContextTokens }
 
 // RunStageStandard 执行插件阶段。
 func RunStageStandard(a *agent.Agent, stage string, ctx any) bool {

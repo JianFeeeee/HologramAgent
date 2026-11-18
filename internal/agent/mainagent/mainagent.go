@@ -49,16 +49,20 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	a := agent.New(cfg)
 	h := a.Hooks()
 
-	// ── 槽位 5：上下文管理（主 agent = **策略裁剪型**，来自 standard）──
+	// ── 槽位 5：上下文管理（主 agent = **策略裁剪型**，本包实现）──
+	//
+	// ★ overflow 的三件（写在这里而不是 standard）：阈值 1.25、恢复预算 2、
+	//   "frame/水页"判定、剔除顺序、记账 —— 全是**主 agent 自己的上下文哲学**。
+	//   驻留子整窗不裁、rt 滑窗，它们一条都用不上。
 	if h.ContextBudget == nil {
-		h.ContextBudget = standard.ContextBudgetRelevance
+		h.ContextBudget = ContextBudgetRelevance
 	}
 	if h.OverBudget == nil {
-		h.OverBudget = standard.OverBudgetRatio
+		h.OverBudget = OverBudgetRatio
 	}
 	if h.Prune == nil {
-		h.Prune = standard.PruneByQuery
-		h.EnforceOverflow = standard.EnforceOverflowStandard
+		h.Prune = PruneByQuery
+		h.EnforceOverflow = EnforceOverflowStandard
 	}
 
 	// ── 槽位 6：agent loop（主 agent 用**标准同步**实现）──

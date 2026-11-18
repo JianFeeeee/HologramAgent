@@ -133,17 +133,6 @@ type mainState struct {
 	// 工具结果预算的记账（方案 B：只统计不裁剪）
 	toolResultWarnTokens int
 	toolResultReporter   toolResultReporter
-	// 超页处置统计
-	overflowStat struct {
-		sync.Mutex
-		Checked    int
-		Triggered  int
-		Aborted    int
-		Upstream   int
-		LastPruned int
-		LastRatio  float64
-		LastEvents int
-	}
 	// 设备数据面（device 模块挂载的那一份）
 	device   agentAPI.DeviceSurface
 	deviceMu sync.RWMutex
