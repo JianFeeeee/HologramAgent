@@ -27,9 +27,6 @@ func (h *recordingHandlers) ExecuteMemoryTool(tc api.ToolCall, s []string) strin
 	return h.hit("memory")
 }
 func (h *recordingHandlers) ExecuteSocialTool(tc api.ToolCall) string { return h.hit("social") }
-func (h *recordingHandlers) ExecuteKnowledgeTool(tc api.ToolCall) string {
-	return h.hit("knowledge")
-}
 func (h *recordingHandlers) ExecuteColdContextTool(tc api.ToolCall) string {
 	return h.hit("coldcontext")
 }
@@ -55,7 +52,6 @@ func TestDispatchRoutesEachPrefix(t *testing.T) {
 		{"persona_set", "persona"},
 		{"stablemem_commit", "memory"},
 		{"social_note", "social"},
-		{"knowledge_search", "knowledge"},
 		{"coldcontext_query", "coldcontext"},
 		{"doc_query", "coldcontext"}, // 旧前缀兼容
 		{"secret_get", "secret"},

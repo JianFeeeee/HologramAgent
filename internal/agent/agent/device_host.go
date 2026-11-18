@@ -122,9 +122,6 @@ func (h builtinHandlers) ExecuteMemoryTool(tc api.ToolCall, scenes []string) str
 func (h builtinHandlers) ExecuteSocialTool(tc api.ToolCall) string {
 	return h.a.executeSocialTool(tc)
 }
-func (h builtinHandlers) ExecuteKnowledgeTool(tc api.ToolCall) string {
-	return h.a.executeKnowledgeTool(tc)
-}
 func (h builtinHandlers) ExecuteColdContextTool(tc api.ToolCall) string {
 	return h.a.executeDocTool(tc)
 }

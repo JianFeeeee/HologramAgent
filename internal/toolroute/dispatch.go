@@ -40,8 +40,6 @@ func Dispatch(h api.BuiltinToolHandlers, tc api.ToolCall, turnScenes []string) (
 		return h.ExecuteMemoryTool(tc, turnScenes), true
 	case strings.HasPrefix(tc.Name, "social_"):
 		return h.ExecuteSocialTool(tc), true
-	case strings.HasPrefix(tc.Name, "knowledge_"):
-		return h.ExecuteKnowledgeTool(tc), true
 	case strings.HasPrefix(tc.Name, "coldcontext_"):
 		// doc_* 是旧前缀（工具已改名），保留兼容：插件/测试仍有旧调用。
 		return h.ExecuteColdContextTool(tc), true

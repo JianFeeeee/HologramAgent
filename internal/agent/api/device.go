@@ -58,7 +58,6 @@ type BuiltinToolHandlers interface {
 	ExecutePersonaTool(tc ToolCall) string
 	ExecuteMemoryTool(tc ToolCall, turnScenes []string) string
 	ExecuteSocialTool(tc ToolCall) string
-	ExecuteKnowledgeTool(tc ToolCall) string
 	ExecuteColdContextTool(tc ToolCall) string
 	ExecuteSecretTool(tc ToolCall) string
 	ExecuteOutputSendHelp(tc ToolCall) string

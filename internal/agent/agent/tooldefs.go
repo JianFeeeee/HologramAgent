@@ -398,8 +398,6 @@ func toolDefWith(name, description string, properties map[string]interface{}, re
 // 声明了没在名单里的也会报出来。
 func init() {
 	for _, name := range []string{
-		// 知识库：检索与列举
-		"knowledge_search", "knowledge_list",
 		// 人物图谱：查询与邻域读取
 		"person_query", "person_network",
 		// 通道：列举
@@ -527,49 +525,6 @@ func (a *Agent) BuildToolDefs() []interface{} {
 			"new_relation": map[string]interface{}{"type": "string", "description": "新关系类型（不填则不变）"},
 			"new_object":   map[string]interface{}{"type": "string", "description": "新客体名（不填则不变）"},
 		}, "old_subject", "old_relation", "old_object"))
-	}
-
-	if a.MainState().knowledge != nil {
-		tools = append(tools, toolDefWith("knowledge_search", "搜索知识库。输入查询关键词，返回相关知识内容。可用 category 把搜索限定在某个分类子树内。", map[string]interface{}{
-			"query":    map[string]interface{}{"type": "string", "description": "查询关键词"},
-			"top_k":    map[string]interface{}{"type": "integer", "description": "返回数量", "default": 5},
-			"category": map[string]interface{}{"type": "string", "description": "可选：限定在某个分类内（前缀匹配子树，如 tech 会搜 tech/go、tech/rust）。留空则搜全库"},
-		}, []string{"query"}, parallelOpts()))
-		tools = append(tools, toolDefWith("knowledge_list", "列出知识库中所有知识分类。", map[string]interface{}{}, nil, parallelOpts()))
-	}
-
-	if a.MainState().knowledge != nil {
-		tools = append(tools, toolDef("knowledge_create", "创建新知识。将知识写入知识库（knowledge/目录），自动向量化索引。可关联已入库媒体（附图/音视频）使该知识能被图本身检索到。", map[string]interface{}{
-			"name":    map[string]interface{}{"type": "string", "description": "知识名称（用作目录名）"},
-			"content": map[string]interface{}{"type": "string", "description": "知识内容，支持 Markdown"},
-			"media_digests": map[string]interface{}{
-				"type":        "array",
-				"items":       map[string]interface{}{"type": "string"},
-				"description": "可选：关联的媒体 digest（可传前缀）。媒体作为一等节点参与跨模态检索——知识能按图本身被搜到，而不依赖生成的描述文本",
-			},
-		}, "name", "content"))
-		tools = append(tools, toolDef("knowledge_import_dir",
-			"从目录批量导入知识（复制，不是引用）。递归扫描该目录，把文档复制进知识库并自动完成索引与向量化，之后即可被 knowledge_search 检索到。\n"+
-				"目录约定（自动适配，无需改造资料）：含 content.md 的目录整体作为一条知识；否则目录里的 .md/.txt 等文件各成一条，**目录路径即分类**。\n"+
-				"注意：dir 必须是绝对路径（你的工作目录不等于进程 cwd）；同名条目会跳过而不覆盖。",
-			map[string]interface{}{
-				"dir":      map[string]interface{}{"type": "string", "description": "源目录的绝对路径，如 /home/qq/notes。不接受相对路径"},
-				"category": map[string]interface{}{"type": "string", "description": "可选：分类前缀，叠加在源目录结构之上。导入 ~/docs/go/x.md 配 category=tech 得到 tech/go/x。留空则沿用源目录自身的层级"},
-				"include_media": map[string]interface{}{
-					"type":        "boolean",
-					"description": "可选：是否把目录里的图片/音视频也导入（复制进媒体库，使该知识能按图本身被搜到）。默认 false",
-					"default":     false,
-				},
-				"dry_run": map[string]interface{}{
-					"type":        "boolean",
-					"description": "可选：只报告将导入什么，不实际写入。试探性导入时建议先跑一次",
-					"default":     true,
-				},
-				"max_items": map[string]interface{}{"type": "integer", "description": "可选：本次最多导入多少条（默认 500，防误传大目录）"},
-			}, "dir"))
-		tools = append(tools, toolDef("knowledge_delete", "删除知识库中的指定知识条目。", map[string]interface{}{
-			"name": map[string]interface{}{"type": "string", "description": "要删除的知识名称"},
-		}, "name"))
 	}
 
 	if a.MainState().coldcontextStore != nil {
