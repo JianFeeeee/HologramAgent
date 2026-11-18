@@ -118,7 +118,7 @@ func InitRuntime(a *agent.Agent) error {
 		return fmt.Errorf("main: nil base")
 	}
 	cfg := a.Config()
-	a.InstallContext(agent.NewRelevanceContext(cfg.ContextSavePath, cfg.Embedder))
+	a.InstallMainRuntime(cfg)
 	a.InstallScheduler()
 	a.InstallMainState(cfg)
 	a.NormalizeNilServices()
