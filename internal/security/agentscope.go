@@ -63,8 +63,10 @@ import (
 // 同时共享 `Runtime` 上的全部注册表与全局基线。
 //
 // ★ 生命周期跟随 agent：创建时 `ForAgent`，销毁时 `ReleaseAgent`。
-// 不释放不会泄漏内存（视图只持有几个字符串），但**残留的 longtime 档位**
-// 会让同名重建的 agent 继承上一代的约束 —— 与主体策略的撤销同一形态。
+//
+// 视图里只剩 **session 档位**（本轮事实）。长期档位与授权、工具策略一样
+// 住在 **agent 记录表**（§3.2.2）—— 所以"同名重建继承上一代约束"这类残留
+// 由 `AgentRegistry.Remove` 一次消灭，不再依赖"记得调 ReleaseAgent"。
 type AgentScope struct {
 	rt      *Runtime
 	agentID string
@@ -72,9 +74,17 @@ type AgentScope struct {
 
 	mu sync.RWMutex
 	// sessionProfile 是本轮输入声明的档位（End 清空）。
+	//
+	// ★ 2026-11-18（§3.2.2）：`longtimeProfile` **字段已删** —— 它现在住在
+	//   `AgentRecord.Facts.LongtimeProfile`（agent 记录表）。
+	//
+	//   删它的收益不是"少一个字段"，而是**消灭一类残留**：原先 agent 回收后
+	//   同名重建会继承上一代的常年档（**提权**），因为档位以"调用方给的名字"
+	//   为键存在这里。现在档位随记录走，`Remove(id)` 一次清干净。
+	//
+	//   session 档位则**刻意留下**：它是"这一轮的事实"（输入载荷携带），
+	//   没有别的落点，且 End 必须清它。
 	sessionProfile string
-	// longtimeProfile 是跨轮保留的档位（显式设置/清除）。
-	longtimeProfile string
 	// sessionExpires 是 session 档位的 TTL 到期时刻（0 = 不过期）。
 	//
 	// 为什么 session 也要 TTL：输入到达后若轮次异常终止（panic/取消），
@@ -182,6 +192,10 @@ func (sc *AgentScope) clearSession() {
 
 // SetLongtimeProfile 设置跨轮保留的档位（空串 = 清除）。
 //
+// ★ 2026-11-18（§3.2.2）：落点改到 **agent 记录**（`Facts.LongtimeProfile`）。
+//
+//	于是"档位"与"输出授权""工具策略"住在同一条记录上，清理点只有一处。
+//
 // 用途：把一个驻留子**长期**派驻为某个权限档（如"访客权限的数字助手"），
 // 不必每条输入都声明。
 //
@@ -191,30 +205,30 @@ func (sc *AgentScope) SetLongtimeProfile(name string) error {
 		return nil
 	}
 	name = strings.TrimSpace(name)
-	if name == "" {
-		sc.mu.Lock()
-		sc.longtimeProfile = ""
-		sc.mu.Unlock()
+	if name != "" {
+		if _, ok := sc.rt.profiles.Get(name); !ok {
+			return &policyErr{fmt.Sprintf(
+				"security: 未声明的安全档位 %q（已声明: %v）", name, sc.rt.profiles.Names())}
+		}
+	}
+	reg, ok := sc.rt.writableRegistry()
+	if !ok {
+		// 无记录表（裸 Runtime / 单测）：不存 —— 判定侧同样读不到（fail-open），
+		// 行为与"未设置常年档"逐字一致。
 		return nil
 	}
-	if _, ok := sc.rt.profiles.Get(name); !ok {
-		return &policyErr{fmt.Sprintf(
-			"security: 未声明的安全档位 %q（已声明: %v）", name, sc.rt.profiles.Names())}
-	}
-	sc.mu.Lock()
-	sc.longtimeProfile = name
-	sc.mu.Unlock()
+	reg.Update(sc.agentID, func(rec *model.AgentRecord) {
+		rec.Facts.LongtimeProfile = name
+	})
 	return nil
 }
 
 // LongtimeProfile 返回跨轮档位名（空 = 未设置）。
 func (sc *AgentScope) LongtimeProfile() string {
-	if sc == nil {
+	if sc == nil || sc.rt == nil {
 		return ""
 	}
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-	return sc.longtimeProfile
+	return sc.rt.factsFor(sc.agentID).LongtimeProfile
 }
 
 // SessionProfile 返回本轮档位名（空 = 本轮未声明；已过期视为空）。
