@@ -1,5 +1,7 @@
 package sdk
 
+import "encoding/json"
+
 // StatusAPI provides a snapshot of the kernel runtime status.
 type StatusAPI interface {
 	GetKernelStatus() *KernelStatus
@@ -33,34 +35,25 @@ type KernelStatus struct {
 	// 「输入路由发生在进内核之前」这条设计事实藏了起来。
 	InputChannels []InputChannelInfo `json:"input_channels"`
 
-	Memory     MemoryStatus     `json:"memory"`
-	Knowledge  KnowledgeStatus  `json:"knowledge"`
-	Documents  DocumentStatus   `json:"documents"`
-	TextMemory TextMemoryStatus `json:"text_memory"`
-	Social     SocialStatus     `json:"social"`
-
-	LLM LLMStatus `json:"llm"`
-
-	Context ContextStatus `json:"context"`
-
-	Runtime RuntimeStatus `json:"runtime"`
-
-	// ONNX 报告统一多模态向量空间（ONNX 模型）是否**真的在用**。
+	// Sections 是**由持有者注册**的状态段（用户裁定 2026-11-18，§0 第 12 条）。
 	//
-	// 为何单列：内核的向量能力是三层降级（统一多模态空间 → 词嵌入 → TF-IDF），
-	// 只报「向量可用/不可用」分不清「ONNX 模型已加载」与「退回了纯文本路径」。
-	// 模型缺失 / 运行时缺失 / provider 打开失败时这里是 enabled=false + reason。
-	ONNX ONNXStatus `json:"onnx"`
-
-	Tracker TrackerStatus `json:"tracker"`
-
-	// Residents 是驻留式子 agent 的运行时视图（数量 = len(Residents)）。
-	Residents []ResidentStatus `json:"residents"`
-
-	// Scheduler 是输入调度器的运行时快照（可观测性，设计文档 §11 O1/O2）。
-	// M2 起输入不再直接排队在 channel 上，而是经 readyQueue/pendingInterrupts/
-	// suspendStack 三集合按优先级调度；这里把这些状态暴露出来。
-	Scheduler SchedulerStatus `json:"scheduler"`
+	// ★ 为什么不给上面那组"每类一份"开字段：实测 9 个生产下恒为零值、
+	//   3 个装的是类型专属结构。基座假设"所有 agent 都有这些面"，
+	//   等于用一个大结构体表达"三形态 + 一无"（与 Hooks.GraphMemory 同病）。
+	//
+	// 现在：谁持有数据谁注册（`Agent.RegisterStatusSection` / 插件
+	// `s.Status().RegisterSection`），消费方按 key 取、自己解码。
+	//
+	//	"context"      主 agent（自己的策略形态：5 个数字 + 记账）
+	//	"scheduler"    主 agent / 驻留子各自那份（各自持有实例）
+	//	"memory"       主 agent（数据由 memory 模块算）
+	//	"knowledge"    knowledge 插件自己
+	//	"resident"     驻留子
+	//	"rt"           rt 子
+	//	"runtime"     基座（纯 Go runtime 事实，与任何 agent 无关）
+	//	"llm"         基座（Provider* 是 AgentConfig 公有字段，每类型都有）
+	//	"security"    基座/安全模块（Guarded/Unguarded 运行态）
+	Sections map[string]json.RawMessage `json:"sections,omitempty"`
 
 	// Usage 是本进程的**累计**用量账目（token 与缓存命中）。
 	//
@@ -288,18 +281,14 @@ type LLMStatus struct {
 	Sources   int    `json:"sources,omitempty"`
 }
 
-type ContextStatus struct {
-	EventCount int `json:"event_count,omitempty"`
-}
-
+// BuildStatus 是内核二进制的构建身份，全部来自 `internal/meta`
+// （由 -ldflags 在构建时注入，未注入时为源码默认值/unknown）。
 type RuntimeStatus struct {
 	Goroutines int    `json:"goroutines"`
 	MemoryMB   int64  `json:"memory_mb"`
 	GoVersion  string `json:"go_version"`
 }
 
-// BuildStatus 是内核二进制的构建身份，全部来自 `internal/meta`
-// （由 -ldflags 在构建时注入，未注入时为源码默认值/unknown）。
 type BuildStatus struct {
 	// Version 是内核语义版本（如 1.0.0）。
 	Version string `json:"version"`

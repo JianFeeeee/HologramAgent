@@ -292,12 +292,22 @@ func (h *Handler) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		// agent_id 是**根 agent 的 id**。前端靠它把 inputch 的 owner 归类：
 		// 归属登记表里根 agent 的 id（如 "main"）与驻留子 id 长得一样，
 		// 不区分就会把根自己的通道标成「驻留子 main」。
-		"agent_id":  ks.AgentID,
-		"scheduler": ks.Scheduler,
-		"residents": ks.Residents,
+		"agent_id": ks.AgentID,
+		// ★ 按 key 取注册段：状态面的结构由持有者定义（见 internal/sdk/status.go
+		// 的 Sections 注释），基座不再承诺 scheduler/residents 的字段名。
+		"scheduler": sectionRaw(ks, "scheduler"),
+		"residents": sectionRaw(ks, "resident"),
 		"channels":  ks.Channels,
 		// inputch 的登记与归属（谁注册、划给了哪个 agent、容量、默认回程）。
 		// 只给设备能力（channels）无法回答「这条输入归谁」——驻留子存在时这就是缺口。
 		"input_channels": ks.InputChannels,
 	})
+}
+
+// sectionRaw 取一个已注册状态段的原始 JSON（未注册 ⇒ nil）。
+func sectionRaw(ks *sdk.KernelStatus, key string) json.RawMessage {
+	if ks == nil || ks.Sections == nil {
+		return nil
+	}
+	return ks.Sections[key]
 }

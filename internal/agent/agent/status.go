@@ -36,7 +36,6 @@ type DocumentStatus = sdk.DocumentStatus
 type TextMemoryStatus = sdk.TextMemoryStatus
 type SocialStatus = sdk.SocialStatus
 type LLMStatus = sdk.LLMStatus
-type ContextStatus = sdk.ContextStatus
 type RuntimeStatus = sdk.RuntimeStatus
 type TrackerStatus = sdk.TrackerStatus
 type BuildStatus = sdk.BuildStatus
@@ -71,8 +70,22 @@ func channelDirection(t agentIO.DeviceType) string {
 	}
 }
 
-// collectKernelStatus 聚合内核各子系统状态快照。
-// 接收所有子系统引用（均为可选——nil 表示不可用），返回统一的状态报告。
+// collectKernelStatus 收集**基座公共面**的状态（类型专属的段由持有者注册）。
+//
+// ## 这里只留真正公共的
+//
+//	Uptime / StartTime / Build / AgentID   内核身份
+//	Plugins / Tools / Channels / InputChannels  已装配能力（每个 agent 都看得见）
+//	Usage                                   累计用量账本
+//	runtime / llm 两个 section              与任何 agent 类型无关的事实
+//
+// ## 这里**不**再填的（已改成注册段）
+//
+//	memory / knowledge / documents / text_memory / social / tracker / onnx
+//	context / scheduler / residents
+//
+// 它们要么生产下恒为零值（句柄为 nil），要么装的是**类型专属结构**。
+// 基座假设"所有 agent 都有这些面"就是把三形态塞进一个结构体。
 func collectKernelStatus(
 	startTime time.Time,
 	agentID string,
@@ -81,12 +94,6 @@ func collectKernelStatus(
 	stageHost *kit.StageHostType,
 	iom *agentIO.IOManager,
 	pluginReg kernelapi.PluginHost,
-	memDB kernelapi.GraphMemory,
-	ks interface{ List() []string },
-	coldcontextStore kernelapi.DocStore,
-	textMem kernelapi.TextMemory,
-	socialStore kernelapi.SocialStore,
-	trk kernelapi.Tracker,
 ) *KernelStatus {
 	status := &KernelStatus{
 		Uptime:    time.Since(startTime).Round(time.Second).String(),
@@ -105,15 +112,6 @@ func collectKernelStatus(
 			// 许可标识与全文：与源码链接一起构成「这是什么许可 + 怎么拿到源码」。
 			License:    meta.License,
 			LicenseURL: meta.LicenseURL,
-		},
-		Runtime: RuntimeStatus{
-			Goroutines: runtime.NumGoroutine(),
-			GoVersion:  runtime.Version(),
-		},
-		LLM: LLMStatus{
-			Available: providerName != "",
-			Provider:  providerName,
-			Sources:   sourceCount,
 		},
 	}
 
@@ -151,7 +149,7 @@ func collectKernelStatus(
 		status.Tools = summary
 	}
 
-	// Channels
+	// Channels + inputch 归属
 	if iom != nil {
 		for _, ch := range iom.ListChannels() {
 			status.Channels = append(status.Channels, channelInfoFromIO(ch))
@@ -170,67 +168,118 @@ func collectKernelStatus(
 		}
 	}
 
-	// Graph memory
-	if memDB != nil {
-		status.Memory.Available = true
-		if info, err := memDB.Introspect(); err == nil {
-			if ec, ok := info["entity_count"].(int); ok {
-				status.Memory.EntityCount = ec
-			}
-			if rc, ok := info["relation_count"].(int); ok {
-				status.Memory.RelationCount = rc
-			}
-			if et, ok := info["entity_type_count"].(int); ok {
-				status.Memory.EntityTypes = et
-			}
-		}
-	}
+	return status
+}
 
-	// Knowledge
-	if ks != nil {
-		status.Knowledge.Available = true
-		status.Knowledge.Items = ks.List()
-		status.Knowledge.ItemCount = len(status.Knowledge.Items)
-	}
-
-	// Documents
-	if coldcontextStore != nil {
-		status.Documents.Available = true
-		stats := coldcontextStore.Stats()
-		if dc, ok := stats["doc_count"].(int); ok {
-			status.Documents.DocCount = dc
-		}
-		if vc, ok := stats["vector_count"].(int); ok {
-			status.Documents.VectorCount = vc
-		}
-	}
-
-	// Text memory
-	if textMem != nil {
-		status.TextMemory.Available = true
-		status.TextMemory.FileCount = textMem.FileCount()
-	}
-
-	// Social
-	if socialStore != nil {
-		status.Social.Available = true
-		if persons, err := socialStore.ListPersons(); err == nil {
-			status.Social.PersonCount = len(persons)
-		}
-	}
-
-	// Tracker
-	if trk != nil {
-		status.Tracker.Available = true
-		status.Tracker.Dir = trk.MergeDir()
-	}
-
-	// Memory
+// NewRuntimeSection 是**基座注册**的 "runtime" 段（与任何 agent 无关）。
+//
+// 它凭什么归基座：Go runtime 统计在主 agent 挂掉之后依然存在，
+// 与任何类型的上下文管理/记忆策略无关。
+func NewRuntimeSection() RuntimeStatus {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	status.Runtime.MemoryMB = int64(m.Alloc / 1024 / 1024)
+	return RuntimeStatus{
+		Goroutines: runtime.NumGoroutine(),
+		MemoryMB:   int64(m.Alloc / 1024 / 1024),
+		GoVersion:  runtime.Version(),
+	}
+}
 
-	return status
+// NewLLMSection 是**基座注册**的 "llm" 段。
+//
+// 它凭什么归基座：`Provider` / `ProviderManager` / `PreferredProvider` 是
+// `AgentConfig` 的**公有字段**，主/驻留/rt 每个实例都有；只由主 agent 注册，
+// 驻留子与 rt 的源可用性就会在状态面完全消失。
+func NewLLMSection(providerName string, sourceCount int) LLMStatus {
+	return LLMStatus{
+		Available: providerName != "",
+		Provider:  providerName,
+		Sources:   sourceCount,
+	}
+}
+
+// registerPendingStatusSections 注册**句柄由 mainState 持有**的那六个段。
+//
+// ★ 为什么它们暂时住基座：`mainState` 还在基座包里（I 批才搬进 mainagent），
+// 而"谁持有数据谁注册"要求注册点能读到持有者。搬注册点而不搬 mainState，
+// 等于从别的包读基座私有字段 —— 那正是本仓不许的口子。
+//
+// I 批之后：本函数随 mainState 整体搬进 `mainagent`，基座里一行不剩。
+func (a *Agent) registerPendingStatusSections() {
+	m := a.MainState()
+	if m == nil {
+		return
+	}
+	if m.indexer != nil || a.GraphDB() != nil {
+		a.RegisterStatusSection(StatusSection{Key: "memory", Payload: func() any {
+			return memorySectionOf(a.GraphDB())
+		}})
+	}
+	if m.coldcontextStore != nil {
+		a.RegisterStatusSection(StatusSection{Key: "documents", Payload: func() any {
+			return documentsSectionOf(m.coldcontextStore)
+		}})
+	}
+	if m.textMem != nil {
+		a.RegisterStatusSection(StatusSection{Key: "text_memory", Payload: func() any {
+			return sdk.TextMemoryStatus{Available: true, FileCount: m.textMem.FileCount()}
+		}})
+	}
+	if m.social != nil {
+		a.RegisterStatusSection(StatusSection{Key: "social", Payload: func() any {
+			st := sdk.SocialStatus{Available: true}
+			if persons, err := m.social.ListPersons(); err == nil {
+				st.PersonCount = len(persons)
+			}
+			return st
+		}})
+	}
+	if m.tracker != nil {
+		a.RegisterStatusSection(StatusSection{Key: "tracker", Payload: func() any {
+			return sdk.TrackerStatus{Available: true, Dir: m.tracker.MergeDir()}
+		}})
+	}
+	if m.multimodalSpace != nil || m.embeddingProvider != "" || m.embeddingError != "" {
+		a.RegisterStatusSection(StatusSection{Key: "onnx", Payload: func() any {
+			return a.onnxStatus()
+		}})
+	}
+}
+
+// memorySectionOf 把图记忆的 Introspect 结果转成状态段。
+func memorySectionOf(db kernelapi.GraphMemory) sdk.MemoryStatus {
+	if db == nil {
+		return sdk.MemoryStatus{}
+	}
+	st := sdk.MemoryStatus{Available: true}
+	if info, err := db.Introspect(); err == nil {
+		if v, ok := info["entity_count"].(int); ok {
+			st.EntityCount = v
+		}
+		if v, ok := info["relation_count"].(int); ok {
+			st.RelationCount = v
+		}
+		if v, ok := info["entity_type_count"].(int); ok {
+			st.EntityTypes = v
+		}
+	}
+	return st
+}
+
+// documentsSectionOf 把冷文档归档的统计转成状态段。
+func documentsSectionOf(store kernelapi.DocStore) sdk.DocumentStatus {
+	if store == nil {
+		return sdk.DocumentStatus{}
+	}
+	st := sdk.DocumentStatus{Available: true}
+	stats := store.Stats()
+	if v, ok := stats["doc_count"].(int); ok {
+		st.DocCount = v
+	}
+	if v, ok := stats["vector_count"].(int); ok {
+		st.VectorCount = v
+	}
+	return st
 }
 
 // GetKernelStatus 返回 Agent 驱动的内核状态快照。
@@ -244,38 +293,33 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 		providerName = a.provider.Name()
 	}
 
-	textMem := a.MainState().textMem
-	socialStore := a.MainState().social
-	trk := a.MainState().tracker
-
-	// 注意：knowledge 在 collectKernelStatus 里是**接口**参数，
-	// 而 (*knowledge.Store)(nil) 塞进接口后 `ks != nil` 仍为真 → 调 List() 直接 panic。
-	// 所以这里必须先判具体指针再进行接口赋值（healthcheck_kernel 会走到这条路径）。
-	var knowledgeLister interface{ List() []string }
-	if a.MainState().knowledge != nil {
-		knowledgeLister = a.MainState().knowledge
+	var startTime time.Time
+	stageHost := (*kit.StageHostType)(nil)
+	pluginReg := kernelapi.PluginHost(nil)
+	if m := a.MainState(); m != nil {
+		startTime = m.startTime
+		stageHost = m.stageHost
+		pluginReg = m.pluginReg
 	}
 
 	ks := collectKernelStatus(
-		a.MainState().startTime,
-		string(a.id),
-		providerName,
-		sourceCount,
-		a.MainState().stageHost,
-		a.io,
-		a.MainState().pluginReg,
-		a.GraphDB(),
-		knowledgeLister,
-		a.MainState().coldcontextStore,
-		textMem,
-		socialStore,
-		trk,
+		startTime, string(a.id), providerName, sourceCount,
+		stageHost, a.io, pluginReg,
 	)
-	ks.ONNX = a.onnxStatus()
-	ks.Scheduler = a.SchedulerStatus()
-	ks.Residents = residentStatuses(a.Residents())
 	ks.Usage = a.usageStatus()
 
+	// ★ 基座注册的两个段（与任何 agent 类型无关）：
+	//
+	//	"runtime"  Go runtime 统计 —— 主 agent 挂了它照样存在
+	//	"llm"      Provider* 是 AgentConfig 公有字段 —— 每个类型都有
+	a.RegisterStatusSection(StatusSection{Key: "runtime", Payload: NewRuntimeSection()})
+	a.RegisterStatusSection(StatusSection{Key: "llm", Payload: NewLLMSection(providerName, sourceCount)})
+
+	// ★ 句柄在 mainState 的六个段（I 批随 mainState 搬进 mainagent）。
+	a.registerPendingStatusSections()
+
+	// ★ 类型注册的段：谁持有数据谁注册（主 agent 在它自己的 Initialize 里注册）。
+	ks.Sections = a.CollectStatusSections()
 	return ks
 }
 

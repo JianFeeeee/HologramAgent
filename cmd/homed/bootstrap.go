@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/recovery"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -190,7 +192,7 @@ func startIPCServer(dataDir, bootMode string, agent *agentCore.Agent) (*ipc.Serv
 	started := false
 	ipcServer := ipc.NewServer(dataDir, func() *ipc.Status {
 		st := agent.GetKernelStatus()
-		llmOK := st != nil && st.LLM.Available
+		llmOK := st != nil && sectionLLMAvailable(st)
 		tools := 0
 		if st != nil {
 			tools = len(st.Tools)
@@ -238,7 +240,7 @@ func startSupervisorRuntime(sup *supervisor.Daemon, trk *tracker.Tracker, agent 
 			return time.Time{}, types.HealthDown, fmt.Errorf("no kernel status")
 		}
 		h := types.HealthHealthy
-		if !st.LLM.Available {
+		if !sectionLLMAvailable(st) {
 			h = types.HealthDegraded
 		}
 		return time.Now(), h, nil
@@ -477,4 +479,22 @@ func compactConfigDB(cfgReg *internalConfig.ConfigRegistry) {
 		after = st.Size()
 	}
 	log.Printf("[homed] config DB compacted: %d -> %d bytes", before, after)
+}
+
+// sectionLLMAvailable 从状态面已注册的 "llm" 段读"模型源可用"。
+//
+// ★ 消费方按 key 取、自己解码：KernelStatus 不再有 LLM 字段（那是类型专属面的残留）。
+func sectionLLMAvailable(ks *agentCore.KernelStatus) bool {
+	if ks == nil || ks.Sections == nil {
+		return false
+	}
+	raw, ok := ks.Sections["llm"]
+	if !ok || raw == nil {
+		return false
+	}
+	var sec sdk.LLMStatus
+	if err := json.Unmarshal(raw, &sec); err != nil {
+		return false
+	}
+	return sec.Available
 }

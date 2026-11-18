@@ -246,6 +246,13 @@ type Agent struct {
 	// 单次用量一直在 StageCtx 与 LLM chain 事件里，缺的正是这个落点。
 	usageLedger kit.Ledger
 
+	// statusSecMu / statusSections 是**类型注册的状态段**（见 statussection.go）。
+	//
+	// ★ 为什么不是字段：`KernelStatus` 那 20 个字段里 9 个生产下恒空、
+	//   3 个装的是类型专属结构。谁持有数据谁注册，基座只按 key 收集。
+	statusSecMu    sync.RWMutex
+	statusSections map[string]StatusSection
+
 	// hooks 是**类型行为注册表**（用户裁定：各类型通过回调注册自己的行为）。
 	//
 	// ★ 基座**不认识自己是哪一类 agent**：它只调这些钩子。
@@ -752,46 +759,4 @@ func (a *Agent) Validate() error {
 		return &MissingHookError{Agent: "", Slot: "agent", Hint: "agent 为 nil"}
 	}
 	return a.hooks.Validate(string(a.id))
-}
-
-// Hooks 返回当前已挂的行为回调（只读快照，供状态面与判据诊断）。
-func (a *Agent) HookReport() HooksReport {
-	if a == nil {
-		return HooksReport{}
-	}
-	return HooksReport{
-		IsChild:       a.hooks.IsChild,
-		IsRealtime:    a.hooks.IsRealtime,
-		ComeFrom:      a.hooks.ComeFrom,
-		MayOffload:    a.hooks.MayOffload,
-		HasBudget:     a.hooks.ContextBudget != nil,
-		HasPrune:      a.hooks.Prune != nil,
-		HasOverBudget: a.hooks.OverBudget != nil,
-		HasOverflow:   a.hooks.OverflowHandler != nil,
-		HasLoop:       a.hooks.Loop != nil,
-		HasRuntime:    a.hooks.Runtime.Start != nil && a.hooks.Runtime.Stop != nil,
-		HasRunStage:   a.hooks.RunStage != nil,
-		// tool execution is a kernel service; it is always available through RunToolBatch.
-		HasToolRunner: true,
-		HasGraph:      a.hooks.GraphMemory != nil,
-		HasSecurity:   a.hooks.SecurityGate != nil,
-	}
-}
-
-// HooksReport 是槽位装配情况的可观察快照（状态面/判据用）。
-type HooksReport struct {
-	IsChild       bool
-	IsRealtime    bool
-	ComeFrom      string
-	MayOffload    bool
-	HasBudget     bool
-	HasPrune      bool
-	HasOverBudget bool
-	HasOverflow   bool
-	HasLoop       bool
-	HasRuntime    bool
-	HasRunStage   bool
-	HasToolRunner bool
-	HasGraph      bool
-	HasSecurity   bool
 }

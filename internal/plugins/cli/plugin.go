@@ -514,15 +514,24 @@ func (p *Plugin) cmdStatus(conn net.Conn, s *sdk.PluginSDK) {
 	}
 	ks := st.GetKernelStatus()
 
+	// ★ 状态面已注册表化：按 key 取"段"，不再读 KernelStatus 的字段
+	// （那些字段在生产下 9 个恒空、3 个是类型专属结构）。
+	var llmSec sdk.LLMStatus
+	_ = sectionInto(ks, "llm", &llmSec)
+	var rtSec sdk.RuntimeStatus
+	_ = sectionInto(ks, "runtime", &rtSec)
+	var memSec sdk.MemoryStatus
+	_ = sectionInto(ks, "memory", &memSec)
+
 	llmStatus := "不可用"
-	if ks.LLM.Available {
-		llmStatus = fmt.Sprintf("%s (%d sources)", ks.LLM.Provider, ks.LLM.Sources)
+	if llmSec.Available {
+		llmStatus = fmt.Sprintf("%s (%d sources)", llmSec.Provider, llmSec.Sources)
 	}
 	memInfo := "未初始化"
-	if ks.Memory.Available {
-		memInfo = fmt.Sprintf("%d entities, %d relations", ks.Memory.EntityCount, ks.Memory.RelationCount)
+	if memSec.Available {
+		memInfo = fmt.Sprintf("%d entities, %d relations", memSec.EntityCount, memSec.RelationCount)
 	}
-	runtime := fmt.Sprintf("goroutines=%d mem=%dMB", ks.Runtime.Goroutines, ks.Runtime.MemoryMB)
+	runtime := fmt.Sprintf("goroutines=%d mem=%dMB", rtSec.Goroutines, rtSec.MemoryMB)
 	uptime := ks.Uptime
 
 	writeLine(conn, map[string]interface{}{
@@ -1038,8 +1047,8 @@ func (p *Plugin) cmdRuntime(conn net.Conn, s *sdk.PluginSDK) {
 	writeJSONContent(conn, map[string]interface{}{
 		"uptime":         ks.Uptime,
 		"agent_id":       ks.AgentID,
-		"scheduler":      ks.Scheduler,
-		"residents":      ks.Residents,
+		"scheduler":      sectionRaw(ks, "scheduler"),
+		"residents":      sectionRaw(ks, "resident"),
 		"channels":       ks.Channels,
 		"input_channels": ks.InputChannels,
 	})
@@ -1206,4 +1215,24 @@ func (p *Plugin) Stop() error {
 	p.wg.Wait()
 	os.Remove(p.socket)
 	return nil
+}
+
+// sectionRaw 取一个已注册状态段的原始 JSON（未注册 ⇒ nil）。
+//
+// ★ 消费方按 key 取、自己解码：状态面的结构由**持有者**定义，
+// 基座不承诺字段名（它连"有哪些段"都不知道）。
+func sectionRaw(ks *sdk.KernelStatus, key string) json.RawMessage {
+	if ks == nil || ks.Sections == nil {
+		return nil
+	}
+	return ks.Sections[key]
+}
+
+// sectionInto 把一个已注册状态段解码进 out（未注册或解码失败 ⇒ false）。
+func sectionInto(ks *sdk.KernelStatus, key string, out any) bool {
+	raw := sectionRaw(ks, key)
+	if raw == nil {
+		return false
+	}
+	return json.Unmarshal(raw, out) == nil
 }

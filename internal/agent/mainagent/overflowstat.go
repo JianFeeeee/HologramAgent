@@ -20,7 +20,11 @@ package mainagent
 // 判定可能从两个 goroutine 进来（内核触发 / 类型的自主巡检），所以账本自带锁。
 // 读侧（状态面）拿的是快照，不与写侧互相阻塞。
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+)
 
 // OverflowStat 是一次观测快照。
 type OverflowStat struct {
@@ -114,3 +118,14 @@ func (l *OverflowLedger) Upstream() {
 // 不影响任何行为判定；类型模块注入自己那份之后，读取者拿到的是它自己的账。
 // 与"基座不许有默认 Loop / 默认裁剪"不冲突 —— 那两类默认会改变行为。
 var defaultLedger = &OverflowLedger{}
+
+// mainLedger 是主 agent 的类型账本（handler 记账与状态面读的是同一份）。
+//
+// ★ "同一份"很重要：状态面显示"触发了几次/裁了几条"，必须就是策略实际
+// 发生的次数；两份额外账本会让两个数字各自漂移。
+var mainLedger = &OverflowLedger{}
+
+// ledgerFor 返回该 agent 的账本（当前单实例，故为进程内一份）。
+//
+// I 批把 mainState 搬进本包后，这里改成从 mainagent 自己的 state 取。
+func ledgerFor(*agent.Agent) *OverflowLedger { return mainLedger }

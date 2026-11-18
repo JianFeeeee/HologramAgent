@@ -153,8 +153,13 @@ func SingleEventFitsBudget(a *agent.Agent) bool {
 // the preemption — lives in this package, because it is the type's policy.
 // HasOversizedFrame / SingleEventFitsBudget / OverflowStat all moved here.
 func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes.OverflowRequest) (bool, int) {
-	// 无账本 ⇒ 用进程内默认账本（主 agent 在 Initialize 里注入自己的那份）。
 	return EnforceOverflowWith(a, f, req, defaultLedger)
+}
+
+// enforceOverflowMain 是本类型注册进 `Hooks.OverflowHandler` 的那一个：
+// 记的是**主 agent 自己的账**（状态面 `"context"` 段读的就是这份）。
+func enforceOverflowMain(a *agent.Agent, f *agenttypes.Frame, req agenttypes.OverflowRequest) (bool, int) {
+	return EnforceOverflowWith(a, f, req, mainLedger)
 }
 
 // EnforceOverflowWith 是带**策略账本**的版本（类型模块注入自己的 `OverflowLedger`）。

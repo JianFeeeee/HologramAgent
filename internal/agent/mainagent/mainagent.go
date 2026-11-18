@@ -62,7 +62,7 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	}
 	if h.Prune == nil {
 		h.Prune = PruneByQuery
-		h.OverflowHandler = EnforceOverflowStandard
+		h.OverflowHandler = enforceOverflowMain
 	}
 
 	// ── 槽位 6：agent loop（主 agent 用**标准同步**实现）──
@@ -134,6 +134,7 @@ func InitRuntime(a *agent.Agent) error {
 	a.InstallMainState(cfg)
 	a.NormalizeNilServices()
 	a.InjectSecretStore()
+	registerStatusSections(a)
 	// ★ 子 agent 的恢复**不在这里**：它在 StartMainRuntime 的最前面
 	//   （恢复要 Assign inputch ⇒ 必须在调度循环起来之前，且插件已就绪）。
 	//   这里只声明维护任务。
