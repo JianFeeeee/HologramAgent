@@ -289,7 +289,7 @@ func splitComma(s string) []string {
 // 这些原语（LoopStandard / RunStageStandard）都在基座上导出，
 // 所以这里不需要 import standard（那会成环：standard → agent）。
 func installResidentHooks(a *Agent) {
-	h := a.HooksValue()
+	h := a.Hooks()
 
 	// 槽位 5：上下文管理 —— 整窗型。
 	if h.ContextBudget == nil {

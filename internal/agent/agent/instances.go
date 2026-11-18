@@ -116,7 +116,7 @@ func (m *InstanceManager) DataDir() string {
 	if m == nil || m.root == nil {
 		return ""
 	}
-	return m.root.DataDir()
+	return m.root.dataDir
 }
 
 // ListChildren 列出实例简报（按 type 过滤，空 = 全部）。
@@ -125,7 +125,7 @@ func (m *InstanceManager) ListChildren(typeName string) []registry.ChildBrief {
 		return nil
 	}
 	out := make([]registry.ChildBrief, 0, 8)
-	for _, e := range m.root.ChildrenOf().All() {
+	for _, e := range (&m.root.children).All() {
 		if typeName != "" && string(e.Kind()) != typeName {
 			continue
 		}
@@ -146,7 +146,7 @@ func (m *InstanceManager) GetChild(id string) (registry.ChildBrief, bool) {
 	if m == nil || m.root == nil {
 		return registry.ChildBrief{}, false
 	}
-	e, ok := m.root.ChildrenOf().Get(id)
+	e, ok := (&m.root.children).Get(id)
 	if !ok {
 		return registry.ChildBrief{}, false
 	}
@@ -163,7 +163,7 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 	if m == nil || m.root == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
-	if _, ok := m.root.ChildrenOf().Get(id); !ok {
+	if _, ok := (&m.root.children).Get(id); !ok {
 		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
 	}
 	policy := ResidualKeep
@@ -174,7 +174,7 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 	// 复用驻留子的销毁路径（它已处理残余/通道处置/策略撤销三条语义）。
 	// rt 走自己的；两者都经 child.Registry.Cleanup，所以这里按类型分派。
 	kind := ""
-	if e, ok := m.root.ChildrenOf().Get(id); ok {
+	if e, ok := (&m.root.children).Get(id); ok {
 		kind = string(e.Kind())
 	}
 	switch childpkg.Kind(kind) {
@@ -200,7 +200,7 @@ func (m *InstanceManager) SendToChild(id, text string) (string, error) {
 	if m == nil || m.root == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
-	e, ok := m.root.ChildrenOf().Get(id)
+	e, ok := (&m.root.children).Get(id)
 	if !ok {
 		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
 	}
@@ -212,11 +212,11 @@ func (m *InstanceManager) SendToChild(id, text string) (string, error) {
 		ch = "sub/" + id
 	}
 	a, _ := e.Agent().(*Agent)
-	if a == nil || a.IO() == nil {
+	if a == nil || a.io == nil {
 		return "", fmt.Errorf("instances: 实例 %q 没有可用 IO", id)
 	}
 	// 父 → 子：在**子的** io 上投递，走它自己的 inputch（复用 InjectOptions）。
-	a.IO().InjectInterruptTextOpts(string(m.root.id), ch, text,
+	a.io.InjectInterruptTextOpts(string(m.root.id), ch, text,
 		agentIO.InjectOptions{Priority: "L4"})
 	return fmt.Sprintf("已向 %s 注入一条输入（会打断它当前处理）。", id), nil
 }
@@ -324,7 +324,7 @@ func (m *InstanceManager) persist() {
 	if m == nil || m.root == nil {
 		return
 	}
-	if err := registry.Save(m.root.DataDir(), m.Records()); err != nil {
+	if err := registry.Save(m.root.dataDir, m.Records()); err != nil {
 		// 落盘失败**不阻断**创建/销毁：实例已经建好/拆掉了，
 		// 硬失败会让一次成功的操作看起来失败。但必须留痕。
 		log.Printf("[instances] 落盘失败（%v）—— 重启后这些实例不会被恢复", err)
@@ -341,7 +341,7 @@ func (m *InstanceManager) Restore() (int, []string) {
 	if m == nil || m.root == nil {
 		return 0, nil
 	}
-	recs, err := registry.Load(m.root.DataDir())
+	recs, err := registry.Load(m.root.dataDir)
 	if err != nil {
 		log.Printf("[instances] %v（跳过恢复，避免把坏表当成空表）", err)
 		return 0, []string{err.Error()}

@@ -80,7 +80,7 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
 	}
-	if err := a.HooksValue().Runtime.Initialize(a); err != nil {
+	if err := a.Hooks().Runtime.Initialize(a); err != nil {
 		return nil, err
 	}
 	return a, nil

@@ -337,7 +337,7 @@ func childKindRT() childpkg.Kind { return childpkg.KindRT }
 // rtReportContextFull）。rt **不是"不处置"**：它的处置是滑动窗口，
 // 滑无可滑时由 rtReportContextFull 上报父（CallParent L2, contextfull）。
 func installRTHooks(a *Agent) {
-	h := a.HooksValue()
+	h := a.Hooks()
 	if h.ContextBudget == nil {
 		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
 	}

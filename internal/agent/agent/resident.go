@@ -357,7 +357,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 			return ResidentInfo{}, fmt.Errorf("驻留子 %s 运行时初始化失败: %w", opts.ID, err)
 		}
 	}
-	child.SetHooks(withRuntimeHooks(child.HooksValue(), RuntimeHooks{
+	child.SetHooks(withRuntimeHooks(child.Hooks(), RuntimeHooks{
 		Start: func(x *Agent) { x.StartResidentRuntime() },
 		Stop:  func(x *Agent) { x.StopResidentRuntime() },
 	}))

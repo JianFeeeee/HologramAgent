@@ -885,7 +885,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 			return "", fmt.Errorf("rtchild %s 运行时初始化失败: %w", opts.ID, err)
 		}
 	}
-	carrier.SetHooks(withRuntimeHooks(carrier.HooksValue(), RuntimeHooks{
+	carrier.SetHooks(withRuntimeHooks(carrier.Hooks(), RuntimeHooks{
 		Start: func(x *Agent) { x.StartRTRuntime() },
 		Stop:  func(x *Agent) { x.StopRTRuntime() },
 	}))
