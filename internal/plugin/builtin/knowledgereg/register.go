@@ -95,6 +95,13 @@ func (a settingsAdapter) Get(key string) (interface{}, error) {
 	return a.st.Get(key)
 }
 
+func (a settingsAdapter) DataDir() string {
+	if a.st == nil {
+		return ""
+	}
+	return a.st.DataDir()
+}
+
 func (a settingsAdapter) RegisterDef(def knowledge.ConfigDef) {
 	if a.st == nil {
 		return

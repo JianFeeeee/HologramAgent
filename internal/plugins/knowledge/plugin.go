@@ -36,7 +36,9 @@
 package knowledgeplugin
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -75,9 +77,14 @@ func (p *Plugin) Start(s Host) error {
 	// ── ② 存储（数据目录 = <dataDir>/knowledge）──
 	root := cfg.rootDir
 	if root == "" {
-		root = filepath.Join("data", "knowledge")
+		// 默认落在宿主的数据根下：内核不再知道"知识库目录叫什么"。
+		root = filepath.Join(cfg.dataDir, "knowledge")
 	}
 	// ★ **先迁移再扫盘**（原 kernelmod/knowledge 的顺序约束，见 migrate.go）。
+	// 目录不存在时先建：首启没有目录不该让迁移"扫描失败"（那是噪声日志）。
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("knowledge: 建数据目录 %s: %w", root, err)
+	}
 	migrateRoot(root)
 	store := NewStore(root)
 	if err := store.Start(); err != nil {
@@ -145,6 +152,7 @@ func (p *Plugin) Stop() error {
 
 // pluginConfig 是本插件的配置快照（读一次，Start 期间不变）。
 type pluginConfig struct {
+	dataDir    string
 	rootDir    string
 	listenAddr string
 	token      string
@@ -165,6 +173,10 @@ func newPluginConfig(s Host) pluginConfig {
 	set := s.Settings()
 	if set == nil {
 		return cfg
+	}
+	cfg.dataDir = set.DataDir()
+	if cfg.dataDir == "" {
+		cfg.dataDir = "."
 	}
 	get := func(key, def string) string {
 		if v, err := set.Get(key); err == nil {

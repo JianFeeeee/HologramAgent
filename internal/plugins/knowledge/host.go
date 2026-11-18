@@ -23,6 +23,11 @@ import "github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 //	住在 config_<name> 表里。读内核全局配置会让插件知道与自己无关的东西。
 type Settings interface {
 	Get(key string) (interface{}, error)
+	// DataDir 是本实例的数据根目录（插件自己的文件放这里）。
+	//
+	// ★ 为什么不是内核路径常量：数据根目录由运维/宿主决定（`-data` 参数、
+	//   容器挂载点），插件只该知道"我的根在它下面"。
+	DataDir() string
 	// RegisterDef 让设置页显示本插件的配置项（名字/类型/说明）。
 	RegisterDef(def ConfigDef)
 }
