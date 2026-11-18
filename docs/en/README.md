@@ -36,6 +36,30 @@ reviewed, translate its *summary* instead of its body.
 
 ---
 
+## ★ 2026-11-18 architecture ruling — read this first
+
+> Eight rounds of correction **overturned the core conclusions of several design docs**.
+> The single authority is `todo.md` §10 六之二 in the repo root (25 verbatim user rulings
+> + a 13-section "boundary table"). Every affected Chinese doc now carries a ⚠️ header.
+
+| Superseded | Current ruling |
+|---|---|
+| "Seven public faces" / Hooks with 13 slots | **4 slots**: `ContextBudget` / `Loop` / `OverflowHandler` / `Runtime` |
+| `GraphMemory` as a shared agent slot | Graph memory is a **type-internal implementation** (main `*GraphDB`, resident/rt `*LightMemory`, worker none) |
+| `ToolRunner` as a type slot | Tool execution belongs to the kernel (`Agent.RunToolBatch`) |
+| `isLightKernel()` / `RuntimeStart`+`RuntimeStop` | Removed (`RuntimeHooks` single object + type metadata) |
+| `resident_agents` / `rt_children` / `rt_transcript` | Collapsed into `admin_child` / `_help` / `_list` (generated from a table) |
+| Overflow triggering inside the agentloop | **Kernel eventloop drives the trigger**; types only implement the hook (main agent posts an L4 air-interrupt into its own `selfInput`) |
+| L1–L4 behaviour contract in the base | Base gives **four string constants only**; behaviour is entirely the type's |
+| `scheduler` belongs to the base | Preemption/queueing/suspension are **type processing**; implementation moves out |
+| `coldcontext` belongs to the base | **Used by the main agent only** → main agent type |
+| `knowledge` is a kernel module | **Internal plugin** (absorbs `kbtree`, computes word/vector work itself) |
+
+The only ownership test: **can it be implemented fully with the SDK alone?**
+Yes ⇒ internal plugin (and its computation is its own); No ⇒ kernel facility or base.
+
+---
+
 ## Document classes (same taxonomy as `docs/zh/`)
 
 | Class | Answers | Naming |

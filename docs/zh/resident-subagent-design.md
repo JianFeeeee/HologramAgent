@@ -1,5 +1,22 @@
 # 驻留式子 Agent 设计（轻量内核 · 两级记忆 · 父子中断）
 
+> ⚠️ **2026-11-18 架构裁定（八轮纠正，优先于本文）**
+>
+> 本文成文于 2026-11-17 及更早，其中以下内容已被**推翻**，勿照做：
+>
+> - **七公共面 / Hooks 13 槽** → 现为 **4 槽**（`ContextBudget` / `Loop` / `OverflowHandler` / `Runtime`）
+> - **`GraphMemory` 作为 agent 公共槽位** → 图记忆是**类型内部实现**（主 `*GraphDB`、驻留/rt `*LightMemory`、worker 无）
+> - **`ToolRunner` 作为类型槽位** → 工具执行归内核 (`Agent.RunToolBatch`)
+> - **`isLightKernel()` / `RuntimeStart`+`RuntimeStop` 两字段** → 已删除（改 `RuntimeHooks` 单对象）
+> - **`resident_agents` / `rt_children` / `rt_transcript` 三个硬编码工具** → 已收敛为
+>   `admin_child` / `admin_child_help` / `admin_child_list`（表生成，随类型增删）
+> - **overflow 触发在 agentloop 内部** → 现由**内核 eventloop 推动触发**，类型只实现钩子；
+>   主 agent 的处置是往自己 `selfInput` 投一条 L4 空中断
+> - **L1–L4 的行为契约** → 基座只给**四个字符串常量**，行为完全归类型
+> - **`scheduler` 属基座** → 抢占/排队/挂起全是**类型处理**，实现体搬出基座
+>
+> **唯一施工依据**：`todo.md` 的 §10 六之二（含 25 条用户原话 + 边界点全表 13 节）。
+
 > **状态：已实现并部署。** 驻留子、两级记忆、父子 L3/L4 中断、残余任务四态均已落地。
 > 本轮（2026-10-31）校订时补充的下沉事实：
 >
@@ -529,10 +546,17 @@ type GraphMemory interface {
 }
 ```
 
-| | `a.graph`（共同面） | `a.memory`（整理面：块/媒体/流水线/整理工具） |
+> ⚠️ **2026-11-18 更新**：下表里的 `a.graph` / `a.memory` 字段**已不再存在于基座**。
+> 图记忆是**类型内部实现**：主 agent 自己持有 `*GraphDB`，驻留子/rt 自己持有 `*LightMemory`，
+> worker 不持有。基座没有 `GraphMemory` 槽位、没有 `Agent.graph` 字段、没有 `GraphDB()` 方法。
+> 下面这张表作为「谁有什么形态的记忆」的**语义说明**仍然成立，但**字段不存在**。
+
+| | 共同面（读） | 整理面（块/媒体/流水线/整理工具） |
 |---|---|---|
-| **根 agent** | 同一个 `*GraphDB` | `*GraphDB` |
-| **驻留子** | `*LightMemory` | **`nil`** |
+| **主 agent** | 同一个 `*GraphDB` | `*GraphDB`（自己持有） |
+| **驻留子** | `*LightMemory` | **没有**（类型里就是 nil） |
+| **rt** | `*LightMemory` | **没有** |
+| **worker** | **没有** | **没有** |
 
 - 子把 `a.memory` 设为 `nil` ⇒ **既有的 22 处 nil 关卡自动禁掉全部 root-only 路径**
   （`executeMemoryTool` 开头已经是 `if a.memory == nil { return "图记忆系统不可用" }`）。

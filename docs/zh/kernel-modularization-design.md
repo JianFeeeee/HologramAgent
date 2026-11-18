@@ -1,5 +1,22 @@
 # 内核模块化与并行装配设计
 
+> ⚠️ **2026-11-18 架构裁定（八轮纠正，优先于本文）**
+>
+> 本文成文于 2026-11-17 及更早，其中以下内容已被**推翻**，勿照做：
+>
+> - **七公共面 / Hooks 13 槽** → 现为 **4 槽**（`ContextBudget` / `Loop` / `OverflowHandler` / `Runtime`）
+> - **`GraphMemory` 作为 agent 公共槽位** → 图记忆是**类型内部实现**（主 `*GraphDB`、驻留/rt `*LightMemory`、worker 无）
+> - **`ToolRunner` 作为类型槽位** → 工具执行归内核 (`Agent.RunToolBatch`)
+> - **`isLightKernel()` / `RuntimeStart`+`RuntimeStop` 两字段** → 已删除（改 `RuntimeHooks` 单对象）
+> - **`resident_agents` / `rt_children` / `rt_transcript` 三个硬编码工具** → 已收敛为
+>   `admin_child` / `admin_child_help` / `admin_child_list`（表生成，随类型增删）
+> - **overflow 触发在 agentloop 内部** → 现由**内核 eventloop 推动触发**，类型只实现钩子；
+>   主 agent 的处置是往自己 `selfInput` 投一条 L4 空中断
+> - **L1–L4 的行为契约** → 基座只给**四个字符串常量**，行为完全归类型
+> - **`scheduler` 属基座** → 抢占/排队/挂起全是**类型处理**，实现体搬出基座
+>
+> **唯一施工依据**：`todo.md` 的 §10 六之二（含 25 条用户原话 + 边界点全表 13 节）。
+
 > **状态**：**已实现并部署**（设计 2026-10-16，落地完成 2026-10-24，2026-10-31 全量校订）。
 > 本文是**唯一的装配架构权威**。任何新增内核模块或插件都必须遵循本文的依赖声明契约。
 >

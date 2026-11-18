@@ -85,18 +85,40 @@ done
 
 ## 三、文档清单
 
-### 3.1 设计文档 —— 可以直接当事实
+### 3.0 ★ 2026-11-18 架构裁定：先读这条
+
+> **八轮纠正推翻了多篇设计文档的核心结论。**
+> 唯一权威是仓库根目录的 `todo.md` §10 六之二（含 25 条用户原话 + 「边界点全表」13 节）。
+>
+> 被推翻的（各文首已加 ⚠️ 标记，**不要照做**）：
+>
+> | 旧写法 | 现行裁定 |
+> |---|---|
+> | 七公共面 / Hooks 13 槽 | **4 槽**：`ContextBudget` / `Loop` / `OverflowHandler` / `Runtime` |
+> | `GraphMemory` 作为 agent 公共槽位 | 图记忆是**类型内部实现**（主 `*GraphDB`、驻留/rt `*LightMemory`、worker 无） |
+> | `ToolRunner` 作为类型槽位 | 工具执行归内核（`Agent.RunToolBatch`） |
+> | `isLightKernel()` / `RuntimeStart`+`RuntimeStop` | 已删（`RuntimeHooks` 单对象 + 类型注册元数据） |
+> | `resident_agents` / `rt_children` / `rt_transcript` | 收敛为 `admin_child` / `_help` / `_list`（表生成） |
+> | overflow 触发在 agentloop 内部 | **内核 eventloop 推动触发**；类型只实现钩子（主 agent 往 `selfInput` 投 L4 空中断） |
+> | L1–L4 的行为契约在基座 | 基座只给**四个字符串常量**，行为完全归类型 |
+> | `scheduler` 属基座 | 抢占/排队/挂起全是**类型处理**，实现体搬出基座 |
+> | `coldcontext` 归基座 | **只有主 agent 用**，属主 agent 类型 |
+> | `knowledge` 是内核模块 | **内部插件**（含 `kbtree` 合并，计算自实现） |
+>
+> 判归属的唯一判据：**能不能只用 SDK 完整实现？** 能 ⇒ 内部插件（计算也归它）；不能 ⇒ 内核设施 / 基座。
+
+### 3.1 设计文档 —— 带 ⚠️ 标记的需按上表校正后再引用
 
 | 文档 | 内容 |
 | --- | --- |
-| [`kernel-modularization-design.md`](./kernel-modularization-design.md) | **装配架构权威**：依赖声明、BFS 分层、Group 0、实例化粒度 |
+| ⚠️ [`kernel-modularization-design.md`](./kernel-modularization-design.md) | **装配架构权威**：依赖声明、BFS 分层、Group 0、实例化粒度 |
 | [`kernel-secret-firewall-design.md`](./kernel-secret-firewall-design.md) | 安全防火墙（**部分实现**，见文首接线状态表） |
-| [`input-scheduler-design.md`](./input-scheduler-design.md) | 两类别输入 + L1–L4 中断 + 可抢占 |
-| [`resident-subagent-design.md`](./resident-subagent-design.md) | 驻留子：轻量内核、两级记忆、父子 L3/L4 |
-| [`toolcall-contract-and-sequence-design.md`](./toolcall-contract-and-sequence-design.md) | 工具调用契约（**附录 A 是压测数据**） |
+| ⚠️ [`input-scheduler-design.md`](./input-scheduler-design.md) | 两类别输入 + L1–L4 中断 + 可抢占 |
+| ⚠️ [`resident-subagent-design.md`](./resident-subagent-design.md) | 驻留子：轻量内核、两级记忆、父子 L3/L4 |
+| ⚠️ [`toolcall-contract-and-sequence-design.md`](./toolcall-contract-and-sequence-design.md) | 工具调用契约（**附录 A 是压测数据**） |
 | [`commondev-design.md`](./commondev-design.md) | 主管式多仓库开发流水线（**设计 · 未实现**） |
-| [`commondev-agent-runtime-design.md`](./commondev-agent-runtime-design.md) | commondev 运行时与内核接入 |
-| [`context-overflow-l4-design.md`](./context-overflow-l4-design.md) | 上下文超页 L4（归档，术语过时） |
+| ⚠️ [`commondev-agent-runtime-design.md`](./commondev-agent-runtime-design.md) | commondev 运行时与内核接入（文内 `resident_agents` 已改名 `admin_child`） |
+| ⚠️ [`context-overflow-l4-design.md`](./context-overflow-l4-design.md) | 上下文超页 L4（归档，术语过时） |
 | [`triple-distill-llm-design.md`](./triple-distill-llm-design.md) | 三元组蒸馏（已实现并**部分否决**） |
 
 ### 3.2 操作手册
