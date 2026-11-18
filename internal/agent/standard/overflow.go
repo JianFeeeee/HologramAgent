@@ -62,6 +62,57 @@ func PruneByQuery(a *agent.Agent, query string, protected int) int {
 	return a.PruneContext(query, protected)
 }
 
+// HasOversizedFrame 报告是否存在「单条事件自己就超过上下文预算」的帧（主 agent 的策略概念）。
+//
+// SingleEventFitsBudget 用的是**平均值**（全局视角：平均每条是否装得下），
+// HasOversizedFrame 看的是**任意一条**是否越过预算。前者判断"裁剪是否无解"，
+// 后者是"有没有该走页级剔除的帧"。
+//
+// ★ 两者住这里而不是基座："frame"、"水页"是主 agent 的**处理抽象**（TaskFrame
+// 是 agentloop 的概念），不是基座事实。基座只给 ContextLen 与 TokenOf。
+func HasOversizedFrame(a *agent.Agent) bool {
+	if a == nil {
+		return false
+	}
+	n := a.ContextLen()
+	if n == 0 {
+		return false
+	}
+	budget := a.ComputeTokenBudget().ContextTokens
+	if budget <= 0 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		if a.TokenOf(i) > budget {
+			return true
+		}
+	}
+	return false
+}
+
+// SingleEventFitsBudget 报告「单条事件是否就装不进预算」。
+//
+// 为什么单独判：保护条数收紧到 1 条仍可能装不下 —— 当单条事件本身就大于
+// ContextTokens 预算时（实测 T10c：工具回灌型事件可达 40026 token 而预算
+// 只有 10667），裁剪在**任何**保护数下都无解。
+//
+// 此时正确做法不是继续收紧（收紧也没用），而是让调用方知道「裁剪帮不上忙」，
+// 由超页处理走终止路径并报出真实原因，而不是反复裁剪直到预算耗尽。
+func SingleEventFitsBudget(a *agent.Agent) bool {
+	if a == nil {
+		return true
+	}
+	n := a.ContextLen()
+	if n == 0 {
+		return true
+	}
+	avg := a.AccumulatedTokens() / n
+	if avg <= 0 {
+		avg = 2000 // 与基座默认事件平均 token 同值（无积累样本时的保守估计）
+	}
+	return avg <= a.ComputeTokenBudget().ContextTokens
+}
+
 // EnforceOverflowStandard is the **standard overflow strategy** for the
 // strategic-pruning type (main agent; resident children compose it too).
 //
@@ -73,15 +124,17 @@ func PruneByQuery(a *agent.Agent, query string, protected int) int {
 // So the base now only exposes **facts and primitives**:
 //
 //	Agent.OverflowRatioNow()      how full it is
-//	Agent.HasOversizedFrame()     is any single frame self-oversized
 //	Agent.AccumulatedTokens()     how much is accumulated
+//	Agent.ContextLen()            how many events
+//	Agent.ContextWindowTokens()   the window size
+//	Agent.TokenOf(i)              per-event cost
 //	Agent.EvictOversizedPages()   page-level eviction primitive
 //	Agent.PruneContext()          pruning primitive
-//	Agent.RaiseContextOverflow()  air-interrupt primitive (preempt only, no pruning)
-//	Agent.NoteOverflow*()         counters
 //
-// And the **decision** (which water line, which remedy first, when to give up)
-// lives here, registered into Hooks.EnforceOverflow by the type module.
+// And **everything else** — the water line, the recovery budget, "is any single
+// frame self-oversized", "does the average event fit", the counters, and issuing
+// the preemption — lives in this package, because it is the type's policy.
+// HasOversizedFrame / SingleEventFitsBudget / OverflowStat all moved here.
 func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes.OverflowRequest) (bool, int) {
 	if a == nil {
 		return false, 0
@@ -95,7 +148,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 	if checked%20 == 0 {
 		log.Printf("[agent] overflow check #%d: ratio=%.2f window=%d events=%d "+
 			"(threshold=%.2f force=%v)",
-			checked, ratio, a.ContextWindowTokens(), a.ContextLenSafe(), overflowRatio, force)
+			checked, ratio, a.ContextWindowTokens(), a.ContextLen(), overflowRatio, force)
 	}
 
 	// Decision point: local water line OR upstream explicitly reported OR
@@ -131,7 +184,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 		}
 	}
 
-	if !force && ratio < overflowRatio && !a.HasOversizedFrame() {
+	if !force && ratio < overflowRatio && !HasOversizedFrame(a) {
 		return false, 0
 	}
 	if force {
@@ -149,7 +202,7 @@ func EnforceOverflowStandard(a *agent.Agent, f *agenttypes.Frame, req agenttypes
 			log.Printf("[agent] context overflow: recover budget exhausted (%d/%d), "+
 				"terminating this frame instead of looping",
 				f.OverflowRecover, overflowRecoverBudget)
-			a.NoteOverflowAborted(ratio, a.ContextLenSafe())
+			a.NoteOverflowAborted(ratio, a.ContextLen())
 			f.Err = fmt.Errorf("上下文超限：已裁剪 %d 次仍超出窗口，"+
 				"本轮终止（请检查 core.agent.max_context_size 与窗口是否匹配）",
 				f.OverflowRecover)
@@ -197,11 +250,11 @@ func handleContextOverflow(a *agent.Agent, query string, ratio float64) int {
 	// (measured T10c: 40026 tokens vs 10667 budget). Pruning is then unsolvable under
 	// any protected count, so terminate with the real reason instead of pruning twice
 	// and burning the budget — the latter loses memory that was already pruned.
-	if !a.SingleEventFitsBudget() {
-		avg := a.AccumulatedTokens() / max(a.ContextLenSafe(), 1)
+	if !SingleEventFitsBudget(a) {
+		avg := a.AccumulatedTokens() / max(a.ContextLen(), 1)
 		log.Printf("[agent] context overflow: single event (%d tok) exceeds budget (%d tok) — "+
 			"pruning cannot help, terminating", avg, a.ComputeTokenBudget().ContextTokens)
-		a.NoteOverflowAborted(ratio, a.ContextLenSafe())
+		a.NoteOverflowAborted(ratio, a.ContextLen())
 		return 0
 	}
 
@@ -218,7 +271,7 @@ func handleContextOverflow(a *agent.Agent, query string, ratio float64) int {
 	// Callers judging "did we free space" must look at the next round's water line,
 	// not this return value.
 	log.Printf("[agent] context overflow: ratio=%.2f events=%d — raising L4 air interrupt "+
-		"(prune happens at task boundary)", ratio, a.ContextLenSafe())
+		"(prune happens at task boundary)", ratio, a.ContextLen())
 	a.RaiseContextOverflow()
 	return 0
 }

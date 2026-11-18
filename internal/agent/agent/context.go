@@ -136,25 +136,6 @@ func (a *Agent) EffectiveProtectedCount() int {
 	return cfgCap
 }
 
-// singleEventFitsBudget 报告「单条事件是否就装不进预算」。
-//
-// 为什么单独判：effectiveProtectedCount 收紧到 1 条仍可能装不下 —— 当单条
-// 事件本身就大于 ContextTokens 预算时（实测 T10c：工具回灌型事件可达 40026
-// token 而预算只有 10667），裁剪在**任何**保护数下都无解。
-//
-// 此时正确做法不是继续收紧（收紧也没用），而是让调用方知道「裁剪帮不上忙」，
-// 由超页处理走终止路径并报出真实原因，而不是反复裁剪直到预算耗尽。
-func (a *Agent) SingleEventFitsBudget() bool {
-	if a == nil || a.context == nil || a.context.Len() == 0 {
-		return true
-	}
-	avg := a.AccumulatedTokens() / a.context.Len()
-	if avg <= 0 {
-		avg = defaultAvgEventTokens
-	}
-	return avg <= a.ComputeTokenBudget().ContextTokens
-}
-
 // ──────────────────────────────────────────────
 // 段页式淘汰（P5，2026-10-29）
 // ──────────────────────────────────────────────
@@ -1229,6 +1210,20 @@ func (c *RelevanceContext) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.events)
+}
+
+// tokenAt 返回第 i 条事件的 token 成本（O(1)：只算那一条，不复制整窗）。
+//
+// ★ 对外只经 Agent.TokenOf 暴露：类型侧策略要逐条成本，但不该拿上下文句柄。
+func (c *RelevanceContext) tokenAt(i int) (int, bool) {
+	c.mu.Lock()
+	if i < 0 || i >= len(c.events) {
+		c.mu.Unlock()
+		return 0, false
+	}
+	evt := *c.events[i]
+	c.mu.Unlock()
+	return eventTokens(evt), true
 }
 
 // toolCallItemsToDoc 把 L1 的工具调用记录转成 L2 类型。

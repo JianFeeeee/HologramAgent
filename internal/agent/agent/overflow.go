@@ -39,27 +39,6 @@ func (a *Agent) AccumulatedTokens() int {
 	return acc
 }
 
-// hasOversizedFrame 报告是否存在「单条事件自己就超过上下文预算」的帧。
-//
-// 与 singleEventFitsBudget 的区别：那个用的是**平均值**（全局视角：
-// 平均每条是否装得下），本函数看的是**任意一条**是否越过预算。
-// 前者判断"裁剪是否无解"，后者是"有没有该走页级剔除的帧"。
-func (a *Agent) HasOversizedFrame() bool {
-	if a == nil || a.context == nil || a.context.Len() == 0 {
-		return false
-	}
-	budget := a.ComputeTokenBudget().ContextTokens
-	if budget <= 0 {
-		return false
-	}
-	for _, e := range a.context.Recent(0) {
-		if eventTokens(e) > budget {
-			return true
-		}
-	}
-	return false
-}
-
 // eventTokens 估算单条上下文事件的 token 占用。
 //
 // ★ ToolResults 必须计入 —— 这是实测踩过的坑：v4 与 T10 的 prompt 峰值
@@ -337,12 +316,31 @@ func isUpstreamContextFull(llmErr error) bool {
 	return errors.As(llmErr, &pe) && pe.Kind == agentAPI.ErrContextFull
 }
 
-// contextLenSafe 是 nil 安全的上下文条数（诊断日志用）。
-func (a *Agent) ContextLenSafe() int {
+// ContextLen 是 nil 安全的上下文条数（基座的**纯读数字**之一）。
+//
+// ★ 它只报事实，不判超没超 —— 阈值与处置在类型侧。
+func (a *Agent) ContextLen() int {
 	if a == nil || a.context == nil {
 		return 0
 	}
 	return a.context.Len()
+}
+
+// TokenOf 返回第 i 条 L1 事件的 token 成本（基座的**纯读数字**之一）。
+//
+// ★ 为什么需要它：类型侧的策略（"有没有单帧自撑爆"）要用逐条成本，
+// 而它不该为此拿到整个上下文实现的句柄。O(1) 只取那一条，不复制整窗。
+//
+// 越界 / 无上下文 ⇒ 0（调用方按"这条不存在"处理，不是错误）。
+func (a *Agent) TokenOf(i int) int {
+	if a == nil || a.context == nil {
+		return 0
+	}
+	n, ok := a.context.tokenAt(i)
+	if !ok {
+		return 0
+	}
+	return n
 }
 
 // overflowStat 字段定义在 Agent 上（见 agent.go），此处只做访问辅助。

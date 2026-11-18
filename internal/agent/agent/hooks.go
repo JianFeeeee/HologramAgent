@@ -93,9 +93,9 @@ type Hooks struct {
 	// 逻辑，它应该是一个预定义的钩子，各个子 agent 注册这个钩子来定义各自的
 	// overflow 行为」）。基座只提供事实与原语：
 	//
-	//	OverflowRatioNow / AccumulatedTokens / HasOversizedFrame   看得见什么
-	//	EvictOversizedPages / PruneContext / RaiseContextOverflow   能做什么
-	//	NoteOverflow*                                              记账
+	//	OverflowRatioNow / AccumulatedTokens / ContextLen          看得见什么
+	//	TokenOf / ContextWindowTokens                              看得见什么
+	//	EvictOversizedPages / PruneContext                         能做什么
 	//
 	// 「水位多少该裁、先剔页还是先归档、恢复时保护多少条」全是策略 ⇒ 在类型侧。
 	//
