@@ -33,10 +33,5 @@ func Loop(a *agent.Agent, f *agenttypes.Frame) agenttypes.Outcome {
 	return agent.LoopStandard(a, f)
 }
 
-// RunStageStandard 执行插件阶段。
-func RunStageStandard(a *agent.Agent, stage string, ctx any) bool {
-	return a.RunStageStandard(stage, ctx)
-}
-
 // RunToolBatch is the kernel tool-request boundary. It is not a
 // type-specific tool runner.

@@ -29,7 +29,6 @@ package agent
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
-	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // RunToolBatch 是基座提供给所有 agentloop 的工具请求入口。
@@ -60,15 +59,6 @@ func (a *Agent) PruneContext(query string, protected int) int {
 		return a.context.PruneWithProtected(query, a.ContextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
 	}
 	return a.context.PruneWithProtected(query, a.ContextTopK(), a.MainState().coldcontextStore, a.EffectiveProtectedCount())
-}
-
-// RunStageStandard 执行插件阶段（before_toolcall / after_output …）。
-func (a *Agent) RunStageStandard(stage string, ctx any) bool {
-	sc, ok := ctx.(*sdk.StageContext)
-	if !ok || sc == nil {
-		return false
-	}
-	return a.runStageDefault(sdk.Stage(stage), sc)
 }
 
 // Hooks 返回当前槽位表（**类型工厂**用它填自己的回调后 SetHooks 挂回）。

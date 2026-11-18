@@ -90,10 +90,12 @@ type Hooks struct {
 	// rt 模块注册异步版；主/驻留注册 standard 同步版。
 	Loop func(a *Agent, f *TaskFrame) agenttypes.Outcome
 
-	// ── 槽位 7：stage ──
-
-	// RunStage 执行某个阶段的插件处理器。nil ⇒ 基座退化为"无插件阶段"。
-	RunStage func(a *Agent, stage string, ctx any) bool
+	// ── 槽位 7（已删）：stage ──
+	//
+	// `RunStage` 曾是槽位，但它的实现**只有一份**（`runStageDefault`：
+	// 发事件 + 转给 StageHost），而所有调用点都在本包内。
+	// 一个"只能填一种函数"的槽位不是扩展点，是转发层 —— 已删（I 批）。
+	// 类型要拦/改阶段行为，走 StageHost 注册的 handler，不走这里。
 
 	// ── 这里**没有**什么（用户裁定 2026-11-18）──
 	//

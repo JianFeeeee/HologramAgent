@@ -346,7 +346,6 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	//
 	// 为什么声明在装配点：蒸馏/归档/合并/复审/转投是**主 agent 的职责**，
 	// 驻留子与 rtchild 不该跟着起这些任务。基座只提供声明面。
-	agent.RegisterMaintenanceTasks()
 
 	return agent, nil
 }

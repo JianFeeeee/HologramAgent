@@ -286,8 +286,9 @@ func splitComma(s string) []string {
 //	                所以它注册 nil 的 Prune / EnforceOverflow —— 那是**明确的策略**
 //	同步队列     —— 与主 agent 同一套标准 loop（标准状态机）
 //
-// 这些原语（LoopStandard / RunStageStandard）都在基座上导出，
-// 所以这里不需要 import standard（那会成环：standard → agent）。
+// ★ 阶段（stage）**不是槽位**了（I 批）：实现只有一份、调用点全在同包，
+//
+//	所以这里不再注册它。
 func installResidentHooks(a *Agent) {
 	h := a.Hooks()
 
@@ -318,13 +319,6 @@ func installResidentHooks(a *Agent) {
 	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现。
 	if h.Loop == nil {
 		h.Loop = func(x *Agent, f *TaskFrame) stepOutcome { return LoopStandard(x, f) }
-	}
-
-	// 槽位 7：stage。
-	if h.RunStage == nil {
-		h.RunStage = func(x *Agent, stage string, ctx any) bool {
-			return x.RunStageStandard(stage, ctx)
-		}
 	}
 
 	a.SetHooks(h)

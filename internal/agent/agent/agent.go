@@ -837,7 +837,6 @@ func (a *Agent) InjectSelfChannel(msg selfInputMsg) {
 //	base.SetHooks(agent.Hooks{
 //	    ContextBudget: main.ContextBudget,       // 上下文管理
 //	    Loop:          kit.Loop,            // agent loop
-//	    RunStage:      kit.StageRunner,
 //	    GraphMemory:   db,                       // 可选记忆
 //	    SecurityGate:  Gate,
 //	})

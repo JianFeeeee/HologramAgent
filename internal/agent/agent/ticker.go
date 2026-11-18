@@ -155,21 +155,3 @@ func (a *Agent) OffloadTask() PeriodicTask {
 	}
 	return PeriodicTask{Name: "offload", Interval: interval, Run: func(x *Agent) { x.offloadPendingTasks(x.MainState().offload) }}
 }
-
-// RegisterMaintenanceTasks 注册**主 agent 的后台维护任务全集**。
-//
-// ★ 这是装配点的入口（`kernelmod/agent` 与将来的 `internal/agent/main` 调用），
-// 基座自己**不**调用它。驻留子/rtchild 不调用 ⇒ 它们一个后台 goroutine 都不多。
-func (a *Agent) RegisterMaintenanceTasks() []string {
-	var registered []string
-	for _, t := range []PeriodicTask{a.DistillTask(), a.ArchiveTask(), a.MergeTask(), a.ReviewTask(), a.OffloadTask()} {
-		if t.Name == "" {
-			continue
-		}
-		if a.RegisterPeriodic(t) {
-			registered = append(registered, t.Name)
-		}
-	}
-	a.Logf("registered %d periodic task(s): %v", len(registered), registered)
-	return registered
-}

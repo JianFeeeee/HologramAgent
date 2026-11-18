@@ -64,9 +64,6 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 
 	// Tool execution is provided by the base/kernel boundary and is not a
 	// registered type callback.
-	if h.RunStage == nil {
-		h.RunStage = standard.RunStageStandard
-	}
 
 	h.Runtime = agent.RuntimeHooks{
 		Initialize: func(a *agent.Agent) error { return InitRuntime(a) },
@@ -130,6 +127,6 @@ func InitRuntime(a *agent.Agent) error {
 	// ★ 子 agent 的恢复**不在这里**：它在 StartMainRuntime 的最前面
 	//   （恢复要 Assign inputch ⇒ 必须在调度循环起来之前，且插件已就绪）。
 	//   这里只声明维护任务。
-	a.RegisterMaintenanceTasks()
+	registerMaintenance(a)
 	return nil
 }

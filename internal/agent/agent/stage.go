@@ -10,12 +10,20 @@ import (
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
+// RunStage 执行某个阶段的插件处理器。
+//
+// ★ 它**不是**槽位（I 批删了那个槽位）：实现只有一份（发事件 + 转给
+//
+//	StageHost），而所有调用点都在本包内。一个"只能填一种函数"的槽位
+//	不是扩展点，是转发层。
+//
+// 类型要拦/改阶段行为，注册 StageHost 的 handler（那是**插件面**），
+// 而不是替换整个阶段的执行方式。
 func (a *Agent) RunStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
-	// ★ 阶段执行是**类型注册的钩子**（用户裁定：stage 与 agentloop 同理）。
-	if a == nil || a.hooks.RunStage == nil {
+	if a == nil {
 		return false
 	}
-	return a.hooks.RunStage(a, string(stage), ctx)
+	return a.runStageDefault(stage, ctx)
 }
 
 // runStageDefault 是标准阶段执行（由 hooks 注册）。
