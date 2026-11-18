@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"strings"
 
+	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 )
 
@@ -235,3 +236,70 @@ func boolOf(m map[string]interface{}, k string) bool {
 	b, _ := m[k].(bool)
 	return b
 }
+
+// toAdminArg 把 rtchild 的**创建参数**转成 admin_child 的 arg 形态。
+//
+// ★ 与 residentChild.toAdminArg 同一纪律：软重启、进程重启恢复、持久化
+//
+//	落盘三条路都走同一个转换点，"三处参数不一致"这种漂移不可能发生。
+func (rc *rtChild) toAdminArg() map[string]interface{} {
+	if rc == nil {
+		return nil
+	}
+	arg := map[string]interface{}{
+		"id":       rc.ID,
+		"inputch":  rc.input,
+		"outputch": rc.output,
+	}
+	if rc.agent != nil {
+		arg["system_prompt"] = rc.agent.systemPrompt
+		arg["allow_graph_write"] = rc.light != nil
+	}
+	// 工具策略等其余创建参数用**创建时保存的原始 arg**：
+	// rt 把 AllowedTools/DenyTools 直接交给了安全模块（DeclareChildPolicy），
+	// 自己不再存副本；而"父的决定"必须可重建，所以原样留一份。
+	for k, v := range rc.createArg {
+		if k == "id" || k == "inputch" || k == "outputch" {
+			continue
+		}
+		arg[k] = v
+	}
+	return arg
+}
+
+// PersistRTChildren 把当前 rtchild 的创建参数写进实例表。
+//
+// ★ 为什么 rt 也要持久化：右键一个"通话中"的 rt 以重启内核为代价丢掉
+//
+//	全部现场是错的；至少要让它在启动后**重新存在**（可被 transcript 复盘）。
+//	但通话本身是瞬时的 —— 恢复出来的 rt 不会继续那通电话，这是刻意的：
+//	恢复的是"它是什么"，不是"它当时在说什么"。
+func (a *Agent) PersistRTChildren() {
+	if a == nil || a.dataDir == "" {
+		return
+	}
+	m := a.EnsureInstanceManager()
+	if m == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, e := range a.children.ByKind(childKindRT()) {
+		rc, ok := e.Agent().(*rtChild)
+		if !ok {
+			continue
+		}
+		seen[rc.ID] = true
+		m.remember(kindRT, rc.ID, rc.toAdminArg())
+	}
+	for _, r := range m.Records() {
+		if r.Type != kindRT {
+			continue
+		}
+		if !seen[r.ID] {
+			m.forget(r.ID)
+		}
+	}
+}
+
+// childKindRT 返回 rt 的登记表类型标签（避免本文件直接 import child 包两次）。
+func childKindRT() childpkg.Kind { return childpkg.KindRT }

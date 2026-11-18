@@ -28,6 +28,18 @@ package agent
 // （任务提示词、划入的 inputch、授权范围、工具白名单），那才是需要跨重启
 // 保住的东西。运行态可以重算，父的决定不能重算。
 //
+// ## 2026-11-18 上移：登记表改为**实例层**统一持久化
+//
+// 原先这里自己维护 `<data>/residents/registry.json`（只认识驻留子），
+// 而 `RestoreResidents` **零调用方** —— 重启后驻留子全丢。
+//
+// 现在创建参数落在 `registry` 的实例表（`<data>/agents/instances.json`），
+// 由 InstanceManager 统一负责（软重启与进程重启共用同一份快照）。
+// 本文件退化为**桥接**：把驻留子的创建参数转成实例表的 arg 形态，
+// 并保留它独有的两项磁盘治理（孤儿目录归档 + 旧登记表迁移）。
+//
+// 这样新增一种可持久化的子 agent 类型**不必再写一遍持久化**。
+//
 // ## 排除项
 //
 // `OffloadOwned`（内核为转投而拉的临时分诊助手）**不写进登记表**：
@@ -134,7 +146,11 @@ func (a *Agent) PersistResidents() {
 	if a == nil || a.dataDir == "" {
 		return
 	}
-	var recs []residentRecord
+	m := a.EnsureInstanceManager()
+	if m == nil {
+		return
+	}
+	seen := map[string]bool{}
 	for _, e := range a.children.ByKind(childpkg.KindResident) {
 		rc, ok := e.Agent().(*residentChild)
 		if !ok {
@@ -144,18 +160,53 @@ func (a *Agent) PersistResidents() {
 		if rc.offloadOwned {
 			continue
 		}
-		recs = append(recs, residentRecord{
-			ID:                rc.ID,
-			TaskPrompt:        rc.taskPrompt,
-			InputChs:          append([]string(nil), rc.inputChs...),
-			AllowedOutputs:    append([]string(nil), rc.allowed...),
-			Capacity:          rc.capacity,
-			PreferredProvider: rc.preferredProvider,
-			AllowedTools:      append([]string(nil), rc.allowedTools...),
-			DenyTools:         append([]string(nil), rc.denyTools...),
-		})
+		seen[rc.ID] = true
+		m.remember(kindResident, rc.ID, rc.toAdminArg())
 	}
-	saveResidentRecords(a.dataDir, recs)
+	// 已经不在登记表里的（被销毁/回收）从实例表摘掉。
+	for _, r := range m.Records() {
+		if r.Type != kindResident {
+			continue
+		}
+		if !seen[r.ID] {
+			m.forget(r.ID)
+		}
+	}
+}
+
+// toAdminArg 把驻留子的**创建参数**转成 admin_child 的 arg 形态。
+//
+// ★ 单一转换点是刻意的：软重启、进程重启恢复、持久化落盘三条路都走它，
+//
+//	于是"参数在三条路上不一致"这种漂移不可能发生。
+func (rc *residentChild) toAdminArg() map[string]interface{} {
+	if rc == nil {
+		return nil
+	}
+	arg := map[string]interface{}{
+		"id":          rc.ID,
+		"task_prompt": rc.taskPrompt,
+		"temp_path":   rc.tempPath,
+	}
+	if len(rc.inputChs) > 0 {
+		arg["input_chs"] = strings.Join(rc.inputChs, ",")
+	}
+	if len(rc.allowed) > 0 {
+		arg["allowed_outputs"] = strings.Join(rc.allowed, ",")
+	}
+	if rc.capacity > 0 {
+		arg["capacity"] = float64(rc.capacity)
+	}
+	if rc.preferredProvider != "" {
+		arg["preferred_provider"] = rc.preferredProvider
+	}
+	if len(rc.allowedTools) > 0 {
+		arg["allowed_tools"] = strings.Join(rc.allowedTools, ",")
+	}
+	if len(rc.denyTools) > 0 {
+		arg["deny_tools"] = strings.Join(rc.denyTools, ",")
+	}
+	return arg
 }
 
 // RestoreResidents 按登记表重建驻留子（进程启动时调用一次）。
@@ -169,41 +220,51 @@ func (a *Agent) PersistResidents() {
 // bootstrap 决定，本函数跟着同一个时机即可 —— 但**不能**自动跑，
 // 因为判据与独立工具构造 Agent 时不希望它去读生产目录。
 func (a *Agent) RestoreResidents() int {
-	recs := loadResidentRecords(a.dataDir)
-	if len(recs) == 0 {
-		return 0
+	// ① 首次升级路径：老版本只有 <data>/residents/registry.json。
+	//    把它迁进实例表后再删旧文件（否则下轮又会被读一遍）。
+	migrateLegacyResidentRegistry(a.dataDir, a.EnsureInstanceManager())
+
+	// ② 统一恢复：实例表里的全部类型（不只驻留子）。
+	n, _ := a.EnsureInstanceManager().Restore()
+	return n
+}
+
+// migrateLegacyResidentRegistry 把旧登记表搬进实例表（一次性）。
+//
+// ★ 为什么保留这段：线上已有部署的 <data>/residents/registry.json 里存着
+//
+//	用户的驻留子定义。直接换格式会让它们"突然全部消失"—— 与本次要修的
+//	缺陷同形，只是成因不同。
+func migrateLegacyResidentRegistry(dataDir string, m *InstanceManager) {
+	if dataDir == "" || m == nil {
+		return
 	}
-	restored := 0
+	recs := loadResidentRecords(dataDir)
+	if len(recs) == 0 {
+		return
+	}
 	for _, r := range recs {
 		if r.ID == "" {
 			continue
 		}
-		if _, dup := a.children.Get(r.ID); dup {
-			continue // 已存在（热重载路径）：不重复建
-		}
-		tempPath := filepath.Join(a.dataDir, "residents", r.ID, "graph.db")
-		_, err := a.SpawnResident(ResidentOptions{
-			ID:                r.ID,
-			TaskPrompt:        r.TaskPrompt,
-			InputChs:          r.InputChs,
-			AllowedOutputs:    r.AllowedOutputs,
-			Capacity:          r.Capacity,
-			TempPath:          tempPath,
-			PreferredProvider: r.PreferredProvider,
-			AllowedTools:      r.AllowedTools,
-			DenyTools:         r.DenyTools,
+		tempPath := filepath.Join(dataDir, "residents", r.ID, "graph.db")
+		m.remember(kindResident, r.ID, map[string]interface{}{
+			"id":                 r.ID,
+			"task_prompt":        r.TaskPrompt,
+			"input_chs":          strings.Join(r.InputChs, ","),
+			"allowed_outputs":    strings.Join(r.AllowedOutputs, ","),
+			"capacity":           float64(r.Capacity),
+			"temp_path":          tempPath,
+			"preferred_provider": r.PreferredProvider,
+			"allowed_tools":      strings.Join(r.AllowedTools, ","),
+			"deny_tools":         strings.Join(r.DenyTools, ","),
 		})
-		if err != nil {
-			log.Printf("[resident] restore %s failed (others continue): %v", r.ID, err)
-			continue
-		}
-		restored++
-		log.Printf("[resident] restored %s (temp+context preserved from previous run)", r.ID)
 	}
-	if restored > 0 {
-		log.Printf("[resident] restored %d/%d Resident(s) from registry", restored, len(recs))
+	if err := os.Remove(residentRegistryPath(dataDir)); err != nil && !os.IsNotExist(err) {
+		log.Printf("[resident] 迁移旧登记表后删除失败: %v", err)
+		return
 	}
-	return restored
+	log.Printf("[resident] 已把 %d 条旧登记表迁入实例表 instances.json", len(recs))
 }
 
 // QuarantineLegacyResidentDirs 把**无法确定归属**的 residents 子目录挪到

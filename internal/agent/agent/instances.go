@@ -316,3 +316,56 @@ func (a *Agent) EnsureInstanceManager() *InstanceManager {
 	}
 	return a.instances
 }
+
+// RestartInstance 是**软重启**单个实例（用户裁定 2026-11-18）。
+//
+// 语义：停掉这一个实例 + 用**保存的创建参数**重建；内核不停、其余实例不受影响。
+//
+// ★ 为什么要它：主 agent 跑飞（工具死循环、上下文爆掉、状态卡死）时，
+//
+//	重启整个内核会打断所有驻留子与在途任务。只重启该实例才是对的粒度。
+//
+// ★ 为什么失败要响亮：做不到就必须说"没做到"。假装成功会让用户以为
+//
+//	跑飞的实例已经被停掉 —— 那比直接报错危险得多。
+func (m *InstanceManager) RestartInstance(id string) (string, error) {
+	if m == nil || m.root == nil {
+		return "", fmt.Errorf("instances: 管理器未就绪")
+	}
+	if _, ok := m.GetChild(id); !ok {
+		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
+	}
+	m.mu.Lock()
+	rec, hasRec := m.recs[id]
+	m.mu.Unlock()
+	if !hasRec {
+		return "", fmt.Errorf("instances: 实例 %q 没有创建参数快照（无法软重启）", id)
+	}
+	// ① 停（残余明确丢弃：它可能已经跑飞，转回队列只会把坏任务扩散）。
+	if _, err := m.DestroyChild(id, "drop"); err != nil {
+		return "", fmt.Errorf("instances: 软重启 %q 失败于停止阶段: %w", id, err)
+	}
+	// ② 用同一份参数重建。
+	arg := rec.Arg
+	if arg == nil {
+		arg = map[string]interface{}{}
+	}
+	arg["id"] = id
+	d, found := registry.Lookup(rec.Type)
+	if !found {
+		return "", fmt.Errorf("instances: 类型 %q 已撤销（无法重建 %q）", rec.Type, id)
+	}
+	out, err := d.Construct(m, arg)
+	if err != nil {
+		return "", fmt.Errorf("instances: 软重启 %q 失败于重建阶段: %w", id, err)
+	}
+	return out, nil
+}
+
+// Root 返回宿主根 agent（根装配点与状态面用）。
+func (m *InstanceManager) Root() *Agent {
+	if m == nil {
+		return nil
+	}
+	return m.root
+}

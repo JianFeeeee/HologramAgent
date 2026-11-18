@@ -310,6 +310,14 @@ type rtChild struct {
 	input  string  // inputch(rt) 的名字（采集侧灌入；成对的一半）
 	output string  // outputch(rt) 的设备名（内核把文本写进去）
 
+	// createArg 是**创建它的原始参数**（admin_child 的 arg 原样留一份）。
+	//
+	// ★ 为什么留原文而不是逐字段存：rt 的若干创建参数（allowed_tools /
+	//   deny_tools）在创建时就交给安全模块了，自己不存副本；而"重建它"
+	//   需要完整参数。逐字段存就必须在每个新参数上加一处，漏一处就是
+	//   "软重启后策略悄悄变宽"—— 那种漂移不可接受。
+	createArg map[string]interface{}
+
 	// round 是本轮序号（单调递增），seq 是本轮所基于的输入 seq。
 	//
 	// ★ seq 是**可验证凭据**：输出回传它，判据才能证明"这一轮是用最新输入跑的"，
@@ -859,6 +867,28 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	// 现在的语义：留档只在**下一次 CloseRTChild 写同名键**时被覆写
 	// （自然淘汰），在那之前一直可取。
 
+	// ★ 留一份创建参数（软重启/恢复/持久化共用同一份）。
+	rc.createArg = map[string]interface{}{
+		"id":                 opts.ID,
+		"inputch":            opts.Input,
+		"outputch":           opts.Output,
+		"system_prompt":      opts.SystemPrompt,
+		"preferred_provider": opts.PreferredProvider,
+		"max_tools":          float64(opts.MaxTools),
+		"temp_path":          opts.TempPath,
+		"allow_graph_write":  opts.AllowGraphWrite,
+	}
+	if len(opts.AllowedTools) > 0 {
+		rc.createArg["allowed_tools"] = strings.Join(opts.AllowedTools, ",")
+	}
+	if len(opts.DenyTools) > 0 {
+		rc.createArg["deny_tools"] = strings.Join(opts.DenyTools, ",")
+	}
+
+	// ★ 落盘在 goroutine 起来**之前**：重启恢复依赖它，而 rtLoop
+	//   一开始跑就可能改 rc 的状态 —— 落盘读的是创建参数，越早越干净。
+	a.PersistRTChildren()
+
 	go carrier.rtLoop(rc)
 
 	rc.Logf("started (output=%s)", opts.Output)
@@ -899,6 +929,8 @@ func (a *Agent) StopRTChild(id string) error {
 		}
 		return err
 	}
+	// 登记表同步（否则重启会把刚停掉的 rtchild 又建回来）。
+	a.PersistRTChildren()
 	return nil
 }
 
