@@ -8,6 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/JianFeeeee/HologramAgent/internal/jiebalib"
 	"github.com/yanyiwu/gojieba"
 )
 
@@ -98,7 +99,7 @@ func jiebaDictDir() string {
 	//
 	// 以前这里只猜 GOMODCACHE/GOPATH/~/go/pkg/mod，部署机上通常没有 Go 模块缓存，
 	// 于是分词与关键词提取会**静默退回空列表**（详见 jieba_embed.go 的说明）。
-	if dir, err := materializeJiebaDict(jiebaDataDirValue()); err == nil && dir != "" {
+	if dir, err := jiebalib.MaterializeDict(jiebaDataDirValue()); err == nil && dir != "" {
 		return dir
 	}
 	log.Printf("[jieba] writing embedded dictionary failed, falling back to module cache lookup (embedded failure usually means cache dir is not writable)")

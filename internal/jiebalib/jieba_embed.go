@@ -1,4 +1,4 @@
-// Package memory 的 jieba 词库内嵌。
+// Package jiebalib 是 jieba 词库的**共享装配**（内核 memory 与 knowledge 插件共用）。
 //
 // 为什么要把词库嵌进二进制，而不是像以前那样去猜 Go 模块缓存路径：
 //
@@ -19,7 +19,7 @@
 // 词性列取 tag（cppjieba 的 PosTagger::LookupTag 走 dict->Find(...)->tag），
 // 取不到时用 SpecialRule 按字符类型兜底。所以这 5 个文件已足够同时支撑
 // Cut 与 Tag，无需再嵌 pos_dict/。
-package memory
+package jiebalib
 
 import (
 	"crypto/sha256"
@@ -67,7 +67,7 @@ var jiebaDictFiles = []string{
 // ★ 外置目录只要**文件齐备且非空**就用，不做哈希校验：
 // 词库是数据不是可执行代码，装错版本最多分词效果差；而哈希校验会让
 // “用户手工换了一份词库”直接不可用，那是不必要的刚性。
-func materializeJiebaDict(dataDirs ...string) (string, error) {
+func MaterializeDict(dataDirs ...string) (string, error) {
 	// ① ② 部署目录优先（带 DataDir 的调用方由 cut.go 传入）
 	for _, d := range append(dataDirs, "/usr/share/hologram") {
 		if d == "" {

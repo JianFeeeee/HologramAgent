@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // ===== 从目录导入知识 =====
@@ -343,7 +341,7 @@ func (s *Store) putMediaFile(path, kind string) (KnowledgeMediaRef, error) {
 	mime := mimeByExt(filepath.Ext(path))
 	// File 名取源文件名：同目录内天然唯一（同名正文+同名媒体本就是一对）。
 	return KnowledgeMediaRef{
-		Digest: memory.MediaBlockID(mime, data), // 内容身份：与媒体块 ID 同构
+		Digest: MediaBlockID(mime, data), // 内容身份：本插件自己算（与内核媒体块同构但独立）
 		MIME:   mime,
 		Kind:   kind,
 		File:   filepath.Base(path),

@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
 
@@ -150,7 +149,7 @@ func NewStore(root string) *Store {
 		denseCachePath: filepath.Join(root, ".dense.json"),
 		vec:            vector.NewStore(),
 		lex:            newLexicalStore(),
-		// 词法路用**标识符感知**分词器（见 identtoken.go），不是 memory.TokenizeWords：
+		// 词法路用**标识符感知**分词器（见 identtoken.go），不是朴素分词：
 		// jieba 会把 `PruneOldBackups` 切成单字符，词法路对标识符因此完全失效。
 		// 只改知识库这一条路，内存索引/关键词提取仍用原分词器（行为不变）。
 		veczer: vector.NewTFIDFVectorizer(identifierTokenizer),
@@ -469,7 +468,7 @@ var sparseSemWeight = 0.5
 //	· 词法路（标识符感知 TF-IDF）给主序，**保留分数差距**
 //	· 稠密路用于同分裁决、补位，以及词法无信号时接管
 //
-// 词法路的分词器不是 memory.TokenizeWords，而是 identifierTokenizer
+// 词法路的分词器不是朴素分词，而是 identifierTokenizer
 // （见 identtoken.go）：jieba 会把 `PruneOldBackups` 切成单字符，词法路
 // 对英文标识符因此完全失效。
 //
@@ -728,7 +727,7 @@ func (s *Store) Write(in KnowledgeEntryInput) error {
 		Content:   in.Content,
 		Path:      path,
 		Category:  category,
-		Tags:      memory.ExtractKeywords(filepath.ToSlash(id) + " " + in.Content),
+		Tags:      ExtractKeywords(filepath.ToSlash(id) + " " + in.Content),
 		UpdatedAt: now,
 		Media:     in.Media,
 	}
@@ -1007,7 +1006,7 @@ func (s *Store) scanDir(category, dirName string) {
 			Content:   content,
 			Path:      contentPath,
 			Category:  category,
-			Tags:      memory.ExtractKeywords(dirName + " " + content),
+			Tags:      ExtractKeywords(dirName + " " + content),
 			UpdatedAt: now,
 		}
 		k.Media = readMediaSidecar(dir)

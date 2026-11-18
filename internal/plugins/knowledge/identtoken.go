@@ -3,8 +3,6 @@ package knowledgeplugin
 import (
 	"regexp"
 	"strings"
-
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // asciiRunRe 匹配一段连续的 ASCII 标识符/单词（允许 . _ - / 作分隔符）。
@@ -46,7 +44,7 @@ var identSepRe = regexp.MustCompile(`[_.\-/]+`)
 //
 // 中文部分完全沿用 jieba，行为不变。
 func identifierTokenizer(text string) []string {
-	base := memory.TokenizeWords(text)
+	base := TokenizeWords(text)
 
 	out := make([]string, 0, len(base)+8)
 	seen := make(map[string]bool, len(base)+8)
