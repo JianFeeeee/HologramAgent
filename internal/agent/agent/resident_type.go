@@ -90,17 +90,19 @@ func residentDescriptor() registry.Descriptor {
 		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
-			if !ok || a == nil || a.root == nil {
+			root, _ := a.Root().(*Agent)
+			if !ok || a == nil || root == nil {
 				return "", fmt.Errorf("resident: 宿主不是实例管理器")
 			}
-			return a.root.spawnResidentForAdmin(arg)
+			return root.spawnResidentForAdmin(arg)
 		},
 		Admin: func(host registry.Host, action string, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
-			if !ok || a == nil || a.root == nil {
+			root, _ := a.Root().(*Agent)
+			if !ok || a == nil || root == nil {
 				return "", fmt.Errorf("resident: 宿主不是实例管理器")
 			}
-			return a.root.residentAdmin(action, arg)
+			return root.residentAdmin(action, arg)
 		},
 		Help: func(host registry.Host) string {
 			return residentHelpText()

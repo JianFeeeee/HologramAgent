@@ -54,7 +54,18 @@ import (
 // 它挂在**根 agent** 上（根是内核装配出来的唯一常驻 agent），但语义上它管理
 // 的是"这台内核下的所有子 agent"，不是"根 agent 的私有物"。
 type InstanceManager struct {
-	root *Agent
+	// host 是实例管理所需的**最小出生面**（不是 `*Agent`）。
+	//
+	// ## 为什么不是 `*Agent`（用户裁定，§9 C+D ③）
+	//
+	// 实例管理做四件事：装配（用类型的 Construct）、登记（记录表）、
+	// 上行通路（注入）、运行期（类型自己的 RuntimeHooks）。这四件
+	// **一项都不属于"某个 agent"** —— 它管的是"这台内核下的所有子 agent"。
+	//
+	// 持有 `*Agent` 的后果是：实例管理器能顺手读父 agent 的任意私有状态，
+	// 而"哪些能力是它真需要的"就再也没人知道了。收成接口后，
+	// 这个答案写在 `InstanceHost` 的五个方法里。
+	host InstanceHost
 
 	// own / ownMu 是**独立使用时**的私有记录表（内核未提供 FacAgentRegistry）。
 	ownMu sync.Mutex
@@ -68,9 +79,32 @@ type InstanceManager struct {
 	// 记录表的写入侧由 kernelapi.AgentRegistry 提供；本包不自己存一份。
 }
 
+// InstanceHost 是实例管理器需要的**全部**出生能力（由根 agent 实现）。
+//
+// ★ 五个方法就是它的全部需求：身份、数据目录、子登记表、日志、
+//
+//	以及两个"按类型销毁"的命令。少一个都编译不过 —— 这正是接口的价值
+//	（比"它能访问 *Agent"精确得多）。
+type InstanceHost interface {
+	// OwnerID 是宿主标识（错误文案与审计用）。
+	OwnerID() string
+	// DataDir 是宿主工作目录（类型 Construct 派生 temp 路径要用）。
+	DataDir() string
+	// Children 是子 agent 的唯一登记表。
+	Children() *childpkg.Registry
+	// AgentsRegistry 是 agent 记录表（可能 nil ⇒ 实例管理器自建私有表）。
+	AgentsRegistry() kernelapi.AgentRegistry
+	// Logf 写一行带身份标签的日志。
+	Logf(format string, args ...any)
+	// DisposeResident 按类型语义销毁一个驻留子（残余处置 + 通道去向）。
+	DisposeResident(id, policy string) (string, error)
+	// DestroyRTChild 停止一个 rt 子。
+	DestroyRTChild(id string) error
+}
+
 // NewInstanceManager 构造实例管理器（根 agent 装配期一次）。
-func NewInstanceManager(root *Agent) *InstanceManager {
-	return &InstanceManager{root: root}
+func NewInstanceManager(host InstanceHost) *InstanceManager {
+	return &InstanceManager{host: host}
 }
 
 // registry 取 agent 记录表的写面（未装配 ⇒ nil）。
@@ -79,10 +113,10 @@ func NewInstanceManager(root *Agent) *InstanceManager {
 //
 //	一条记录同时承载"重建所需参数"与"父声明事实" ⇒ 清理点只有 Remove 一处。
 func (m *InstanceManager) registry() kernelapi.AgentRegistry {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return nil
 	}
-	if reg := m.root.agentsRegistry(); reg != nil {
+	if reg := m.host.AgentsRegistry(); reg != nil {
 		return reg
 	}
 	// ★ 独立使用（单测/裁剪版内核）时自建一张私有表：
@@ -105,27 +139,27 @@ var _ registry.Host = (*InstanceManager)(nil)
 
 // OwnerID 返回宿主标识。
 func (m *InstanceManager) OwnerID() string {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return ""
 	}
-	return string(m.root.id)
+	return m.host.OwnerID()
 }
 
 // DataDir 返回宿主工作目录（类型 Construct 派生 temp 路径要用）。
 func (m *InstanceManager) DataDir() string {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return ""
 	}
-	return m.root.dataDir
+	return m.host.DataDir()
 }
 
 // ListChildren 列出实例简报（按 type 过滤，空 = 全部）。
 func (m *InstanceManager) ListChildren(typeName string) []registry.ChildBrief {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return nil
 	}
 	out := make([]registry.ChildBrief, 0, 8)
-	for _, e := range (&m.root.children).All() {
+	for _, e := range m.host.Children().All() {
 		if typeName != "" && string(e.Kind()) != typeName {
 			continue
 		}
@@ -143,10 +177,10 @@ func (m *InstanceManager) ListChildren(typeName string) []registry.ChildBrief {
 
 // GetChild 取单个实例简报。
 func (m *InstanceManager) GetChild(id string) (registry.ChildBrief, bool) {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return registry.ChildBrief{}, false
 	}
-	e, ok := (&m.root.children).Get(id)
+	e, ok := m.host.Children().Get(id)
 	if !ok {
 		return registry.ChildBrief{}, false
 	}
@@ -160,32 +194,31 @@ func (m *InstanceManager) GetChild(id string) (registry.ChildBrief, bool) {
 
 // DestroyChild 销毁一个实例（骨架清理 + 撤销主体策略 + 注销入站登记）。
 func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
-	if _, ok := (&m.root.children).Get(id); !ok {
+	if _, ok := m.host.Children().Get(id); !ok {
 		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
 	}
-	policy := ResidualKeep
+	policy := "keep"
 	if strings.EqualFold(residual, "drop") {
-		pb := ResidualDrop
-		policy = pb
+		policy = "drop"
 	}
 	// 复用驻留子的销毁路径（它已处理残余/通道处置/策略撤销三条语义）。
 	// rt 走自己的；两者都经 child.Registry.Cleanup，所以这里按类型分派。
 	kind := ""
-	if e, ok := (&m.root.children).Get(id); ok {
+	if e, ok := m.host.Children().Get(id); ok {
 		kind = string(e.Kind())
 	}
 	switch childpkg.Kind(kind) {
 	case childpkg.KindResident:
 		// 残余处置由类型自己的 FinishResident 一步完成（停止 + 取 + 处置 + 销毁），
 		// 否则"取完到销毁之间"子还会收新任务，那些结果随销毁丢失。
-		if _, _, err := m.root.FinishResidentWithTarget(id, policy, ChannelOrphan, "", nil); err != nil {
+		if _, err := m.host.DisposeResident(id, policy); err != nil {
 			return "", err
 		}
 	case childpkg.KindRT:
-		if err := m.root.StopRTChild(id); err != nil {
+		if err := m.host.DestroyRTChild(id); err != nil {
 			return "", err
 		}
 	default:
@@ -197,10 +230,10 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 
 // SendToChild 向实例注入一条输入（复用现有 inputch 注入原语）。
 func (m *InstanceManager) SendToChild(id, text string) (string, error) {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
-	e, ok := (&m.root.children).Get(id)
+	e, ok := m.host.Children().Get(id)
 	if !ok {
 		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
 	}
@@ -216,7 +249,7 @@ func (m *InstanceManager) SendToChild(id, text string) (string, error) {
 		return "", fmt.Errorf("instances: 实例 %q 没有可用 IO", id)
 	}
 	// 父 → 子：在**子的** io 上投递，走它自己的 inputch（复用 InjectOptions）。
-	a.io.InjectInterruptTextOpts(string(m.root.id), ch, text,
+	a.io.InjectInterruptTextOpts(m.host.OwnerID(), ch, text,
 		agentIO.InjectOptions{Priority: "L4"})
 	return fmt.Sprintf("已向 %s 注入一条输入（会打断它当前处理）。", id), nil
 }
@@ -321,10 +354,10 @@ func (m *InstanceManager) Records() []registry.Record {
 
 // persist 把创建参数快照落盘（<data>/agents/instances.json）。
 func (m *InstanceManager) persist() {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return
 	}
-	if err := registry.Save(m.root.dataDir, m.Records()); err != nil {
+	if err := registry.Save(m.host.DataDir(), m.Records()); err != nil {
 		// 落盘失败**不阻断**创建/销毁：实例已经建好/拆掉了，
 		// 硬失败会让一次成功的操作看起来失败。但必须留痕。
 		log.Printf("[instances] 落盘失败（%v）—— 重启后这些实例不会被恢复", err)
@@ -338,10 +371,10 @@ func (m *InstanceManager) persist() {
 //	重启后所有驻留子消失。现在恢复逻辑在**实例层**，不按类型各写一份：
 //	类型只要 Construct 幂等，就能被恢复。
 func (m *InstanceManager) Restore() (int, []string) {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return 0, nil
 	}
-	recs, err := registry.Load(m.root.dataDir)
+	recs, err := registry.Load(m.host.DataDir())
 	if err != nil {
 		log.Printf("[instances] %v（跳过恢复，避免把坏表当成空表）", err)
 		return 0, []string{err.Error()}
@@ -351,7 +384,7 @@ func (m *InstanceManager) Restore() (int, []string) {
 		log.Printf("[instances] 恢复跳过: %s", e)
 	}
 	if ok > 0 {
-		m.root.Logf("restored %d child agent(s) from instances.json", ok)
+		m.host.Logf("restored %d child agent(s) from instances.json", ok)
 	}
 	return ok, errs
 }
@@ -396,7 +429,7 @@ func (a *Agent) EnsureInstanceManager() *InstanceManager {
 //
 //	跑飞的实例已经被停掉 —— 那比直接报错危险得多。
 func (m *InstanceManager) RestartInstance(id string) (string, error) {
-	if m == nil || m.root == nil {
+	if m == nil || m.host == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
 	if _, ok := m.GetChild(id); !ok {
@@ -438,10 +471,14 @@ func (m *InstanceManager) RestartInstance(id string) (string, error) {
 	return out, nil
 }
 
-// Root 返回宿主根 agent（根装配点与状态面用）。
-func (m *InstanceManager) Root() *Agent {
+// Root 返回宿主（装配点与状态面用）。
+//
+// ★ 返回**接口**而不是 `*Agent`：实例管理器不持有 agent，
+//
+//	所以"顺手读父的私有状态"这条路从结构上不存在。
+func (m *InstanceManager) Root() InstanceHost {
 	if m == nil {
 		return nil
 	}
-	return m.root
+	return m.host
 }

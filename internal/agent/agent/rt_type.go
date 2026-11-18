@@ -102,17 +102,19 @@ func rtDescriptor() registry.Descriptor {
 		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
-			if !ok || a == nil || a.root == nil {
+			root, _ := a.Root().(*Agent)
+			if !ok || a == nil || root == nil {
 				return "", fmt.Errorf("rt: 宿主不是实例管理器")
 			}
-			return a.root.spawnRTChildForAdmin(arg)
+			return root.spawnRTChildForAdmin(arg)
 		},
 		Admin: func(host registry.Host, action string, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
-			if !ok || a == nil || a.root == nil {
+			root, _ := a.Root().(*Agent)
+			if !ok || a == nil || root == nil {
 				return "", fmt.Errorf("rt: 宿主不是实例管理器")
 			}
-			return a.root.rtAdmin(action, arg)
+			return root.rtAdmin(action, arg)
 		},
 		Help: func(host registry.Host) string { return rtHelpText() },
 	}
