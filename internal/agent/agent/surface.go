@@ -141,3 +141,20 @@ func (a *Agent) SetImpl(v any) {
 		a.impl = v
 	}
 }
+
+// AgentHooks 返回**载体 agent 的槽位表**（子 agent 类型用）。
+//
+// ★ 为什么需要它：判据与诊断要能看见"这个子 agent 注册了哪些槽位"，
+//
+//	而槽位表在载体（*Agent）上，不在 Entry 上。Entry 暴露 Agent() any，
+//	外部拿到后仍需一个稳定的读取入口 —— 就是本方法。
+func (rc *residentChild) AgentHooks() Hooks { return rc.agent.HooksValue() }
+
+// AgentForTest 返回载体（判据用；生产路径不经过它）。
+func (rc *residentChild) AgentForTest() *Agent { return rc.agent }
+
+// AgentHooks 返回 rt 载体 agent 的槽位表。
+func (rc *rtChild) AgentHooks() Hooks { return rc.agent.HooksValue() }
+
+// AgentForTest 返回 rt 载体（判据用）。
+func (rc *rtChild) AgentForTest() *Agent { return rc.agent }
