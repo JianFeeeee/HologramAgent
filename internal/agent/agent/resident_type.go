@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 )
 
@@ -83,6 +84,7 @@ func residentDescriptor() registry.Descriptor {
 				return fmt.Errorf("resident: 实例不是 *Agent（装配错误）")
 			}
 			a.InstallScheduler()
+			installResidentHooks(a)
 			return nil
 		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
@@ -269,4 +271,48 @@ func splitComma(s string) []string {
 		}
 	}
 	return out
+}
+
+// installResidentHooks 注册**驻留子自己**的七公共面槽位。
+//
+// ## 为什么这必须是驻留子的职责（用户 2026-11-18）
+//
+// 基座不假设任何 loop 样式、不假设任何裁剪策略。驻留子的语义是
+//
+//	整窗上下文   —— 传统上下文只受"模型能收多少"这个**硬上限**约束；
+//	                不按相关度挑、不向 doc 记忆归档
+//	contextfull  —— 撞窗口时**上报父**（CallParent/L4），由父决定压缩/回收/销毁；
+//	                所以它注册 nil 的 Prune / EnforceOverflow —— 那是**明确的策略**
+//	同步队列     —— 与主 agent 同一套标准 loop（标准状态机）
+//
+// 这些原语（LoopStandard / RunStageStandard）都在基座上导出，
+// 所以这里不需要 import standard（那会成环：standard → agent）。
+func installResidentHooks(a *Agent) {
+	h := a.HooksValue()
+
+	// 槽位 5：上下文管理 —— 整窗型。
+	if h.ContextBudget == nil {
+		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
+	}
+	if h.OverBudget == nil {
+		// 整窗型不做本地超页判定：它的处置是"撞窗口就上报父"，
+		// 由父决定（见 overflow 的 contextfull 路径）。
+		h.OverBudget = func(*Agent) bool { return false }
+	}
+	// Prune / EnforceOverflow 保持 nil：整窗型明确不做相关性裁剪，
+	// 也不做超页处置 —— 那是父的决定（用户裁定：丢事件的决定权在父）。
+
+	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现。
+	if h.Loop == nil {
+		h.Loop = func(x *Agent, f *TaskFrame) stepOutcome { return LoopStandard(x, f) }
+	}
+
+	// 槽位 7：stage。
+	if h.RunStage == nil {
+		h.RunStage = func(x *Agent, stage string, ctx any) bool {
+			return x.RunStageStandard(stage, ctx)
+		}
+	}
+
+	a.SetHooks(h)
 }

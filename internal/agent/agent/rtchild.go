@@ -48,6 +48,7 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -696,13 +697,6 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		Security:    a.Gate(),
 		IsRealtime:  true, // ★ 类型标签：只有它可被划 rt 通道
 	})
-	// ★ 注册 **rt 自己**的 runtime（与主/驻留都不同：不起队列、只起 rtLoop）。
-	//   注册之后 carrier.Start() 走的就是 rt 的语义 —— 这正是"类型注册自己的
-	//   运行行为"的落点：基座不再替任何类型决定起哪些 goroutine。
-	carrier.SetHooks(withRuntimeHooks(carrier.HooksValue(), RuntimeHooks{
-		Start: func(x *Agent) { x.StartRTRuntime() },
-		Stop:  func(x *Agent) { x.StopRTRuntime() },
-	}))
 	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 记忆整理
 	//   循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。
 	//   只保留一个 rtLoop（rtLoop 由 rtSpawn 的调用方推动）。
@@ -866,6 +860,24 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//
 	// 现在的语义：留档只在**下一次 CloseRTChild 写同名键**时被覆写
 	// （自然淘汰），在那之前一直可取。
+
+	// ★ 注册 **rt 自己**的运行期：先由类型装它需要的服务（整窗上下文预算等），
+	//   再挂生命周期。两步分开是因为它们回答不同问题：
+	//   装服务 = "跑起来需要什么"，生命周期 = "怎么起停"。
+	//
+	// 位置在这里（通道已划好、登记已完成、rollback 可用）：任何一步失败都能
+	// 完整回滚，不留半残实例。
+	if d, ok := registry.Lookup(kindRT); ok && d.Initialize != nil {
+		if err := d.Initialize(carrier); err != nil {
+			cancel()
+			rollback()
+			return "", fmt.Errorf("rtchild %s 运行时初始化失败: %w", opts.ID, err)
+		}
+	}
+	carrier.SetHooks(withRuntimeHooks(carrier.HooksValue(), RuntimeHooks{
+		Start: func(x *Agent) { x.StartRTRuntime() },
+		Stop:  func(x *Agent) { x.StopRTRuntime() },
+	}))
 
 	// ★ 留一份创建参数（软重启/恢复/持久化共用同一份）。
 	rc.createArg = map[string]interface{}{

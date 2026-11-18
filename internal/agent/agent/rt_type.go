@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 )
 
@@ -82,11 +83,23 @@ func rtDescriptor() registry.Descriptor {
 				Description: "列出当前可用的 rt 通道（哪些 inputch/outputch 带实时能力），创建前的必查",
 			},
 		},
-		// rt 不装调度器：它不吃队列（单槽覆盖式输入，最新者胜）。
-		// ★ 但必须显式注册一个 no-op Initialize 之外的"不需要"：
-		//   基座不替它猜，所以这里什么都不做 —— 有这一行是为了让读者
-		//   看见"rt 明确不装"，而不是"忘了装"。
-		Initialize: func(instance any) error { return nil },
+		// rt 的运行时装配（用户裁定：类型自己决定需要什么）。
+		//
+		// ★ rt **不装调度器**：它不吃队列（单槽覆盖式输入，最新者胜）。
+		//   它也不注册 Loop/RunStage —— rtLoop 是 rt 自己的驱动，
+		//   不经基座的 RunTaskSteps（那个是同步状态机，对 rt 是反向的）。
+		//
+		// 但**上下文预算必须注册**：整窗型（只受硬上限约束），
+		// 否则 ContextTokenBudget 会退回策略裁剪型的预算值，
+		// 于是 rt 的通话历史会被"按相关度裁"——那是 rt 明确不要的。
+		Initialize: func(instance any) error {
+			a, _ := instance.(*Agent)
+			if a == nil {
+				return fmt.Errorf("rt: 实例不是 *Agent（装配错误）")
+			}
+			installRTHooks(a)
+			return nil
+		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
 			a, ok := host.(*InstanceManager)
 			if !ok || a == nil || a.root == nil {
@@ -308,3 +321,26 @@ func (a *Agent) PersistRTChildren() {
 
 // childKindRT 返回 rt 的登记表类型标签（避免本文件直接 import child 包两次）。
 func childKindRT() childpkg.Kind { return childpkg.KindRT }
+
+// installRTHooks 注册**rt 自己**的上下文槽位。
+//
+// ## rt 与主/驻留的差别（这些都是 rt 的类型语义）
+//
+//	整窗上下文    通话历史不该被"按相关度裁"—— 通话是连贯的，
+//	              裁掉中间那段会让模型失去上下文；只受模型窗口硬上限约束。
+//	无本地超页处置  撞窗口时**上报父**（CallParent，contextfull 式交接），
+//	              由父决定保留哪些（父用 transcript 动作按需取回）。
+//	异步 loop     rtLoop 是 rt 自己的驱动（不经 RunTaskSteps）。
+//
+// 所以这里注册 ContextBudget（整窗）与 OverBudget（恒 false），
+// Prune / EnforceOverflow 保持 nil（明确的策略：不做）。
+func installRTHooks(a *Agent) {
+	h := a.HooksValue()
+	if h.ContextBudget == nil {
+		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
+	}
+	if h.OverBudget == nil {
+		h.OverBudget = func(*Agent) bool { return false }
+	}
+	a.SetHooks(h)
+}
