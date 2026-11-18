@@ -336,6 +336,14 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		Security: a.Gate(),
 	})
 
+	// ★ 注册**驻留子自己**的 runtime 回调（用户裁定：类型注册自己的运行行为）。
+	//   基座只持有一个槽位；主 agent 填 main 版，这里填 resident 版。
+	//   漏了这一步的后果是"子 Start 之后什么都不跑"，而基座不会替它猜。
+	child.SetHooks(withRuntimeHooks(child.HooksValue(), RuntimeHooks{
+		Start: func(x *Agent) { x.StartResidentRuntime() },
+		Stop:  func(x *Agent) { x.StopResidentRuntime() },
+	}))
+
 	rc := &residentChild{
 		Child: &childpkg.Child{
 			ID:   opts.ID,

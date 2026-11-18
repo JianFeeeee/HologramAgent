@@ -689,9 +689,16 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		Security:    a.Gate(),
 		IsRealtime:  true, // ★ 类型标签：只有它可被划 rt 通道
 	})
-	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 3 个记忆
-	//   整理循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。
-	//   只保留一个 rtLoop。
+	// ★ 注册 **rt 自己**的 runtime（与主/驻留都不同：不起队列、只起 rtLoop）。
+	//   注册之后 carrier.Start() 走的就是 rt 的语义 —— 这正是"类型注册自己的
+	//   运行行为"的落点：基座不再替任何类型决定起哪些 goroutine。
+	carrier.SetHooks(withRuntimeHooks(carrier.HooksValue(), RuntimeHooks{
+		Start: func(x *Agent) { x.StartRTRuntime() },
+		Stop:  func(x *Agent) { x.StopRTRuntime() },
+	}))
+	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 记忆整理
+	//   循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。
+	//   只保留一个 rtLoop（rtLoop 由 rtSpawn 的调用方推动）。
 	carrier.ctx, carrier.cancel = ctx, cancel
 	carrier.mkRT(newRTSlot(), opts.MaxTools)
 
