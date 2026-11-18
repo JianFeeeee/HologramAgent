@@ -896,19 +896,60 @@ A-1 改的每个位置，到 J 批完成时，是否还是现在这个形态？
 | **K** | 子 agent 包 4,614 行（rtchild/resident/spawn/rt_type/resident_type） | J |
 | **L** | 清理（`interceptLoop` → 类型；import 收窄到零；黑盒判据 + 变异验证） | K |
 
-### 11.1 落地进度（截至 2026-11-18）
+### 11.1 落地进度（截至 2026-11-18 终）
 
-| 批 | 状态 | 说明 |
+| 批 | 状态 | 关键提交 |
 |---|---|---|
-| A-1 / A2 / E | ✅ 完成 | 见对应提交（`8b580e4b`…`53a8cf88`） |
-| G | ✅ 完成 | `19f91d86`…`54c2540b`：knowledge 全归插件，`kernelmod/knowledge` / `kbtree` 删除 |
-| C+D ① | ✅ 完成 | `d4f4f7d0`…`15a767de`：五表合一（`outputsByAgent` / `principals.byID` / `instances.recs` / `longtimeProfile` 全删） |
-| C+D ② | ✅ 完成 | `8e079475`：LLM 设施归内核（`kernelapi.LLMClient` + `kernelmod/llm.Client`） |
+| A-1 / A2 / E | ✅ 完成 | `8b580e4b`…`53a8cf88` |
+| G | ✅ 完成 | `19f91d86`…`54c2540b`：knowledge 全归插件，`kernelmod/knowledge` / `plugins/kbtree` 删除 |
+| C+D ① | ✅ 完成 | `d4f4f7d0`…`15a767de`：五表合一，四张旧表全删 |
+| C+D ② | ✅ 完成 | `8e079475`：LLM 设施归内核（`kernelapi.LLMClient`） |
 | C+D ③ | ✅ 完成 | `e4c47922`：`InstanceManager` 摘出 `*Agent`（`InstanceHost` 七方法） |
 | H | ✅ 完成 | `3b3d3e21`：`surface.go` 34 → 2（构造面共 5） |
-| I | ⚠️ 部分 | `7b93d1a8`：删 `Hooks.RunStage` 槽位 + 维护任务逐条注册。**状态机仍在基座**（见下） |
-| J / K | ❌ 未做 | 依赖 I 的真正落地 |
-| L | ⚠️ 部分 | `96e93830` import 收窄（security/plugin 归零）；`0f43e062` 架构判据 7 条 |
+| L（import 归零） | ✅ 完成 | `42cf9fb4`：`internal/agent/**` 对 **8 个实现包全部归零** |
+| L（架构判据） | ✅ 完成 | `0f43e062`：§10 的不变量变成可执行判据（含 8 条变异验证） |
+| I / J / K | ⚠️ 未完成 | 见下 |
+
+#### 不变量实测（§10，全部通过）
+
+```
+kernelloop 直接 import          : kernelapi + kernelapi/model only
+internal/agent/** → memory       : 0
+internal/agent/** → memory/*     : 0
+internal/agent/** → nlp          : 0
+internal/agent/** → security     : 0
+internal/agent/** → plugin       : 0
+internal/agent/** → knowledge    : 0
+security → internal/agent/agent  : 0
+Hooks 槽位                       : 4
+surface.go 访问器                : 2（构造面共 5）
+旧表 outputsByAgent / byID       : 定义已消失
+```
+
+#### I / J / K 为什么没做（结构性，不是时间）
+
+`task.go`（1,529 行）与 `process.go`（809 行）的 step 函数引用
+**38 种基座私有成员**（`a.sched` / `a.context` / `a.hooks` / `a.mainState` /
+`a.usageLedger` …）。搬包意味着二选一：
+
+1. 把这些全部导成方法 ⇒ 把 §6.3 刚删的 34 个访问器加回来
+2. 把它们作为参数传进每一步 ⇒ 换一种形式的耦合（`step(a, f, sched, ctx, hooks…)`）
+
+**真正的解法是 §6.2**：`context` / `sched` / `mainState` **本身**要先归类型
+（J 批），状态机才有地方可搬。而 J 依赖 I、I 依赖 J —— 这不是"先后两刀"，
+是**一次设计、一次落地**：
+
+```
+standard.Runtime{ frame, sched, context, hooks }   ← 单一载体
+    ↓ 方法是它的方法（不再逐个传参）
+stepPrepare / stepLLM / … → (*Runtime) 的方法
+    ↓
+类型只持有 Runtime，基座只剩 4 槽 + 阶段原语
+```
+
+强行拆一半会留下"半在基座半在 standard"的中间态 —— 那正是 §0 第 13 条
+（每条改动先问终态）要消灭的东西。本轮**没有留下中间态**：
+所有已完成的部分都是终态的一部分。
 
 #### 为什么 I 只做了一部分（诚实记录）
 
