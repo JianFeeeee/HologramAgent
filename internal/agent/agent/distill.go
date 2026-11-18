@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
 	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
@@ -679,7 +680,7 @@ func (a *Agent) emitMemoryCandidate(source, input, response, reasoning string, t
 	}
 	// ★ 记忆候选是**不经 context** 的另一条持久化侧路（走 EmitOutput）。
 	// 不在这里拦，明文会直接进长期记忆 —— 而记忆跨会话保留、每轮被召回。
-	a.ScrubMemoryCandidate(payload)
+	ctxmgr.ScrubMemoryCandidate(payload, a.SecretStore())
 	a.io.EmitOutput("memory", "memory_candidate", payload)
 }
 

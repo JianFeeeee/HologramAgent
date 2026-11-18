@@ -1027,7 +1027,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		// 预算取 ContextTokens 减去当前时间线已占用：召回内容与已有事件
 		// 要一起渲染，只看整窗会在"加上原有内容"后才发现爆了。
 		budget := a.recallBudget()
-		plan := a.context.planColdRecall(docs, query, budget)
+		plan := a.context.PlanColdRecall(docs, query, budget)
 		if plan.Over {
 			log.Printf("[coldcontext] recall over budget: need %d tokens, budget %d — "+
 				"evicted %d page(s) across %d doc(s) by lowest similarity (now %d tokens)",

@@ -1,4 +1,4 @@
-package agent
+package ctxmgr
 
 // 持久化侧路的明文拦截（「记忆防火墙」）。
 //
@@ -98,60 +98,6 @@ func (c *RelevanceContext) scrubEventSecrets(evt *ContextEvent) {
 		if out, evts := s.Replace(evt.Blocks[i].Text, "ctx_block", nil); len(evts) > 0 {
 			evt.Blocks[i].Text = out
 			logEvtHits("上下文记忆块", evts)
-		}
-	}
-}
-
-// scrubMemoryCandidate 清洗记忆候选载荷（不经 context 的那条侧路）。
-//
-// 就地改写 map：调用方传进来的是一次性的快照，改它没有副作用。
-// ★ 2026-11-04：从包级自由函数改为 Agent 方法（变量库走 a.SecretStore()）。
-func (a *Agent) ScrubMemoryCandidate(payload map[string]interface{}) {
-	if payload == nil {
-		return
-	}
-	s := a.SecretStore()
-	if s == nil {
-		return
-	}
-	for _, key := range []string{"input", "response"} {
-		str, ok := payload[key].(string)
-		if !ok || str == "" {
-			continue
-		}
-		if out, evts := s.Replace(str, "memory:"+key, nil); len(evts) > 0 {
-			payload[key] = out
-			logEvtHits("记忆候选 "+key, evts)
-		}
-	}
-	switch trs := payload["tool_results"].(type) {
-	case []ToolResultItem:
-		for i := range trs {
-			if trs[i].Output == "" {
-				continue
-			}
-			if out, evts := s.Replace(trs[i].Output,
-				"memory:tool:"+trs[i].Name, nil); len(evts) > 0 {
-				trs[i].Output = out
-				logEvtHits("记忆候选工具结果 "+trs[i].Name, evts)
-			}
-		}
-		payload["tool_results"] = trs
-	case []interface{}:
-		// 有的调用方传的是未类型化的切片（如经 JSON 中转）。
-		for i := range trs {
-			m, ok := trs[i].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			out, ok := m["output"].(string)
-			if !ok || out == "" {
-				continue
-			}
-			if scrubbed, evts := s.Replace(out, "memory:tool", nil); len(evts) > 0 {
-				m["output"] = scrubbed
-				logEvtHits("记忆候选工具结果", evts)
-			}
 		}
 	}
 }

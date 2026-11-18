@@ -23,7 +23,7 @@ func (a *Agent) InstallMainRuntime(cfg AgentConfig) {
 	rc := NewRelevanceContext(cfg.ContextSavePath, cfg.Embedder)
 	// 裁剪保留条数：从配置传入（0 时保持 NewRelevanceContext 的历史默认）。
 	if cfg.CtxTuning.ProtectedCount > 0 {
-		rc.protectedCount = cfg.CtxTuning.ProtectedCount
+		rc.WithProtected(cfg.CtxTuning.ProtectedCount)
 	}
 	if cfg.StageHost != nil {
 		rc.SetToolDefLookup(cfg.StageHost.ToolDef)

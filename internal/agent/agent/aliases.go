@@ -17,6 +17,8 @@ type (
 	ColdRecallPlan  = agenttypes.ColdRecallPlan
 	ToolResultStore = agenttypes.ToolResultStore
 	ChildTaskState  = agenttypes.ChildTaskState
+	ToolResultItem  = agenttypes.ToolResultItem
+	ToolCallItem    = agenttypes.ToolCallItem
 	_               = agenttypes.SelfInputMsg
 	MemoryBlock     = model.MemoryBlock
 

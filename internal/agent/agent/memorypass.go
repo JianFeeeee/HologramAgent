@@ -301,7 +301,7 @@ func (a *Agent) protectedContextCount() int {
 	if a == nil || a.context == nil {
 		return kit.DefaultProtectedCount
 	}
-	if n := a.context.protectedCount; n > 0 {
+	if n := a.context.ProtectedCount(); n > 0 {
 		return n
 	}
 	return kit.DefaultProtectedCount

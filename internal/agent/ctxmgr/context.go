@@ -1,4 +1,4 @@
-package agent
+package ctxmgr
 
 import (
 	"encoding/json"
@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/vector"
@@ -31,7 +30,7 @@ import (
 //
 // 生产数据实证（改动前）：tool_results 的键只有 ["name","output"]，
 // 参数完全没有留存 —— 这意味着回灌后无法重建"当时到底调了什么"。
-type ToolResultItem = agenttypes.ToolResultItem
+// ToolResultItem 见 aliases.go（本包别名）。
 
 // ToolCallItem 是一次工具调用的**完整记录**（含参数）。
 //
@@ -46,7 +45,7 @@ type ToolResultItem = agenttypes.ToolResultItem
 //
 // 参数本身是模型给出的，正常是别名（sec_xxx），但仍可能被直接传明文
 // （插件工具），所以落盘前必须过 scrubEventSecrets（与 Input/Response 同一条闸）。
-type ToolCallItem = agenttypes.ToolCallItem
+// ToolCallItem 见 aliases.go（本包别名）。
 
 const contextFlushInterval = 5 * time.Second
 
@@ -109,32 +108,6 @@ type RelevanceContext struct {
 // 下限保1：protected=0 会让「最近 N 条一定在候选里」这条保证消失，
 // 而 Prune 的 protected 切片是 `events[len-protected:]` —— 0 值会切出空切片
 // 后仍走 keep 逻辑，虽不panic，但等于放弃了近处保护的意义。
-func (a *Agent) EffectiveProtectedCount() int {
-	cfgCap := kit.DefaultProtectedCount
-	if n := a.context.ProtectedCount(); n > 0 {
-		cfgCap = n
-	}
-
-	budget := a.ComputeTokenBudget()
-	tokens := budget.ContextTokens
-	if tokens <= 0 || a.context == nil || a.context.Len() == 0 {
-		return cfgCap // 没有样本/预算，按配置来
-	}
-
-	avg := a.AccumulatedTokens() / a.context.Len()
-	if avg <= 0 {
-		avg = defaultAvgEventTokens
-	}
-
-	budgetCap := tokens / avg
-	if budgetCap < 1 {
-		budgetCap = 1
-	}
-	if budgetCap < cfgCap {
-		return budgetCap
-	}
-	return cfgCap
-}
 
 // ──────────────────────────────────────────────
 // 段页式淘汰（P5，2026-10-29）
@@ -144,10 +117,10 @@ func (a *Agent) EffectiveProtectedCount() int {
 //
 // 页的相似度取**页内各侧的最大值**：call 侧里往往带着关键实体
 // （文件路径、命令、代码），而 result 侧是回显 —— 只看一侧会漏。
-func (c *RelevanceContext) pageSimilarity(e *ContextEvent, page int,
+func (c *RelevanceContext) PageSimilarity(e *ContextEvent, page int,
 	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
 
-	callText, resText := c.pageTexts(e, page)
+	callText, resText := c.PageTexts(e, page)
 	best := math.Inf(-1)
 
 	score := func(text string) {
@@ -156,14 +129,14 @@ func (c *RelevanceContext) pageSimilarity(e *ContextEvent, page int,
 		}
 		// 与事件评分同构：同一统一空间内才比稠密余弦。
 		if len(queryDense) > 0 && queryFP != "" && e.DenseFP == queryFP {
-			if v, ok := c.vectorForText(text); ok && len(v) == len(queryDense) {
+			if v, ok := c.VectorForText(text); ok && len(v) == len(queryDense) {
 				if s := vector.DenseCosine(queryDense, v); s > best {
 					best = s
 				}
 				return
 			}
 		}
-		if s := vector.CosineSimilarity(queryVec, c.vectorizeClean(text)); s > best {
+		if s := vector.CosineSimilarity(queryVec, c.VectorizeClean(text)); s > best {
 			best = s
 		}
 	}
@@ -179,7 +152,7 @@ func (c *RelevanceContext) pageSimilarity(e *ContextEvent, page int,
 //
 // 页内文本（工具参数/结果）不是一等块，没有预存向量；
 // 这里按需算，失败就返回 false 让调用方退回稀疏余弦。
-func (c *RelevanceContext) vectorForText(text string) ([]float64, bool) {
+func (c *RelevanceContext) VectorForText(text string) ([]float64, bool) {
 	if c.denseSpace == nil || !c.denseSpace.Loaded() {
 		return nil, false
 	}
@@ -191,7 +164,7 @@ func (c *RelevanceContext) vectorForText(text string) ([]float64, bool) {
 }
 
 // pageTexts 取某页的 call 侧与 result 侧正文（与 docBlocksForEntry 同构）。
-func (c *RelevanceContext) pageTexts(e *ContextEvent, page int) (call, result string) {
+func (c *RelevanceContext) PageTexts(e *ContextEvent, page int) (call, result string) {
 	if e == nil {
 		return "", ""
 	}
@@ -254,13 +227,13 @@ func (c *RelevanceContext) PageCount(e *ContextEvent) int {
 //  3. **剔除是标注**：数据留在原位，可随时恢复（InactivePages 清空即恢复）。
 //
 // 返回本次新剔除的页数。
-func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, query string) int {
+func (c *RelevanceContext) EvictPagesLocked(e *ContextEvent, budgetTokens int, query string) int {
 	if e == nil || budgetTokens <= 0 || query == "" {
 		return 0
 	}
 	evicted := 0
 	for {
-		total := eventTokens(*e)
+		total := EventTokens(*e)
 		if total <= budgetTokens {
 			break
 		}
@@ -271,7 +244,7 @@ func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, q
 		}
 		var cands []cand
 		for p := 2; p <= c.PageCount(e); p++ {
-			if containsInt(e.InactivePages, p) {
+			if ContainsInt(e.InactivePages, p) {
 				continue
 			}
 			cands = append(cands, cand{p, 0})
@@ -282,10 +255,10 @@ func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, q
 			break
 		}
 
-		queryDense, queryFP := c.queryDenseFor(query)
-		queryVec := c.vectorizeClean(query)
+		queryDense, queryFP := c.QueryDenseFor(query)
+		queryVec := c.VectorizeClean(query)
 		for i := range cands {
-			cands[i].score = c.pageSimilarity(e, cands[i].page, queryDense, queryFP, queryVec)
+			cands[i].score = c.PageSimilarity(e, cands[i].page, queryDense, queryFP, queryVec)
 		}
 		sort.Slice(cands, func(i, j int) bool { return cands[i].score < cands[j].score })
 
@@ -301,7 +274,7 @@ func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, q
 		// 剔除改变了这一帧的渲染内容 ⇒ 向量必须重算。
 		// 不重算的话，下一轮召回仍按"整帧含被剔页"的向量打分，
 		// 剔除等于没生效（相似度还带着已隐藏内容的分量）。
-		c.computeVector(e)
+		c.ComputeVector(e)
 		c.save()
 	}
 	return evicted
@@ -318,7 +291,7 @@ func (c *RelevanceContext) evictPagesLocked(e *ContextEvent, budgetTokens int, q
 // 而 L2 的存储形态（块、字段）与它并不等长。
 // 按存储体积估算会系统性偏离 —— 归档压缩过的文档会被低估，
 // 于是"以为装得下、实际装不下"。
-func estimateColdEventTokens(d *model.ColdDoc) int {
+func EstimateColdEventTokens(d *model.ColdDoc) int {
 	if d == nil {
 		return 0
 	}
@@ -368,7 +341,7 @@ func estimateColdEventTokens(d *model.ColdDoc) int {
 //     剔掉这一帧就只剩工具流水，模型无法理解它在讲什么。
 //
 // 返回的计划由调用方执行（本函数**不改任何状态**，纯计算）。
-func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, budget int) ColdRecallPlan {
+func (c *RelevanceContext) PlanColdRecall(docs []*model.ColdDoc, query string, budget int) ColdRecallPlan {
 	plan := ColdRecallPlan{Docs: docs, Budget: budget, Evict: map[string][]int{}}
 
 	if len(docs) == 0 || budget <= 0 {
@@ -376,7 +349,7 @@ func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, b
 	}
 	// ① 估算整批
 	for _, d := range docs {
-		plan.Need += estimateColdEventTokens(d)
+		plan.Need += EstimateColdEventTokens(d)
 	}
 	plan.OriginalNeed = plan.Need
 	if plan.Need <= budget {
@@ -391,8 +364,8 @@ func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, b
 		tokens   int
 		score    float64
 	}
-	queryDense, queryFP := c.queryDenseFor(query)
-	queryVec := c.vectorizeClean(query)
+	queryDense, queryFP := c.QueryDenseFor(query)
+	queryVec := c.VectorizeClean(query)
 
 	var pool []pageCand
 	for di, d := range docs {
@@ -407,7 +380,7 @@ func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, b
 					docIdx:   di,
 					eventIdx: ei,
 					page:     page,
-					tokens:   pageTokens(ev, page),
+					tokens:   PageTokens(ev, page),
 				})
 			}
 		}
@@ -419,7 +392,7 @@ func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, b
 	// ③ 算相似度（只算一次，避免循环里重复向量化）
 	for i := range pool {
 		d := docs[pool[i].docIdx]
-		pool[i].score = coldPageSimilarity(c, d, pool[i].eventIdx, pool[i].page,
+		pool[i].score = ColdPageSimilarity(c, d, pool[i].eventIdx, pool[i].page,
 			queryDense, queryFP, queryVec)
 	}
 
@@ -448,24 +421,9 @@ func (c *RelevanceContext) planColdRecall(docs []*model.ColdDoc, query string, b
 // 下限保护：至少给 1/4 的 ContextTokens。
 // 否则时间线已接近满窗时，预算变成 0 或负数 ——
 // 那样**任何**召回都会被判超预算而全部剔空，等于召不回来。
-func (a *Agent) recallBudget() int {
-	if a == nil || a.context == nil {
-		return 0
-	}
-	tb := a.ComputeTokenBudget()
-	avail := tb.ContextTokens - a.AccumulatedTokens()
-	floor := tb.ContextTokens / 4
-	if avail < floor {
-		avail = floor
-	}
-	if avail < 0 {
-		avail = 0
-	}
-	return avail
-}
 
 // countPlanPages 统计计划里被剔除的页数。
-func countPlanPages(evict map[string][]int) int {
+func CountPlanPages(evict map[string][]int) int {
 	n := 0
 	for _, pages := range evict {
 		n += len(pages)
@@ -474,7 +432,7 @@ func countPlanPages(evict map[string][]int) int {
 }
 
 // pageTokens 估算一页渲染后的 token（call 侧 + result 侧）。
-func pageTokens(ev *model.ColdEvent, page int) int {
+func PageTokens(ev *model.ColdEvent, page int) int {
 	if page == 1 {
 		in, resp, _ := colddoc.InOut(ev)
 		return kit.EstimateTokens(in) + kit.EstimateTokens(resp)
@@ -490,14 +448,14 @@ func pageTokens(ev *model.ColdEvent, page int) int {
 			n += kit.EstimateTokens(string(b))
 		}
 	}
-	if res, ok := coldToolResult(ev, tc); ok {
+	if res, ok := ColdToolResult(ev, tc); ok {
 		n += kit.EstimateTokens(res)
 	}
 	return n
 }
 
 // coldToolResult 按 CallID（退化到名字）配对工具结果。
-func coldToolResult(ev *model.ColdEvent, tc *model.ToolCallItem) (string, bool) {
+func ColdToolResult(ev *model.ColdEvent, tc *model.ToolCallItem) (string, bool) {
 	if tc.CallID != "" {
 		for i := range ev.ToolResults {
 			if ev.ToolResults[i].CallID == tc.CallID {
@@ -521,7 +479,7 @@ func coldToolResult(ev *model.ColdEvent, tc *model.ToolCallItem) (string, bool) 
 //	多个事件的"第 2 页"被混成一个分数（跨事件串味）。判据实测：
 //	6 个工具页拿到完全相同的 0.5774 —— 那是第 1 页 llm_round 的分数
 //	反复覆盖的结果，页与页之间完全没有区分度，剔除变成随机。
-func coldPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page int,
+func ColdPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page int,
 	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
 
 	if d == nil || eventIdx < 0 || eventIdx >= len(d.Events) {
@@ -534,14 +492,14 @@ func coldPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page in
 			return
 		}
 		if len(queryDense) > 0 && queryFP != "" {
-			if v, ok := c.vectorForText(text); ok && len(v) == len(queryDense) {
+			if v, ok := c.VectorForText(text); ok && len(v) == len(queryDense) {
 				if s := vector.DenseCosine(queryDense, v); s > best {
 					best = s
 				}
 				return
 			}
 		}
-		if s := vector.CosineSimilarity(queryVec, c.vectorizeClean(text)); s > best {
+		if s := vector.CosineSimilarity(queryVec, c.VectorizeClean(text)); s > best {
 			best = s
 		}
 	}
@@ -561,7 +519,7 @@ func coldPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page in
 				score(string(b))
 			}
 		}
-		if res, ok := coldToolResult(ev, tc); ok {
+		if res, ok := ColdToolResult(ev, tc); ok {
 			score(res)
 		}
 	}
@@ -572,7 +530,7 @@ func coldPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page in
 }
 
 // queryDenseFor 取查询的稠密向量（与 PruneWithProtected 同构）。
-func (c *RelevanceContext) queryDenseFor(query string) ([]float64, string) {
+func (c *RelevanceContext) QueryDenseFor(query string) ([]float64, string) {
 	if c.denseSpace == nil || !c.denseSpace.Loaded() {
 		return nil, ""
 	}
@@ -581,15 +539,6 @@ func (c *RelevanceContext) queryDenseFor(query string) ([]float64, string) {
 		return nil, ""
 	}
 	return dv, c.denseSpace.Fingerprint()
-}
-
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 // ProtectedCount 返回配置给的保护条数**上限**（实际值见 effectiveProtectedCount）。
@@ -650,7 +599,7 @@ func (c *RelevanceContext) SetDenseSpace(ds vector.MultimodalEmbedder) {
 		if evt.DenseFP == fp && len(evt.DenseVec) == dim {
 			continue
 		}
-		c.computeVector(evt)
+		c.ComputeVector(evt)
 		filled++
 	}
 	if filled > 0 {
@@ -680,12 +629,12 @@ func (c *RelevanceContext) load() {
 		return
 	}
 	for _, evt := range events {
-		c.computeVector(evt)
+		c.ComputeVector(evt)
 	}
 	c.events = events
 }
 
-func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolDef, channelDefLookup func(name string) (sdk.ChannelDef, bool)) string {
+func TextForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolDef, channelDefLookup func(name string) (sdk.ChannelDef, bool)) string {
 	// 事件自带 NoMemory（coldcontext_query 回填的历史事件）：不进计算层。
 	//
 	// 为什么回填事件不参与计算：它们的内容刚刚在 L2 里被向量化过一次，
@@ -843,11 +792,11 @@ func (c *RelevanceContext) channelCleanerForDoc() kernelapi.ChannelCleaner {
 	}
 }
 
-func (c *RelevanceContext) computeVector(evt *ContextEvent) {
-	text := textForVector(evt, c.toolDefLookup, c.channelDefLookup)
+func (c *RelevanceContext) ComputeVector(evt *ContextEvent) {
+	text := TextForVector(evt, c.toolDefLookup, c.channelDefLookup)
 	// 稀疏向量始终计算（TF-IDF/fastText，退化时仍可用）
 	if text != "" {
-		evt.Vector = c.vectorize(text)
+		evt.Vector = c.Vectorize(text)
 	}
 	// 稠密向量：文本向量 ⊕ 本事件持有的一等记忆块媒体向量（同一统一空间）。
 	// 只有媒体的输入（无文本）也要有可比较的坐标，因此不再按 text=="" 提前返回。
@@ -892,7 +841,7 @@ func (c *RelevanceContext) Save() error {
 // 而不是在每个调用点 —— 逐个补必漏（实测踩到：只拦了 f.Msgs，
 // 而 f.CleanInput / f.ToolResults / f.Response 都是独立副本）。
 // snapshotEvents 返回当前事件的浅拷贝（判据/诊断用；调用方不得修改元素）。
-func (c *RelevanceContext) snapshotEvents() []*ContextEvent {
+func (c *RelevanceContext) SnapshotEvents() []*ContextEvent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]*ContextEvent, len(c.events))
@@ -905,7 +854,7 @@ func (c *RelevanceContext) Append(evt ContextEvent) {
 	defer c.mu.Unlock()
 
 	c.scrubEventSecrets(&evt)
-	c.computeVector(&evt)
+	c.ComputeVector(&evt)
 	c.events = append(c.events, &evt)
 
 	// 认领"先落盘、后进 L1"的超长工具结果记录（已在锁内，直接操作）。
@@ -913,14 +862,14 @@ func (c *RelevanceContext) Append(evt ContextEvent) {
 	// 为什么挂在 Append 而不是各调用点：Append 是事件进入 L1 的唯一咽喉
 	// （task.go 有三处调用），散点调用必然漏一条路径——那一条上的句柄
 	// 就永久悬空（模型拿到 event_id 去读得到"未找到"）。
-	c.claimPendingToolResultsLocked(&evt)
+	c.ClaimPendingToolResultsLocked(&evt)
 
 	c.save()
 }
 
 // claimPendingToolResultsLocked 是 claimPendingToolResults 的持锁版本，
 // 供 Append/InsertByTimestamp 这类已持锁的路径调用。
-func (c *RelevanceContext) claimPendingToolResultsLocked(evt *ContextEvent) {
+func (c *RelevanceContext) ClaimPendingToolResultsLocked(evt *ContextEvent) {
 	if c == nil || evt == nil || evt.ID == "" || len(c.pendingToolResults) == 0 {
 		return
 	}
@@ -936,8 +885,8 @@ func (c *RelevanceContext) InsertByTimestamp(evt ContextEvent) {
 	defer c.mu.Unlock()
 
 	c.scrubEventSecrets(&evt) // 同 Append：咽喉处拦截
-	c.computeVector(&evt)
-	c.claimPendingToolResultsLocked(&evt) // 同 Append：认领待登记的落盘记录
+	c.ComputeVector(&evt)
+	c.ClaimPendingToolResultsLocked(&evt) // 同 Append：认领待登记的落盘记录
 
 	idx := sort.Search(len(c.events), func(i int) bool {
 		return c.events[i].Timestamp.After(evt.Timestamp)
@@ -957,7 +906,7 @@ func (c *RelevanceContext) save() error {
 	if !c.dirty {
 		c.dirty = true
 		if c.saveTimer == nil {
-			c.saveTimer = time.AfterFunc(contextFlushInterval, c.flush)
+			c.saveTimer = time.AfterFunc(contextFlushInterval, c.Flush)
 		} else {
 			c.saveTimer.Reset(contextFlushInterval)
 		}
@@ -965,7 +914,7 @@ func (c *RelevanceContext) save() error {
 	return nil
 }
 
-func (c *RelevanceContext) flush() {
+func (c *RelevanceContext) Flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.dirty {
@@ -999,7 +948,7 @@ func (c *RelevanceContext) Prune(currentInput string, topK int, coldcontextStore
 // resetInactivePagesLocked 清空所有事件的剔除标记（调用方须持锁）。
 //
 // 剔除是渲染期的临时决定，不是记忆属性 —— 见 ContextEvent.InactivePages 的注释。
-func (c *RelevanceContext) resetInactivePagesLocked() {
+func (c *RelevanceContext) ResetInactivePagesLocked() {
 	for _, e := range c.events {
 		if e != nil && len(e.InactivePages) > 0 {
 			e.InactivePages = nil
@@ -1021,7 +970,7 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 	//
 	// 放在函数最前面（包括提前返回的那条路径之前）：只要 Prune 被调用，
 	// 就说明窗口被重新规划过，旧标记一律失效。
-	c.resetInactivePagesLocked()
+	c.ResetInactivePagesLocked()
 
 	if len(c.events) <= topK {
 		return 0
@@ -1051,7 +1000,7 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 			useDense = true
 		}
 	}
-	queryVec := c.vectorizeClean(currentInput)
+	queryVec := c.VectorizeClean(currentInput)
 
 	scoredEvents := make([]scoredEvent, len(candidates))
 	for i, evt := range candidates {
@@ -1231,7 +1180,7 @@ func (c *RelevanceContext) Len() int {
 // tokenAt 返回第 i 条事件的 token 成本（O(1)：只算那一条，不复制整窗）。
 //
 // ★ 对外只经 Agent.TokenOf 暴露：类型侧策略要逐条成本，但不该拿上下文句柄。
-func (c *RelevanceContext) tokenAt(i int) (int, bool) {
+func (c *RelevanceContext) TokenAt(i int) (int, bool) {
 	c.mu.Lock()
 	if i < 0 || i >= len(c.events) {
 		c.mu.Unlock()
@@ -1239,7 +1188,7 @@ func (c *RelevanceContext) tokenAt(i int) (int, bool) {
 	}
 	evt := *c.events[i]
 	c.mu.Unlock()
-	return eventTokens(evt), true
+	return EventTokens(evt), true
 }
 
 // toolCallItemsToDoc 把 L1 的工具调用记录转成 L2 类型。
@@ -1298,7 +1247,7 @@ func convertToolResults(items []ToolResultItem) []model.ToolResultItem {
 // 做本地文件读。工具结果全文落盘本质是"记住一份东西"，属同一职责。
 
 // persistToolResult 把正文写入事件目录，返回元信息。
-func (c *RelevanceContext) persistToolResult(evtID, tool, text string) (*ToolResultStore, error) {
+func (c *RelevanceContext) PersistToolResult(evtID, tool, text string) (*ToolResultStore, error) {
 	if c == nil {
 		return nil, fmt.Errorf("toolresult: context 为空")
 	}
@@ -1352,7 +1301,7 @@ func nextToolResultSeq(dir string) int {
 // readToolResultBody 按字节区间读取正文。
 //
 // offset 从 0 开始；limit<=0 表示读到结尾。返回内容与「是否已到末尾」。
-func (c *RelevanceContext) readToolResultBody(evtID string, st *ToolResultStore, offset, limit int) (string, bool, error) {
+func (c *RelevanceContext) ReadToolResultBody(evtID string, st *ToolResultStore, offset, limit int) (string, bool, error) {
 	if c == nil || st == nil {
 		return "", true, fmt.Errorf("toolresult: 无记录")
 	}
@@ -1417,7 +1366,7 @@ func (c *RelevanceContext) PlanCompaction(keepRecent int) CompactPlan {
 	if keepRecent < 1 {
 		keepRecent = 1
 	}
-	evts := c.snapshotEvents()
+	evts := c.SnapshotEvents()
 	plan := CompactPlan{Keep: keepRecent, Total: len(evts)}
 	if len(evts) <= keepRecent {
 		return plan
@@ -1491,7 +1440,7 @@ func (c *RelevanceContext) ApplyCompaction(plan CompactPlan, summary string) int
 	c.mu.Unlock()
 
 	if toVector != nil {
-		c.computeVector(toVector)
+		c.ComputeVector(toVector)
 	}
 	c.save()
 	return removed
@@ -1551,16 +1500,73 @@ const compactionToolResultMaxRunes = 400
 // ★ 为什么需要它们：共享词嵌入是可选装配（未注入时 `c.embedder == nil`）。
 // 直接 `c.embedder.Vectorize(...)` 会 panic（实测：判据构造点不注入 embedder
 // 就撞 nil pointer）。空安全在这里收一处，而不是让 6 个调用点各判一次。
-func (c *RelevanceContext) vectorize(text string) map[string]float64 {
+func (c *RelevanceContext) Vectorize(text string) map[string]float64 {
 	if c == nil || c.embedder == nil {
 		return nil
 	}
 	return c.embedder.VectorizeMap(text)
 }
 
-func (c *RelevanceContext) vectorizeClean(text string) map[string]float64 {
+func (c *RelevanceContext) VectorizeClean(text string) map[string]float64 {
 	if c == nil || c.embedder == nil {
 		return nil
 	}
 	return c.embedder.VectorizeCleanMap(text)
+}
+
+// EvictOversizedPages 是**页级剔除原语**：把「单条事件自己就超预算」的那些帧
+// 按页标注剔除，返回剔除的页数与是否有缩减。
+//
+// ★ 为什么它是本包的方法而不是基座的函数：它要对 `events` 逐个持锁改
+//
+//	`InactivePages`，那是**实现的内部状态**。基座经本方法调用，
+//	不直接碰字段。
+func (c *RelevanceContext) EvictOversizedPages(budget int, query string) (evicted int, reduced bool) {
+	if c == nil || budget <= 0 || query == "" {
+		return 0, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.events {
+		if e == nil {
+			continue
+		}
+		if EventTokens(*e) <= budget {
+			continue
+		}
+		n := c.EvictPagesLocked(e, budget, query)
+		evicted += n
+		if n > 0 {
+			reduced = true
+		}
+	}
+	return evicted, reduced
+}
+
+// EventsCopy 返回事件切片的**浅拷贝**（基座只读遍历用）。
+func (c *RelevanceContext) EventsCopy() []*ContextEvent {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*ContextEvent, len(c.events))
+	copy(out, c.events)
+	return out
+}
+
+// WithProtected 设置本帧现场的保护条数（构造期一次）。
+func (c *RelevanceContext) WithProtected(n int) *RelevanceContext {
+	if c != nil && n > 0 {
+		c.protectedCount = n
+	}
+	return c
+}
+
+// SavePath 返回落盘目录（基座只读）。
+func (c *RelevanceContext) SavePath() string {
+	if c == nil {
+		return ""
+	}
+	return c.savePath
 }

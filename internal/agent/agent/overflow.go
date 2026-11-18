@@ -23,7 +23,7 @@ package agent
 //	"上游错误是不是超页"的判定    → api.IsContextFull（识别归上游调用的发出者）
 //
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
 )
 
 // accumulatedTokens 估算**未裁剪**的积累上下文 token 数。
@@ -38,7 +38,7 @@ func (a *Agent) AccumulatedTokens() int {
 	}
 	acc := 0
 	for _, e := range a.context.Recent(0) {
-		acc += eventTokens(e)
+		acc += ctxmgr.EventTokens(e)
 	}
 	return acc
 }
@@ -69,23 +69,6 @@ func (a *Agent) AccumulatedTokens() int {
 //
 // ★ 判据口径：**统计视图必须等于渲染视图**。渲染不出的内容不该占预算，
 // 否则裁剪永远「裁不动」，这不是保守，是自相矛盾。
-func eventTokens(e ContextEvent) int {
-	n := kit.EstimateTokens(e.Input) + kit.EstimateTokens(e.Response)
-	if len(e.ToolResults) == 0 {
-		return n
-	}
-	// 与 process.go 的 timelineToolLines 用**同一个**页索引函数：
-	// 配对规则（CallID 优先、退化到名字、配不上记 0 永不剔除）只能有一份。
-	pageOf := toolResultPageIndex(&e)
-	for i, tr := range e.ToolResults {
-		// 已剔除的页不渲染 ⇒ 不计入预算（渲染视图 = 统计视图）。
-		if i < len(pageOf) && containsInt(e.InactivePages, pageOf[i]) {
-			continue
-		}
-		n += kit.EstimateTokens(tr.Output)
-	}
-	return n
-}
 
 // contextWindowTokens 取本 agent 的窗口上限（token）。
 func (a *Agent) ContextWindowTokens() int {
@@ -126,7 +109,7 @@ func (a *Agent) TokenOf(i int) int {
 	if a == nil || a.context == nil {
 		return 0
 	}
-	n, ok := a.context.tokenAt(i)
+	n, ok := a.context.TokenAt(i)
 	if !ok {
 		return 0
 	}
@@ -162,36 +145,13 @@ func (a *Agent) EvictOversizedPages(query string) (evicted int, reduced bool) {
 	if a == nil || a.context == nil {
 		return 0, false
 	}
-	// query 为空时自己推导（与策略无关的一条通用规则：剔除靠相关性打分，
-	// 拿不到 query 就只能按顺序处理，而按顺序乱剔比如不剔更糟）。
+	// query 为空时自己推导（剔除靠相关性打分，拿不到 query 只能按顺序处理，
+	// 而按顺序乱剔比如不剔更糟）。
 	if query == "" {
 		query = a.LastUserQueryForPrune()
 	}
-	if query == "" {
-		return 0, false
-	}
 	budget := a.ComputeTokenBudget().ContextTokens
-	if budget <= 0 {
-		return 0, false
-	}
-	a.context.mu.Lock()
-	defer a.context.mu.Unlock()
-	for _, e := range a.context.events {
-		if e == nil {
-			continue
-		}
-		if eventTokens(*e) <= budget {
-			continue
-		}
-		// EvictPages 内部要调 c.save()/computeVector（都需要锁），所以这里
-		// 必须用已持锁的形态。为此 evictPagesLocked 自身不取锁。
-		n := a.context.evictPagesLocked(e, budget, query)
-		evicted += n
-		if n > 0 {
-			reduced = true
-		}
-	}
-	return evicted, reduced
+	return a.context.EvictOversizedPages(budget, query)
 }
 
 // PruneForQuery 是**裁剪原语**：按 query 的相关性裁一次（走注册的 Prune 钩子）。
