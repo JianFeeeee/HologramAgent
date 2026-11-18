@@ -402,9 +402,12 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 			reg.Unregister(inboundChannelName(opts.ID))
 		}
 	}()
+	// ★ 上行通路：父一次性把"怎么投给父"装进子的基座（用户裁定 2026-11-18）。
+	//   子此后只调 CallParent —— 通道名与注入点都由父提供，子不拼、不猜。
+	child.InstallCallParent(BuildCallParent(a, opts.ID, parentInCh))
 	child.mkResident(func(text string) {
-		a.io.InjectInterruptTextOpts(opts.ID, parentInCh, text,
-			agentIO.InjectOptions{Priority: "L3"})
+		// 子主动汇报（notify_parent 工具）：父该尽快看到，L3。
+		_ = child.CallParent(CallLevelInteractive, CallKindNotify, text, nil)
 	}, func() { a.handleChildContextFull(rc) })
 
 	if err := a.children.Add(rc); err != nil {

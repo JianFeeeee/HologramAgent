@@ -729,9 +729,13 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//   初版在回调里调 residentInboundChannel（它内部会 Register）⇒ 每发一次
 	//   就重复登记一次，而该表按 name 全局唯一 —— 是纯粹的写放大 + 脏登记。
 	rtInboundCh := a.residentInboundChannel("rt/" + opts.ID)
+	// ★ 上行通路：父一次性把"怎么投给父"装进 rt 载体（与驻留子同一套）。
+	//   rt 的交接/发问走它，不再自己拼 "rt/"+id 与注入点。
+	carrier.InstallCallParent(BuildCallParent(a, "rt/"+opts.ID, rtInboundCh))
 	_ = carrier.mkResident(func(text string) {
-		a.io.InjectInterruptTextOpts("rt/"+opts.ID, rtInboundCh, text,
-			agentIO.InjectOptions{Priority: "L4"})
+		// rt 通话里"向父发问"是**用户的话**：父必须尽快看到，L3（交互级）。
+		// 不用 L4 —— 那是内核级插件的立即打断权，子 agent 不该有。
+		_ = carrier.CallParent(CallLevelInteractive, CallKindAsk, text, nil)
 	}, nil)
 
 	rc := &rtChild{

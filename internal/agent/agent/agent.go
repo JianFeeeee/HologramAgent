@@ -86,6 +86,14 @@ type Agent struct {
 	// 插件/工具族）都可以搬出基座包，基座也就不再 import 那 16 个实现包。
 	impl any
 
+	// callParent 是**父为子安装**的上行投递函数（子 → 父的唯一通路）。
+	//
+	// ★ 由父在创建子时装入（InstallCallParent），因为只有父知道自己的
+	//   IOManager 与那条入站 inputch 名。子若自己拼，历史上出过两次故障：
+	//   rt 拼成 "rt/"+id 导致路由永远查不到；子在自己的 io 上注入导致
+	//   消息进子自己的队列（父收不到）。
+	callParent CallParentFunc
+
 	// cfg 是**归一化后的**构造参数。类型模块的初始化回调要用它
 	// （例如归档间隔 ≤0 时继承蒸馏间隔 —— 归一化只该有一处）。
 	cfg AgentConfig
