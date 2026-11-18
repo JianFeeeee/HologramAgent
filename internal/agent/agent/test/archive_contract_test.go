@@ -41,7 +41,7 @@ import (
 //
 // 为什么这样搭：归档只看 graph memory + coldcontext store + embedder，
 // 不需要 provider/插件/IO 这些。少装配一样，判据就少一样可能坏的东西。
-func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) *agent.Agent) (*agent.Agent, *coldcontext.Store, *memory.GraphDB) {
+func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) (*agent.Agent, error)) (*agent.Agent, *coldcontext.Store, *memory.GraphDB) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -62,7 +62,7 @@ func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) *agent.Age
 
 	iom := io.NewIOManager()
 
-	a := factory(agent.AgentConfig{
+	a, instErr := factory(agent.AgentConfig{
 		Security: security.NewDisabledRuntime().AsGate(),
 		ID:       types.AgentID("archive-contract"),
 		Memory:   g,
@@ -73,6 +73,9 @@ func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) *agent.Age
 		// DistillInterval 同理（ArchiveInterval<=0 时它会继承 DistillInterval）。
 		DistillInterval: 50 * time.Millisecond,
 	})
+	if instErr != nil {
+		t.Fatalf("Instantiate(main): %v", instErr)
+	}
 	return a, store, g
 }
 
@@ -84,7 +87,9 @@ func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) *agent.Age
 // `blocksAfter == blocksBefore ⇒ continue` 前置门 ⇒ 块永远不进库、文档永不删
 // ⇒ 本判据红（这正是在生产里发生了三天的形态）。
 func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
-	a, store, g := archiveHarness(t, agent.New)
+	a, store, g := archiveHarness(t, func(cfg agent.AgentConfig) (*agent.Agent, error) {
+		return agent.Instantiate(agent.TypeNameMain, cfg)
+	})
 
 	// 一段「终端日志 / 工具回执」类正文：NLP 抽不出合法三元组。
 	// 用它构造文档，正是生产里那 702 篇的形态。
@@ -143,7 +148,9 @@ func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 // 既没三元组也没有块的空文档，删掉是安全的（没有内容可丢），
 // 但它必须走**空文档**路径而不是被当成失败重试。
 func TestArchiveKeepsDocumentWhenItHoldsNothing(t *testing.T) {
-	a, store, _ := archiveHarness(t, agent.New)
+	a, store, _ := archiveHarness(t, func(cfg agent.AgentConfig) (*agent.Agent, error) {
+		return agent.Instantiate(agent.TypeNameMain, cfg)
+	})
 
 	doc, err := store.ContextToColdContext("context_archived", []coldcontext.ContextEntry{{
 		Source: "agent",

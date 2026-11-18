@@ -42,8 +42,10 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-// BatchOpts 是批执行的可变部分（导出：类型模块经 Hooks.ToolRunner 传入）。
-// 其余全部共享。
+// BatchOpts 是工具批执行的参数。
+//
+// agentloop 通过基座 RunToolBatch 发起工具请求；工具执行器、授权、防火墙、
+// 超时、取消、结果清洗和 output 路由都属于 kernel。
 type BatchOpts = agenttypes.BatchOpts
 
 // batchResult 是单条工具的结果。

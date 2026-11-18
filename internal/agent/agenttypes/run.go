@@ -160,7 +160,7 @@ type ToolCall = agentAPI.ToolCall
 type BatchOpts struct {
 	// Ctx 是本次批量的执行作用域（rt 传整轮 roundCtx，其余传自身 ctx）。
 	//
-	// ★ 为什么放进 opts 而不是 runner 的形参：`ToolRunner` 是槽位，
+	// BatchOpts is the request options passed to the kernel tool boundary.
 	// 各类型注册的实现必须能接受"这一批属于哪个作用域"——rt 的取消域是
 	// 整轮，主 agent 是自身 ctx。让 runner 自己猜（读 a.ctx）会让 rt 的
 	// 取消域失效（实测会退化成"打断不了"）。

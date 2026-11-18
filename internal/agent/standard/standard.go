@@ -58,13 +58,5 @@ func RunStageStandard(a *agent.Agent, stage string, ctx any) bool {
 	return a.RunStageStandard(stage, ctx)
 }
 
-// SynchronousRunner 是标准**同步** toolcall 实现（提交一批、按索引拿回结果）。
-//
-// ★ 异步（rt）注册自己的实现：差别只是"提交后是否阻塞等待"，
-// 执行归属始终在内核（事件循环推动）。
-type SynchronousRunner struct{}
-
-// RunBatch 执行一批工具并按索引顺序返回（协议要求配对完整）。
-func (SynchronousRunner) RunBatch(a *agent.Agent, calls []agenttypes.ToolCall, opts agenttypes.BatchOpts) []agenttypes.BatchResult {
-	return a.RunToolBatch(calls, opts)
-}
+// RunToolBatch is the kernel tool-request boundary. It is not a
+// type-specific tool runner.

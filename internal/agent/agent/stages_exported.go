@@ -32,9 +32,9 @@ import (
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-// RunToolBatch 执行一批工具并按索引返回结果（同步语义）。
+// RunToolBatch 是基座提供给所有 agentloop 的工具请求入口。
 //
-// rt 的异步实现不必用它 —— 异步是 rt 自己的 agentloop 语义。
+// agentloop 只决定何时发起请求以及本批约束；实际执行属于 kernel eventloop。
 func (a *Agent) RunToolBatch(calls []agenttypes.ToolCall, opts agenttypes.BatchOpts) []agenttypes.BatchResult {
 	ctx := opts.Ctx
 	if ctx == nil {

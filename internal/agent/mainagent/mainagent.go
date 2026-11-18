@@ -28,6 +28,8 @@
 package mainagent
 
 import (
+	"fmt"
+
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 )
@@ -62,16 +64,17 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	// ── 槽位 6：agent loop（主 agent 用**标准同步**实现）──
 	h.Loop = standard.Loop
 
-	// ── 槽位 1：toolcall（同步提交；执行由内核事件循环推进）──
-	if h.ToolRunner == nil {
-		h.ToolRunner = standard.SynchronousRunner{}
-	}
-
-	// ── 槽位 7：stage（标准阶段执行）──
+	// Tool execution is provided by the base/kernel boundary and is not a
+	// registered type callback.
 	if h.RunStage == nil {
 		h.RunStage = standard.RunStageStandard
 	}
 
+	h.Runtime = agent.RuntimeHooks{
+		Initialize: func(a *agent.Agent) error { return InitRuntime(a) },
+		Start:      func(a *agent.Agent) { a.StartRegisteredRuntime() },
+		Stop:       func(a *agent.Agent) { a.StopRegisteredRuntime() },
+	}
 	// ── 类型身份（数据事实，不是行为）──
 	h.ComeFrom = ComeFrom
 
@@ -81,9 +84,9 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
 	}
-
-	// 主 agent 的后台维护任务：只**声明**，刻度由内核事件循环承担。
-	a.RegisterMaintenanceTasks()
+	if err := a.HooksValue().Runtime.Initialize(a); err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 
@@ -93,3 +96,33 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 // 「类型模块**组合**标准实现」的落点（用户裁定：组合而非继承）。
 
 const ComeFrom = "user"
+
+// InitRuntime 是主 agent 的类型初始化（由 RuntimeHooks.Initialize 触发）。
+//
+// ## 为什么这里才是主 agent 的装配位置
+//
+// 「内核持有基座、类型模块注册回调」⇒ 基座 `Agent.New` 只做**通用**构造
+// （字段、槽位、安全闸、IO 路由器）。**主 agent 专属的那些**在这里：
+//
+//	上下文实现（RelevanceContext：策略裁剪型）
+//	输入调度器（四级抢占 + 挂起恢复）
+//	主 agent 专属状态（记忆整理面 / 媒体 / 插件 / 预算统计 / 设备）
+//	typed-nil 归一 + 变量库注入到上下文与 stageHost
+//	后台维护任务声明（蒸馏/归档/合并/复审/转投）
+//
+// rtchild 与驻留子**不走**这条路径：它们各自注册自己的 Initialize，
+// 用自己的上下文/调度器（整窗型 / 无队列），于是"主 agent 的复杂性"
+// 不再泄漏到它们身上。
+func InitRuntime(a *agent.Agent) error {
+	if a == nil {
+		return fmt.Errorf("main: nil base")
+	}
+	cfg := a.Config()
+	a.InstallContext(agent.NewRelevanceContext(cfg.ContextSavePath, cfg.Embedder))
+	a.InstallScheduler()
+	a.InstallMainState(cfg)
+	a.NormalizeNilServices()
+	a.InjectSecretStore()
+	a.RegisterMaintenanceTasks()
+	return nil
+}

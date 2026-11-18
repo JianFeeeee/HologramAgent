@@ -87,6 +87,10 @@ type Agent struct {
 	// 插件/工具族）都可以搬出基座包，基座也就不再 import 那 16 个实现包。
 	impl any
 
+	// cfg 是**归一化后的**构造参数。类型模块的初始化回调要用它
+	// （例如归档间隔 ≤0 时继承蒸馏间隔 —— 归一化只该有一处）。
+	cfg AgentConfig
+
 	context      *RelevanceContext
 	systemPrompt string
 	ctx          context.Context
@@ -472,11 +476,10 @@ func New(cfg AgentConfig) *Agent {
 		// （见 knowledge 的媒体侧车），不再需要外部 getter/putter 接线。
 		allowedOutputs: cfg.AllowedOutputs,
 		selfInputCh:    make(chan selfInputMsg, 64),
-		sub:            &subStates{},
-		sched:          newScheduler(256),
 		maxToolTurns:   cfg.MaxToolTurns,
 		// ★ IsRealtime 现在是**钩子**（装配期由 rt 模块注册），不是字段。
 		//   这里只把 cfg 的意图带过去，保持构造点签名不变。
+		cfg: cfg,
 		hooks: Hooks{
 			// ★ 类型身份从**构造参数**转成**钩子**（用户裁定：回调注册，
 			// 不按类型分支）。类型模块可在 SetHooks 里覆盖这两项。
@@ -489,42 +492,6 @@ func New(cfg AgentConfig) *Agent {
 		},
 		publisher: agentEventBus{bus: cfg.EventBus, who: string(cfg.ID)},
 		lastInput: make(map[string]time.Time),
-	}
-
-	// ★ 主 agent 的装配面进分区表（见 agentstate.go）：记忆整理/媒体/插件/
-	//   预算统计都在 `sub.main` 里，基座只留一个分区指针。
-	//   非主 agent（驻留子/rt/工作式子）不填它 —— 它们用不到那些实现句柄。
-	if cfg.Memory != nil || cfg.Indexer != nil || cfg.DocStore != nil || cfg.Knowledge != nil ||
-		cfg.PluginReg != nil || cfg.StageHost != nil {
-		m := a.MkMain()
-		m.indexer = cfg.Indexer
-		m.tracker = cfg.Tracker
-		m.coldcontextStore = cfg.DocStore
-		m.knowledge = cfg.Knowledge
-		m.social = cfg.SocialStore
-		m.textMem = cfg.TextMemory
-		m.pluginReg = cfg.PluginReg
-		m.pluginDir = cfg.PluginDir
-		m.stageHost = cfg.StageHost
-		m.embedder = embedder
-		m.multimodalSpace = cfg.MultimodalSpace
-		m.embeddingProvider = cfg.EmbeddingProvider
-		m.embeddingError = cfg.EmbeddingError
-		m.fusionCfg = cfg.FusionCfg
-		m.personality = cfg.Personality
-		m.personaStore = cfg.PersonaStore
-		m.distillInterval = cfg.DistillInterval
-		m.archiveInterval = cfg.ArchiveInterval
-		m.reviewInterval = cfg.ReviewInterval
-		m.mergeInterval = cfg.MergeInterval
-		m.maxContextSize = cfg.MaxContextSize
-		m.ctxTuning = cfg.CtxTuning
-		m.offload = cfg.Offload
-		m.inputCfg = cfg.InputProcessing
-		m.thinkingEnabled = cfg.ThinkingEnabled
-		m.startTime = time.Now()
-		m.pluginHealth = kit.NewPluginHealthTracker()
-		m.noMergeMarkers = make(map[string]int)
 	}
 
 	// ★ 授权事实声明给**安全模块**（用户裁定 2026-11-17）。
@@ -540,9 +507,6 @@ func New(cfg AgentConfig) *Agent {
 			if a.context != nil {
 				a.context.SetSecretStore(st)
 			}
-			if sh := a.MainState().stageHost; sh != nil {
-				sh.SetSecretStore(st)
-			}
 			// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
 			// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。
 			if a.providerManager != nil {
@@ -555,7 +519,6 @@ func New(cfg AgentConfig) *Agent {
 	//   接口字段装的是"具体类型的 nil 指针"时，接口值本身**不是 nil**
 	//   ⇒ `if a.pluginReg != nil` 会放行，随后方法内部解引用空指针 panic。
 	//   这里把每一处 typed-nil 显式折成真 nil。
-	a.NormalizeNilServices()
 
 	// 输入路由：inputch 是可分配资源，划给某个 agent 后输入**只**流向那个 agent
 	// （设计 §4.1「路由发生在进内核之前」）。io 层不认识 agent，所以在这里把路由器
@@ -573,21 +536,19 @@ func (a *Agent) Start() {
 	if l := kernelloop.Current(); l != nil {
 		l.RegisterInputSink(string(a.id), &inputSink{a: a})
 	}
-	go a.schedulerLoop()
-	go a.InterceptLoop()
-	// ★ 后台维护任务由**类型注册**（ticker.go），基座不硬编码任何一条。
-	//   主 agent 在装配点调 RegisterMaintenanceTasks；驻留子/rtchild 不调 ⇒
-	//   它们一个多余的后台 goroutine 都不会起。
-	a.startPeriodic()
-	a.ReembedStaleMedia()
-	a.MigrateLegacyGraphMedia()
+	// 跑起来是**类型**的事（它注册 Runtime.Start）；基座只负责通用登记。
+	if r := a.hooks.Runtime; r.Start != nil {
+		r.Start(a)
+	}
 	a.Logf("%s started, waiting for IO interrupts", a.id)
 }
 
 func (a *Agent) Stop() {
 	// 父退出**必须**销毁全部驻留子（设计 §10 硬约束：子不得比父活得久、不留孤儿）。
-	a.StopResidents()
-	// ★ 释放本 agent 的策略执行视图（2026-10-31）。
+	if a.hooks.Runtime.Stop != nil {
+		a.hooks.Runtime.Stop(a)
+	}
+	// 释放本 agent 的策略执行视图（2026-10-31）。
 	//
 	// 视图里存着 **longtimeProfile**（跨轮保留的档位）。不释放的话，
 	// 同名 agent 重建会继承上一代的 long-time 档 —— 那时可能是
@@ -611,7 +572,23 @@ func (a *Agent) Stop() {
 	a.cancel()
 }
 
-// drainPendingInterrupts 给排队/待处理/已挂起任务中带同步回执通道的调用方补一条
+// StartRegisteredRuntime is the kernel-owned runtime bridge used by the
+// registered main type. The callback is registered by mainagent; the base
+// does not select a type or start a loop implicitly.
+func (a *Agent) StartRegisteredRuntime() {
+	go a.schedulerLoop()
+	go a.InterceptLoop()
+	a.startPeriodic()
+	a.ReembedStaleMedia()
+	a.MigrateLegacyGraphMedia()
+}
+
+// StopRegisteredRuntime is the matching lifecycle bridge for the registered type.
+func (a *Agent) StopRegisteredRuntime() {
+	a.StopResidents()
+	a.drainPendingInterrupts("agent_stopped")
+}
+
 // skipped 终态（复用 emitSkippedReply：非阻塞写，不对外发 agent_output 事件）。
 func (a *Agent) drainPendingInterrupts(reason string) {
 	if a.sched == nil {
@@ -805,7 +782,6 @@ func (a *Agent) InjectSelfChannel(msg selfInputMsg) {
 //	base.SetHooks(agent.Hooks{
 //	    ContextBudget: main.ContextBudget,       // 上下文管理
 //	    Loop:          kit.Loop,            // agent loop
-//	    ToolRunner:    kit.SynchronousRunner{},
 //	    RunStage:      kit.StageRunner,
 //	    GraphMemory:   db,                       // 可选记忆
 //	    SecurityGate:  Gate,
@@ -848,8 +824,10 @@ func (a *Agent) HookReport() HooksReport {
 		HasOverBudget: a.hooks.OverBudget != nil,
 		HasOverflow:   a.hooks.EnforceOverflow != nil,
 		HasLoop:       a.hooks.Loop != nil,
+		HasRuntime:    a.hooks.Runtime.Start != nil && a.hooks.Runtime.Stop != nil,
 		HasRunStage:   a.hooks.RunStage != nil,
-		HasToolRunner: a.hooks.ToolRunner != nil,
+		// tool execution is a kernel service; it is always available through RunToolBatch.
+		HasToolRunner: true,
 		HasGraph:      a.hooks.GraphMemory != nil,
 		HasSecurity:   a.hooks.SecurityGate != nil,
 	}
@@ -866,6 +844,7 @@ type HooksReport struct {
 	HasOverBudget bool
 	HasOverflow   bool
 	HasLoop       bool
+	HasRuntime    bool
 	HasRunStage   bool
 	HasToolRunner bool
 	HasGraph      bool

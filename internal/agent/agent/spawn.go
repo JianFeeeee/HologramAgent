@@ -279,18 +279,9 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			reachedLimit = true
 		}
 
-		// ★★ 走共享的 runToolBatch（2026-11-04 重构）：
-		//
-		// 原实现逐条直调 `executeToolCall`（= executeToolCallOutcome 的文本壳），
-		// 内无任何 runStage ⇒ 普通子的工具调用同样**跳过 before/after_toolcall**，
-		// 与 rt 同型缺陷（见 toolbatch.go 头注释的对照表）。
-		//
-		// 保留两处**子专属**的差异，通过 batchOpts 注入而不是各写一遍执行逻辑：
-		//   ① 禁用输出工具与系统工具（子把结果回父，不直接回用户）
-		//   ② 强制串行（NoBatch）—— 子历史上是串行的，改并发会改变它已上线
-		//      行为的时序假设，不在本次重构范围内（判据 TestWorkerToolsStaySerial 钉住）
-		// ★ 工作式子借用父 agent 注册的 toolcall 槽位（它自己不持有 Agent）。
-		results := a.hooks.ToolRunner.RunBatch(a, resp.ToolCalls, BatchOpts{
+		// Tool execution remains kernel-owned. The worker loop only provides
+		// worker-specific request constraints; it does not implement a runner.
+		results := a.RunToolBatch(resp.ToolCalls, BatchOpts{
 			Ctx:        a.ctx,
 			Channel:    parentChannel,
 			NoBatch:    true,

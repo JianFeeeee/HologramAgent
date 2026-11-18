@@ -2,7 +2,6 @@ package agent
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
-	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
@@ -40,6 +39,17 @@ import (
 //   - `NewBase()` **不自带任何默认实现**：默认值会让"忘了注册"变成静默行为漂移。
 //   - 钩子收 `*Agent` 而不是把状态拷出来：钩子就是"这个类型对基座的操作"，
 //     拷出来反而会让两边状态分叉。
+//
+// RuntimeHooks groups the lifecycle callbacks for one registered agent type.
+// The kernel owns Agent; the type module only supplies this behavior object.
+type RuntimeHooks struct {
+	// Initialize wires type-owned runtime state into the kernel-owned Agent.
+	// It runs during type instantiation, before Start.
+	Initialize func(a *Agent) error
+	Start      func(a *Agent)
+	Stop       func(a *Agent)
+}
+
 type Hooks struct {
 	// ── 类型身份（**数据事实**，不是类型结论）──
 	//
@@ -59,6 +69,9 @@ type Hooks struct {
 	// 只有主 agent 注册为 true：让子再去拉孙子会形成无界增殖
 	// （每层都能拉 MAX 个），而积压的源头是根那一条调度链。
 	MayOffload bool
+
+	// Runtime is the single lifecycle registration for this type.
+	Runtime RuntimeHooks
 
 	// ── 槽位 5：上下文管理 ──
 
@@ -89,14 +102,6 @@ type Hooks struct {
 	// RunStage 执行某个阶段的插件处理器。nil ⇒ 基座退化为"无插件阶段"。
 	RunStage func(a *Agent, stage string, ctx any) bool
 
-	// ── 槽位 1：toolcall ──
-
-	// ToolRunner 执行一批工具，返回与入参**同序**的结果。
-	// rt 模块注册全异步实现（调用方不被阻塞）。
-	ToolRunner ToolRunner
-
-	// ── 槽位 2：可选记忆（可运行期覆盖）──
-
 	// GraphMemory 是本 agent 的图记忆面（可 nil = 没有图记忆）。
 	//
 	// ★ 它是**可选槽位**（用户 2026-11-17 纠正：图记忆是可选配置）：
@@ -113,19 +118,14 @@ type Hooks struct {
 	SecurityGate SecurityGate
 }
 
-// ToolRunner 是 toolcall 槽位的契约。
-//
-// 只声明"执行一批调用并按索引顺序返回结果"这一件事：具体的授权闸、
-// schema 校验、超时、脱敏都在实现里（standard 提供同步版，rt 提供异步版）。
-type ToolRunner interface {
-	RunBatch(a *Agent, calls []agentAPI.ToolCall, opts BatchOpts) []BatchResult
-}
-
-// Validate 校验**必填槽位**是否齐全（装配期调用，缺了就响亮报错）。
+// Tool execution is a base/kernel service and is not a hook. The tool-request
+// boundary is Agent.RunToolBatch.// Validate 校验**必填槽位**是否齐全（装配期调用，缺了就响亮报错）。
 //
 // 这里刻意区分"必填"与"合法为空"：
 //
-//	必填：ContextBudget / OverBudget / Loop / ToolRunner / SecurityGate
+// 必填：ContextBudget / OverBudget / Loop / SecurityGate / Runtime
+// Tool execution is a base/kernel service and is not a hook.
+//
 //	合法为空：Prune / EnforceOverflow（整窗策略明确不做裁剪与超页处置）
 //	        GraphMemory（图记忆是可选配置）
 //	        RunStage（无插件阶段时基座退化为直通）
@@ -141,7 +141,7 @@ func (h Hooks) Validate(who string) error {
 		{"ContextBudget", h.ContextBudget != nil, "由类型模块注册（主：RelevanceContext；驻留/rt：整窗）"},
 		{"OverBudget", h.OverBudget != nil, "由类型模块注册（主：按窗口预算判定；驻留/rt：恒 false）"},
 		{"Loop", h.Loop != nil, "由类型模块注册（kit.Loop 或 rt 的 Asyncloop）"},
-		{"ToolRunner", h.ToolRunner != nil, "由类型模块注册（kit.ToolRunner 或 rt 的 AsyncToolRunner）"},
+		{"Runtime", h.Runtime.Initialize != nil && h.Runtime.Start != nil && h.Runtime.Stop != nil, "由类型模块注册完整 runtime 生命周期对象"},
 		{"SecurityGate", h.SecurityGate != nil, "由类型模块在装配点从 kernelapi.FacSecurity 取"},
 	}
 	for _, s := range slots {
