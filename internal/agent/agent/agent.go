@@ -250,6 +250,9 @@ type Agent struct {
 	// ★ 为什么是 per-agent 而不是全局：轮次档位（sessionProfile）是该 agent
 	// 独有的状态。放在共享单例上，主 agent 的 guest 会被驻留子的 owner 覆盖
 	// —— 实测可复现（两者同进程并发）。
+	// agents 是内核装配的 **agent 记录表**（可能为 nil ⇒ 独立使用）。
+	agents kernelapi.AgentRegistry
+
 	securityScopeView kernelapi.SecurityScope
 	securityScopeOnce sync.Once
 
@@ -357,6 +360,18 @@ type AgentConfig struct {
 	// nil 或空 = **完整授权**（默认）；非空 = 白名单，只允许列出的输出通道。
 	// 父 agent 创建驻留子时用它收窄子的输出能力。
 	AllowedOutputs []string
+	// Agents 是 **agent 记录表**的写面（§3.2.2 唯一事实来源）。
+	//
+	// ## 为什么它必须进 AgentConfig
+	//
+	// 记录表承载父为子声明的全部事实（输出授权 / 工具策略 / 长期档位）与
+	// 重建所需参数。它由内核装配（`kernelmod/agentreg`）并在这里传入 ——
+	// 于是"登记"与"判定"（安全模块读同一张表）看到的是同一份数据。
+	//
+	// nil = 独立使用（单测 / 裁剪版内核）：实例管理器会自建一张私有表，
+	// 行为与"内核提供一张表"完全一致（同一个实现，不是第二套代码）。
+	Agents kernelapi.AgentRegistry
+
 	// Security 是安全防火墙的**数据面闸门**（`kernelapi.SecurityGate`）。
 	//
 	// ## 用户裁定（2026-11-17）：「安全模块是强制的透明层」
@@ -467,6 +482,7 @@ func New(cfg AgentConfig) *Agent {
 		// ★ IsRealtime 现在是**钩子**（装配期由 rt 模块注册），不是字段。
 		//   这里只把 cfg 的意图带过去，保持构造点签名不变。
 		cfg:       cfg,
+		agents:    cfg.Agents,
 		hooks:     Hooks{},
 		publisher: agentEventBus{bus: cfg.EventBus, who: string(cfg.ID)},
 		lastInput: make(map[string]time.Time),
@@ -480,7 +496,7 @@ func New(cfg AgentConfig) *Agent {
 	//   一条记录同时承载输出授权、工具策略、长期档位 —— 清理点只剩 Remove。
 	//
 	// 无记录表（裸 agent 单测）⇒ 跳过：判定侧 fail-open，行为与改造前一致。
-	if reg := kernelapi.AgentRegistryOf(a.Gate()); reg != nil {
+	if reg := a.agentsRegistry(); reg != nil {
 		rec := model.AgentRecord{
 			ID:        string(a.id),
 			ParentID:  a.cfg.ParentID,
@@ -577,7 +593,7 @@ func (a *Agent) Stop() {
 	//   这是 §3.2.2 的收益：原先四处清理点（ReleaseOutputs / ReleaseAgent /
 	//   RevokeChildPolicy / forget）合并成这一处。漏一处就是残留（同名重建
 	//   继承上一代授权是**提权**），现在从结构上不可能漏。
-	if reg := kernelapi.AgentRegistryOf(a.Gate()); reg != nil {
+	if reg := a.agentsRegistry(); reg != nil {
 		reg.Remove(string(a.id))
 	}
 	// 停机前给待办任务补终态。运行中的任务会经 cancel → LLM 失败 → emitResponse

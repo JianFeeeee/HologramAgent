@@ -239,6 +239,9 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		//
 		// 判据 TestAgentAssemblyWiresSecurity 走真实登记表装配 + 真工具执行，
 		// 删掉本行或 Requires 里的 FacSecurity 都会红。
+		// ★ agent 记录表（§3.2.2 唯一事实来源）：父声明事实、创建参数、
+		//   生命周期都住在这里。安全模块读同一张表做判定。
+		Agents:          agentregOf(k),
 		Security:        secRT.AsGate(),
 		ThinkingEnabled: cfg.LLM.ThinkingEnabled,
 		InputProcessing: cfg.InputProcessing,
@@ -414,3 +417,13 @@ func errMissing(moduleName, facility string) error {
 
 var _ = events.EventMemoryAccess
 var _ = memory.AccessEvent{}
+
+// agentregOf 取 agent 记录表的写面（未装配 ⇒ nil：基座会用私有表，行为一致）。
+func agentregOf(k *kstate.State) kernelapi.AgentRegistry {
+	if impl, ok := k.Require(kernelapi.FacAgentRegistry); ok {
+		if reg, _ := impl.(kernelapi.AgentRegistry); reg != nil {
+			return reg
+		}
+	}
+	return nil
+}

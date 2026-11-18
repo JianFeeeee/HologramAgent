@@ -337,6 +337,9 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		// 长时间不被人工审阅。它是本仓**最需要闸门**的一类 agent，
 		// 而原先它是唯一**完全没有闸门**的（子从 New 起 a.security 就是 nil）。
 		Security: a.Gate(),
+		// ★ 子的记录必须落进**同一张表**（父的记录表）：安全模块判定时读它，
+		//   实例管理器持久化时也读它 —— 一张表，一个清理点（§3.2.2）。
+		Agents: a.agentsRegistry(),
 	})
 
 	// ★ 注册**驻留子自己**的 runtime 回调（用户裁定：类型注册自己的运行行为）。

@@ -39,6 +39,11 @@ import (
 	"sync"
 	"time"
 
+	agentregimpl "github.com/JianFeeeee/HologramAgent/internal/agent/agentreg"
+
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
+
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
@@ -51,24 +56,48 @@ import (
 type InstanceManager struct {
 	root *Agent
 
-	// mu 保护 recs（创建参数快照，软重启要用）。
-	mu   sync.Mutex
-	recs map[string]instanceRecord
-}
+	// own / ownMu 是**独立使用时**的私有记录表（内核未提供 FacAgentRegistry）。
+	ownMu sync.Mutex
+	own   kernelapi.AgentRegistry
 
-// instanceRecord 是**重建一个实例所需的全部信息**（软重启与持久化共用）。
-//
-// ★ 只存创建参数，不存运行态：运行态可以重算，创建参数（父的决定）不能重算。
-type instanceRecord struct {
-	Type    string                 `json:"type"`
-	ID      string                 `json:"id"`
-	Arg     map[string]interface{} `json:"arg"`
-	Created time.Time              `json:"created"`
+	// recs 的原存放处（`mu` + `recs` 两张结构）已并入 **agent 记录表**
+	// （§3.2.2 五表合一）：创建参数是 `AgentRecord.Arg`，生命周期是
+	// `AgentRecord.Lifecycle`，父声明事实是 `AgentRecord.Facts`。
+	//
+	// ⇒ 本类型只剩"把类型注册表接到记录表"的转发职责（见 remember/forget）。
+	// 记录表的写入侧由 kernelapi.AgentRegistry 提供；本包不自己存一份。
 }
 
 // NewInstanceManager 构造实例管理器（根 agent 装配期一次）。
 func NewInstanceManager(root *Agent) *InstanceManager {
-	return &InstanceManager{root: root, recs: map[string]instanceRecord{}}
+	return &InstanceManager{root: root}
+}
+
+// registry 取 agent 记录表的写面（未装配 ⇒ nil）。
+//
+// ★ 创建参数不再由本类型持有：它住在 `AgentRecord.Arg`。
+//
+//	一条记录同时承载"重建所需参数"与"父声明事实" ⇒ 清理点只有 Remove 一处。
+func (m *InstanceManager) registry() kernelapi.AgentRegistry {
+	if m == nil || m.root == nil {
+		return nil
+	}
+	if reg := m.root.agentsRegistry(); reg != nil {
+		return reg
+	}
+	// ★ 独立使用（单测/裁剪版内核）时自建一张私有表：
+	//   **同一个实现**（agentreg.Store），不是第二套代码 —— 所以"有内核表"
+	//   与"没有内核表"两条路径的行为必然一致。
+	//
+	// 为什么不能"没有表就不持久化"：实例管理器存在的意义就是跨重启恢复；
+	// 缺表时静默不落盘会让单测通过而生产失效（正是本仓反复踩的形态）。
+	m.ownMu.Lock()
+	if m.own == nil {
+		m.own = agentregimpl.New()
+	}
+	reg := m.own
+	m.ownMu.Unlock()
+	return reg
 }
 
 // Host 实现 registry.Host。
@@ -194,60 +223,98 @@ func (m *InstanceManager) SendToChild(id, text string) (string, error) {
 
 // RecreateChild 用保存的创建参数重建实例（软重启用）。
 func (m *InstanceManager) RecreateChild(typeName, id string) (string, error) {
-	m.mu.Lock()
-	rec, ok := m.recs[id]
-	m.mu.Unlock()
-	if !ok {
+	reg := m.registry()
+	if reg == nil {
+		return "", fmt.Errorf("instances: 记录表未装配（无法重建 %q）", id)
+	}
+	var found model.AgentRecord
+	for _, r := range reg.Records() {
+		if r.ID == id {
+			found = r
+			break
+		}
+	}
+	if found.ID == "" {
 		return "", fmt.Errorf("instances: 实例 %q 没有创建参数快照（无法重建）", id)
 	}
-	arg := rec.Arg
+	arg := found.Arg
 	if arg == nil {
 		arg = map[string]interface{}{}
 	}
 	arg["id"] = id
-	d, found := registry.Lookup(typeName)
-	if !found {
+	d, ok := registry.Lookup(typeName)
+	if !ok {
 		return "", fmt.Errorf("instances: 类型 %q 未注册（无法重建 %q）", typeName, id)
 	}
 	return d.Construct(m, arg)
 }
 
 // remember 记录创建参数（软重启与持久化共用）。
+//
+// ★ 落点是 **agent 记录**（`AgentRecord.Arg`）：创建参数与父声明事实是同一条
+//
+//	记录的两个字段，所以"重建所需信息"和"授权约束"不会各存一处。
 func (m *InstanceManager) remember(typeName, id string, arg map[string]interface{}) {
 	if m == nil || id == "" {
+		return
+	}
+	reg := m.registry()
+	if reg == nil {
 		return
 	}
 	cp := make(map[string]interface{}, len(arg))
 	for k, v := range arg {
 		cp[k] = v
 	}
-	m.mu.Lock()
-	m.recs[id] = instanceRecord{Type: typeName, ID: id, Arg: cp, Created: time.Now()}
-	m.mu.Unlock()
+	// ★ 用 **Register**（upsert）而不是 Update：创建流程里记录的落点可能
+	//   晚于本调用（子的 New 在本函数之后才跑），Update 会因"记录还不存在"
+	//   静默不写 —— 那正是持久化看起来成功、恢复却找不到参数的原因。
+	if !reg.Present(id) {
+		_ = reg.Register(model.AgentRecord{
+			ID:        id,
+			Type:      typeName,
+			Created:   time.Now().Format(time.RFC3339),
+			Arg:       cp,
+			Lifecycle: "running",
+		})
+	} else {
+		reg.Update(id, func(rec *model.AgentRecord) {
+			rec.Type = typeName
+			rec.Arg = cp
+			if rec.Created == "" {
+				rec.Created = time.Now().Format(time.RFC3339)
+			}
+		})
+	}
 	// 落盘（软重启与进程重启共用同一份快照）。
 	m.persist()
 }
 
-// forget 忘掉一个实例的创建参数。
+// forget 忘掉一个实例（**创建参数与父声明事实一并消失**）。
 func (m *InstanceManager) forget(id string) {
-	m.mu.Lock()
-	delete(m.recs, id)
-	m.mu.Unlock()
+	if m == nil || id == "" {
+		return
+	}
+	if reg := m.registry(); reg != nil {
+		reg.Remove(id)
+	}
 	m.persist()
 }
 
 func (m *InstanceManager) Records() []registry.Record {
-	m.mu.Lock()
-	out := make([]registry.Record, 0, len(m.recs))
-	for _, r := range m.recs {
-		out = append(out, registry.Record{
-			Type:    r.Type,
-			ID:      r.ID,
-			Arg:     r.Arg,
-			Created: r.Created.Format(time.RFC3339),
-		})
+	reg := m.registry()
+	if reg == nil {
+		return nil
 	}
-	m.mu.Unlock()
+	all := reg.Records()
+	out := make([]registry.Record, 0, len(all))
+	for _, r := range all {
+		// 只列**有类型**的（根 agent 自己也在表里，但它不是"子实例"）。
+		if r.Type == "" {
+			continue
+		}
+		out = append(out, registry.Record{Type: r.Type, ID: r.ID, Arg: r.Arg, Created: r.Created})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
@@ -335,9 +402,18 @@ func (m *InstanceManager) RestartInstance(id string) (string, error) {
 	if _, ok := m.GetChild(id); !ok {
 		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
 	}
-	m.mu.Lock()
-	rec, hasRec := m.recs[id]
-	m.mu.Unlock()
+	reg := m.registry()
+	if reg == nil {
+		return "", fmt.Errorf("instances: 记录表未装配（无法软重启 %q）", id)
+	}
+	var rec model.AgentRecord
+	hasRec := false
+	for _, r := range reg.Records() {
+		if r.ID == id && r.Type != "" {
+			rec, hasRec = r, true
+			break
+		}
+	}
 	if !hasRec {
 		return "", fmt.Errorf("instances: 实例 %q 没有创建参数快照（无法软重启）", id)
 	}

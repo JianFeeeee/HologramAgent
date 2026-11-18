@@ -704,7 +704,9 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// ⇒ 记忆整理面（块/媒体/流水线）全部不可达，只有 Recall/Commit 可用。
 		LightMemory: rtLight,
 		Security:    a.Gate(),
-		IsRealtime:  true, // ★ 类型标签：只有它可被划 rt 通道
+		// ★ 与驻留子同理：子的记录落进父的表（安全判定与持久化共用一份）。
+		Agents:     a.agentsRegistry(),
+		IsRealtime: true, // ★ 类型标签：只有它可被划 rt 通道
 	})
 	// ★ 不调 carrier.Start()：那会起 schedulerLoop / interceptLoop / 记忆整理
 	//   循环。rt 要的是"不吃队列、无轮询"，这些 goroutine 对它是**反向**的。
