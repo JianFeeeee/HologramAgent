@@ -519,23 +519,6 @@ func (a *Agent) Stop() {
 	a.cancel()
 }
 
-// StartRegisteredRuntime is the kernel-owned runtime bridge used by the
-// registered main type. The callback is registered by mainagent; the base
-// does not select a type or start a loop implicitly.
-func (a *Agent) StartRegisteredRuntime() {
-	go a.schedulerLoop()
-	go a.InterceptLoop()
-	a.startPeriodic()
-	a.ReembedStaleMedia()
-	a.MigrateLegacyGraphMedia()
-}
-
-// StopRegisteredRuntime is the matching lifecycle bridge for the registered type.
-func (a *Agent) StopRegisteredRuntime() {
-	a.StopResidents()
-	a.drainPendingInterrupts("agent_stopped")
-}
-
 // skipped 终态（复用 emitSkippedReply：非阻塞写，不对外发 agent_output 事件）。
 func (a *Agent) drainPendingInterrupts(reason string) {
 	if a.sched == nil {

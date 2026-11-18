@@ -72,8 +72,8 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 
 	h.Runtime = agent.RuntimeHooks{
 		Initialize: func(a *agent.Agent) error { return InitRuntime(a) },
-		Start:      func(a *agent.Agent) { a.StartRegisteredRuntime() },
-		Stop:       func(a *agent.Agent) { a.StopRegisteredRuntime() },
+		Start:      func(a *agent.Agent) { a.StartMainRuntime() },
+		Stop:       func(a *agent.Agent) { a.StopMainRuntime() },
 	}
 	// ── 类型身份（数据事实，不是行为）──
 	h.ComeFrom = ComeFrom
