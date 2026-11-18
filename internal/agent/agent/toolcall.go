@@ -417,7 +417,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	// 驻留子只要拿到 device_ctl_cmdrun 就能指挥**任意**设备。
 	// 这里按目标设备的通道名 device/<id> 查同一道闸：父授权了哪台设备，才允许指挥哪台。
 	if _, isDeviceTool := a.io.DeviceOfTool(tc.Name); isDeviceTool {
-		if id, _ := tc.Arguments["device_id"].(string); id != "" && !a.IsOutputAllowed("device/"+id) {
+		if id, _ := tc.Arguments["device_id"].(string); id != "" && !a.checkOutputGate("device/"+id) {
 			return toolOutcome{Text: fmt.Sprintf("Device [%s] is not authorized for this agent (see output_list_channels for available device/<id> channels, or use devicedetect)", id)}
 		}
 	}

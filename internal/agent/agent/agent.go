@@ -644,9 +644,22 @@ func (a *Agent) Logf(format string, args ...any) {
 
 func (a *Agent) ID() types.AgentID { return a.id }
 
-// IsOutputAllowed 报告某个输出通道是否被授权给本 agent。
+// IsOutputAllowed 是**渲染判据**：决定某个输出通道要不要出现在工具表里。
 //
-// 默认（未配置白名单）= **完整授权**；这是"默认完整授权、父可收窄"的落点。
+// ## 它只用于渲染（用户裁定 2026-11-18）
+//
+//	范围（父声明的白名单） → **渲染**：进不进工具表 → 基座（数据在 agent）
+//	闸门（CheckOutput）    → **调用**：过不过     → 安全模块
+//
+// 这两个判据必须分开：
+//
+//	· 渲染侧必须**照旧过滤**，即使安全模块未装配 —— 否则模型会看见父明确
+//	  禁用的通道，再在执行时被拒（模型白算一轮，用户看到"工具调用失败"）。
+//	· 调用侧必须**恒放行**（未装配 = 没有闸门），而不是靠白名单兜底。
+//
+// ⇒ 本方法**不再被任何执行路径调用**（`output.go` / `toolcall.go` 三处
+//
+//	改走 `a.Gate().CheckOutput(...)`），只剩 `tooldefs.go` 的渲染过滤。
 func (a *Agent) IsOutputAllowed(channel string) bool {
 	// ★ 判定在**安全模块**（用户裁定 2026-11-17：「设备是否授权不应该安全
 	//   模块负责吗？」）。agent 只提供事实（`allowedOutputs` 在构造期由父

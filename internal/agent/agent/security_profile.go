@@ -398,3 +398,23 @@ func (a *Agent) clampPriority(declared, source string) string {
 	}
 	return g.ClampPriority(declared, a.IsKernelLevelSource(source))
 }
+
+// checkOutputGate 是**调用判据**：安全模块的闸门（不是渲染用的白名单）。
+//
+// 语义（用户裁定）：
+//
+//	安全模块已装配   → 闸门判定（Guarded）
+//	安全模块未装配   → **恒放行**（"没有闸门"是一种运行态，不是拒绝）
+//
+// ★ 与 `IsOutputAllowed` 的分工：那个只决定"要不要渲染进工具表"。
+func (a *Agent) checkOutputGate(channel string) bool {
+	if a == nil {
+		return false
+	}
+	g := a.Gate()
+	if g == nil || a.id == "" {
+		// 未装配闸门 / 无身份（判据里的匿名构造）：恒放行。
+		return true
+	}
+	return g.CheckOutput(string(a.id), channel).Allowed
+}

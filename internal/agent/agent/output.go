@@ -198,8 +198,11 @@ func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
 	if channel == "" {
 		return "工具名称格式: output_send__{channel}"
 	}
-	// 授权闸（纵深防御）：模型可能凭名字直接调未授权的输出门。
-	if !a.IsOutputAllowed(channel) {
+	// ★ 授权闸（**调用判据**）：模型可能凭名字直接调未授权的输出门。
+	//
+	// 这里走安全模块的闸门，而不是渲染用的 `IsOutputAllowed`：
+	// 未装配安全模块 ⇒ 恒放行（那是"没有闸门"的运行态，不是"授权通过"）。
+	if d := a.checkOutputGate(channel); !d {
 		return fmt.Sprintf("通道 [%s] 未授权给本 agent。可用通道见 output_list_channels", channel)
 	}
 	// 通道存在性是**内核唯一该管的校验**。type 与能力的匹配下放给插件：
@@ -400,9 +403,6 @@ func (a *Agent) executeOutputListChannels() string {
 	parts = append(parts, "可用通道:")
 	for _, ch := range channels {
 		if ch.OutputCaps == 0 {
-			continue
-		}
-		if !a.IsOutputAllowed(ch.Name) {
 			continue
 		}
 		line := fmt.Sprintf("  - %s: [%s] %s", ch.Name, ch.OutputCaps.String(), ch.Description)
