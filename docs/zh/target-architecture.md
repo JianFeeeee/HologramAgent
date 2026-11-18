@@ -896,6 +896,40 @@ A-1 改的每个位置，到 J 批完成时，是否还是现在这个形态？
 | **K** | 子 agent 包 4,614 行（rtchild/resident/spawn/rt_type/resident_type） | J |
 | **L** | 清理（`interceptLoop` → 类型；import 收窄到零；黑盒判据 + 变异验证） | K |
 
+### 11.1 落地进度（截至 2026-11-18）
+
+| 批 | 状态 | 说明 |
+|---|---|---|
+| A-1 / A2 / E | ✅ 完成 | 见对应提交（`8b580e4b`…`53a8cf88`） |
+| G | ✅ 完成 | `19f91d86`…`54c2540b`：knowledge 全归插件，`kernelmod/knowledge` / `kbtree` 删除 |
+| C+D ① | ✅ 完成 | `d4f4f7d0`…`15a767de`：五表合一（`outputsByAgent` / `principals.byID` / `instances.recs` / `longtimeProfile` 全删） |
+| C+D ② | ✅ 完成 | `8e079475`：LLM 设施归内核（`kernelapi.LLMClient` + `kernelmod/llm.Client`） |
+| C+D ③ | ✅ 完成 | `e4c47922`：`InstanceManager` 摘出 `*Agent`（`InstanceHost` 七方法） |
+| H | ✅ 完成 | `3b3d3e21`：`surface.go` 34 → 2（构造面共 5） |
+| I | ⚠️ 部分 | `7b93d1a8`：删 `Hooks.RunStage` 槽位 + 维护任务逐条注册。**状态机仍在基座**（见下） |
+| J / K | ❌ 未做 | 依赖 I 的真正落地 |
+| L | ⚠️ 部分 | `96e93830` import 收窄（security/plugin 归零）；`0f43e062` 架构判据 7 条 |
+
+#### 为什么 I 只做了一部分（诚实记录）
+
+`task.go`（1,529 行）与 `process.go`（809 行）里的状态机**仍在基座**。
+要搬进 `internal/agent/standard`，需要先解决一个结构问题：
+
+`stepLLM` / `stepPrepare` / `stepToolBatch` … 这些 step 函数里引用了
+**38 种基座私有成员**（`a.sched` / `a.context` / `a.hooks` / `a.interruptInput` /
+`a.usageLedger` / `a.MainState()` …）。搬包意味着要么把这些成员全部导成
+方法（那就把 §6.3 刚删掉的访问器又加回来），要么把它们作为**参数**传进
+每一步（那是另一种形式的耦合）。
+
+真正的解法是 §6.2 那张表：`context` / `sched` / `mainState` **本身**
+要先归类型（J 批），状态机才有地方可搬。而 J 批依赖 I、I 批依赖 J ——
+这个循环说明**这两批必须一起设计、一起落地**，不是先后两刀。
+
+本轮没有强行拆一半（那会留下"半在基座半在 standard"的中间态，
+正是 §0 第 13 条要消灭的东西）。**下一步**：先设计 `standard` 的
+`Runtime` 载体（承载 frame + sched + context 的单一结构），
+让 step 函数成为它的方法，逐 step 迁出，一次到位。
+
 **C+D 是本轮最大的「所有权交付」**，三件事必须同一批落地（否则会留下双份事实）：
 ① agents 表归内核并把安全三表并入（§3.2.2）；② LLM 重试/fallback 归内核、基座只持
 `LLMClient` 句柄（§3.2.1）；③ `InstanceManager` 从 `*Agent` 摘下。
