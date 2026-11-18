@@ -6,7 +6,7 @@ package test
 import (
 	"testing"
 
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
 func newStore(t *testing.T) *knowledge.Store {

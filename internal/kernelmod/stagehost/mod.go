@@ -13,10 +13,10 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	"log"
 	"strings"
 

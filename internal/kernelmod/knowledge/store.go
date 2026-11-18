@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
 // StoreModule 提供知识库。

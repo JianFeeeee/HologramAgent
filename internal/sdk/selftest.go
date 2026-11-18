@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
 // VirtualInstance 是完全隔离的虚拟存储集合，供内置插件（如 healthcheck）

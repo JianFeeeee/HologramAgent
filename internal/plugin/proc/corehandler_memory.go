@@ -3,7 +3,7 @@ package proc
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )

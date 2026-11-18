@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
 func getString(m map[string]interface{}, key string) string {

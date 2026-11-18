@@ -1,4 +1,4 @@
-package knowledge
+package knowledgeplugin
 
 import (
 	"encoding/json"

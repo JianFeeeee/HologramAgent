@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
 	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )

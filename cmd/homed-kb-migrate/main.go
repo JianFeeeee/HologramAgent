@@ -31,7 +31,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/JianFeeeee/HologramAgent/internal/knowledge"
+	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
 func main() {
