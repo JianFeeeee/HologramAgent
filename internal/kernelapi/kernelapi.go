@@ -392,7 +392,28 @@ type GraphMemoryOpener interface {
 	// 消费方（驻留子/rt 的装配点）自己断言成它需要的窄面。
 	OpenLight(mainRO GraphMemory, tempPath string, allowWrite bool) (any, error)
 	// Close 关闭一个由本接口打开的句柄（幂等）。
-	Close(m GraphMemory) error
+	//
+	// 入参用 `any`：`OpenLight` 返回的是**轻量实例**（方法集与全量 GraphDB
+	// 不同，见 OpenLight 的注释），所以关闭也必须由装配面按自己的类型处理。
+	Close(m any) error
+	// ExportTriples 导出某库里的全部活跃三元组（回收驻留子时父要读子的 temp）。
+	//
+	// ★ 入参 `any`：temp 是 `OpenLight` 的内部结构，契约层不认识它。
+	ExportTriples(db any, since int) ([]model.Triple, error)
+	// LightCommon 取轻量实例的**共同面**（Recall/Commit 那一面，实现 GraphMemory）。
+	//
+	// ★ 为什么需要它：基座的 `LightMemory` 字段要一个 `GraphMemory`，
+	//   而轻量实例的方法集与全量 GraphDB 不同（见上面的注释）。
+	//   "它到底满足哪个接口"只有实现侧知道 —— 所以由装配面回答。
+	LightCommon(light any) GraphMemory
+	// LightTemp 取轻量实例的 **temp 库句柄**（`OpenLight` 返回值的内部结构）。
+	//
+	// ★ 为什么需要它：回收驻留子时父要读子的 temp 三元组（`ExportTriples`），
+	//   而那是 `*LightMemory` 的具体字段 —— 基座不该知道那个类型
+	//   （判据 §8 第 3 条）。所以"取 temp"这件事也归装配面。
+	//
+	// 入参是 `OpenLight` 的返回值（`any`）；不是轻量实例时返回 nil。
+	LightTemp(light any) GraphMemory
 }
 
 // ───────────────────────── 安全闸门 ─────────────────────────

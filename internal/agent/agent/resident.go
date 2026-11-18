@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"os"
 	"path/filepath"
@@ -27,7 +28,6 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -114,9 +114,17 @@ type residentChild struct {
 	// 来自 childpkg.Child 的**嵌入**：骨架统一管理生命周期，类型只管差异。
 	*childpkg.Child
 
-	agent    *Agent
-	light    *memory.LightMemory
-	mainRO   *memory.GraphDB
+	agent *Agent
+	// opener 是图记忆装配面（Dispose 里关句柄要用；不持有 *Agent 的实现细节）。
+	opener kernelapi.GraphMemoryOpener
+	// light / mainRO 用**契约接口**而不是实现类型（判据 §8 第 3 条）：
+	//
+	//	light  读 temp∪main、只写 temp（LightMemory 的方法集是 GraphMemory 的子集）
+	//	mainRO 主库的**结构上写不进**只读视图
+	//
+	// 类型模块只关心"能不能 Recall/Commit"，不关心它是 SQLite 还是别的实现。
+	light    any
+	mainRO   kernelapi.GraphMemory
 	tempPath string
 	dir      string
 	inputChs []string
@@ -190,11 +198,11 @@ func (rc *residentChild) Dispose() string {
 	// Agent 侧（teardownResidentWith），由骨架的 OnDispose 钩子调用 ——
 	// 强行搬进来会让本类型持有对父的隐式反向引用，比现在更糟。
 	if rc.light != nil {
-		_ = rc.light.Close()
+		_ = closeGraphWith(rc.opener, rc.light)
 		rc.light = nil
 	}
 	if rc.mainRO != nil {
-		_ = rc.mainRO.Close()
+		_ = closeGraphWith(rc.opener, rc.mainRO)
 		rc.mainRO = nil
 	}
 	// ★ 这里**不删** temp 目录（2026-11-17 改）。
@@ -261,22 +269,31 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 			return ResidentInfo{}, fmt.Errorf("创建 temp 目录: %w", err)
 		}
 	}
-	mainRO, err := memory.OpenGraphDBReadOnly(main.Path())
+	// ★ 经**装配面**开关句柄（实现构造在 memory 模块里，基座只调接口）。
+	opener := a.graphOpener
+	if opener == nil {
+		return ResidentInfo{}, fmt.Errorf("驻留子需要图记忆装配面（AgentConfig.GraphOpener 未注入）")
+	}
+	mainRO, err := opener.OpenReadOnly(main.Path())
 	if err != nil {
 		return ResidentInfo{}, fmt.Errorf("打开主库受限句柄: %w", err)
 	}
-	light, err := memory.NewLightMemory(mainRO, opts.TempPath, true)
+	lightAny, err := opener.OpenLight(mainRO, opts.TempPath, true)
 	if err != nil {
-		_ = mainRO.Close()
+		_ = opener.Close(mainRO)
 		return ResidentInfo{}, err
 	}
+	light := lightAny
+	// 轻量实例的**共同面**（Recall/Commit 那一面）用于 graphMemoryOf。
+	// 它由装配面给出：基座不 import memory，所以不认识 LightMemory 的类型。
+	lightGraph := opener.LightCommon(light)
 
 	// ② 划入 inputch（登记表里记归属；一个插件的多个 inputch 可分别划给不同子）。
 	if reg := a.io.ChannelRegistry(); reg != nil {
 		for _, ch := range opts.InputChs {
 			if err := reg.Assign(ch, opts.ID, opts.Capacity); err != nil {
-				_ = light.Close()
-				_ = mainRO.Close()
+				_ = a.closeGraph(light)
+				_ = a.closeGraph(mainRO)
 				return ResidentInfo{}, fmt.Errorf("划入 inputch %s: %w", ch, err)
 			}
 		}
@@ -322,7 +339,7 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 		// 聊到哪」都不知道，等于每次重启丢失全部对话现场（图记忆也一起丢，
 		// 见 teardownResidentWith 的保留语义）。
 		ContextSavePath: filepath.Join(filepath.Dir(opts.TempPath), "context.json"),
-		LightMemory:     light, // 轻量内核：只有图记忆共同面
+		LightMemory:     lightGraph, // 轻量内核：只有图记忆共同面
 		AllowedOutputs:  opts.AllowedOutputs,
 		// ★ 白/黑名单进 AgentConfig（基座渲染侧要读；原先只存在子载体上，
 		//   于是模型看得见父禁用的工具，执行时才被拒）。
@@ -351,8 +368,8 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	if d, ok := registry.Lookup(kindResident); ok && d.Initialize != nil {
 		if err := d.Initialize(child); err != nil {
 			child.Stop()
-			_ = light.Close()
-			_ = mainRO.Close()
+			_ = a.closeGraph(light)
+			_ = a.closeGraph(mainRO)
 			_ = os.RemoveAll(filepath.Dir(opts.TempPath))
 			return ResidentInfo{}, fmt.Errorf("驻留子 %s 运行时初始化失败: %w", opts.ID, err)
 		}
@@ -396,9 +413,9 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	if err := a.DeclareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
 		child.Stop()
 		if light != nil {
-			_ = light.Close()
+			_ = a.closeGraph(light)
 		}
-		_ = mainRO.Close()
+		_ = a.closeGraph(mainRO)
 		_ = os.RemoveAll(filepath.Dir(opts.TempPath))
 		return ResidentInfo{}, fmt.Errorf("为驻留子 %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
 	}
@@ -428,8 +445,8 @@ func (a *Agent) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 
 	if err := a.children.Add(rc); err != nil {
 		child.Stop()
-		_ = light.Close()
-		_ = mainRO.Close()
+		_ = a.closeGraph(light)
+		_ = a.closeGraph(mainRO)
 		_ = os.RemoveAll(filepath.Dir(opts.TempPath))
 		return ResidentInfo{}, fmt.Errorf("登记驻留子 %s 失败: %w", opts.ID, err)
 	}
@@ -802,10 +819,10 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 
 	rc.agent.Stop() // 停子的调度器（取消其运行中的任务）
 	if rc.light != nil {
-		_ = rc.light.Close() // 关掉 temp 实例
+		_ = a.closeGraph(rc.light) // 关掉 temp 实例
 	}
 	if rc.mainRO != nil {
-		_ = rc.mainRO.Close()
+		_ = a.closeGraph(rc.mainRO)
 	}
 	// ★ temp 目录的处置**分两种情况**（2026-11-17 改）。
 	//
@@ -1014,11 +1031,15 @@ func (a *Agent) CompressResident(id string) (int, error) {
 // harvestResidentMemory 把子 temp 里的活跃三元组收割进主记忆，返回合入条数。
 //
 // 必须在 Destroy **之前**调用：Destroy 会 Close 掉 temp。
-func (a *Agent) HarvestResidentMemory(rc *residentChild, keep ...func([]InputchRecord, []memory.Triple) []memory.Triple) (int, error) {
-	if rc == nil || rc.light == nil || rc.light.Temp() == nil || a.MainGraph() == nil {
+func (a *Agent) HarvestResidentMemory(rc *residentChild, keep ...func([]InputchRecord, []model.Triple) []model.Triple) (int, error) {
+	if rc == nil || rc.light == nil || rc.opener == nil || a.MainGraph() == nil {
 		return 0, nil
 	}
-	exported, err := rc.light.Temp().ExportTriples(0)
+	temp := rc.opener.LightTemp(rc.light)
+	if temp == nil {
+		return 0, nil
+	}
+	exported, err := rc.opener.ExportTriples(temp, 0)
 	if err != nil {
 		return 0, fmt.Errorf("读取子 temp 失败: %w", err)
 	}
@@ -1035,7 +1056,7 @@ func (a *Agent) HarvestResidentMemory(rc *residentChild, keep ...func([]InputchR
 	return len(selected), nil
 }
 
-func (a *Agent) ReclaimResident(id string, keep func([]InputchRecord, []memory.Triple) []memory.Triple) (ResidentInfo, error) {
+func (a *Agent) ReclaimResident(id string, keep func([]InputchRecord, []model.Triple) []model.Triple) (ResidentInfo, error) {
 	rc, ok := a.residentEntryOf(id)
 	if !ok {
 		return ResidentInfo{}, fmt.Errorf("驻留子 %s 不存在", id)

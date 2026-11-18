@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"sort"
 	"strings"
@@ -840,7 +841,8 @@ const (
 	// 回答「最近/最新/现在是什么」用这个 —— 运维场景里答案常常是
 	// 「新值覆盖旧值」（实测 v4 的 overwrite 组就是考这个），
 	// 相关性排序会把旧的同名实体排在新值前面。
-	SortRecent SortMode = "recent"
+	// ★ 声明点已搬到 model；这里转发。
+	SortRecent = model.SortRecent
 )
 
 // ParseSortMode 解析排序模式；空或无法识别时返回默认（相关性）。

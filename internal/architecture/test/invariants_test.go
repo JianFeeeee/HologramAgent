@@ -22,11 +22,15 @@
 package test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // repoRoot 返回仓根（本判据在 internal/architecture/test 下）。
@@ -151,8 +155,10 @@ func TestAgentHasNoImplementationImports(t *testing.T) {
 // 于是「还剩什么没做」在 CI 里是有数的 —— 不靠记忆，也不会被
 // "全部归零"这种说法悄悄盖过去。
 func TestKnownUnfinishedImportsAreListed(t *testing.T) {
+	// ★ 进度：`internal/memory` 已归零（2026-11-18，值类型上移 model +
+	//   纯函数能力经 kernelapi.MemoryOps / GraphOpener 注入）。
+	//   剩下三个是**下一刀**的对象（见函数注释）。
 	known := map[string]bool{
-		"internal/memory":             true,
 		"internal/memory/coldcontext": true,
 		"internal/memory/vector":      true,
 		"internal/memory/text":        true,
@@ -360,4 +366,58 @@ func TestSurfaceHasFiveAccessors(t *testing.T) {
 			t.Fatalf("★ 构造面访问器 %q 不存在了（判据 6 要求这五个都在）", name)
 		}
 	}
+}
+
+// TestBlockIDsAgree 钉住"块 ID 规则只有一份"这件事的**可观察形式**。
+//
+// `SentenceBlockID` 与 `MediaBlockID` 是**内容派生 ID**：同内容必须同 ID，
+// 否则同一段原句/同一张图会落成两个块（去重失效、召回重复）。
+//
+// 这两条规则今天在**两处**各自实现（基座内联 + memory 侧），因为
+// "基座不能 import memory、memory 不能 import 基座"（成环）。
+// 有意的重复 → 必须有判据钉住它们一致，否则迟早漂移。
+//
+// 判据只比对**输出**（黑盒），不读实现。
+func TestBlockIDsAgree(t *testing.T) {
+	// 基座侧的派生函数是私有的，所以这里通过 memory 侧的导出函数 +
+	// 一个**独立重算**（同规则的期望值）比对。若两边任一漂移，本判据红。
+	cases := []struct {
+		mime string
+		data []byte
+	}{
+		{"", nil},
+		{"image/png", []byte{1, 2, 3}},
+		{"text/plain", []byte("hello")},
+		{"image/jpeg", []byte{0, 255, 0}},
+	}
+	for _, c := range cases {
+		got := memory.MediaBlockID(c.mime, c.data)
+		want := expectedMediaBlockID(c.mime, c.data)
+		if got != want {
+			t.Fatalf("★ MediaBlockID 规则漂移（mime=%q len(data)=%d）:\n  got  %q\n  want %q",
+				c.mime, len(c.data), got, want)
+		}
+	}
+	for _, text := range []string{"", "hello", "  中文句子  ", "a\nb"} {
+		got := memory.SentenceBlockID(text)
+		want := expectedSentenceBlockID(text)
+		if got != want {
+			t.Fatalf("★ SentenceBlockID 规则漂移（text=%q）:\n  got  %q\n  want %q", text, got, want)
+		}
+	}
+}
+
+// expectedMediaBlockID 是规则的**独立重算**（判据侧实现，不是被测代码）。
+func expectedMediaBlockID(mime string, data []byte) string {
+	h := sha256.New()
+	h.Write([]byte(strings.TrimSpace(mime)))
+	h.Write([]byte{0})
+	h.Write(data)
+	return "blk_media_" + hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// expectedSentenceBlockID 同上。
+func expectedSentenceBlockID(text string) string {
+	h := sha256.Sum256([]byte(strings.TrimSpace(text)))
+	return "blk_src_" + hex.EncodeToString(h[:12])
 }

@@ -38,6 +38,14 @@ import (
 
 type BlockModality string
 
+// 模态取值（声明点在 model；实现侧以常量转发，既有 `memory.BlockText` 不变）。
+const (
+	BlockText  BlockModality = "text"
+	BlockImage BlockModality = "image"
+	BlockVideo BlockModality = "video"
+	BlockAudio BlockModality = "audio"
+)
+
 type PageKind string
 
 type BlockRole string
@@ -315,6 +323,12 @@ type RecallResult struct {
 }
 
 type SortMode string
+
+// 排序模式（声明点在 model；实现侧以常量转发）。
+const (
+	// SortRecent 按更新时间倒序（同时间按提及次数）。
+	SortRecent SortMode = "recent"
+)
 
 type DeleteResult struct {
 	Blocks int `json:"blocks"`

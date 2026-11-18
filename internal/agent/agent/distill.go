@@ -2,16 +2,16 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
+	"github.com/JianFeeeee/HologramAgent/internal/scene"
 	"log"
 	"strings"
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
-	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 )
 
 type ConsolidationTask struct {
@@ -125,7 +125,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	st.Scanned++
 
 	// ── 第一步：三元组（关系层，派生加工）──
-	triples := coldDocToTriples(coldDoc, vectorizerFace{e: a.MainState().embedder}, a.toolDeclaresNoMemory)
+	triples := coldDocToTriples(coldDoc, a.extractor, a.norm, a.toolDeclaresNoMemory)
 	written := 0
 	if len(triples) > 0 {
 		w, _, err := a.CommitTriplesWithMedia(triples, string(a.id)+"_doc_archival", 0, coldDoc.Blocks)
@@ -194,7 +194,7 @@ func (a *Agent) archiveOneColdDoc(coldDoc *coldcontext.ColdDoc, st *archiveStats
 	// 这是可以接受的：PutMemoryBlocks 是 upsert、AddMemoryBlockEdge 显式查重，
 	// 下一轮重试幂等收敛（补上缺的边），不会产生重复块。
 	if len(coldDoc.Blocks) > 0 {
-		bound := a.LinkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source))
+		bound := a.LinkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, scene.Channel(coldDoc.Source))
 		if bound != len(coldDoc.Blocks) {
 			// 迁移不完整：此时 L3 里已有一部分块，L2 仍是全量。
 			// 重试是靠 PutMemoryBlocks/AddMemoryBlockEdge 的幂等性收敛的
@@ -542,8 +542,8 @@ func entitySimilarity(a, b string) float64 {
 	return float64(intersect) / float64(union)
 }
 
-func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, toolNoMemory func(name string) bool) []model.Triple {
-	var triples []memory.Triple
+func coldDocToTriples(coldDoc *coldcontext.ColdDoc, extractor artifacts.Extractor, norm artifacts.Norm, toolNoMemory func(name string) bool) []model.Triple {
+	var triples []model.Triple
 	if coldDoc == nil {
 		return triples
 	}
@@ -555,7 +555,7 @@ func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, too
 	// 文档归档的知识是有**来源场面**的：来自 QQ 的对话归档，其三元组就该
 	// 钉在 chan:qq 上。这样「又来一条 QQ 消息」时，这批知识靠场景就能取回，
 	// 不必指望本轮措辞与它们字面重合。
-	docScene := memory.ChannelScene(coldDoc.Source)
+	docScene := scene.Channel(coldDoc.Source)
 
 	isArchivedContext := coldDoc.Meta != nil && coldDoc.Meta["is_archived_context"] == "true"
 
@@ -574,8 +574,8 @@ func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, too
 		// 再按**落库闸门**判一次：能被 FilterNoiseTriples 留下才值得造。
 		// 两处口径（80 是「值不值得是主题」的语义阈值，50 是「能不能落库」
 		// 的存储约束）都必须满足，缺一个就会产生必然被拒的三元组。
-		memory.IsValidEntityName(coldDoc.Summary) {
-		triples = append(triples, memory.Triple{
+		norm.NameOK(coldDoc.Summary) {
+		triples = append(triples, model.Triple{
 			Subject:     "文档",
 			SubjectType: "Concept",
 			Relation:    "主题",
@@ -599,24 +599,30 @@ func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, too
 	// 等于在丢失的信息上再丢一次：句子被截断后依存句法往往解析不出主谓宾。
 	//
 	// 现在优先用事件里的完整正文；存量文档没有 Events 才退回 Content。
-	e := nlp.NewExtractor(nil)
-	if embedder != nil {
-		e.SetEmbedder(embedder)
-	}
-	result := e.Extract(coldcontextOriginalText(coldDoc, toolNoMemory))
-	if result != nil {
-		for _, nt := range result.Triples {
-			mt := nlp.ToMemoryTriple(nt)
-			if mt.Subject != "" && mt.Relation != "" && mt.Object != "" {
-				mt.Scene = docScene
-				triples = append(triples, mt)
+	// ★ 提取器是**注入**的（契约在 internal/artifacts，实现在 nlp）：
+	//   基座不认识 onnx / 依存句法 / 融合权重，只认识"文本 → 三元组"。
+	//
+	// nil（未装配）⇒ 跳过通用提取：只写文档元数据三元组。
+	// 那不是"静默失效"——装配点没给提取器就是明确的"这个部署不做 NLP 提取"。
+	if extractor != nil {
+		for _, nt := range extractor.Extract(coldcontextOriginalText(coldDoc, toolNoMemory)) {
+			if nt.Subject != "" && nt.Relation != "" && nt.Object != "" {
+				triples = append(triples, model.Triple{
+					Subject:     nt.Subject,
+					SubjectType: nt.SubjectType,
+					Relation:    nt.Relation,
+					Object:      nt.Object,
+					ObjectType:  nt.ObjectType,
+					Confidence:  nt.Confidence,
+					Scene:       docScene,
+				})
 			}
 		}
 	}
 
 	// 仅当来源非归档上下文且非空时写「来源」——归档文档写死模板三元组属于垃圾
 	if coldDoc.Source != "" && coldDoc.Source != "context_archived" {
-		triples = append(triples, memory.Triple{
+		triples = append(triples, model.Triple{
 			Subject:     "文档",
 			SubjectType: "Concept",
 			Relation:    "来源",
@@ -631,7 +637,10 @@ func coldDocToTriples(coldDoc *coldcontext.ColdDoc, embedder nlp.Vectorizer, too
 	// 而落库闸门 validEntityName 只管名字像不像名字。这一层是防止
 	// 「每个文档的常用词都变成实体」的唯一防线（CutExact 时代的那层已随
 	// 提取器换代丢失，见 memory.IsNoiseEntity 的说明）。
-	return memory.FilterNoiseTriples(triples)
+	//
+	// ★ 判定经 `artifacts.Norm` 注入（基座不 import memory，判据 §8 第 3 条）；
+	//   未装配时零值放行（多写几条噪声可清理，而不是让归档一条都建不起来）。
+	return filterNoiseTriples(triples, norm)
 }
 
 // isTemplateSummary 识别 summarizeEntries 生成的模板化摘要
@@ -759,4 +768,22 @@ func coldcontextOriginalText(coldDoc *coldcontext.ColdDoc, toolNoMemory func(nam
 		}
 	}
 	return b.String()
+}
+
+// filterNoiseTriples 按注入的归一化判定剔掉噪声三元组。
+//
+// 判定规则本身在 memory 侧（`FilterNoiseTriples`）；本函数只负责**接口形状**
+// （基座拿到的是一组三元组 + 一个判定面）。
+func filterNoiseTriples(triples []model.Triple, norm artifacts.Norm) []model.Triple {
+	if len(triples) == 0 {
+		return triples
+	}
+	out := triples[:0]
+	for _, t := range triples {
+		if norm.IsNoise(t.Subject) || norm.IsNoise(t.Object) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }

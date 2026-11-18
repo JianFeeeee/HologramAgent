@@ -1,6 +1,9 @@
 package agent
 
-import "github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
+)
 
 // 图记忆的**共同面**（设计 docs/zh/resident-subagent-design.md §16.0）。
 //
@@ -19,8 +22,6 @@ import "github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 // 所以驻留子的轻量内核**不该有那些代码路径**：它用 `*memory.LightMemory` 接上 `graph`，
 // 而 `a.GraphDB()`（整理面）保持 nil —— 既有的 22 处 `if a.GraphDB() != nil` 关卡
 // 会自动把整理面全部禁掉，不需要写"每个方法都返回错误"的受限包装。
-
-import "github.com/JianFeeeee/HologramAgent/internal/memory"
 
 // contextTokenBudget 返回拼装时间线时可用的 token 预算。
 //
@@ -48,7 +49,7 @@ func (a *Agent) ContextTokenBudget(b kit.TokenBudget) int {
 //   - 驻留子：*memory.LightMemory（读 temp∪main，只写 temp）
 type GraphMemory interface {
 	// Recall 按关键词/种子实体召回（子的实现是两空间并集）。
-	Recall(keywords []string, seedEntities []string, depth int, sessionFilter string) (*memory.RecallResult, error)
+	Recall(keywords []string, seedEntities []string, depth int, sessionFilter string) (*model.RecallResult, error)
 	// RecallSorted 是可指定呈现顺序的召回（相关性 / 时间倒序）。
 	//
 	// 刻意与 Recall 并存而不是改签名：Recall 有 6 个调用方（webui / cli /
@@ -57,8 +58,8 @@ type GraphMemory interface {
 	//   它不在 SDK 的公开契约里，只在 core 内部这个接口上 ——
 	//   加它是因为「兜底召回路径绕过向量空间隔离」是真回归
 	//   （判据 TestMemoryRecall_指纹不匹配的块被跳过）。
-	RecallSorted(keywords []string, seedEntities []string, depth int, sessionFilter, fingerprint string, mode memory.SortMode) (*memory.RecallResult, error)
+	RecallSorted(keywords []string, seedEntities []string, depth int, sessionFilter, fingerprint string, mode model.SortMode) (*model.RecallResult, error)
 
 	// Commit 写入三元组（子的实现只落自己的 temp 空间）。
-	Commit(triples []memory.Triple, sessionID string, turnID int) (int, int, error)
+	Commit(triples []model.Triple, sessionID string, turnID int) (int, int, error)
 }

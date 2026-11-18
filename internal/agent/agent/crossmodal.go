@@ -3,12 +3,12 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"sort"
 	"strings"
 	"unicode"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
@@ -22,7 +22,7 @@ import (
 // 内容」这回事——能召回的必然是被某层持有的块。
 type CrossModalHit struct {
 	Doc        *coldcontext.ColdDoc // 文本路命中的文档；视觉路命中时为 nil
-	Media      *memory.MemoryBlock  // 视觉路命中的媒体块；文本路命中时也可能带关联块
+	Media      *model.MemoryBlock   // 视觉路命中的媒体块；文本路命中时也可能带关联块
 	MediaScore float64              // 视觉路原始 cosine（无则 0）
 	DocScore   float64              // 文本路原始 cosine（无则 0）
 	Fused      float64              // 归一化加权融合分，供最终排序
@@ -93,7 +93,7 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 			hit := CrossModalHit{Doc: dh.Doc, DocScore: dh.Score}
 			// 命中文档若持有一等记忆块，把首个媒体块一并带上（用于双命中标记）。
 			for i := range dh.Doc.Blocks {
-				if dh.Doc.Blocks[i].Modality != memory.BlockText {
+				if dh.Doc.Blocks[i].Modality != model.BlockText {
 					b := dh.Doc.Blocks[i]
 					hit.Media = &b
 					break
@@ -109,7 +109,7 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 		qv, err := a.MainState().multimodalSpace.VectorizeDense(query)
 		if err != nil {
 			log.Printf("[crossmodal] multimodal text encoding failed: %v", err)
-		} else if hits, err := a.GraphDB().RecallBlocks(memory.BlockRecallQuery{
+		} else if hits, err := a.GraphDB().RecallBlocks(model.BlockRecallQuery{
 			Vector:      qv,
 			Fingerprint: a.MainState().multimodalSpace.Fingerprint(),
 			TopK:        per,
@@ -127,7 +127,7 @@ func (a *Agent) retrieveCrossModal(query string, topK int, cfg CrossModalFusionC
 			log.Printf("[crossmodal] media block retrieval failed: %v", err)
 		} else {
 			for _, h := range hits {
-				if h.Block.Modality == memory.BlockText {
+				if h.Block.Modality == model.BlockText {
 					continue // 文本块由文本路负责，避免同一内容两路重复
 				}
 				b := h.Block

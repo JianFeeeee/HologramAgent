@@ -6,12 +6,12 @@ package agent
 // 子侧两个小工具：`notify_parent`（L3 主动汇报）与 `inputch_note`（主动写处理表）。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"path/filepath"
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 func strArg(tc agentAPI.ToolCall, key string) string {
@@ -35,7 +35,7 @@ func splitArg(s string) []string {
 
 // reclaimKeepAll 是回收时的默认策略：把子 temp 的活跃记录全部纳入主记忆
 // （"哪些纳入"由父的模型决定——这里给的是"全要"这一档）。
-func reclaimKeepAll(_ []InputchRecord, triples []memory.Triple) []memory.Triple { return triples }
+func reclaimKeepAll(_ []InputchRecord, triples []model.Triple) []model.Triple { return triples }
 
 // residualPolicyOf 从工具参数读残余任务的处置策略（keep/drop）。
 //

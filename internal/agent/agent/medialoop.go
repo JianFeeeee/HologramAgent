@@ -3,11 +3,11 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"sync"
 	"sync/atomic"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
 )
@@ -49,9 +49,9 @@ func (a *Agent) ReembedStaleMedia() {
 	// 只迁图像：多模态空间当前覆盖 text+image，音频/视频不在其内
 	// （不拿别的模态的向量顶替——那是静默错配）。
 	// StaleBlockVectors 只给元数据（lean 列），字节由 reembedOneBlock 按需取。
-	var targets []memory.MemoryBlock
+	var targets []model.MemoryBlock
 	for _, b := range stale {
-		if b.Modality == memory.BlockImage {
+		if b.Modality == model.BlockImage {
 			targets = append(targets, b)
 		}
 	}
@@ -68,7 +68,7 @@ func (a *Agent) ReembedStaleMedia() {
 		len(targets), shortFP(fp), a.MainState().multimodalSpace.Dim(), workers)
 
 	var jobsOnce sync.Once
-	jobs := make(chan memory.MemoryBlock, workers*2)
+	jobs := make(chan model.MemoryBlock, workers*2)
 	var done, failed, unsupported int64
 	var wg sync.WaitGroup
 
@@ -134,7 +134,7 @@ func (a *Agent) ReembedStaleMedia() {
 //
 // 模态不在本空间覆盖范围时返回 ErrModalityUnsupported，调用方据此区分
 // 「永久无向量」与「本次失败重试」。
-func (a *Agent) reembedOneBlock(b memory.MemoryBlock, fp string) error {
+func (a *Agent) reembedOneBlock(b model.MemoryBlock, fp string) error {
 	mime := b.MIME
 	if mime == "" {
 		mime = "image/png"

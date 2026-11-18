@@ -18,6 +18,7 @@ package memory
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
@@ -51,7 +52,7 @@ func (GraphOpener) OpenLight(mainRO kernelapi.GraphMemory, tempPath string, allo
 }
 
 // Close 关闭由本接口打开的句柄（幂等）。
-func (GraphOpener) Close(m kernelapi.GraphMemory) error {
+func (GraphOpener) Close(m any) error {
 	if m == nil {
 		return nil
 	}
@@ -59,6 +60,41 @@ func (GraphOpener) Close(m kernelapi.GraphMemory) error {
 		return c.Close()
 	}
 	return nil
+}
+
+// ExportTriples 导出某库里的全部活跃三元组（`*GraphDB.ExportTriples`）。
+func (GraphOpener) ExportTriples(db any, since int) ([]model.Triple, error) {
+	g, ok := db.(*GraphDB)
+	if !ok || g == nil {
+		return nil, nil
+	}
+	return g.ExportTriples(since)
+}
+
+// LightCommon 取轻量实例的**共同面**（满足 kernelapi.GraphMemory 的那一面）。
+//
+// ★ 用 `*LightMemory` 自己的 GraphMemory 实现：它内嵌了读 temp∪main 的
+//
+//	`graphFace`（只实现 Recall/Commit 那一组方法）。
+func (GraphOpener) LightCommon(light any) kernelapi.GraphMemory {
+	lm, ok := light.(*LightMemory)
+	if !ok || lm == nil {
+		return nil
+	}
+	if gf, ok := any(lm).(kernelapi.GraphMemory); ok {
+		return gf
+	}
+	// 方法集不满足契约 ⇒ 装配错误（响亮返回 nil，由调用方报错）。
+	return nil
+}
+
+// LightTemp 取轻量实例的 temp 库句柄（`*LightMemory.Temp()`）。
+func (GraphOpener) LightTemp(light any) kernelapi.GraphMemory {
+	lm, ok := light.(*LightMemory)
+	if !ok || lm == nil {
+		return nil
+	}
+	return lm.Temp()
 }
 
 // 编译期确认。

@@ -23,6 +23,12 @@ import (
 // —— 迁移与蒸馏都会重复跑同一条原句。
 // 迁移块自己用的是 blk_ent_<entityID>_<hash>（依赖行号，不是内容派生），
 // 不能复用；这里用 sha256(TrimSpace(text))。
+// ★ 规则在基座内联实现（`agent/agent` 的 `sentenceBlockIDOf`）：
+//
+//	块 ID 由内容派生这条规则要跟着"块"这个模型走，而基座与 memory
+//	都需要它。两边同一条规则、同一份实现（这里转调同形函数）——
+//	不 import 基座（那会成环），所以两边各自写**同一个哈希**：
+//	输入相同 ⇒ 输出逐字相同（判据 `TestBlockIDsAgree` 钉住）。
 func SentenceBlockID(text string) string {
 	h := sha256.Sum256([]byte(strings.TrimSpace(text)))
 	return "blk_src_" + hex.EncodeToString(h[:12])

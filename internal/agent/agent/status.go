@@ -12,7 +12,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
-	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -363,7 +362,7 @@ func (a *Agent) usageStatus() sdk.UsageStatus {
 // 判据是 Loaded()（provider 真正打开且元数据合法），**不是**「配置里写了 provider」——
 // 后者在模型缺失 / 运行时缺失时也为真，拿它当判据就是假绿。
 func (a *Agent) onnxStatus() sdk.ONNXStatus {
-	st := sdk.ONNXStatus{Provider: a.MainState().embeddingProvider, DepParser: depParserStatus()}
+	st := sdk.ONNXStatus{Provider: a.MainState().embeddingProvider, DepParser: a.depParserStatus()}
 	if a.MainState().multimodalSpace != nil && a.MainState().multimodalSpace.Loaded() {
 		st.Enabled = true
 		st.Dim = a.MainState().multimodalSpace.Dim()
@@ -389,14 +388,17 @@ func (a *Agent) onnxStatus() sdk.ONNXStatus {
 //
 // 判据是「包级默认位上有解析器且能报出模型路径」，不是「配了 onnx_model_path」：
 // 配置留空时用的是二进制内嵌模型（解到 <data>/nlp 后加载），只看配置会漏报。
-func depParserStatus() sdk.DepParserStatus {
-	p := nlp.GetDefaultParser()
-	if p == nil {
+func (a *Agent) depParserStatus() sdk.DepParserStatus {
+	// ★ 依存句法分析器是**注入**的能力（契约在 kernelapi，实现在 nlp）：
+	//   基座不该 import `internal/nlp`（带 ONNX 的实现包，判据 §8 第 3 条）。
+	//   未装配 ⇒ 状态面报"未启用"（不是崩溃，也不是谎报启用）。
+	info := a.depParser()
+	if info == nil || !info.Enabled {
 		return sdk.DepParserStatus{}
 	}
 	st := sdk.DepParserStatus{Enabled: true}
-	if mp, ok := p.(interface{ ModelPath() string }); ok {
-		st.ModelPath = mp.ModelPath()
+	if mp := info.ModelPath; mp != "" {
+		st.ModelPath = mp
 		if strings.Contains(filepath.ToSlash(st.ModelPath), "/nlp/dep_parser.onnx") {
 			// 内嵌模型的解出位置固定为 <dataDir>/nlp/dep_parser.onnx；
 			// 无法从路径反推来源时保留 false（未知不冒充内嵌）。

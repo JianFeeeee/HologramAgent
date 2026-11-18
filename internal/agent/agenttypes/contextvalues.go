@@ -7,9 +7,9 @@ package agenttypes
 // （与 kernelapi/model 同一手法）。两边各留别名，既有调用点逐字不变。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 )
@@ -115,10 +115,10 @@ type ContextEvent struct {
 	NoMemory bool `json:"no_memory,omitempty"`
 	// --- 原生多模态记忆 ---
 	// 一等记忆块：块本身随事件在层间迁移，身份不变，不建引用计数。
-	Blocks   []memory.MemoryBlock `json:"blocks,omitempty"` // 一等记忆块（text/image/video/audio）
-	Vector   vector.Vector        `json:"-"`                // 稀疏词向量（TF-IDF/fastText 空间）
-	DenseVec []float64            `json:"-"`                // 稠密多模态向量（与媒体/文档共享空间）
-	DenseFP  string               `json:"-"`                // DenseVec 所属统一空间指纹（缓存字段，不持久化）
+	Blocks   []model.MemoryBlock `json:"blocks,omitempty"` // 一等记忆块（text/image/video/audio）
+	Vector   vector.Vector       `json:"-"`                // 稀疏词向量（TF-IDF/fastText 空间）
+	DenseVec []float64           `json:"-"`                // 稠密多模态向量（与媒体/文档共享空间）
+	DenseFP  string              `json:"-"`                // DenseVec 所属统一空间指纹（缓存字段，不持久化）
 }
 
 // CompactPlan 是一次压缩的**只读计划**：描述要压掉哪一段、留下哪一段。

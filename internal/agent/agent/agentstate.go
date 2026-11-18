@@ -33,6 +33,7 @@ package agent
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"sync"
 	"time"
 
@@ -40,7 +41,6 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -125,7 +125,7 @@ type mainState struct {
 	personality        *agentPkg.Personality
 	personaStore       PersonaStore
 	pendingMedia       map[string]interface{}
-	pendingMediaBlocks []memory.MemoryBlock
+	pendingMediaBlocks []model.MemoryBlock
 	pendingToolBlocks  []interface{}
 	noMergeMarkers     map[string]int
 	noMergeMu          sync.Mutex

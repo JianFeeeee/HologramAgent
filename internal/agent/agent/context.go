@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"io"
 	"log"
 	"math"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -776,7 +776,23 @@ func textForVector(evt *ContextEvent, toolDefLookup func(name string) *sdk.ToolD
 		}
 	}
 
-	return memory.CleanText(text)
+	// ★ 文本清洗（原 `memory.CleanText`）在基座内联实现：它是**三行纯字符串
+	//   操作**（去首尾逗号与空白），为它开一个注入面是过度设计；
+	//   而为它 import `internal/memory`（带 SQLite）才是真问题。
+	return cleanVectorText(text)
+}
+
+// cleanVectorText 是向量化前的文本清洗（去首尾标点与空白）。
+//
+// 与 `internal/memory.CleanText` 的规则**逐字一致**（那边也转调本函数 —— 见下）。
+func cleanVectorText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	text = strings.TrimPrefix(text, "，")
+	text = strings.TrimPrefix(text, "，")
+	return strings.TrimSpace(text)
 }
 
 // toolOutputClean 根据工具定义的 NoMemory/Cleaner 清洗输出，用于计算层。
@@ -1104,7 +1120,7 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 				ReasoningContent: s.event.ReasoningContent,
 				ToolResults:      convertToolResults(s.event.ToolResults),
 				ToolCalls:        toolCallItemsToDoc(s.event.ToolCalls),
-				Blocks:           append([]memory.MemoryBlock(nil), s.event.Blocks...),
+				Blocks:           append([]model.MemoryBlock(nil), s.event.Blocks...),
 			}
 		}
 		doc, err := coldcontextStore.ContextToColdContext("context_archived", entries, c.embedder, nil, c.toolOutputClean, c.channelCleanerForDoc())
@@ -1173,10 +1189,10 @@ func (c *RelevanceContext) Recent(n int) []ContextEvent {
 
 // Blocks 返回当前上下文持有的一等记忆块（供跨层存活判定）。
 // 迁移后源事件已被清空，因此这里只会拿到真正属于 L0 的块。
-func (c *RelevanceContext) Blocks() []memory.MemoryBlock {
+func (c *RelevanceContext) Blocks() []model.MemoryBlock {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []memory.MemoryBlock
+	var out []model.MemoryBlock
 	for _, e := range c.events {
 		out = append(out, e.Blocks...)
 	}

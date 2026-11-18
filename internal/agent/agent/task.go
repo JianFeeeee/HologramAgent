@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"strings"
 	"sync"
@@ -34,7 +35,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
@@ -1021,7 +1021,7 @@ func (a *Agent) runOneTool(f *TaskFrame, idx int) batchItemResult {
 
 	// 场景已在 stepToolBatch 的 fan-out **之前**解析完毕（避免竞争与重复计强度），
 	// 这里只读取结果。
-	var turn memory.TurnScene
+	var turn model.TurnScene
 	if f != nil && f.SceneDone {
 		turn = f.TurnScene
 	}

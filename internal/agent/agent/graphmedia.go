@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"strings"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 )
 
@@ -35,12 +37,12 @@ func (a *Agent) MigrateLegacyGraphMedia() {
 	if a.GraphDB() == nil {
 		return
 	}
-	blocks, entities, err := a.GraphDB().MigrateLegacyMediaEntities(func(short string) (memory.MemoryBlock, bool) {
+	blocks, entities, err := a.GraphDB().MigrateLegacyMediaEntities(func(short string) (model.MemoryBlock, bool) {
 		// 先看该内容是否已经有对应的块（内容派生 ID，前缀可查）。
 		if b, ok, err := a.GraphDB().BlockByIDPrefix("blk_media_" + short); err == nil && ok {
 			return b, true
 		}
-		return memory.MemoryBlock{}, false
+		return model.MemoryBlock{}, false
 	})
 	if err != nil {
 		log.Printf("[media] legacy media entity migration failed (will retry next round): %v", err)
@@ -57,7 +59,7 @@ func (a *Agent) MigrateLegacyGraphMedia() {
 // 承载，引用单位就是块 ID。seed 允许复用调用方已持有的块（L2→L3 迁移
 // 保持块身份不变）。
 // ★ sentenceBlockID 是**原句块 ID**（原为 sentences 表行号）。
-func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []string, seed map[string]memory.MemoryBlock, scene string) int {
+func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []string, seed map[string]model.MemoryBlock, scene string) int {
 	if a.GraphDB() == nil || sentenceBlockID == "" {
 		return 0
 	}
@@ -81,7 +83,7 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 		if b.Scene == "" {
 			b.Scene = scene
 		}
-		if err := a.GraphDB().PutMemoryBlocks([]memory.MemoryBlock{b}); err != nil {
+		if err := a.GraphDB().PutMemoryBlocks([]model.MemoryBlock{b}); err != nil {
 			log.Printf("[media] L3 block write failed (%s): %v", shortID(b.ID), err)
 			continue
 		}
@@ -96,7 +98,7 @@ func (a *Agent) attachBlocksToSentenceBlock(sentenceBlockID string, refs []strin
 
 // linkBlocksToDocument 把文档持有的块写入 L3，并建立
 // document --contains--> block 边。块的 ID 原样保留（迁移而非重建）。
-func (a *Agent) LinkBlocksToDocument(docID string, blocks []memory.MemoryBlock, scene string) int {
+func (a *Agent) LinkBlocksToDocument(docID string, blocks []model.MemoryBlock, scene string) int {
 	if a.GraphDB() == nil || docID == "" || len(blocks) == 0 {
 		return 0
 	}
@@ -142,7 +144,7 @@ func (a *Agent) LinkBlocksToDocument(docID string, blocks []memory.MemoryBlock, 
 // 已无意义，签名是 SDK 契约不改），但要判断「这次到底写没写进去」，必须看
 // **written**（真正通过校验并落库的三元组条数）。不要再用块数差值 ——
 // 块 ID 由内容派生，幂等命中时块数根本不涨（详见 memory.CommitReady 的注释）。
-func (a *Agent) CommitTriplesWithMedia(triples []memory.Triple, sessionID string, turnID int, seed []memory.MemoryBlock) (written, blocks int, err error) {
+func (a *Agent) CommitTriplesWithMedia(triples []model.Triple, sessionID string, turnID int, seed []model.MemoryBlock) (written, blocks int, err error) {
 	if a.GraphDB() == nil {
 		// 轻量内核（memory == nil，子只有图记忆）：只写图记忆。
 		// 写目标由 a.graph 决定 —— 根落 main，子落自己的 temp。
@@ -164,7 +166,7 @@ func (a *Agent) CommitTriplesWithMedia(triples []memory.Triple, sessionID string
 	if err != nil {
 		return 0, 0, err
 	}
-	byRef := make(map[string]memory.MemoryBlock, len(seed))
+	byRef := make(map[string]model.MemoryBlock, len(seed))
 	for _, b := range seed {
 		if b.ID != "" {
 			byRef[b.ID] = b
@@ -188,7 +190,7 @@ func (a *Agent) CommitTriplesWithMedia(triples []memory.Triple, sessionID string
 // ★ 签名从 int64 改为 string：挂载点已从「sentences 表行号」
 //
 //	改成「原句块 ID」（sentences 表退场后行号不存在）。
-func (a *Agent) RecallBlocksForSentence(sentenceBlockID string) ([]memory.MemoryBlock, error) {
+func (a *Agent) RecallBlocksForSentence(sentenceBlockID string) ([]model.MemoryBlock, error) {
 	if a.GraphDB() == nil {
 		return nil, nil
 	}
@@ -228,7 +230,7 @@ func (a *Agent) resolveMediaRefs(refs []string) []string {
 // ★ 从 Relation.SentenceID（旧 sentences 表行号）改为按 SentenceText 现算
 // blk_src_<hash>。原因：Commit 块化后原句由块承载，sentences 表退场，
 // 行号不再是稳定的挂载点；而 SentenceText 一直在 Relation 上。
-func sentenceIDsFromRelations(relations []memory.Relation) []string {
+func sentenceIDsFromRelations(relations []model.Relation) []string {
 	if len(relations) == 0 {
 		return nil
 	}
@@ -237,7 +239,7 @@ func sentenceIDsFromRelations(relations []memory.Relation) []string {
 	for _, r := range relations {
 		id := ""
 		if r.SentenceText != "" {
-			id = memory.SentenceBlockID(r.SentenceText)
+			id = sentenceBlockIDOf(r.SentenceText)
 		}
 		if id == "" || seen[id] {
 			continue
@@ -249,7 +251,7 @@ func sentenceIDsFromRelations(relations []memory.Relation) []string {
 }
 
 // mediaContextForRelations 是 mediaContextForSentences 的关系入口。
-func (a *Agent) mediaContextForRelations(relations []memory.Relation) string {
+func (a *Agent) mediaContextForRelations(relations []model.Relation) string {
 	return a.mediaContextForSentences(sentenceIDsFromRelations(relations))
 }
 
@@ -257,7 +259,7 @@ func (a *Agent) mediaContextForRelations(relations []memory.Relation) string {
 //
 // 带上原始句子（截断到 60 字）：三元组只是「A 关系 B」，脱离原句往往看不出
 // 语气、条件与指代——`sentence_text` 的存在意义就是「日后从图谱回到原文」。
-func formatRecallRelations(relations []memory.Relation, max int) []string {
+func formatRecallRelations(relations []model.Relation, max int) []string {
 	var out []string
 	for i, r := range relations {
 		if max > 0 && i >= max {
@@ -277,7 +279,7 @@ func formatRecallRelations(relations []memory.Relation, max int) []string {
 //
 // Indexer.BuildContext 刻意不返回关系（只给实体索引以省 token），
 // 因此这里用命中的实体名再查一次关系，只为拿到原句。
-func (a *Agent) mediaContextForInjectedEntities(injected *memory.InjectedContext) string {
+func (a *Agent) mediaContextForInjectedEntities(injected *model.InjectedContext) string {
 	if a.GraphDB() == nil || injected == nil || len(injected.Entities) == 0 {
 		return ""
 	}
@@ -334,4 +336,15 @@ func (a *Agent) mediaContextForSentences(sentenceBlockIDs []string) string {
 		return ""
 	}
 	return strings.Join(lines, "\n")
+}
+
+// sentenceBlockIDOf 是原句块的**内容派生 ID**（`blk_src_<sha256 前12字节>`）。
+//
+// ★ 为什么在基座内联而不是注入：它是**纯哈希**（十几行），
+//
+//	而"块 ID 必须由内容派生"这条规则本身要跟着块模型走。
+//	实现侧（`internal/memory.SentenceBlockID`）转调本函数 ⇒ 同一规则一份。
+func sentenceBlockIDOf(text string) string {
+	h := sha256.Sum256([]byte(strings.TrimSpace(text)))
+	return "blk_src_" + hex.EncodeToString(h[:12])
 }

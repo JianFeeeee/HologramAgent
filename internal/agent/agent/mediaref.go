@@ -3,12 +3,12 @@ package agent
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"strings"
 	"time"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 )
 
 // 媒体记忆接线：把对话里出现的图片/音频变成一等记忆块。
@@ -27,16 +27,16 @@ import (
 // 统一空间向量被检索，描述式索引是将就方案。
 
 // blockModalityFromMIME 按 MIME 大类推断块的模态。
-func blockModalityFromMIME(mime string) memory.BlockModality {
+func blockModalityFromMIME(mime string) model.BlockModality {
 	switch {
 	case strings.HasPrefix(mime, "image/"):
-		return memory.BlockImage
+		return model.BlockImage
 	case strings.HasPrefix(mime, "video/"):
-		return memory.BlockVideo
+		return model.BlockVideo
 	case strings.HasPrefix(mime, "audio/"):
-		return memory.BlockAudio
+		return model.BlockAudio
 	default:
-		return memory.BlockText
+		return model.BlockText
 	}
 }
 
@@ -48,12 +48,12 @@ func blockModalityFromMIME(mime string) memory.BlockModality {
 // 块 ID 由内容派生（memory.MediaBlockID）：同内容 ⇒ 同 ID ⇒ 落库时
 // ON CONFLICT 天然去重（这正是内容寻址当年的好处，但现在由块 ID 直接提供，
 // 不需要一层独立的寻址存储）。
-func (a *Agent) CaptureBlockMedia(blocks []agentAPI.ContentBlock, tool string) []memory.MemoryBlock {
+func (a *Agent) CaptureBlockMedia(blocks []agentAPI.ContentBlock, tool string) []model.MemoryBlock {
 	if len(blocks) == 0 {
 		return nil
 	}
 
-	var out []memory.MemoryBlock
+	var out []model.MemoryBlock
 	for _, b := range blocks {
 		var url string
 		switch {
@@ -70,8 +70,8 @@ func (a *Agent) CaptureBlockMedia(blocks []agentAPI.ContentBlock, tool string) [
 			continue // http(s) URL 或格式不认，跳过
 		}
 
-		block := memory.MemoryBlock{
-			ID:        memory.MediaBlockID(mime, data),
+		block := model.MemoryBlock{
+			ID:        a.mediaBlockID(mime, data),
 			Modality:  blockModalityFromMIME(mime),
 			Data:      data,
 			MIME:      mime,
@@ -89,7 +89,7 @@ func (a *Agent) CaptureBlockMedia(blocks []agentAPI.ContentBlock, tool string) [
 
 // embedBlockOnIngest 给刚捕获的块立即计算多模态坐标。
 // 只在多模态空间可用且为图像时执行；音频/未配置时静默跳过（保持既有行为）。
-func (a *Agent) embedBlockOnIngest(b *memory.MemoryBlock) {
+func (a *Agent) embedBlockOnIngest(b *model.MemoryBlock) {
 	if b == nil || a.MainState().multimodalSpace == nil || !a.MainState().multimodalSpace.Loaded() {
 		return
 	}
@@ -110,7 +110,7 @@ func (a *Agent) embedBlockOnIngest(b *memory.MemoryBlock) {
 // 为何要缓存而不是当场挂：块在 process() 执行期间被捕获，而承载它的
 // ContextEvent 要等 process() 返回后才 Append——此刻还没有 owner。
 // 与既有的 a.MainState().pendingMedia 同一手法（均由 schedulerLoop goroutine 独占读写）。
-func (a *Agent) stageMediaBlocks(blocks ...memory.MemoryBlock) {
+func (a *Agent) stageMediaBlocks(blocks ...model.MemoryBlock) {
 	if len(blocks) == 0 {
 		return
 	}
@@ -118,7 +118,7 @@ func (a *Agent) stageMediaBlocks(blocks ...memory.MemoryBlock) {
 }
 
 // drainMediaBlocks 取出并清空本轮累积的块。
-func (a *Agent) drainMediaBlocks() []memory.MemoryBlock {
+func (a *Agent) drainMediaBlocks() []model.MemoryBlock {
 	if len(a.MainState().pendingMediaBlocks) == 0 {
 		return nil
 	}
@@ -131,7 +131,7 @@ func (a *Agent) drainMediaBlocks() []memory.MemoryBlock {
 //
 // 块存储在事件自身（随 context.json 持久化），不维护引用账本：
 // 存活与否由持有它的层决定。
-func (a *Agent) BindEventMedia(evt *ContextEvent, blocks []memory.MemoryBlock) {
+func (a *Agent) BindEventMedia(evt *ContextEvent, blocks []model.MemoryBlock) {
 	if evt == nil || len(blocks) == 0 {
 		return
 	}
@@ -145,7 +145,7 @@ func (a *Agent) BindEventMedia(evt *ContextEvent, blocks []memory.MemoryBlock) {
 //
 // 不含任何生成的描述文本：图片按自己的向量被检索，标签仅提供 MIME 与
 // 短块 ID，让模型知道有这份媒体、并可据此取回（块 ID 是它的唯一身份）。
-func blockLabel(b *memory.MemoryBlock) string {
+func blockLabel(b *model.MemoryBlock) string {
 	if b == nil {
 		return ""
 	}

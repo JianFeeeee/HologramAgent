@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"strings"
 	"time"
 )
@@ -11,10 +12,12 @@ import (
 // BlockModality 是一等记忆块的原生模态。
 
 const (
-	BlockText  BlockModality = "text"
-	BlockImage BlockModality = "image"
-	BlockVideo BlockModality = "video"
-	BlockAudio BlockModality = "audio"
+	// ★ 取值声明点已搬到 model（消费方不该为常量 import 实现包）；
+	//   这里是别名转发，既有 `memory.BlockText` 写法不变。
+	BlockText  = model.BlockText
+	BlockImage = model.BlockImage
+	BlockVideo = model.BlockVideo
+	BlockAudio = model.BlockAudio
 )
 
 // PageKind 是「页」的类型：一页 = 一次完整往返。

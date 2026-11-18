@@ -38,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"log"
 	"runtime/debug"
 	"sort"
@@ -49,7 +50,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -307,8 +307,9 @@ type rtChild struct {
 	// ★ 必须在 Dispose 里关闭：它们是 SQLite 句柄，不关就随每次
 	// create/stop 累积泄漏。驻留子那边由 teardownResident 关，
 	// rt 这边原先没有图记忆，所以从未需要处理 —— 接入后必须补。
-	light  *memory.LightMemory
-	mainRO *memory.GraphDB
+	light  any
+	mainRO kernelapi.GraphMemory
+	opener kernelapi.GraphMemoryOpener
 	slot   *rtSlot // 唯一输入入口：单槽覆盖
 	input  string  // inputch(rt) 的名字（采集侧灌入；成对的一半）
 	// contextFullReported 保证"滑无可滑"只上报父一次（同一通电话里）。
@@ -442,11 +443,11 @@ func (rc *rtChild) Dispose() string {
 	// 反了会让 LightMemory.Close 去关一个已关的 main（它只关 temp，
 	// 但保持"子先于父"的顺序与本仓其它所有关闭路径一致）。
 	if rc.light != nil {
-		_ = rc.light.Close()
+		_ = closeGraphWith(rc.opener, rc.light)
 		rc.light = nil
 	}
 	if rc.mainRO != nil {
-		_ = rc.mainRO.Close()
+		_ = closeGraphWith(rc.opener, rc.mainRO)
 		rc.mainRO = nil
 	}
 	return ""
@@ -638,34 +639,42 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	//  ② AllowGraphWrite 默认 false：一次通话几十轮高频写入会把图谱灌满噪声
 	//     （与 rtvoice 插件给 inputch 标 NoMemory 同一条考虑）。
 	//  ③ 失败**必须回滚**：与驻留子同样拒绝创建一个"记忆装配半残"的执行体。
+	// ★ 经**装配面**开关句柄（实现构造在 memory 模块里，基座只调接口）。
 	var (
-		rtLight  *memory.LightMemory
-		rtMainRO *memory.GraphDB
+		rtLight   any
+		rtLightGF kernelapi.GraphMemory
+		rtMainRO  kernelapi.GraphMemory
 	)
+	opener := a.graphOpener
 	if gm := a.MainGraph(); gm != nil {
-		ro, err := memory.OpenGraphDBReadOnly(gm.Path())
+		if opener == nil {
+			cancel()
+			return "", fmt.Errorf("rtchild 需要图记忆装配面（AgentConfig.GraphOpener 未注入）")
+		}
+		ro, err := opener.OpenReadOnly(gm.Path())
 		if err != nil {
 			cancel()
 			return "", fmt.Errorf("rtchild 打开主库受限句柄失败: %w", err)
 		}
 		rtMainRO = ro
-		light, err := memory.NewLightMemory(ro, opts.TempPath, opts.AllowGraphWrite)
+		lightAny, err := opener.OpenLight(ro, opts.TempPath, opts.AllowGraphWrite)
 		if err != nil {
-			_ = ro.Close()
+			_ = opener.Close(ro)
 			cancel()
 			return "", fmt.Errorf("rtchild 装配图记忆失败: %w", err)
 		}
-		rtLight = light
+		rtLight = lightAny
+		rtLightGF = opener.LightCommon(lightAny)
 	}
 	// 统一回滚：任何后续失败都要把这些句柄关掉，否则每失败一次泄一个
 	// SQLite 句柄（驻留子那边用逐点 Close；这里集中成一个闭包，
 	// 因为它有 4 个失败点，逐点写必然漏一处）。
 	rollbackMem := func() {
 		if rtLight != nil {
-			_ = rtLight.Close()
+			_ = opener.Close(rtLight)
 		}
 		if rtMainRO != nil {
-			_ = rtMainRO.Close()
+			_ = opener.Close(rtMainRO)
 		}
 	}
 
@@ -702,7 +711,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// ★ 图记忆共同面（与驻留子同一个字段、同一套语义）：
 		// 给了 LightMemory ⇒ graphMemoryOf 用它，且 a.GraphDB() 保持 nil
 		// ⇒ 记忆整理面（块/媒体/流水线）全部不可达，只有 Recall/Commit 可用。
-		LightMemory: rtLight,
+		LightMemory: rtLightGF,
 		Security:    a.Gate(),
 		// ★ 与驻留子同理：子的记录落进父的表（安全判定与持久化共用一份）。
 		Agents:     a.agentsRegistry(),
@@ -762,7 +771,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 			ParentID:  string(a.id),
 		},
 		agent: carrier, slot: carrier.rt().slot,
-		light: rtLight, mainRO: rtMainRO,
+		light: rtLight, mainRO: rtMainRO, opener: opener,
 		input: opts.Input, output: opts.Output,
 	}
 	// ★ 输出异步壳（用户裁定：rt 的所有调用都异步）。

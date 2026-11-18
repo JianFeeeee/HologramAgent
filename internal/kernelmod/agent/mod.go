@@ -22,6 +22,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
@@ -175,6 +176,13 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		SystemPrompt:    sysPrompt,
 		Provider:        provider,
 		ProviderManager: providerMgr,
+		// ★ 记忆侧的**计算能力**经契约注入（判据 §8 第 3 条）：
+		//   基座不 import memory / nlp，只认识"提取器"与"归一化判定"这两件事。
+		Extractor:   nlp.NewArtifactsExtractor(vectorizerOf(k)),
+		Norm:        memory.ArtifactsNorm(),
+		MemoryOps:   memory.NewMemoryOps(),
+		GraphOpener: graphOpenerOf(k),
+		DepParser:   nlp.DepParserInfo(),
 		// ★ LLM 设施（§3.2.1）：重试/回退/记账/活动源/分类错误全在它内部。
 		//   基座只持句柄并转发 —— 它不再认识"有两个源"这件事。
 		LLM: llmClientOf(k),
@@ -435,6 +443,26 @@ func llmClientOf(k *kstate.State) kernelapi.LLMClient {
 	if impl, ok := k.Require(kernelapi.FacLLMClient); ok {
 		if c, _ := impl.(kernelapi.LLMClient); c != nil {
 			return c
+		}
+	}
+	return nil
+}
+
+// vectorizerOf 取共享词嵌入，转成 nlp 需要的 Vectorizer（未装配 ⇒ nil）。
+func vectorizerOf(k *kstate.State) nlp.Vectorizer {
+	if impl, ok := k.Require(kernelapi.FacEmbedder); ok {
+		if e, _ := impl.(*memory.StaticEmbedder); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// graphOpenerOf 取图记忆装配面（未装配 ⇒ nil：子 agent 起不来并响亮报错）。
+func graphOpenerOf(k *kstate.State) kernelapi.GraphMemoryOpener {
+	if impl, ok := k.Require(kernelapi.FacGraphOpener); ok {
+		if op, _ := impl.(kernelapi.GraphMemoryOpener); op != nil {
+			return op
 		}
 	}
 	return nil

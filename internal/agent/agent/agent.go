@@ -15,8 +15,8 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -183,9 +183,13 @@ type Agent struct {
 	// offload 是积压任务自动转投的参数（见 offload.go）。
 
 	// 进行中的 LLM 请求取消函数，interceptLoop 可调用以在请求中打断
-	llm       kernelapi.LLMClient
-	cancelLLM context.CancelFunc
-	llmMu     sync.Mutex
+	llm         kernelapi.LLMClient
+	extractor   artifacts.Extractor
+	norm        artifacts.Norm
+	memOps      kernelapi.MemoryOps
+	graphOpener kernelapi.GraphMemoryOpener
+	cancelLLM   context.CancelFunc
+	llmMu       sync.Mutex
 
 	// 进行中的**工具调用**取消函数集合（2026-10-31 加）。
 	//
@@ -326,14 +330,47 @@ type AgentConfig struct {
 	//
 	// nil = 独立使用（单测）：基座回落到"单源直调 Provider"，
 	// 行为与改造前一致（没有回退链可走）。
-	LLM    kernelapi.LLMClient
-	IO     *agentIO.IOManager
-	Memory kernelapi.GraphMemory
+	LLM kernelapi.LLMClient
+	// Extractor 是**三元组提取器**（契约在 internal/artifacts，实现在 nlp）。
+	//
+	// ★ 为什么经配置注入而不是让基座 import nlp：那是带 ONNX 的实现包
+	//   （判据 §8 第 3 条）。基座只调 `Extract(text) []Triple` 一件。
+	//
+	// nil ⇒ 归档时跳过通用提取（只写文档元数据三元组）。
+	Extractor artifacts.Extractor
+	// Norm 是**归一化判定**（实体名能否落库 / 是否噪声，实现在 memory）。
+	//
+	// 零值语义是"放行"：未装配时多写几条噪声（可清理），而不是让归档
+	// 一条关系都建不起来（静默失效）。
+	Norm artifacts.Norm
+	// DepParser 返回依存句法分析器的**只读事实**（状态面用）。
+	//
+	// ★ 与 Extractor 同理：实现是 `internal/nlp`（带 ONNX），基座只读事实。
+	// nil ⇒ 状态面报"未启用"。
+	DepParser func() (enabled bool, modelPath string)
+	// MemoryOps 是记忆侧的**纯函数能力面**（契约在 kernelapi，实现在 memory）。
+	//
+	// ★ 为什么它必须存在：基座要用 CleanText / ExtractKeywords / MediaBlockID /
+	//   SortMode / Situation，而那些函数今天住在 `internal/memory`
+	//   —— 一个带 SQLite 的实现包（判据 §8 第 3 条）。
+	//
+	// nil ⇒ 各调用点按零值安全处理（见 memoryops_face.go）。
+	MemoryOps kernelapi.MemoryOps
+	// GraphOpener 是**图记忆的装配面**（关库/开轻量实例）。
+	//
+	// ★ 为什么它也必须注入：驻留子与 rt 要开"主库只读视图 + temp 实例"，
+	//   而那是 `memory.OpenGraphDBReadOnly` / `memory.NewLightMemory`
+	//   —— 实现构造（判据 §8 第 3 条）。
+	//
+	// nil ⇒ 子 agent 起不来（装配错误，构造期响亮报错而不是静默无记忆）。
+	GraphOpener kernelapi.GraphMemoryOpener
+	IO          *agentIO.IOManager
+	Memory      kernelapi.GraphMemory
 	// LightMemory 是**轻量内核**的图记忆装配（驻留子用；读 temp∪main，只写 temp）。
 	//
 	// 给了它就意味着这是轻量内核：`Memory` 必须为 nil，
 	// 于是记忆整理面（块/媒体/流水线/整理工具）全部不可达（见 memoryface.go）。
-	LightMemory *memory.LightMemory
+	LightMemory kernelapi.GraphMemory
 	Indexer     kernelapi.MemoryIndexer
 	Tracker     kernelapi.Tracker
 
@@ -473,6 +510,10 @@ func New(cfg AgentConfig) *Agent {
 		id:                cfg.ID,
 		provider:          cfg.Provider,
 		llm:               cfg.LLM,
+		extractor:         cfg.Extractor,
+		norm:              cfg.Norm,
+		memOps:            cfg.MemoryOps,
+		graphOpener:       cfg.GraphOpener,
 		preferredProvider: cfg.PreferredProvider,
 		providerManager:   cfg.ProviderManager,
 		io:                cfg.IO,

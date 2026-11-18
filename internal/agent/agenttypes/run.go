@@ -25,7 +25,6 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
@@ -131,7 +130,7 @@ type Frame struct {
 	TurnReasoning string
 	// Scene 是本轮**涌现**出来的场景键；SceneDone 标记是否已解析（一轮只解析一次）。
 	Scene     string
-	TurnScene memory.TurnScene
+	TurnScene model.TurnScene
 	SceneDone bool
 
 	Step     Step

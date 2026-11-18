@@ -1,13 +1,14 @@
 package agent
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
+	"github.com/JianFeeeee/HologramAgent/internal/scene"
 	"log"
 	"strconv"
 	"time"
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
 )
 
@@ -32,7 +33,7 @@ func (a *Agent) SceneKeysFor(evt *agentIO.InputEvent, toolName string) []string 
 	add := func(k string) {
 		// 显式声明的场景键来自插件，大小写/空白/标点都不可控；归一化后再去重，
 		// 否则「chan:QQ」与「chan:qq」会变成两个场景，各自只召回一半记忆。
-		k = memory.NormalizeSceneKey(k)
+		k = scene.Normalize(k)
 		if k == "" || seen[k] {
 			return
 		}
@@ -58,10 +59,10 @@ func (a *Agent) SceneKeysFor(evt *agentIO.InputEvent, toolName string) []string 
 	}
 
 	if evt != nil {
-		add(memory.ChannelScene(evt.Source))
+		add(scene.Channel(evt.Source))
 	}
 	if toolName != "" {
-		add(memory.ToolScene(toolName))
+		add(scene.Tool(toolName))
 	}
 	return keys
 }
@@ -348,18 +349,18 @@ func (a *Agent) sceneSuppressed(evt *agentIO.InputEvent) bool {
 
 // sceneFeaturesFor 采集一轮交互的场面指纹。
 //
-// 特征权重由种类决定（见 memory.SituationFeature.Weight）：通道与对象是
+// 特征权重由种类决定（见 model.SituationFeature.Weight）：通道与对象是
 // 「同一个场面」最强的同一性信号，工具是行为信号，话题是软信号。
-func (a *Agent) situationFeaturesFor(evt *agentIO.InputEvent, cleanInput, tool string) []memory.SituationFeature {
+func (a *Agent) situationFeaturesFor(evt *agentIO.InputEvent, cleanInput, tool string) []model.SituationFeature {
 	// 声明不参与场面识别：连时段特征都不产——一个不参与的面孔
 	// 不该在 situation_evidence / scene_features 里留下任何足迹。
 	if a.sceneSuppressed(evt) {
 		return nil
 	}
-	var feats []memory.SituationFeature
+	var feats []model.SituationFeature
 	if evt != nil {
 		if evt.Source != "" {
-			feats = append(feats, memory.SituationFeature{Kind: "chan", Value: evt.Source})
+			feats = append(feats, model.SituationFeature{Kind: "chan", Value: evt.Source})
 		}
 		// 对话对象：插件在 payload 里给的群/用户标识（有则用，无则退化为仅有通道）
 		for _, k := range []string{"peer", "peer_id", "group_id", "user_id", "chat_id"} {
@@ -370,25 +371,25 @@ func (a *Agent) situationFeaturesFor(evt *agentIO.InputEvent, cleanInput, tool s
 					if k == "group_id" {
 						kind = "peer_group"
 					}
-					feats = append(feats, memory.SituationFeature{Kind: kind, Value: s})
+					feats = append(feats, model.SituationFeature{Kind: kind, Value: s})
 					break
 				}
 			}
 		}
 		// 时段：弱信号。人的记忆确实带时间气味（「早上那件事」），
 		// 但它不该主导场面判定，所以权重最低。
-		feats = append(feats, memory.SituationFeature{Kind: "part", Value: partOfDay(time.Now())})
+		feats = append(feats, model.SituationFeature{Kind: "part", Value: partOfDay(time.Now())})
 	}
 	if tool != "" {
-		feats = append(feats, memory.SituationFeature{Kind: "tool", Value: tool})
+		feats = append(feats, model.SituationFeature{Kind: "tool", Value: tool})
 	}
 	// 话题：取清洗后输入的内容词做软特征（最多 3 个）。
 	if cleanInput != "" {
-		for i, kw := range memory.ExtractKeywords(memory.CleanText(cleanInput)) {
+		for i, kw := range a.extractKeywords(a.cleanText(cleanInput)) {
 			if i >= 3 {
 				break
 			}
-			feats = append(feats, memory.SituationFeature{Kind: "topic", Value: kw})
+			feats = append(feats, model.SituationFeature{Kind: "topic", Value: kw})
 		}
 	}
 	return feats
@@ -438,8 +439,8 @@ func partOfDay(t time.Time) string {
 //
 // 解析会**写库**（场景强化/长出），所以必须一轮一次：多调一次就多给场景记
 // 一次强度，"工具调得多"会被误读成"这个场面更常出现"。
-func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
-	var out memory.TurnScene
+func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) model.TurnScene {
+	var out model.TurnScene
 	if a == nil || a.GraphDB() == nil {
 		return out
 	}
@@ -449,21 +450,21 @@ func (a *Agent) resolveTurnScenes(f *TaskFrame, tool string) memory.TurnScene {
 
 	declared := a.SceneKeysFor(evtOf(f), tool)
 	feats := a.situationFeaturesFor(evtOf(f), cleanInputOf(f), tool)
-	sig := memory.NewSituation(feats...)
+	sig := a.newSituation(feats...)
 
 	turn, err := a.GraphDB().EnterSceneWithHint(sig, declared)
 	if err != nil {
 		log.Printf("[agent] scene enter failed: %v", err)
 		// 出错时至少把声明场景交给召回，不让整条召回链一起失效
-		turn = memory.TurnScene{Keys: declared}
+		turn = model.TurnScene{Keys: declared}
 		if len(declared) > 0 {
 			turn.Primary = declared[0]
 		}
 	}
 	if turn.Emergent {
-		log.Printf("[agent] scene emerged/hit: %q (fingerprint %v)", turn.Primary, memory.SituationKeys(sig))
+		log.Printf("[agent] scene emerged/hit: %q (fingerprint %v)", turn.Primary, a.situationKeys(sig))
 	} else if len(turn.DeclaredCreated) > 0 {
-		log.Printf("[agent] declared scene confirmed: %v (fingerprint %v)", turn.DeclaredCreated, memory.SituationKeys(sig))
+		log.Printf("[agent] declared scene confirmed: %v (fingerprint %v)", turn.DeclaredCreated, a.situationKeys(sig))
 	}
 	if f != nil {
 		f.TurnScene = turn

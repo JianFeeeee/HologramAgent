@@ -64,6 +64,9 @@ func newChildHarness(t *testing.T) *childHarness {
 		IO:       iom,
 		Memory:   g,
 		DataDir:  dir,
+		// ★ 图记忆装配面：驻留子/rt 要开"主库只读 + temp 实例"。
+		//   生产由 kernelmod/agent 注入（FacGraphOpener）；判据这里用同一实现。
+		GraphOpener: memory.NewGraphOpener(),
 	})
 	if instErr != nil {
 		t.Fatalf("Instantiate(main): %v", instErr)
@@ -193,11 +196,12 @@ func TestResidentRestoredAfterRestart(t *testing.T) {
 	iom2 := io.NewIOManager()
 	iom2.RegisterInputChannel("inbox", io.ChannelDef{})
 	a2, err := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
-		Security: security.NewDisabledRuntime().AsGate(),
-		ID:       types.AgentID("root2"),
-		IO:       iom2,
-		Memory:   h.graph,
-		DataDir:  h.dataDir,
+		Security:    security.NewDisabledRuntime().AsGate(),
+		ID:          types.AgentID("root2"),
+		IO:          iom2,
+		Memory:      h.graph,
+		DataDir:     h.dataDir,
+		GraphOpener: memory.NewGraphOpener(),
 	})
 	if err != nil {
 		t.Fatalf("Instantiate(root2): %v", err)

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"runtime/debug"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
 	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -499,7 +499,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		// 关键词提取：支持逗号分隔和自然语言
 		keywords := strings.Split(query, ",")
 		if len(keywords) == 1 {
-			keywords = memory.ExtractKeywords(query)
+			keywords = a.extractKeywords(query)
 		}
 		// 排序模式：默认相关性；显式要"最近/最新"时用 recent。
 		//
@@ -507,7 +507,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		// 相关性排序下新旧同名实体的命中层级完全相同，只能靠时间分胜负；
 		// 而 casual 组问"某个服务端口是多少"，要的是实词精确命中。
 		// 用一个排序同时服务这两类问题，必然有一边错。
-		sortMode := memory.ParseSortMode(fmt.Sprint(tc.Arguments["sort"]))
+		sortMode := model.SortMode(a.parseSortMode(fmt.Sprint(tc.Arguments["sort"])))
 
 		// 块向量召回优先。
 		//
@@ -607,10 +607,10 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if batchScene == "" {
 			batchScenes = turnScenes
 		}
-		var triples []memory.Triple
+		var triples []model.Triple
 		for _, td := range triplesData {
 			if m, ok := td.(map[string]interface{}); ok {
-				t := memory.Triple{
+				t := model.Triple{
 					Subject:      getString(m, "subject"),
 					Relation:     getString(m, "relation"),
 					Object:       getString(m, "object"),
@@ -852,7 +852,7 @@ func (a *Agent) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) str
 		if err != nil {
 			return fmt.Sprintf("stable memory edit failed (deleting old record): %v", err)
 		}
-		triples := []memory.Triple{{
+		triples := []model.Triple{{
 			Subject:      newSubject,
 			Relation:     newRelation,
 			Object:       newObject,
@@ -1141,8 +1141,8 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 }
 
 // sortLabel 把排序模式翻成给模型看的中文标签。
-func sortLabel(m memory.SortMode) string {
-	if m == memory.SortRecent {
+func sortLabel(m model.SortMode) string {
+	if m == model.SortRecent {
 		return "newest first"
 	}
 	return "相关性"
@@ -1201,7 +1201,7 @@ func (a *Agent) recallByBlocks(query string) string {
 	// 先召回再判断的话，看到的是一堆高分块 ——
 	// 而「分数高」本身不能证明相关。
 	hits, abstain, arb, err := a.GraphDB().RecallBlocksGuarded(
-		memory.BlockRecallQuery{
+		model.BlockRecallQuery{
 			Vector:      vec,
 			Fingerprint: a.MainState().multimodalSpace.Fingerprint(),
 			TopK:        blockRecallTopK,
@@ -1374,7 +1374,7 @@ func (a *Agent) restoreDocEvents(d *coldcontext.ColdDoc, inactivePages []int) in
 				}
 				return out
 			}(),
-			Blocks: append([]memory.MemoryBlock(nil), held...),
+			Blocks: append([]model.MemoryBlock(nil), held...),
 			// 召回期剔除的页（裁剪预算用）：标注但数据保留
 			InactivePages: inactivePages,
 		})
@@ -1433,7 +1433,7 @@ func coldcontextRecallHeadline(d *coldcontext.ColdDoc, eventCount int) string {
 	if n := len(d.Blocks); n > 0 {
 		media := 0
 		for i := range d.Blocks {
-			if d.Blocks[i].Modality != memory.BlockText {
+			if d.Blocks[i].Modality != model.BlockText {
 				media++
 			}
 		}
