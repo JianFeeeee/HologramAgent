@@ -51,8 +51,8 @@ func (a *Agent) distillContext() {
 		return
 	}
 	n := a.contextMgr().Len()
-	if n > a.MainState().maxContextSize*2 {
-		archived := a.contextMgr().Prune("", a.MainState().maxContextSize, a.MainState().coldcontextStore)
+	if n > a.CfgInt(CfgKeyMaxContextSize, 30)*2 {
+		archived := a.contextMgr().Prune("", a.CfgInt(CfgKeyMaxContextSize, 30), a.MainState().coldcontextStore)
 		if archived > 0 {
 			log.Printf("[agent] distill: pruned %d low-relevance events to document memory (total=%d)", archived, n)
 		}

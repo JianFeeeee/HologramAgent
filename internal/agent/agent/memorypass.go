@@ -202,7 +202,12 @@ func (a *Agent) ContextTopKForProtected(protected int) int {
 	if protected < 0 {
 		protected = 0
 	}
-	hardCap := a.MainState().maxContextSize - 1
+	// ★ fallback 刻意是 **0**（不是 30）：未注入配置管理器时（独立工具/单测）
+	//   要保持改造前的零值语义 —— 那时 `mainState.maxContextSize` 因装配
+	//   短路而恒为 0，hardCap 落到 1。给 30 会**改变**未装配场景的行为
+	//   （实测：`TestL1RenderKeepsNewestTurnsUnderBudget` 因此红）。
+	//   生产路径永远有配置管理器 ⇒ 读到的是真实值。
+	hardCap := a.CfgInt(CfgKeyMaxContextSize, 0) - 1
 	if hardCap < protected+1 {
 		hardCap = protected + 1 // 保护范围本身超过运维上限时，保护优先
 	}
@@ -250,7 +255,12 @@ func (a *Agent) ContextTopKForProtected(protected int) int {
 // max_context_size 仍作为**上限**保留：它是运维给的「活跃条数」硬约束，
 // 预算算出来的条数超过它时以它为准（否则改了配置不生效会让人困惑）。
 func (a *Agent) ContextTopK() int {
-	hardCap := a.MainState().maxContextSize - 1 // 运维配置的上限（历史语义：-1 因为要留 protected）
+	// ★ fallback 刻意是 **0**（不是 30）：未注入配置管理器时（独立工具/单测）
+	//   要保持改造前的零值语义 —— 那时 `mainState.maxContextSize` 因装配
+	//   短路而恒为 0，hardCap 落到 1。给 30 会**改变**未装配场景的行为
+	//   （实测：`TestL1RenderKeepsNewestTurnsUnderBudget` 因此红）。
+	//   生产路径永远有配置管理器 ⇒ 读到的是真实值。
+	hardCap := a.CfgInt(CfgKeyMaxContextSize, 0) - 1 // 运维配置的上限（历史语义：-1 因为要留 protected）
 	if hardCap < 1 {
 		hardCap = 1
 	}

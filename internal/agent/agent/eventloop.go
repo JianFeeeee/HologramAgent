@@ -391,7 +391,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 	desc := ""
 	switch mediaType {
 	case "image":
-		desc = a.MainState().inputCfg.Image.DescribePrompt
+		desc = a.CfgString("core.input_processing.image.describe_prompt", "")
 		if desc == "" {
 			// ★★ 2026-10-06：原文写的是「请使用 describe_image 工具查看详情」，
 			// 但下面已经**内联**了 image_url block —— 模型直接能看。
@@ -401,7 +401,7 @@ func (a *Agent) mediaToBlocks(payload map[string]interface{}, mediaType string, 
 			desc = fmt.Sprintf("An image arrived from %s (attached to this message; look at it directly).", source)
 		}
 	case "audio":
-		desc = a.MainState().inputCfg.Audio.DescribePrompt
+		desc = a.CfgString("core.input_processing.audio.describe_prompt", "")
 		if desc == "" {
 			// 同上：audio_url block 已内联。不要指示调 transcribe_audio
 			// （它现在需要 path/digest）；若模型本身不处理音频，

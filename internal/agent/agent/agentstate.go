@@ -41,7 +41,6 @@ import (
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
-	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
 // rtState 是 rtchild 专属状态。
@@ -112,15 +111,13 @@ type mainState struct {
 	pluginDir    string
 	stageHost    *kit.StageHostType
 	pluginHealth *kit.PluginHealthTracker
-	// 上下文调优与维护节奏
-	distillInterval time.Duration
-	archiveInterval time.Duration
-	reviewInterval  time.Duration
-	mergeInterval   time.Duration
-	maxContextSize  int
-	ctxTuning       kit.ContextTuning
-	offload         OffloadOptions
-	inputCfg        types.InputProcessingConfig
+	// ★ 原先这里有八个**配置值**（distillInterval / archiveInterval /
+	//   reviewInterval / mergeInterval / maxContextSize / ctxTuning / offload /
+	//   inputCfg）。它们是装配期快照，住在主 agent 状态里 ⇒ 配置改要重启、
+	//   同一份值两个落点、且 mainState 搬不走。
+	//
+	//   现在统一走 `a.Cfg()`（内核注入的配置管理器，用户裁定），
+	//   用到时才读。键名集中在 cfgsurface.go。
 	// 媒体与人格
 	personality        *agentPkg.Personality
 	personaStore       PersonaStore

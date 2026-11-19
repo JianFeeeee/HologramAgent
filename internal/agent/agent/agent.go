@@ -114,6 +114,9 @@ type Agent struct {
 	//   能力面（条数/落盘/工具结果），不参与它的任何策略。
 	ctxHolder *RelevanceContext
 
+	// cfgStore 是内核注入的配置管理器句柄（`Config().Cfg`）。
+	cfgStore kernelapi.ConfigStore
+
 	// ★ context 实现不在这里：它是**主 agent 的类型私有实现**（§6.2 #1）。
 	// 基座通过 Hooks.ContextManager 取它（类型在 Initialize 里装上自己的那份）。
 	systemPrompt string
@@ -496,6 +499,12 @@ type AgentConfig struct {
 	// MaxToolTurns 是单个任务允许的工具轮次上限（0 = 不限）。
 	// 设计文档 D6：主循环必须有硬上限，否则模型不停调用就永不完结。
 	MaxToolTurns int
+
+	// Cfg 是**配置管理器**（内核注入）。各 agent 经它读写配置 —— 配置是内核
+	// 持有的事实，不是 agent 的私有状态（用户裁定）。
+	//
+	// ★ 未注入 ⇒ 各读取点走各自的默认值（独立工具/单测），行为与改造前一致。
+	Cfg kernelapi.ConfigStore
 
 	// Offload 是「积压任务自动转投给驻留子」的参数（见 offload.go）。
 	//

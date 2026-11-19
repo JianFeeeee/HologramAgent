@@ -172,7 +172,11 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	// 未注入时 ToolAPI 路径对设备放行：那是"授权可被绕过"的既成缺口。
 	// 注入后，cli 的 /terminal、seq 序列等一切走 ToolAPI 的调用都受同一道闸。
 	agent, instErr := agentCore.Instantiate(agentCore.TypeNameMain, agentCore.AgentConfig{
-		ID:              "main",
+		ID: "main",
+		// ★ 配置管理器注入基座（用户裁定）：各 agent 经它读写配置。
+		//   配置是**内核持有的事实**，不是 agent 的私有状态 —— 于是
+		//   "配置改要重启"与"同一份值两个落点"两条病同时消失。
+		Cfg:             cfgReg,
 		SystemPrompt:    sysPrompt,
 		Provider:        provider,
 		ProviderManager: providerMgr,

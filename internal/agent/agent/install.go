@@ -63,14 +63,6 @@ func (a *Agent) InstallMainState(cfg AgentConfig) {
 	m.fusionCfg = cfg.FusionCfg
 	m.personality = cfg.Personality
 	m.personaStore = cfg.PersonaStore
-	m.distillInterval = cfg.DistillInterval
-	m.archiveInterval = cfg.ArchiveInterval
-	m.reviewInterval = cfg.ReviewInterval
-	m.mergeInterval = cfg.MergeInterval
-	m.maxContextSize = cfg.MaxContextSize
-	m.ctxTuning = cfg.CtxTuning
-	m.offload = cfg.Offload
-	m.inputCfg = cfg.InputProcessing
 	m.thinkingEnabled = cfg.ThinkingEnabled
 	m.startTime = time.Now()
 	m.pluginHealth = kit.NewPluginHealthTracker()
