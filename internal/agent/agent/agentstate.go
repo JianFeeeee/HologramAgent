@@ -132,11 +132,8 @@ type mainState struct {
 	// 工具结果预算的记账（方案 B：只统计不裁剪）
 	toolResultWarnTokens int
 	toolResultReporter   toolResultReporter
-	// 设备数据面（device 模块挂载的那一份）
-	device   agentAPI.DeviceSurface
-	deviceMu sync.RWMutex
-	// 内置工具处理器（路由交给 device，这里只是族实现）
-	builtinHandlers agentAPI.BuiltinToolHandlers
+	// ★ device / builtinHandlers 不在这里：前者是**内核持有的数据面**，
+	//   后者是**类型注册的内部工具**，两者都归基座字段（见 agent.go）。
 	// 开始时间与思考开关
 	startTime       time.Time
 	thinkingEnabled bool

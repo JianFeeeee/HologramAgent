@@ -83,10 +83,14 @@ func (a *Agent) MountDevice(d api.DeviceSurface) {
 		return
 	}
 	// 挂载同时接上路由适配器：device 由此拿到"选族后调谁"。
-	a.MainState().builtinHandlers = builtinHandlers{a: a}
-	a.MainState().deviceMu.Lock()
-	a.MainState().device = d
-	a.MainState().deviceMu.Unlock()
+	//
+	// ★ 适配器只在类型**没注册自己的**内部工具时兜底（裸 agent / 单测）。
+	if a.builtinTools == nil {
+		a.builtinTools = builtinHandlers{a: a}
+	}
+	a.deviceMu.Lock()
+	a.device = d
+	a.deviceMu.Unlock()
 }
 
 // Device 返回已挂载的数据面（未挂载时为 nil）。
@@ -94,9 +98,9 @@ func (a *Agent) Device() api.DeviceSurface {
 	if a == nil {
 		return nil
 	}
-	a.MainState().deviceMu.RLock()
-	defer a.MainState().deviceMu.RUnlock()
-	return a.MainState().device
+	a.deviceMu.RLock()
+	defer a.deviceMu.RUnlock()
+	return a.device
 }
 
 // errNoAgentForDevice 表示 device 调用时 Agent 未装配（装配顺序错误）。
@@ -105,6 +109,27 @@ var errNoAgentForDevice = &deviceHostErr{"device: agent 未装配"}
 type deviceHostErr struct{ msg string }
 
 func (e *deviceHostErr) Error() string { return e.msg }
+
+// SetBuiltinTools 由**类型**注册自己的内部工具族处理器。
+//
+// ★ §8.1「每个 agent 类型可以额外定义自己的内部工具（用于状态/记忆管理）」：
+//
+//	主 agent 注册 memory/persona/social/doc/secret/output/plugin 七族；
+//	驻留子可能只注册其中两三族。基座只按接口调用，不认识谁实现了什么。
+func (a *Agent) SetBuiltinTools(h api.BuiltinToolHandlers) {
+	if a == nil {
+		return
+	}
+	a.builtinTools = h
+}
+
+// BuiltinTools 返回当前注册的族处理器（未注册 ⇒ 兜底适配器）。
+func (a *Agent) BuiltinTools() api.BuiltinToolHandlers {
+	if a == nil {
+		return nil
+	}
+	return a.builtinTools
+}
 
 // builtinHandlers 把 Agent 的族处理器暴露成 api.BuiltinToolHandlers。
 //

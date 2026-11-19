@@ -254,7 +254,15 @@ type Agent struct {
 	// ★ 刻意不复用整轮执行的锁：Agent 按设计**没有**保护整轮的互斥量
 	//（挂起不能持锁，见 input-scheduler-design §8.1 I3）。
 
-	// builtinHandlers 是交给 device 路由层的族处理器适配器（装配期构造一次）。
+	// device 是**内核持有的设备数据面**（用户裁定：与 toolcall 同类 ——
+	// 基座接受请求、内核统一调用、经防火墙）。它**不是**任何类型的私有状态。
+	device   agentAPI.DeviceSurface
+	deviceMu sync.RWMutex
+	// builtinTools 是交给 device 路由层的族处理器适配器（装配期构造一次）。
+	//
+	// ★ 它指向的是**类型自己的内部工具**（persona/memory/social/doc/secret/
+	//   output/plugin），所以由类型注册（`SetBuiltinTools`），基座只按接口持用。
+	builtinTools agentAPI.BuiltinToolHandlers
 
 	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
 	// （由 gate 按 agentID 持有，见 security_profile.go 的 securityScope）。

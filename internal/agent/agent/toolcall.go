@@ -340,8 +340,8 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 	//
 	// 未挂载 device 时（独立工具、单测、特殊装配）退化为下面的本地 switch，
 	// 行为不变 —— 两条路径的一致性由 device_dispatch_test.go 钉住。
-	if a.MainState().builtinHandlers != nil {
-		if text, handled := toolroute.Dispatch(a.MainState().builtinHandlers, tc, turnScenes); handled {
+	if a.builtinTools != nil {
+		if text, handled := toolroute.Dispatch(a.builtinTools, tc, turnScenes); handled {
 			return toolOutcome{Text: text}
 		}
 	}
