@@ -148,7 +148,27 @@ type subStates struct {
 	archive  *rtArchiveState
 	resident *residentState
 	worker   *workerState
-	main     *mainState
+	main     any
+}
+
+// SubMain 返回**主 agent 的类型状态**（由 mainagent 存入；基座不读它）。
+//
+// ★ 基座不认识主 agent 实现的形状（§6.2 #4）：它只存/取 `any`。
+//
+//	主 agent 在自己的包里断言回来。
+func (a *Agent) SubMain() any {
+	if a == nil {
+		return nil
+	}
+	return a.ensureSub().main
+}
+
+// SetSubMain 由主 agent 在 Initialize 里存自己的 State。
+func (a *Agent) SetSubMain(v any) {
+	if a == nil {
+		return
+	}
+	a.ensureSub().main = v
 }
 
 // ensure 返回分区表（`New` 里已建好；这里只是 nil 安全的兜底）。
@@ -244,14 +264,16 @@ func (a *Agent) MainState() *mainState {
 	if s.main == nil {
 		s.main = &mainState{}
 	}
-	return s.main
+	m, _ := s.main.(*mainState)
+	return m
 }
 
-// mkMain 创建主 agent状态（主 agent 构造时调）。
+// MkMain 创建主 agent 状态（主 agent 构造时调）。
 func (a *Agent) MkMain() *mainState {
 	s := a.ensureSub()
 	if s.main == nil {
 		s.main = &mainState{}
 	}
-	return s.main
+	m, _ := s.main.(*mainState)
+	return m
 }
