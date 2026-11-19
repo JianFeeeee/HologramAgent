@@ -42,7 +42,10 @@ import (
 	// ★ 空白导入**主 agent 类型模块**：它的 init 把工厂登记进类型表，
 	//   内核启动时 `Instantiate("main", …)` 才有实例（用户裁定：
 	//   「没有被调用就没有这个 agent 的实例」）。装配点不需要知道它怎么装。
+	// 类型模块的**装配注册**：import 即注册（每种类型在自己的 init() 里
+	// 注册 Descriptor / 工具 / Hook）。这是加新类型时**唯一**要改的装配点。
 	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/worker"
 )
 
 // Module 提供主 Agent。
