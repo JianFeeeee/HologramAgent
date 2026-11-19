@@ -223,7 +223,7 @@ func (a *Agent) cancelRunningTools() {
 
 // channelConsolidation 标记记忆整理类自输入：无记忆路径处理，
 // 不写入对话上下文、不向任何输出通道 emit 响应。
-const channelConsolidation = "_consolidation_"
+// 常量已上移到 agenttypes.ChannelConsolidation（基座保留别名，见 aliases.go）。
 
 // SelfKindAir 是"空中断"这个标签（**只有标签，没有语义解释**）。
 //

@@ -1,4 +1,4 @@
-package agent
+package worker
 
 import (
 	"encoding/json"
@@ -9,29 +9,6 @@ import (
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
-
-// maxRetainedChildTasks 是保留的已完成子任务上限（防结果无限占用内存）。
-const maxRetainedChildTasks = 20
-
-// evictChildTasksLocked 淘汰最旧的已完成子任务。调用方必须持有 childMu。
-func (w *workerState) evictLocked() {
-	for len(w.tasks) > maxRetainedChildTasks {
-		oldestID := ""
-		var oldestSeq int64
-		for id, st := range w.tasks {
-			if st.Running {
-				continue
-			}
-			if oldestID == "" || st.Seq < oldestSeq {
-				oldestID, oldestSeq = id, st.Seq
-			}
-		}
-		if oldestID == "" {
-			return // 剩下全是运行中的，不淘汰
-		}
-		delete(w.tasks, oldestID)
-	}
-}
 
 // ── 工作式子的工具禁令（**单一事实来源**） ──
 //
@@ -117,7 +94,7 @@ func workerToolReject(ct agentAPI.ToolCall) string {
 	return fmt.Sprintf("子 Agent 不允许调用 %s: %s（%s）", r.class, ct.Name, r.hint)
 }
 
-func (a *Agent) ExecuteSpawnChild(tc agentAPI.ToolCall, parentChannel string) string {
+func (m *M) SpawnChild(tc agentAPI.ToolCall, parentChannel string) string {
 	task, _ := tc.Arguments["task"].(string)
 	if task == "" {
 		if b, _ := json.Marshal(tc.Arguments); len(b) > 2 {
@@ -136,22 +113,15 @@ func (a *Agent) ExecuteSpawnChild(tc agentAPI.ToolCall, parentChannel string) st
 		maxTurns = 30
 	}
 
-	w := a.MkWorker()
-	w.mu.Lock()
-	w.nextID++
-	taskID := fmt.Sprintf("child_%d", w.nextID)
-	w.mu.Unlock()
+	taskID := m.state().NextID()
 
 	// parentChannel 由调用方（任务帧）传入：子任务完成通知要回到**发起这次
 	// spawn 的那个任务**的通道，而不是"内核当前通道"（那个概念已删除）。
-	if parentChannel == "" || parentChannel == channelConsolidation {
+	if parentChannel == "" || parentChannel == agenttypes.ChannelConsolidation {
 		parentChannel = "cli"
 	}
 
-	w.mu.Lock()
-	w.tasks[taskID] = &agenttypes.ChildTaskState{Running: true}
-	w.mu.Unlock()
-	go a.runChildTask(taskID, task, parentChannel, maxTurns)
+	go m.runChildTask(taskID, task, parentChannel, maxTurns)
 
 	return fmt.Sprintf("子任务已启动（ID: %s，最多 %d 轮）。完成后会自动通知你，届时用 child_result 查看输出即可（**只需查询一次**）", taskID, maxTurns)
 }
@@ -202,8 +172,8 @@ const childSystemPromptTemplate = `你是 HologramAgent 的子任务助手。
 
 任务: %s`
 
-func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns int) {
-	if a.provider == nil {
+func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int) {
+	if m.A.Config().Provider == nil {
 		log.Printf("[child] %s failed: no LLM provider configured", taskID)
 		return
 	}
@@ -216,7 +186,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		{Role: "user", Content: task},
 	}
 
-	allTools := a.BuildToolDefs()
+	allTools := m.A.BuildToolDefs()
 	childTools := make([]interface{}, 0, len(allTools))
 	for _, t := range allTools {
 		toolMap, ok := t.(map[string]interface{})
@@ -251,16 +221,16 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			MaxTokens:       4096,
 			Tools:           childTools,
 			ToolChoice:      "auto",
-			DisableThinking: !a.MainState().thinkingEnabled,
+			DisableThinking: !m.A.Config().ThinkingEnabled,
 		}
 
-		// ★ 走与主 agent 同一套 provider 选择（而不是直接 a.provider.Chat）。
+		// ★ 走与主 agent 同一套 provider 选择（而不是直接 m.A.Config().Provider.Chat）。
 		//
 		// 两件事因此成立：
 		//  ① `core.agent.llm.child_provider` 对它生效（四类 agent 各自可配源）
 		//  ② 多源回退对它生效 —— 此前它是唯一绕过回退链的地方：
 		//     默认源抖动一次，整条子任务就"执行失败"，而主 agent 同刻能自动换源
-		resp, err := a.chatWithProviderChain(req)
+		resp, err := m.chatWithProviderChain(req)
 		if err != nil {
 			finalResult = fmt.Sprintf("子 Agent 执行失败: %v", err)
 			break
@@ -279,8 +249,8 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 
 		// Tool execution remains kernel-owned. The worker loop only provides
 		// worker-specific request constraints; it does not implement a runner.
-		results := a.RunToolBatch(resp.ToolCalls, BatchOpts{
-			Ctx:        a.ctx,
+		results := m.A.RunToolBatch(resp.ToolCalls, agenttypes.BatchOpts{
+			Ctx:        m.A.Ctx(),
 			Channel:    parentChannel,
 			NoBatch:    true,
 			ToolFilter: workerToolReject,
@@ -309,7 +279,7 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 			// 重烧一整个上下文）。所以先做一次「不带工具的收尾调用」，把已有
 			// 成果落成文本。仅在失败路径上多花一次 LLM 调用。
 			log.Printf("[child] %s exhausted budget maxTurns=%d, attempting wrap-up distillation of results so far", taskID, maxTurns)
-			if summary := a.salvageChildSummary(msgs, maxTurns); summary != "" {
+			if summary := m.salvageSummary(msgs, maxTurns); summary != "" {
 				finalResult = summary
 			} else {
 				finalResult = fmt.Sprintf("子 Agent 已达工具轮上限（%d 轮）仍未产出最终答复，任务未完成", maxTurns)
@@ -320,26 +290,12 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 		}
 	}
 
-	w := a.WorkerStateOf()
-	if w != nil {
-		w.mu.Lock()
-		if st := w.tasks[taskID]; st != nil {
-			st.Running = false
-			st.Result = finalResult
-			w.seq++
-			st.Seq = w.seq
-		}
-		w.evictLocked()
-		w.mu.Unlock()
-	}
+	m.state().Finish(taskID, finalResult)
 
 	log.Printf("[child] %s done: %s", taskID, truncateStr(finalResult, 100))
 
 	notification := fmt.Sprintf("子任务 %s 已完成。请用 child_result 工具查看输出（只需查询一次；重复查询不会返回失败）。", taskID)
-	a.InjectSelfChannel(selfInputMsg{
-		Text:    notification,
-		Channel: parentChannel, // 回到父对话通道，正常处理（写入上下文 + emit 响应）
-	})
+	m.A.InjectSelfChannel(agenttypes.SelfInputMsg{Text: notification, Channel: parentChannel})
 }
 
 // executeChildResultTool 取回子任务结果。
@@ -348,30 +304,19 @@ func (a *Agent) runChildTask(taskID, task string, parentChannel string, maxTurns
 // 这一点至关重要——完成通知会长期留在持久上下文里（formatMergedTimeline
 // 每轮重新注入），如果重复查询返回“不存在”这种失败信号，模型会认定任务
 // 未完成而无限重试（实测单轮 35 次工具调用、持续 514 秒）。
-func (a *Agent) ExecuteChildResultTool(tc agentAPI.ToolCall) string {
+func (m *M) ChildResult(tc agentAPI.ToolCall) string {
 	taskID, _ := tc.Arguments["task_id"].(string)
 	if taskID == "" {
 		return "请提供 task_id 参数"
 	}
 
-	w := a.WorkerStateOf()
-	if w == nil {
-		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
-	}
-	w.mu.Lock()
-	st, ok := w.tasks[taskID]
-	if !ok {
-		w.mu.Unlock()
-		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
-	}
-	if st.Running {
-		w.mu.Unlock()
+	if snap, ok := m.state().Snapshot(taskID); ok && snap.Running {
 		return fmt.Sprintf("子任务 %s 仍在运行中，尚未完成。请等待完成通知后再查询。", taskID)
 	}
-	first := !st.Delivered
-	st.Delivered = true
-	result := st.Result
-	w.mu.Unlock()
+	first, result, ok := m.state().MarkDelivered(taskID)
+	if !ok {
+		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
+	}
 
 	if first {
 		return fmt.Sprintf("【子任务 %s 结果】\n%s", taskID, result)
@@ -397,19 +342,19 @@ const childSalvagePrompt = `你已用完工具调用轮次预算，不能再调�
 // 比这多出来的**一次**调用贵得多。
 //
 // 失败不抛错（外层只在失败路径上调用它）：返回空串即回退到诚实的事实陈述。
-func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) string {
-	if a.provider == nil {
+func (m *M) salvageSummary(msgs []agentAPI.Message, maxTurns int) string {
+	if m.A.Config().Provider == nil {
 		return ""
 	}
 	salvageMsgs := make([]agentAPI.Message, 0, len(msgs)+1)
 	salvageMsgs = append(salvageMsgs, msgs...)
 	salvageMsgs = append(salvageMsgs, agentAPI.Message{Role: "user", Content: childSalvagePrompt})
 
-	resp, err := a.completeLLMNoRetry(a.ctx, &agentAPI.CompletionRequest{
+	resp, err := m.A.CompleteLLMNoRetry(m.A.Ctx(), &agentAPI.CompletionRequest{
 		Messages:        salvageMsgs,
 		MaxTokens:       4096,
 		ToolChoice:      "none", // 不给工具，强制走文本产出
-		DisableThinking: !a.MainState().thinkingEnabled,
+		DisableThinking: !m.A.Config().ThinkingEnabled,
 	})
 	if err != nil {
 		log.Printf("[child] wrap-up distillation failed (falling back to factual summary): %v", err)
@@ -422,20 +367,20 @@ func (a *Agent) salvageChildSummary(msgs []agentAPI.Message, maxTurns int) strin
 	return fmt.Sprintf("（注：已达 %d 轮工具上限，以下为已取得成果的收尾提炼，可能不完整）\n%s", maxTurns, content)
 }
 
-func (a *Agent) ExecuteLLMTool(tc agentAPI.ToolCall) string {
-	if a.providerManager == nil {
+func (m *M) ExecuteLLMTool(tc agentAPI.ToolCall) string {
+	if m.A.Config().ProviderManager == nil {
 		return "LLM 源管理器不可用"
 	}
 	switch tc.Name {
 	case "llm_list_sources":
-		sources := a.providerManager.List()
+		sources := m.A.Config().ProviderManager.List()
 		if len(sources) == 0 {
 			return "没有可用的 LLM 源"
 		}
 		parts := []string{"可用 LLM 源:"}
 		for _, name := range sources {
 			mark := " "
-			if p := a.providerManager.Get(""); p != nil && p.Name() == name {
+			if p := m.A.Config().ProviderManager.Get(""); p != nil && p.Name() == name {
 				mark = "→"
 			}
 			parts = append(parts, fmt.Sprintf("  %s %s", mark, name))
@@ -447,10 +392,10 @@ func (a *Agent) ExecuteLLMTool(tc agentAPI.ToolCall) string {
 		if name == "" {
 			return "请提供源名称"
 		}
-		if err := a.providerManager.SetDefault(name); err != nil {
+		if err := m.A.Config().ProviderManager.SetDefault(name); err != nil {
 			return fmt.Sprintf("切换失败: %v", err)
 		}
-		a.provider = a.providerManager.Get(name)
+		// ★ 活动源由内核设施持有（§3.2.1）：这里只切默认源。
 		return fmt.Sprintf("已切换到 LLM 源: %s", name)
 
 	default:
@@ -463,7 +408,20 @@ func (a *Agent) ExecuteLLMTool(tc agentAPI.ToolCall) string {
 // 优先级：自身 preferredProvider 提前 → 其余源按原顺序回退。
 // 与主 agent 的 `callLLMWithFallback` 的区别是这里不重试、不切 active provider：
 // 子任务是短生命周期，重试只会把一个已经抖动的时间窗拉长。
-func (a *Agent) chatWithProviderChain(req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+func (m *M) chatWithProviderChain(req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
 	// ★ 走内核设施（NoRetry：子任务短生命周期，重试只会把抖动的窗口拉长）。
-	return a.completeLLMNoRetry(a.ctx, req)
+	return m.A.CompleteLLMNoRetry(m.A.Ctx(), req)
+}
+
+// truncateStr 按字符截断（保留前 n 个 rune + "..."）。
+//
+// ★ 内联而不用基座的导出版：本包 import 基座，但那是"类型依赖基座"的
+//
+//	合法方向；这个三行纯函数没必要为它加一个导出面。
+func truncateStr(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
 }

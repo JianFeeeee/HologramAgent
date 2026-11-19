@@ -79,7 +79,7 @@ func init() {
 			if a == nil {
 				return "内核装配错误：工具上下文里没有 agent"
 			}
-			return a.ExecuteSpawnChild(tc, c.Channel)
+			return spawnChildFn(a, tc, c.Channel)
 		})
 
 	registerTool("child_result",
@@ -95,7 +95,7 @@ func init() {
 			if a == nil {
 				return "内核装配错误：工具上下文里没有 agent"
 			}
-			return a.ExecuteChildResultTool(tc)
+			return childResultFn(a, tc)
 		})
 
 	// ── 子侧：向上汇报 + 写处理表 ──

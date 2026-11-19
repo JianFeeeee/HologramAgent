@@ -10,6 +10,9 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
+// channelConsolidation 见 agenttypes.ChannelConsolidation。
+const channelConsolidation = agenttypes.ChannelConsolidation
+
 type (
 	// 上下文（L1）与工具结果的纯数据。
 	ContextEvent    = agenttypes.ContextEvent

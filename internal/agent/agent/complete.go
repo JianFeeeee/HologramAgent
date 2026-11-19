@@ -22,7 +22,7 @@ import (
 )
 
 // completeLLMNoRetry 与 completeLLM 相同，但关闭同源瞬时错误重试。
-func (a *Agent) completeLLMNoRetry(ctx context.Context, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+func (a *Agent) CompleteLLMNoRetry(ctx context.Context, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
 	if a.llm != nil {
 		return a.llm.Complete(ctx, &kernelapi.LLMRequest{
 			AgentID:   string(a.id),

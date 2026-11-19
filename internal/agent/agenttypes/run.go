@@ -230,3 +230,10 @@ type BatchResult struct {
 	Raw    interface{}
 	Denied bool
 }
+
+// ChannelConsolidation 是「记忆整理」这类自输入的通道名。
+//
+// ★ 放在值类型层：状态机、子 agent 实现（spawn）、事件循环**三条线**都要判它。
+//
+//	放基座 ⇒ 每搬走一处就得为它开一个导出；放这里 ⇒ 共用且无回路。
+const ChannelConsolidation = "_consolidation_"
