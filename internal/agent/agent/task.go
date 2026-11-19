@@ -265,7 +265,7 @@ func (a *Agent) RunInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) 
 //     即中断已提交的那段上下文留在下面（前缀），本任务自己的现场落回其上。
 //
 // 实现：重建基础前缀（system + timeline + 用户输入）；由于中断结束时已把它的
-// 输入/输出提交进 a.context，重建出的 timeline 已含中断的效果；再把本任务
+// 输入/输出提交进 a.contextMgr()，重建出的 timeline 已含中断的效果；再把本任务
 // 自己的尾部（Stage 上下文 + 工具轮产物 + 占位）原样接回。
 func (a *Agent) RebaseFramePrefix(f *TaskFrame) {
 	if f == nil || f.PrefixLen <= 0 || f.PrefixLen > len(f.Msgs) {
@@ -293,7 +293,7 @@ func (a *Agent) RebaseFramePrefix(f *TaskFrame) {
 	f.PrefixLen = len(prefix)
 
 	// ★ 恢复也是**新的上下文装配点**：中断任务跑完已把它的输入/输出提交进
-	// a.context（见上面注释），于是重建出的前缀可能比被挂起时更大。
+	// a.contextMgr()（见上面注释），于是重建出的前缀可能比被挂起时更大。
 	// 不在这里裁，这份"更大的前缀"会被原样发出去，下一轮再靠 stepLLM 的
 	// 闸门补救——而那时已经付过一次超限请求的代价。
 	//
@@ -472,7 +472,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	}
 
 	if !isInterrupt {
-		a.context.Append(ContextEvent{
+		a.contextMgr().Append(ContextEvent{
 			Timestamp: start,
 			Source:    evt.Source,
 			Input:     input,
@@ -504,7 +504,7 @@ func (a *Agent) FinishInputTask(f *TaskFrame, out stepOutcome) {
 		log.Printf("[agent] process %s error: %v", evt.Type, f.Err)
 		resp := fmt.Sprintf("处理错误: %v", f.Err)
 		a.EmitResponse(evt, resp, f.TurnUsage)
-		a.context.Append(ContextEvent{Timestamp: time.Now(), Source: "agent", Input: f.Input, Response: resp})
+		a.contextMgr().Append(ContextEvent{Timestamp: time.Now(), Source: "agent", Input: f.Input, Response: resp})
 		f.Terminal = terminalError
 		return
 	}
@@ -546,9 +546,9 @@ func (a *Agent) FinishInputTask(f *TaskFrame, out stepOutcome) {
 		ToolCalls:        f.ToolCalls,
 	}
 	a.BindEventMedia(&turnEvt, a.drainMediaBlocks())
-	// ★ 明文拦截发生在 a.context.Append **内部**（见 context.go 的 Append），
+	// ★ 明文拦截发生在 a.contextMgr().Append **内部**（见 context.go 的 Append），
 	// 不是在每个调用点 —— 写 context 的地方有 5 处，逐个补必漏。
-	a.context.Append(turnEvt)
+	a.contextMgr().Append(turnEvt)
 
 	a.EmitResponse(evt, f.Response, f.TurnUsage)
 
@@ -621,7 +621,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 
 	a.Logf("tool call loop start, max_ctx=%d target=%d fixed=%d mem=%d ctx=%d %d tools, %d events, personality=%t, docs=%d",
 		budget.MaxContext, budget.TargetUsage, budget.FixedTokens, budget.MemoryTokens, budget.ContextTokens,
-		len(f.Tools), a.context.Len(),
+		len(f.Tools), a.contextMgr().Len(),
 		a.MainState().personality != nil && a.MainState().personality.Content != "",
 		a.coldcontextStoreSize())
 

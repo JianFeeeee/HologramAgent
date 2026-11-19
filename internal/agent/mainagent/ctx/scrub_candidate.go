@@ -1,4 +1,4 @@
-package ctxmgr
+package ctx
 
 import "github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 

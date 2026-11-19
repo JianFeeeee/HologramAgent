@@ -46,5 +46,5 @@ func (a *Agent) InstallMainRuntime(cfg AgentConfig) {
 			cfg.DocStore.BuildDenseIndex(cfg.MultimodalSpace)
 		}
 	}
-	a.context = rc
+	a.ctxHolder = rc
 }

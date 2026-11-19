@@ -50,15 +50,15 @@ func (a *Agent) RunToolBatch(calls []agenttypes.ToolCall, opts agenttypes.BatchO
 //
 // protected 是**本帧现场**的保留条数；负值表示用全局默认。
 func (a *Agent) PruneContext(query string, protected int) int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
 	// ★ 这里是**真正执行裁剪**（不是把活再交给钩子）：钩子实现调本方法，
 	//   本方法若回头调钩子就成了无限递归（实测栈溢出）。
 	if protected >= 0 {
-		return a.context.PruneWithProtected(query, a.ContextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
+		return a.contextMgr().PruneWithProtected(query, a.ContextTopKForProtected(protected), a.MainState().coldcontextStore, protected)
 	}
-	return a.context.PruneWithProtected(query, a.ContextTopK(), a.MainState().coldcontextStore, a.EffectiveProtectedCount())
+	return a.contextMgr().PruneWithProtected(query, a.ContextTopK(), a.MainState().coldcontextStore, a.EffectiveProtectedCount())
 }
 
 // Hooks 返回当前槽位表（**类型工厂**用它填自己的回调后 SetHooks 挂回）。

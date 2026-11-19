@@ -23,7 +23,7 @@ package agent
 //	"上游错误是不是超页"的判定    → api.IsContextFull（识别归上游调用的发出者）
 //
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
+	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
 )
 
 // accumulatedTokens 估算**未裁剪**的积累上下文 token 数。
@@ -33,12 +33,12 @@ import (
 // 不成立**（这个坑已由 resident.go:checkContextFull 的注释记录过一次，
 // 这里抽成函数是为了让两处共用同一口径，避免再次漂移）。
 func (a *Agent) AccumulatedTokens() int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
 	acc := 0
-	for _, e := range a.context.Recent(0) {
-		acc += ctxmgr.EventTokens(e)
+	for _, e := range a.contextMgr().Recent(0) {
+		acc += mainctx.EventTokens(e)
 	}
 	return acc
 }
@@ -93,10 +93,10 @@ func (a *Agent) OverflowRatioNow() float64 {
 //
 // ★ 它只报事实，不判超没超 —— 阈值与处置在类型侧。
 func (a *Agent) ContextLen() int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
-	return a.context.Len()
+	return a.contextMgr().Len()
 }
 
 // TokenOf 返回第 i 条 L1 事件的 token 成本（基座的**纯读数字**之一）。
@@ -106,10 +106,10 @@ func (a *Agent) ContextLen() int {
 //
 // 越界 / 无上下文 ⇒ 0（调用方按"这条不存在"处理，不是错误）。
 func (a *Agent) TokenOf(i int) int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
-	n, ok := a.context.TokenAt(i)
+	n, ok := a.contextMgr().TokenAt(i)
 	if !ok {
 		return 0
 	}
@@ -121,10 +121,10 @@ func (a *Agent) TokenOf(i int) int {
 // 空中断自己没有正文，但它被触发时"刚才在做什么"是有答案的：
 // 上下文里最后一条真实用户输入。取不到返回空串（pruneByQuery 按时间保留）。
 func (a *Agent) LastUserQueryForPrune() string {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return ""
 	}
-	evts := a.context.Recent(0) // 值为 ContextEvent（非指针），Recent 已做深拷贝
+	evts := a.contextMgr().Recent(0) // 值为 ContextEvent（非指针），Recent 已做深拷贝
 	for i := len(evts) - 1; i >= 0; i-- {
 		if evts[i].Input != "" {
 			return evts[i].Input
@@ -142,7 +142,7 @@ func (a *Agent) LastUserQueryForPrune() string {
 //	而策略裁剪型会在此基础上再叠加"整帧归档"。所以它留在基座，
 //	策略（何时调、调完还超怎么办）由类型注册的 EnforceOverflow 决定。
 func (a *Agent) EvictOversizedPages(query string) (evicted int, reduced bool) {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0, false
 	}
 	// query 为空时自己推导（剔除靠相关性打分，拿不到 query 只能按顺序处理，
@@ -151,7 +151,7 @@ func (a *Agent) EvictOversizedPages(query string) (evicted int, reduced bool) {
 		query = a.LastUserQueryForPrune()
 	}
 	budget := a.ComputeTokenBudget().ContextTokens
-	return a.context.EvictOversizedPages(budget, query)
+	return a.contextMgr().EvictOversizedPages(budget, query)
 }
 
 // PruneForQuery 是**裁剪原语**：按 query 的相关性裁一次（走注册的 Prune 钩子）。

@@ -143,7 +143,7 @@ func (a *Agent) MemoryPass(query, trigger string, prune, recall bool, scenes []s
 // **不做声明判定**——声明已由调用方（pruneOnInput / stepToolAfter）解析，
 // 这里只负责执行。放在 memoryPass 内部是为了让裁剪与召回共享入口。
 func (a *Agent) PruneByQuery(query string) int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
 	return a.pruneWithHook(query, a.EffectiveProtectedCount())
@@ -159,7 +159,7 @@ func (a *Agent) PruneByQuery(query string) int {
 // 用户裁定「Prune 并入 OverflowHandler」指的是后者那条路径；声明式裁剪
 // 在这里，用基座的裁剪**原语**直接执行（它不再是一个 Hooks 槽位）。
 func (a *Agent) pruneWithHook(query string, protected int) int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
 	return a.PruneContext(query, protected)
@@ -176,7 +176,7 @@ func (a *Agent) pruneWithHook(query string, protected int) int {
 // 可能是一整批工具结果。若按全局末尾 N 条保护，那些结果可能落在保护范围外
 // 被归档——恢复后的任务引用的内容已不在上下文里，等于自相矛盾。
 func (a *Agent) PruneForResume(query string, protected int) int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
 	if protected < 0 {
@@ -191,7 +191,7 @@ func (a *Agent) PruneForResume(query string, protected int) int {
 	// 这里按**本帧保护条数**重新推导：先算 token 预算能装几条，
 	// 再保证下限是 protected+1（否则 Prune 会把 protected 之外的裁光）。
 	topK := a.ContextTopKForProtected(protected)
-	return a.context.PruneWithProtected(query, topK, a.MainState().coldcontextStore, protected)
+	return a.contextMgr().PruneWithProtected(query, topK, a.MainState().coldcontextStore, protected)
 }
 
 // contextTopKForProtected 是按**指定保护条数**推导保留条数的版本。
@@ -216,8 +216,8 @@ func (a *Agent) ContextTopKForProtected(protected int) int {
 		return hardCap
 	}
 	avg := 0
-	if a.context != nil {
-		if n := a.context.Len(); n > 0 {
+	if a.contextMgr() != nil {
+		if n := a.contextMgr().Len(); n > 0 {
 			avg = a.AccumulatedTokens() / n
 		}
 	}
@@ -263,8 +263,8 @@ func (a *Agent) ContextTopK() int {
 
 	// 平均事件 token：优先用实际积累，没有积累时退回保守值。
 	avg := 0
-	if a.context != nil {
-		if n := a.context.Len(); n > 0 {
+	if a.contextMgr() != nil {
+		if n := a.contextMgr().Len(); n > 0 {
 			avg = a.AccumulatedTokens() / n
 		}
 	}
@@ -298,10 +298,10 @@ func (a *Agent) ContextTopK() int {
 
 // protectedContextCount 返回当前保护条数（最近 N 条永不换出）。
 func (a *Agent) protectedContextCount() int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return kit.DefaultProtectedCount
 	}
-	if n := a.context.ProtectedCount(); n > 0 {
+	if n := a.contextMgr().ProtectedCount(); n > 0 {
 		return n
 	}
 	return kit.DefaultProtectedCount

@@ -107,8 +107,15 @@ type Agent struct {
 	// cfg 是**归一化后的**构造参数。类型模块的初始化回调要用它
 	// （例如归档间隔 ≤0 时继承蒸馏间隔 —— 归一化只该有一处）。
 	cfg AgentConfig
+	// contextMgr 是**类型的**上下文实现（§6.2 #1：基座零持有实现体）。
+	//
+	// ★ 这不是"基座持有实现"：它是装配期一次性写入的**句柄**，语义上属于
+	//   类型（主 agent 在 Initialize 里 new 出来挂进来）。基座的代码只读它的
+	//   能力面（条数/落盘/工具结果），不参与它的任何策略。
+	ctxHolder *RelevanceContext
 
-	context      *RelevanceContext
+	// ★ context 实现不在这里：它是**主 agent 的类型私有实现**（§6.2 #1）。
+	// 基座通过 Hooks.ContextManager 取它（类型在 Initialize 里装上自己的那份）。
 	systemPrompt string
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -576,8 +583,8 @@ func New(cfg AgentConfig) *Agent {
 	// 而不是进程级单例（见 RelevanceContext.SecretStore 的注释）。
 	if gate := a.Gate(); gate != nil {
 		if st := gate.Store(); st != nil {
-			if a.context != nil {
-				a.context.SetSecretStore(st)
+			if a.contextMgr() != nil {
+				a.contextMgr().SetSecretStore(st)
 			}
 			// ProviderManager 是**全进程共享**的一份（主/子/驻留子同源），
 			// 出向装饰要在它 Register 时生效，所以注入也必须到它身上。

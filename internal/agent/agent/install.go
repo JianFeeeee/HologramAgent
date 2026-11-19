@@ -22,7 +22,7 @@ func (a *Agent) InstallContext(c *RelevanceContext) {
 	if a == nil {
 		return
 	}
-	a.context = c
+	a.ctxHolder = c
 }
 
 // InstallScheduler 装入本类型的输入调度器（无队列的类型不装）。
@@ -93,8 +93,8 @@ func (a *Agent) InjectSecretStore() {
 	if st == nil {
 		return
 	}
-	if a.context != nil {
-		a.context.SetSecretStore(st)
+	if a.contextMgr() != nil {
+		a.contextMgr().SetSecretStore(st)
 	}
 	if m := a.MainState(); m != nil && m.stageHost != nil {
 		m.stageHost.SetSecretStore(st)

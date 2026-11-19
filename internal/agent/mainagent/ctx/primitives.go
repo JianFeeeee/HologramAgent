@@ -1,4 +1,4 @@
-package ctxmgr
+package ctx
 
 // primitives.go —— 上下文事件的**纯计算原语**（token 估算 / 页索引）。
 //

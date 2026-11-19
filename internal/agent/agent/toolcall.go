@@ -1027,7 +1027,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 		// 预算取 ContextTokens 减去当前时间线已占用：召回内容与已有事件
 		// 要一起渲染，只看整窗会在"加上原有内容"后才发现爆了。
 		budget := a.recallBudget()
-		plan := a.context.PlanColdRecall(docs, query, budget)
+		plan := a.contextMgr().PlanColdRecall(docs, query, budget)
 		if plan.Over {
 			log.Printf("[coldcontext] recall over budget: need %d tokens, budget %d — "+
 				"evicted %d page(s) across %d doc(s) by lowest similarity (now %d tokens)",
@@ -1061,7 +1061,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 				if labels := a.BlockLabelsForDoc(d); labels != "" {
 					content = content + "\n关联媒体: " + labels
 				}
-				a.context.InsertByTimestamp(ContextEvent{
+				a.contextMgr().InsertByTimestamp(ContextEvent{
 					Timestamp: d.CreatedAt,
 					Source:    "cold_storage",
 					Input:     fmt.Sprintf("load cold context: %s", query),
@@ -1323,7 +1323,7 @@ func (a *Agent) currentFingerprint() string {
 // 传 nil 表示整篇完整回灌。剔除是标注而非删除：数据全在，
 // 清空 InactivePages 即可恢复渲染。
 func (a *Agent) restoreDocEvents(d *model.ColdDoc, inactivePages []int) int {
-	if a == nil || a.context == nil || d == nil || !colddoc.HasEvents(d) {
+	if a == nil || a.contextMgr() == nil || d == nil || !colddoc.HasEvents(d) {
 		return 0
 	}
 
@@ -1333,7 +1333,7 @@ func (a *Agent) restoreDocEvents(d *model.ColdDoc, inactivePages []int) int {
 		// 只用 InOut 会让回填出的 ContextEvent 缺 ReasoningContent，
 		// 于是再次被裁下时思维链就永久丢了（而且 L1 里那份已经是唯一副本）。
 		input, response, reasoning, held := colddoc.InOutWithReasoning(&ev)
-		a.context.InsertByTimestamp(ContextEvent{
+		a.contextMgr().InsertByTimestamp(ContextEvent{
 			Timestamp:        ev.Timestamp, // ★ 原始时间戳：回到事件发生的位置
 			Source:           ev.Source,
 			Input:            input,

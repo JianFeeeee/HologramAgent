@@ -1,4 +1,4 @@
-package ctxmgr
+package ctx
 
 // aliases.go —— 本包用的**值类型别名**（声明点在 agenttypes / model）。
 //

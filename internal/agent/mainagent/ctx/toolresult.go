@@ -1,4 +1,4 @@
-package ctxmgr
+package ctx
 
 // 超长工具结果的「全文落盘 + 按范围回读」（纯逻辑部分）。
 //

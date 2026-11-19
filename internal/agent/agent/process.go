@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
+	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
 	"log"
 	"regexp"
 	"sort"
@@ -663,10 +663,10 @@ func (a *Agent) BuildMessages(sysPrompt, input string, ctxTokens int) []agentAPI
 // 组内完整性由 buildEventGroup 保证（要么全有要么全无），因此任何顺序
 // 都不会产生「有 tool_calls 无配对结果」的非法序列。
 func (a *Agent) renderL1Messages(maxTokens int) []agentAPI.Message {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return nil
 	}
-	events := a.context.EventsCopy()
+	events := a.contextMgr().EventsCopy()
 
 	// 先把每个事件组装成一个「消息组」，再决定哪些组进上下文。
 	// 组装与取舍分开，取舍逻辑才能只看预算，不看消息形态。
@@ -742,7 +742,7 @@ func (a *Agent) buildEventGroup(e *ContextEvent) ([]agentAPI.Message, bool) {
 	activeCallIDs := make(map[string]bool)
 	for i, tc := range e.ToolCalls {
 		page := i + 2
-		if ctxmgr.ContainsInt(e.InactivePages, page) {
+		if mainctx.ContainsInt(e.InactivePages, page) {
 			continue
 		}
 		calls = append(calls, agentAPI.ToolCall{ID: tc.CallID, Name: tc.Name, Arguments: tc.Arguments, RawArguments: tc.RawArguments})

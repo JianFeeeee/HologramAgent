@@ -992,7 +992,7 @@ func (a *Agent) CompressResident(id string) (int, error) {
 		return 0, fmt.Errorf("驻留子 %s 不存在", id)
 	}
 
-	ctx := rc.agent.context
+	ctx := rc.agent.contextMgr()
 	compacted := 0
 
 	if ctx != nil {
@@ -1096,7 +1096,7 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 // 于是 `f.Msgs` 的规模结构上封顶在 ~80% 窗口 —— 对 90% 阈值而言是**永远不成立**的判据
 // （写测试时我用一个比系统提示词还小的窗口才勉强越过线，那等于什么都没测）。
 //
-// 正确的事是"**要被裁了**"：拿**未裁剪**的积累上下文（`a.context` 的全部事件）估算，
+// 正确的事是"**要被裁了**"：拿**未裁剪**的积累上下文（`a.contextMgr()` 的全部事件）估算，
 // 它超过窗口阈值就说明下一轮必须丢事件 ⇒ 这就是 contextfull。
 //
 // 只对**驻留子**生效（只有它们设了 onContextFull）。
@@ -1112,7 +1112,7 @@ func (a *Agent) CheckContextFull() {
 	if signaled {
 		return
 	}
-	if a.context == nil {
+	if a.contextMgr() == nil {
 		return
 	}
 	// ★ 判据统一走 overflowRatioNow（与容量保护同一个量）：

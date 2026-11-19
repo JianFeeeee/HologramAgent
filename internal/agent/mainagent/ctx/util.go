@@ -1,4 +1,4 @@
-package ctxmgr
+package ctx
 
 // util.go —— 本包自带的小工具（不 import agent，避免成环）。
 //

@@ -5,7 +5,7 @@ package agent
 // ★ 为什么它留在基座而不是 ctxmgr：它读 `a.ComputeTokenBudget()` 与
 //   累计 token（**基座的事实**），而 ctxmgr 不认识 Agent。
 
-import "github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
+import mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
 
 // EffectiveProtectedCount 返回本帧现场要保护的条数。
 //
@@ -19,20 +19,20 @@ import "github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
 // 这条保证消失。
 func (a *Agent) EffectiveProtectedCount() int {
 	cfgCap := protectedCountDefault
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return cfgCap
 	}
-	if n := a.context.ProtectedCount(); n > 0 {
+	if n := a.contextMgr().ProtectedCount(); n > 0 {
 		cfgCap = n
 	}
 	budget := a.ComputeTokenBudget()
 	tokens := budget.ContextTokens
-	if tokens <= 0 || a.context.Len() == 0 {
+	if tokens <= 0 || a.contextMgr().Len() == 0 {
 		return cfgCap
 	}
-	avg := a.AccumulatedTokens() / a.context.Len()
+	avg := a.AccumulatedTokens() / a.contextMgr().Len()
 	if avg <= 0 {
-		avg = ctxmgr.DefaultAvgEventTokens
+		avg = mainctx.DefaultAvgEventTokens
 	}
 	budgetCap := tokens / avg
 	if budgetCap < 1 {
@@ -62,7 +62,7 @@ func countPlanPages(evict map[string][]int) int {
 //
 //	都会被判超预算而全部剔空，等于召不回来。
 func (a *Agent) recallBudget() int {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return 0
 	}
 	tb := a.ComputeTokenBudget()

@@ -2,7 +2,7 @@ package agent
 
 import (
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
+	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
 	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
@@ -50,9 +50,9 @@ func (a *Agent) distillContext() {
 	if a.MainState().coldcontextStore == nil {
 		return
 	}
-	n := a.context.Len()
+	n := a.contextMgr().Len()
 	if n > a.MainState().maxContextSize*2 {
-		archived := a.context.Prune("", a.MainState().maxContextSize, a.MainState().coldcontextStore)
+		archived := a.contextMgr().Prune("", a.MainState().maxContextSize, a.MainState().coldcontextStore)
 		if archived > 0 {
 			log.Printf("[agent] distill: pruned %d low-relevance events to document memory (total=%d)", archived, n)
 		}
@@ -680,7 +680,7 @@ func (a *Agent) emitMemoryCandidate(source, input, response, reasoning string, t
 	}
 	// ★ 记忆候选是**不经 context** 的另一条持久化侧路（走 EmitOutput）。
 	// 不在这里拦，明文会直接进长期记忆 —— 而记忆跨会话保留、每轮被召回。
-	ctxmgr.ScrubMemoryCandidate(payload, a.SecretStore())
+	mainctx.ScrubMemoryCandidate(payload, a.SecretStore())
 	a.io.EmitOutput("memory", "memory_candidate", payload)
 }
 

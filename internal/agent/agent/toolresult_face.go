@@ -12,18 +12,18 @@ package agent
 import (
 	"fmt"
 
-	"github.com/JianFeeeee/HologramAgent/internal/agent/ctxmgr"
+	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
 )
 
 // storeToolResult 把超长结果正文落盘，返回元信息。IO 委托给上下文。
 func (a *Agent) storeToolResult(evtID, tool, text string) (*ToolResultStore, error) {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return nil, fmt.Errorf("toolresult: agent 未就绪")
 	}
-	if a.context.SavePath() == "" {
+	if a.contextMgr().SavePath() == "" {
 		return nil, fmt.Errorf("toolresult: 未配置持久化目录，无法落盘")
 	}
-	return a.context.PersistToolResult(evtID, tool, text)
+	return a.contextMgr().PersistToolResult(evtID, tool, text)
 }
 
 // offloadToolResult 把超长结果落盘，返回替换后的预览文本。
@@ -31,7 +31,7 @@ func (a *Agent) storeToolResult(evtID, tool, text string) (*ToolResultStore, err
 // 返回 ok=false 时调用方保持原内容不变（落盘失败不能吞掉结果 ——
 // 宁可撞窗口也不能让模型看不到任何东西）。
 func (a *Agent) offloadToolResult(f *TaskFrame, tool, content string) (string, bool) {
-	if a == nil || a.context == nil || content == "" {
+	if a == nil || a.contextMgr() == nil || content == "" {
 		return "", false
 	}
 	evtID := ""
@@ -39,7 +39,7 @@ func (a *Agent) offloadToolResult(f *TaskFrame, tool, content string) (string, b
 		evtID = f.EventID
 	}
 	if evtID == "" {
-		evtID = ctxmgr.NewEventID()
+		evtID = mainctx.NewEventID()
 		if f != nil {
 			f.EventID = evtID
 		}
@@ -49,8 +49,8 @@ func (a *Agent) offloadToolResult(f *TaskFrame, tool, content string) (string, b
 		a.Logf("toolresult offload failed (tool=%s): %v — 保持原内容", tool, err)
 		return "", false
 	}
-	a.context.RegisterToolResultStore(evtID, st)
-	return ctxmgr.PreviewToolResult(evtID, st, ctxmgr.HeadLinesOf(content, ctxmgr.PreviewHeadLines), ctxmgr.PreviewHeadLines), true
+	a.contextMgr().RegisterToolResultStore(evtID, st)
+	return mainctx.PreviewToolResult(evtID, st, mainctx.HeadLinesOf(content, mainctx.PreviewHeadLines), mainctx.PreviewHeadLines), true
 }
 
 // readStoredToolResult 实现 toolresult_read：按句柄 + 字节区间读回全文。
@@ -78,24 +78,24 @@ func (a *Agent) readStoredToolResult(args map[string]interface{}) (string, error
 	if limit > maxReadBytes {
 		limit = maxReadBytes
 	}
-	if a.context == nil {
+	if a.contextMgr() == nil {
 		return "", fmt.Errorf("上下文不可用")
 	}
-	st := a.context.FindToolResultStore(evtID)
+	st := a.contextMgr().FindToolResultStore(evtID)
 	if st == nil {
 		return "", fmt.Errorf("未找到 event_id=%s 的工具结果记录：可能句柄有误，或该事件已随上下文淘汰", evtID)
 	}
-	body, atEnd, err := a.context.ReadToolResultBody(evtID, st, offset, limit)
+	body, atEnd, err := a.contextMgr().ReadToolResultBody(evtID, st, offset, limit)
 	if err != nil {
 		return "", err
 	}
-	return ctxmgr.FormatReadBack(st, offset, body, atEnd), nil
+	return mainctx.FormatReadBack(st, offset, body, atEnd), nil
 }
 
 // HasStoredToolResults 判断当前上下文里是否有可回读的超长工具结果。
 func (a *Agent) HasStoredToolResults() bool {
-	if a == nil || a.context == nil {
+	if a == nil || a.contextMgr() == nil {
 		return false
 	}
-	return a.context.HasAnyToolResultStore()
+	return a.contextMgr().HasAnyToolResultStore()
 }
