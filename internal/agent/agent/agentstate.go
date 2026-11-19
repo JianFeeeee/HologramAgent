@@ -151,36 +151,6 @@ func (a *Agent) SetSubMain(v any) {
 	a.SetSub(SubKeyMain, v)
 }
 
-// 分区键（类型状态各占一格）。
-const (
-	SubKeyRT       = "rt"
-	SubKeyArchive  = "archive"
-	SubKeyResident = "resident"
-	SubKeyWorker   = "worker"
-	SubKeyMain     = "main"
-)
-
-// Sub 取某个类型的状态格（键见 SubKey*）。
-func (a *Agent) Sub(key string) any {
-	if a == nil {
-		return nil
-	}
-	if s := a.ensureSub(); s != nil {
-		return s.get(key)
-	}
-	return nil
-}
-
-// SetSub 存某个类型的状态格（由类型在构造/Initialize 时调用）。
-func (a *Agent) SetSub(key string, v any) {
-	if a == nil {
-		return
-	}
-	if s := a.ensureSub(); s != nil {
-		s.set(key, v)
-	}
-}
-
 // ensure 返回分区表（`New` 里已建好；这里只是 nil 安全的兜底）。
 func (a *Agent) ensureSub() *subStates {
 	if a == nil {
@@ -197,14 +167,13 @@ func (a *Agent) rt() *rtState {
 	if a == nil || a.sub == nil {
 		return nil
 	}
-	v, _ := a.sub.get(SubKeyRT).(*rtState)
+	v, _ := a.Sub(SubKeyRT).(*rtState)
 	return v
 }
 
 // mkRT 为本次装配创建 rt 状态（rtchild 构造时调）。
 func (a *Agent) mkRT(slot *rtSlot, maxTools int) {
-	s := a.ensureSub()
-	s.set(SubKeyRT, &rtState{slot: slot, maxTools: maxTools})
+	a.SetSub(SubKeyRT, &rtState{slot: slot, maxTools: maxTools})
 }
 
 // archive 取父侧的 rt 留档（不是 rt 父时返回 nil）。
@@ -212,17 +181,16 @@ func (a *Agent) ArchiveOf() *rtArchiveState {
 	if a == nil || a.sub == nil {
 		return nil
 	}
-	v, _ := a.sub.get(SubKeyArchive).(*rtArchiveState)
+	v, _ := a.Sub(SubKeyArchive).(*rtArchiveState)
 	return v
 }
 
 // mkArchive 创建留档区（父第一次拉起 rt 时调）。
 func (a *Agent) MkArchive() *rtArchiveState {
-	s := a.ensureSub()
-	if s.get(SubKeyArchive) == nil {
-		s.set(SubKeyArchive, &rtArchiveState{closed: map[string][]agentAPI.Message{}})
+	if a.Sub(SubKeyArchive) == nil {
+		a.SetSub(SubKeyArchive, &rtArchiveState{closed: map[string][]agentAPI.Message{}})
 	}
-	v, _ := s.get(SubKeyArchive).(*rtArchiveState)
+	v, _ := a.Sub(SubKeyArchive).(*rtArchiveState)
 	return v
 }
 
@@ -231,15 +199,14 @@ func (a *Agent) Resident() *residentState {
 	if a == nil || a.sub == nil {
 		return nil
 	}
-	v, _ := a.sub.get(SubKeyResident).(*residentState)
+	v, _ := a.Sub(SubKeyResident).(*residentState)
 	return v
 }
 
 // mkResident 为本次装配创建驻留子状态（驻留子构造时调）。
 func (a *Agent) mkResident(notifyParent func(string), onContextFull func()) *residentState {
-	s := a.ensureSub()
 	st := &residentState{notifyParent: notifyParent, onContextFull: onContextFull}
-	s.set(SubKeyResident, st)
+	a.SetSub(SubKeyResident, st)
 	return st
 }
 
@@ -253,23 +220,18 @@ func (a *Agent) MainState() *mainState {
 	if a == nil {
 		return nil
 	}
-	s := a.ensureSub()
-	if s == nil {
-		return nil
+	if a.Sub(SubKeyMain) == nil {
+		a.SetSub(SubKeyMain, &mainState{})
 	}
-	if s.get(SubKeyMain) == nil {
-		s.set(SubKeyMain, &mainState{})
-	}
-	m, _ := s.get(SubKeyMain).(*mainState)
+	m, _ := a.Sub(SubKeyMain).(*mainState)
 	return m
 }
 
 // MkMain 创建主 agent 状态（主 agent 构造时调）。
 func (a *Agent) MkMain() *mainState {
-	s := a.ensureSub()
-	if s.get(SubKeyMain) == nil {
-		s.set(SubKeyMain, &mainState{})
+	if a.Sub(SubKeyMain) == nil {
+		a.SetSub(SubKeyMain, &mainState{})
 	}
-	m, _ := s.get(SubKeyMain).(*mainState)
+	m, _ := a.Sub(SubKeyMain).(*mainState)
 	return m
 }

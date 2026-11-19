@@ -384,7 +384,7 @@ func (a *Agent) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, 
 		pluginName, _ := tc.Arguments["plugin_name"].(string)
 		return toolOutcome{Text: a.ExecuteGetPluginTools(pluginName)}
 	case strings.HasPrefix(tc.Name, "llm_"):
-		return toolOutcome{Text: executeLLMToolFn(a, tc)}
+		return toolOutcome{Text: a.ExecuteLLMTool(tc)}
 	case strings.HasPrefix(tc.Name, "secret_"):
 		return toolOutcome{Text: a.executeSecretTool(tc)}
 		// ★★ 2026-10-06：describe_image / transcribe_audio / ocr_image 已移出内核，

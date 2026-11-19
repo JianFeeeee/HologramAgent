@@ -58,45 +58,9 @@ func init() {
 		}
 	}
 
-	// ── 父侧：工作式子（异步子 agent）──
-	//
-	// ★ 工作式子不进 children 登记表（它没有 io/通道，结果是幂等缓存），
-	//   所以它不是 admin_child 管的类型；两个工具自成一组。
-	registerTool("spawn_child",
-		"启动一个异步子 Agent 执行独立任务，不阻塞当前对话。完成后系统自动通知你。"+
-			"多个互不依赖的子任务可在同一轮里一次 spawn 多个。",
-		registry.SideParent,
-		map[string]interface{}{
-			"task": map[string]interface{}{
-				"type": "string", "description": "要子 Agent 完成的任务描述（要完整、含必要背景）",
-			},
-			"max_turns": map[string]interface{}{
-				"type": "integer", "description": "子 Agent 最大工具轮数（默认 5，范围 1-30）",
-			},
-		}, []string{"task"},
-		func(c registry.ToolCtx, tc agentAPI.ToolCall) string {
-			a := hostAgent(c)
-			if a == nil {
-				return "内核装配错误：工具上下文里没有 agent"
-			}
-			return spawnChildFn(a, tc, c.Channel)
-		})
-
-	registerTool("child_result",
-		"查询异步子 Agent 的执行结果（收到完成通知后调用，只需查询一次）。",
-		registry.SideParent,
-		map[string]interface{}{
-			"task_id": map[string]interface{}{
-				"type": "string", "description": "spawn_child 返回的任务 ID，如 child_1",
-			},
-		}, []string{"task_id"},
-		func(c registry.ToolCtx, tc agentAPI.ToolCall) string {
-			a := hostAgent(c)
-			if a == nil {
-				return "内核装配错误：工具上下文里没有 agent"
-			}
-			return childResultFn(a, tc)
-		})
+	// ★ `spawn_child` / `child_result` 由**工作式子类型包**自己注册
+	//   （internal/agent/worker 的 init 里调 registry.RegisterTool）：
+	//   那是它的能力，基座只按表渲染与分派。
 
 	// ── 子侧：向上汇报 + 写处理表 ──
 	//

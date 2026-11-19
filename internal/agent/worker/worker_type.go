@@ -7,7 +7,6 @@ package worker
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // M 是工作式子类型的实现载体（每个父 agent 一个）。
@@ -50,12 +49,4 @@ func (m *M) state() *State {
 	st := NewState()
 	m.A.SetSub(agent.SubKeyWorker+"/state", st)
 	return st
-}
-
-func init() {
-	agent.BindWorker(
-		func(a *agent.Agent, tc agentAPI.ToolCall, ch string) string { return ensure(a).SpawnChild(tc, ch) },
-		func(a *agent.Agent, tc agentAPI.ToolCall) string { return ensure(a).ChildResult(tc) },
-		func(a *agent.Agent, tc agentAPI.ToolCall) string { return ensure(a).ExecuteLLMTool(tc) },
-	)
 }
