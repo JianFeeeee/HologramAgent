@@ -647,10 +647,10 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 		}
 	}
 
-	// 上下文占满检测：**上报**给上级（驻留子），不在此处裁剪。
-	// 只有驻留子设了 onContextFull ⇒ 对根 agent 是 no-op（根自己走
-	// enforceContextBudget 就地裁，没有上级可报）。
-	a.CheckContextFull()
+	// ★ 基座**不在这里算水位**：它只承接内核上报的 contextfull 异常
+	// （见 stepLLM 里 `ErrLLMContextFull` 的分支 → 调类型的 OverflowHandler）。
+	// 本地水位怎么算、超了怎么报，是**类型自己的策略**（驻留子在自己的
+	// OverflowHandler 里算并 CallParent）。
 
 	f.Step = StepLLM
 	return outcomeContinue

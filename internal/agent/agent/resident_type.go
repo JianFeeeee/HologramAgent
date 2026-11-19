@@ -298,22 +298,46 @@ func installResidentHooks(a *Agent) {
 	if h.ContextBudget == nil {
 		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
 	}
-	// ★ 驻留子的 OverflowHandler = **上报父**（不急裁）。
+	// ★ 驻留子的 OverflowHandler = **自己算水位 → 上报父**（不急裁）。
 	//
 	// 整窗型不做相关性裁剪，撞窗口时交给父决定（压缩 / 回收 / 销毁）——
-	// 丢事件的决定权在父（用户裁定）。所以它注册的不是"什么都不做"，
-	// 而是"把事实交给能决定的人"。
+	// 丢事件的决定权在父（用户裁定）。
+	//
+	// ★ 水位怎么算、超了报给谁、只报一次的去重标记放哪 —— **全在这里**。
+	//   改造前这些在基座的 `CheckContextFull` 里（`a.Resident().onContextFull`
+	//   闭包 + `ctxFullSignaled` 标记），那是基座替类型做策略。
 	if h.OverflowHandler == nil {
 		h.OverflowHandler = func(x *Agent, _ *TaskFrame, req agenttypes.OverflowRequest) (bool, int) {
-			// 只看本地水位：`OverflowLocal` 且未 force 时才判；
-			// resume / air 两种时机对整窗型没有意义（它不裁）。
-			if req.Kind != agenttypes.OverflowLocal || req.Force {
+			// 内核上报的 contextfull（Force）与本地水位两种来源都收。
+			if req.Kind != agenttypes.OverflowLocal {
 				return false, 0
 			}
-			if x.ContextLen() == 0 {
+			if x.ContextLen() == 0 || x.contextMgr() == nil {
 				return false, 0
 			}
-			x.CheckContextFull()
+			res := x.Resident()
+			if res == nil {
+				return false, 0
+			}
+			// 只报一次：滑无可滑是**持续状态**，每轮都报会把父的上下文也顶满。
+			res.ctxFullMu.Lock()
+			already := res.ctxFullSignaled
+			res.ctxFullMu.Unlock()
+			if already {
+				return false, 0
+			}
+			// 本地水位：拿**未裁剪**的积累上下文估算（拼好的 f.Msgs 已被
+			// 预算裁过，对 90% 阈值永远不成立 —— 那是「要被裁了」而不是
+			// 「已经裁过」的判据）。
+			if !req.Force && x.OverflowRatioNow() < contextFullRatio {
+				return false, 0
+			}
+			res.ctxFullMu.Lock()
+			res.ctxFullSignaled = true
+			res.ctxFullMu.Unlock()
+			if res.onContextFull != nil {
+				res.onContextFull()
+			}
 			return false, 0
 		}
 	}

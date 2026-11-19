@@ -636,6 +636,9 @@ func (a *Agent) Start() {
 	// ★ 向**内核事件循环**登记本 agent 的输入投递口：此后按 inputch 归属
 	//   路由的输入由循环推动到它这里（用户裁定「处理输入事件路由」归 eventloop）。
 	//   循环未装配（单测/独立工具）时这一步是 no-op，行为与改造前一致。
+	// ★ 登记**投递入口**（基座假设：注册的 agent 会恰当承接 inputch 的内容，
+	//   并按需要调用 outputch）。内核按归属路由到它，它把输入放进本 agent 的 io ——
+	//   `priority` 标签随事件走，分拣由各类型自己的 agentloop 解释。
 	if l := kernelloop.Current(); l != nil {
 		l.RegisterInputSink(string(a.id), &inputSink{a: a})
 	}

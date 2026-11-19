@@ -1017,7 +1017,11 @@ func (a *Agent) CompressResident(id string) (int, error) {
 	}
 
 	rc.agent.clearInputchTable() // 处理表记的是被压掉那段窗口的逐轮处理 ⇒ 必须清
-	rc.agent.resetContextFull()
+	if r := rc.agent.Resident(); r != nil {
+		r.ctxFullMu.Lock()
+		r.ctxFullSignaled = false
+		r.ctxFullMu.Unlock()
+	}
 	rc.mu.Lock()
 	rc.state = "running"
 	rc.mu.Unlock()
@@ -1089,61 +1093,10 @@ func (a *Agent) handleChildContextFull(rc *residentChild) {
 	a.RaiseVector(VectorChildContextFull, vectorArgs{ChildID: rc.ID})
 }
 
-// checkContextFull 判断本 agent 的**积累上下文是否已经装不下窗口**，是则触发一次 contextfull。
+// checkContextFull 的实现已搬到 resident 自己的 OverflowHandler 里。
 //
-// ❗判据为什么不能写成"估算拼好的 f.Msgs"：`buildMessages` 拿到的 `budget.ContextTokens`
-// 本身就是按 `targetUsage = 0.8 × 窗口` 算出来的，时间线**在拼进消息之前就被预算裁过**了。
-// 于是 `f.Msgs` 的规模结构上封顶在 ~80% 窗口 —— 对 90% 阈值而言是**永远不成立**的判据
-// （写测试时我用一个比系统提示词还小的窗口才勉强越过线，那等于什么都没测）。
-//
-// 正确的事是"**要被裁了**"：拿**未裁剪**的积累上下文（`a.contextMgr()` 的全部事件）估算，
-// 它超过窗口阈值就说明下一轮必须丢事件 ⇒ 这就是 contextfull。
-//
-// 只对**驻留子**生效（只有它们设了 onContextFull）。
-func (a *Agent) CheckContextFull() {
-	r := a.Resident()
-	if r == nil || r.onContextFull == nil {
-		return
-	}
-	// 读标记要加锁：它可能被**父的 goroutine**（CompressResident）并发清零。
-	r.ctxFullMu.Lock()
-	signaled := r.ctxFullSignaled
-	r.ctxFullMu.Unlock()
-	if signaled {
-		return
-	}
-	if a.contextMgr() == nil {
-		return
-	}
-	// ★ 判据统一走 overflowRatioNow（与容量保护同一个量）：
-	//
-	// 原实现自己手写了一遍 `Input+Response` 的累加，与 overflow.AccumulatedTokens
-	// 的差别不只是"重复"——后者用 eventTokens 计入 **ToolResults**，而手写版
-	// 漏了它。工具回灌正是 v4/T10 实测的 prompt 主力（17~40 万 token 几乎全部
-	// 来自工具输出），漏算等于把"已经装不下"误判成"还宽松"，
-	// 驻留子因此永远报不到 contextfull、父也就永远不知道该回收它。
-	if a.OverflowRatioNow() < contextFullRatio {
-		return
-	}
-	r.ctxFullMu.Lock()
-	r.ctxFullSignaled = true
-	r.ctxFullMu.Unlock()
-	r.onContextFull()
-}
-
-// resetContextFull 清零上报标记（压缩后允许再次上报）。
-//
-// 加锁理由见 Agent.ctxFullMu：本函数**通常由父的 goroutine 调用**
-// （CompressResident），而子的调度器 goroutine 正在读同一个字段。
-func (a *Agent) resetContextFull() {
-	r := a.Resident()
-	if r == nil {
-		return
-	}
-	r.ctxFullMu.Lock()
-	r.ctxFullSignaled = false
-	r.ctxFullMu.Unlock()
-}
+// ★ 基座不算水位：它只承接内核上报的 contextfull 异常，然后调类型注册的
+// handler。水位怎么算、超了报给谁、去重标记放哪 —— 全是类型策略。
 
 // ---- 子侧：inputch 处理表（子持有，父 pull） ----
 

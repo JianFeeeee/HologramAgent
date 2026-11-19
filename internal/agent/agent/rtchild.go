@@ -1018,6 +1018,28 @@ func (a *Agent) PushRTInput(id, text string) (uint64, error) {
 	return seq, nil
 }
 
+// pushInput 是 rt 的**投递语义**（单槽覆盖 + 立刻作废当前轮）。
+//
+// ★ 它由 rtchild 自己的 InputSink 调用（见 rtsink.go），**不在基座**：
+//
+//	"最新者胜"是 rt 这个类型的 agentloop 语义，基座不认识它。
+func (rc *rtChild) pushInput(evt *agentIO.InputEvent) uint64 {
+	seq := rc.slot.Push(evt)
+	// ★ 契约 1 的执行点：新输入一到就取消当前轮。只写槽不取消是错的
+	// （rtLoop 正 block 在 rtRunOnce 的流里，不会回到循环顶部取新值）。
+	// ★ 但**工具执行期间不取消**（用户裁定 R5）：副作用不可回滚。
+	rc.mu.Lock()
+	cancel, critical := rc.curCancel, rc.critical
+	if cancel != nil && critical > 0 {
+		rc.suppressedCancels++
+	}
+	rc.mu.Unlock()
+	if cancel != nil && critical == 0 {
+		cancel()
+	}
+	return seq
+}
+
 // StatsRTChild 返回一个 rtchild 的只读状态（诊断/判据用）。
 type RTChildStats struct {
 	ID      string `json:"id"`
