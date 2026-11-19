@@ -21,6 +21,7 @@ package test
 
 import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/resident"
 	"os"
 	"path/filepath"
 	"strings"

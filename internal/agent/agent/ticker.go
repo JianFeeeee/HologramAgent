@@ -143,15 +143,3 @@ func (a *Agent) MergeTask() PeriodicTask {
 func (a *Agent) ReviewTask() PeriodicTask {
 	return PeriodicTask{Name: "review", Interval: a.CfgDuration(CfgKeyReviewInterval, 120*time.Minute), Run: func(x *Agent) { x.reviewRelations() }}
 }
-
-// OffloadTask 返回"积压任务转投"（未启用或本类型不转投时返回零值，注册被拒）。
-func (a *Agent) OffloadTask() PeriodicTask {
-	if !a.Config().Offload.Enabled {
-		return PeriodicTask{}
-	}
-	interval := a.Config().Offload.BusyAfter / 5
-	if interval < time.Second {
-		interval = time.Second
-	}
-	return PeriodicTask{Name: "offload", Interval: interval, Run: func(x *Agent) { x.offloadPendingTasks(x.Config().Offload) }}
-}

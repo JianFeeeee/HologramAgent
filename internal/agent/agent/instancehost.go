@@ -8,14 +8,16 @@ package agent
 // "实例管理器需要父的什么"在一处可数：
 //
 //	OwnerID / DataDir / Children / AgentsRegistry / Logf
-//	DestroyResident / DestroyRTChild
+//
+// ★ 这里**没有** `DisposeResident` / `DestroyRTChild`（2026-11-19 删）：
+//   那两格是"基座认识两个具体类型的销毁动作"，正是要消灭的形态。
+//   现在销毁一律走 `Descriptor.Admin(action="destroy")` —— 类型自己决定
+//   残余怎么处置、通道怎么交代，内核只按 type 查表调用。
 //
 // 其余一切（provider、context、scheduler、mainState…）**都不在面里** ——
 // 那正是把 `*Agent` 收成接口的意义：以前它顺手就能读，现在读不到。
 
 import (
-	"strings"
-
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
 )
 
@@ -44,29 +46,4 @@ func (a *Agent) Children() *childpkg.Registry {
 		return nil
 	}
 	return &a.children
-}
-
-// DisposeResident 实现 InstanceHost（按类型语义销毁一个驻留子）。
-//
-// ★ 名字不与既有的 `DestroyResident(id)` 冲突：那个是"父随时可做的销毁"，
-//
-//	本方法多一个**残余处置决定**（实例管理器的 `DestroyChild` 携带它）。
-func (a *Agent) DisposeResident(id, policy string) (string, error) {
-	if a == nil {
-		return "", nil
-	}
-	pol := ResidualKeep
-	if strings.EqualFold(policy, "drop") {
-		pol = ResidualDrop
-	}
-	_, msg, err := a.FinishResidentWithTarget(id, pol, ChannelOrphan, "", nil)
-	return msg, err
-}
-
-// DestroyRTChild 实现 InstanceHost。
-func (a *Agent) DestroyRTChild(id string) error {
-	if a == nil {
-		return nil
-	}
-	return a.StopRTChild(id)
 }

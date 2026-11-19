@@ -443,11 +443,11 @@ func (rc *rtChild) Dispose() string {
 	// 反了会让 LightMemory.Close 去关一个已关的 main（它只关 temp，
 	// 但保持"子先于父"的顺序与本仓其它所有关闭路径一致）。
 	if rc.light != nil {
-		_ = closeGraphWith(rc.opener, rc.light)
+		_ = CloseGraphWith(rc.opener, rc.light)
 		rc.light = nil
 	}
 	if rc.mainRO != nil {
-		_ = closeGraphWith(rc.opener, rc.mainRO)
+		_ = CloseGraphWith(rc.opener, rc.mainRO)
 		rc.mainRO = nil
 	}
 	return ""
@@ -646,7 +646,9 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		rtMainRO  kernelapi.GraphMemory
 	)
 	opener := a.graphOpener
-	if gm := a.MainGraph(); gm != nil {
+	// ★ 主库路径问基座：`GraphDB()` 是根 agent 的完整图库句柄（类型自己持有、
+	//   经 AgentConfig 交给基座）；`MainGraph()` 是共同面，没有 Path。
+	if gm := a.GraphDB(); gm != nil {
 		if opener == nil {
 			cancel()
 			return "", fmt.Errorf("rtchild 需要图记忆装配面（AgentConfig.GraphOpener 未注入）")
@@ -693,7 +695,7 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 		//
 		// ⚠️ 注意 rt 仍走 resolveProviders 的回退链（只是把优先源提前）：
 		// 硬锁定会让"首选源抖动"直接变成"通话中断"。
-		PreferredProvider: firstNonEmpty(opts.PreferredProvider, a.preferredProvider),
+		PreferredProvider: FirstNonEmpty(opts.PreferredProvider, a.preferredProvider),
 		IO:                childIO,
 		StageHost:         a.MainState().stageHost,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
@@ -749,7 +751,8 @@ func (a *Agent) SpawnRTChild(opts RTChildOptions) (string, error) {
 	// ★ 入站通道**只登记一次**（在这里），回调里只投递。
 	//   初版在回调里调 residentInboundChannel（它内部会 Register）⇒ 每发一次
 	//   就重复登记一次，而该表按 name 全局唯一 —— 是纯粹的写放大 + 脏登记。
-	rtInboundCh := a.residentInboundChannel("rt/" + opts.ID)
+	rtInboundCh := ChildInboundChannel("rt/" + opts.ID)
+	a.RegisterInboundChannel(rtInboundCh, "rt")
 	// ★ 上行通路：父一次性把"怎么投给父"装进 rt 载体（与驻留子同一套）。
 	//   rt 的交接/发问走它，不再自己拼 "rt/"+id 与注入点。
 	carrier.InstallCallParent(BuildCallParent(a, "rt/"+opts.ID, rtInboundCh))
@@ -986,7 +989,7 @@ func (a *Agent) PushRTInput(id, text string) (uint64, error) {
 		return 0, fmt.Errorf("rtchild %s 不存在", id)
 	}
 	evt := &agentIO.InputEvent{
-		Source:        a.residentParentSource(),
+		Source:        a.ParentSource(),
 		Type:          "text",
 		Payload:       map[string]interface{}{"content": text},
 		OutputChannel: rc.output,
@@ -1664,7 +1667,7 @@ func FormatRTTranscript(msgs []agentAPI.Message) string {
 				fmt.Fprintf(&sb, "[tool_call] %s %s\n", tc.Name, rtArgsSummary(tc.Arguments))
 			}
 		case "tool":
-			fmt.Fprintf(&sb, "[tool_result] %s\n", truncateStr(strings.TrimSpace(m.Content), rtTranscriptToolMaxRunes))
+			fmt.Fprintf(&sb, "[tool_result] %s\n", TruncateStr(strings.TrimSpace(m.Content), rtTranscriptToolMaxRunes))
 		default: // user 及其它
 			if strings.TrimSpace(m.Content) != "" {
 				fmt.Fprintf(&sb, "[%s] %s\n", m.Role, strings.TrimSpace(m.Content))
@@ -1686,7 +1689,7 @@ func rtArgsSummary(args map[string]interface{}) string {
 	sort.Strings(keys) // 稳定输出：判据与人工复盘都需要可复现
 	var parts []string
 	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, truncateStr(fmt.Sprintf("%v", args[k]), 80)))
+		parts = append(parts, fmt.Sprintf("%s=%s", k, TruncateStr(fmt.Sprintf("%v", args[k]), 80)))
 	}
 	return strings.Join(parts, " ")
 }
@@ -1756,7 +1759,8 @@ func (a *Agent) CloseRTChild(id string) (int, error) {
 	ar.closed[id] = transcript
 	ar.mu.Unlock()
 
-	a.RaiseVector(VectorRTChildClosed, vectorArgs{RTID: id, RTCount: n, RTChars: chars})
+	a.RaiseKernelInterruptAt("rtchild/"+id, "kernel",
+		rtChildClosedText(id, n, chars), LevelCritical)
 	log.Printf("[rtchild] %s closed: %d messages (%d chars) kept for on-demand transcript", id, n, chars)
 	return n, nil
 }

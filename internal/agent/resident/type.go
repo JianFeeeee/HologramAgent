@@ -1,4 +1,4 @@
-package agent
+package resident
 
 // resident_type.go —— **驻留子类型**的注册项（Descriptor）。
 //
@@ -19,6 +19,7 @@ package agent
 
 import (
 	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"path/filepath"
 	"strings"
 
@@ -80,29 +81,26 @@ func residentDescriptor() registry.Descriptor {
 		//   于是子 Start 之后 `schedulerLoop` 撞到 nil 调度器（实测 panic：
 		//   `(*scheduler).hasRoom(0x0?)`，被 recover 吞掉后子永远不处理输入）。
 		Initialize: func(instance any) error {
-			a, _ := instance.(*Agent)
+			a, _ := instance.(*agent.Agent)
 			if a == nil {
-				return fmt.Errorf("resident: 实例不是 *Agent（装配错误）")
+				return fmt.Errorf("resident: 实例不是 *agent.Agent（装配错误）")
 			}
-			a.InstallScheduler()
 			installResidentHooks(a)
 			return nil
 		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
-			a, ok := host.(*InstanceManager)
-			root, _ := a.Root().(*Agent)
-			if !ok || a == nil || root == nil {
+			m := Of(host)
+			if m == nil {
 				return "", fmt.Errorf("resident: 宿主不是实例管理器")
 			}
-			return root.spawnResidentForAdmin(arg)
+			return m.spawnResidentForAdmin(arg)
 		},
 		Admin: func(host registry.Host, action string, arg map[string]interface{}) (string, error) {
-			a, ok := host.(*InstanceManager)
-			root, _ := a.Root().(*Agent)
-			if !ok || a == nil || root == nil {
+			m := Of(host)
+			if m == nil {
 				return "", fmt.Errorf("resident: 宿主不是实例管理器")
 			}
-			return root.residentAdmin(action, arg)
+			return m.residentAdmin(action, arg)
 		},
 		Help: func(host registry.Host) string {
 			return residentHelpText()
@@ -149,7 +147,7 @@ const kindResident = "resident"
 //   ToolCall，因为注册面的入参已经是规范化的 map（kernel 已拆好参数）。
 
 // spawnResidentForAdmin 处理 admin_child(type=resident, action=create)。
-func (a *Agent) spawnResidentForAdmin(arg map[string]interface{}) (string, error) {
+func (m *M) spawnResidentForAdmin(arg map[string]interface{}) (string, error) {
 	id := strings.TrimSpace(strOf(arg, "id"))
 	if id == "" {
 		return "", fmt.Errorf("resident: create 需要 id")
@@ -160,16 +158,16 @@ func (a *Agent) spawnResidentForAdmin(arg map[string]interface{}) (string, error
 	}
 	tempPath := strings.TrimSpace(strOf(arg, "temp_path"))
 	if tempPath == "" {
-		anchor := a.dataDir
-		if anchor == "" && a.GraphDB() != nil && a.GraphDB().Path() != "" {
-			anchor = filepath.Dir(filepath.Dir(a.GraphDB().Path()))
+		anchor := m.A.DataDir()
+		if anchor == "" && m.A.GraphDB() != nil && m.A.GraphDB().Path() != "" {
+			anchor = filepath.Dir(filepath.Dir(m.A.GraphDB().Path()))
 		}
 		if anchor == "" {
 			return "", fmt.Errorf("resident: create 需要 data_dir 或显式 temp_path")
 		}
 		tempPath = filepath.Join(anchor, "residents", id, "graph.db")
 	}
-	info, err := a.SpawnResident(ResidentOptions{
+	info, err := m.SpawnResident(agenttypes.ResidentOptions{
 		ID:                id,
 		TaskPrompt:        strOf(arg, "task_prompt"),
 		InputChs:          inputChs,
@@ -184,40 +182,57 @@ func (a *Agent) spawnResidentForAdmin(arg map[string]interface{}) (string, error
 		return "", err
 	}
 	// 记录创建参数（软重启与持久化共用）。
-	if m := a.Instances(); m != nil {
-		m.remember(string(kindResident), id, arg)
+	if im := m.A.Instances(); im != nil {
+		im.Remember(string(kindResident), id, arg)
 	}
 	return "已创建驻留子: " + MarshalResidentInfo(info), nil
 }
 
-// residentAdmin 处理驻留子的**类型独有**动作（compress / reclaim / table）。
-func (a *Agent) residentAdmin(action string, arg map[string]interface{}) (string, error) {
+// residentAdmin 处理驻留子的动作（通用 destroy + 类型独有 compress/reclaim/table）。
+//
+// ★ `destroy` 落在这里而不是内核：残余怎么处置（keep/stash/drop）、
+//
+//	通道怎么交代 —— 全是**驻留子的语义**。内核只按 type 查表调用。
+func (m *M) residentAdmin(action string, arg map[string]interface{}) (string, error) {
 	id := strings.TrimSpace(strOf(arg, "id"))
 	if id == "" {
 		return "", fmt.Errorf("resident: 动作 %q 需要 id", action)
 	}
 	switch action {
+	case "destroy":
+		policy := agenttypes.ResidualKeep
+		switch strings.ToLower(strOf(arg, "residual")) {
+		case "drop":
+			policy = agenttypes.ResidualDrop
+		case "stash":
+			policy = agenttypes.ResidualStash
+		}
+		n, msg, err := m.FinishResidentWithTarget(id, policy, agenttypes.ChannelOrphan, "", nil)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已销毁 %s（残余 %d 条：%s）", id, n, msg), nil
 	case "compress":
-		n, err := a.CompressResident(id)
+		n, err := m.CompressResident(id)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("已压缩 %s 的上下文（丢弃 %d 条旧事件，并清理其 inputch 处理表）；子继续存在", id, n), nil
 	case "reclaim":
-		policy := ResidualKeep
+		policy := agenttypes.ResidualKeep
 		switch strings.ToLower(strOf(arg, "residual")) {
 		case "drop":
-			policy = ResidualDrop
+			policy = agenttypes.ResidualDrop
 		case "stash":
-			policy = ResidualStash
+			policy = agenttypes.ResidualStash
 		}
-		n, msg, err := a.FinishResidentWithTarget(id, policy, ChannelOrphan, "", nil)
+		n, msg, err := m.FinishResidentWithTarget(id, policy, agenttypes.ChannelOrphan, "", nil)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("已回收 %s（残余 %d 条：%s）", id, n, msg), nil
 	case "table":
-		table, err := a.ResidentTable(id)
+		table, err := m.ResidentTable(id)
 		if err != nil {
 			return "", err
 		}
@@ -291,12 +306,13 @@ func splitComma(s string) []string {
 // ★ 阶段（stage）**不是槽位**了（I 批）：实现只有一份、调用点全在同包，
 //
 //	所以这里不再注册它。
-func installResidentHooks(a *Agent) {
+func installResidentHooks(a *agent.Agent) {
 	h := a.Hooks()
+	mm := Wrap(a)
 
 	// 槽位 5：上下文管理 —— 整窗型。
 	if h.ContextBudget == nil {
-		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
+		h.ContextBudget = func(_ *agent.Agent, b kit.TokenBudget) int { return b.MaxContext }
 	}
 	// ★ 驻留子的 OverflowHandler = **自己算水位 → 上报父**（不急裁）。
 	//
@@ -304,18 +320,18 @@ func installResidentHooks(a *Agent) {
 	// 丢事件的决定权在父（用户裁定）。
 	//
 	// ★ 水位怎么算、超了报给谁、只报一次的去重标记放哪 —— **全在这里**。
-	//   改造前这些在基座的 `CheckContextFull` 里（`a.Resident().onContextFull`
+	//   改造前这些在基座的 `CheckContextFull` 里（`m.st.onContextFull`
 	//   闭包 + `ctxFullSignaled` 标记），那是基座替类型做策略。
 	if h.OverflowHandler == nil {
-		h.OverflowHandler = func(x *Agent, _ *TaskFrame, req agenttypes.OverflowRequest) (bool, int) {
+		h.OverflowHandler = func(x *agent.Agent, _ *agent.TaskFrame, req agenttypes.OverflowRequest) (bool, int) {
 			// 内核上报的 contextfull（Force）与本地水位两种来源都收。
 			if req.Kind != agenttypes.OverflowLocal {
 				return false, 0
 			}
-			if x.ContextLen() == 0 || x.contextMgr() == nil {
+			if x.ContextLen() == 0 || x.ContextManager() == nil {
 				return false, 0
 			}
-			res := x.Resident()
+			res := mm.st
 			if res == nil {
 				return false, 0
 			}
@@ -342,10 +358,34 @@ func installResidentHooks(a *Agent) {
 		}
 	}
 
-	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现。
+	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现，
+	// 但**轮次结束后自己写 inputch 处理表**（那张表是驻留子的语义）。
 	if h.Loop == nil {
-		h.Loop = func(x *Agent, f *TaskFrame) stepOutcome { return RunTaskSteps(x, f) }
+		h.Loop = residentLoop
 	}
 
 	a.SetHooks(h)
+}
+
+// residentContextFullText 是"子上下文已满"这条内核级中断的正文。
+//
+// ★ 正文由**类型自己**决定（基座不认识"驻留子的 contextfull"是什么）：
+//
+//	父看到的是"该决定压缩 / 回收 / 销毁"，而不是一段实现细节。
+func residentContextFullText(id string) string {
+	return "驻留子 " + id + " 的上下文已满。请决定：压缩它的上下文" +
+		"（admin_child action=compress）、回收它（action=reclaim），或销毁（action=destroy）。"
+}
+
+// residentLoop 是驻留子的 agentloop：标准同步状态机 + 本轮 inputch 记账。
+//
+// ★ 记账必须在这里而不是基座：处理表与"本轮处理了什么"是**驻留子**的
+//
+//	语义（父会来 pull 这张表判断进度）。基座不认识有谁拥有这样一张表。
+func residentLoop(a *agent.Agent, f *agent.TaskFrame) agenttypes.Outcome {
+	out := agent.RunTaskSteps(a, f)
+	if m := Wrap(a); m != nil {
+		m.AutoRecordInputch(f)
+	}
+	return out
 }

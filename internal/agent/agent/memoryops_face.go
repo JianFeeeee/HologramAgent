@@ -96,7 +96,8 @@ func (a *Agent) closeGraph(m any) error {
 }
 
 // closeGraphWith 用给定的装配面关闭句柄（结构体方法里没有 *Agent 时用）。
-func closeGraphWith(opener kernelapi.GraphMemoryOpener, m any) error {
+// CloseGraphWith 关闭一个图记忆句柄（类型包在自己装配记忆时用）。
+func CloseGraphWith(opener kernelapi.GraphMemoryOpener, m any) error {
 	if m == nil {
 		return nil
 	}

@@ -99,7 +99,8 @@ func (a *Agent) IsKernelLevelSource(source string) bool {
 // 一轮 = 一次被执行的输入（排队与中断都算）。为什么不用 inputch 处理表的条数：
 // 那张表记的是"当前上下文窗口内"的轮次，压缩会清空（设计 §8.3）——
 // 拿它当轮次会让父看到轮次倒退。
-func (a *Agent) roundsExecuted() int {
+// RoundsExecuted 返回本 agent 已执行的轮次数（类型状态面展示用）。
+func (a *Agent) RoundsExecuted() int {
 	if a.sched == nil {
 		return 0
 	}
@@ -114,12 +115,13 @@ func (a *Agent) DumpScheduler() SchedulerSnapshot {
 }
 
 // schedulerLoop 是唯一的任务执行者（取代原 eventLoop 的输入处理）。
-func (a *Agent) schedulerLoop() {
+// SchedulerLoop 是"取任务 → 跑任务"的驱动（类型自己的 agentloop 起它）。
+func (a *Agent) SchedulerLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[agent] schedulerLoop panic recovered: %v\n%s", r, debug.Stack())
 			time.Sleep(time.Second)
-			go a.schedulerLoop()
+			go a.SchedulerLoop()
 		}
 	}()
 

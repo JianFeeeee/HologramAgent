@@ -34,7 +34,7 @@ func (a *Agent) StartMainRuntime() {
 	//
 	//	① 恢复调用各类型的 Construct ⇒ 它要 `io.ChannelRegistry().Assign(...)`。
 	//	   插件已加载（插件在 Agent.Start 之前就装好了），但**父的 input 接收槽**
-	//	   是 Start 里才注册的 —— 所以必须在 `go a.schedulerLoop()` 之前。
+	//	   是 Start 里才注册的 —— 所以必须在 `go a.SchedulerLoop()` 之前。
 	//	② 恢复出来的子如果立刻投任务，父的调度器还没起 ⇒ 任务只能排队
 	//	   （不会丢），调度器一起来就处理。反之若先起循环再恢复，
 	//	   父可能已经在处理"子不存在"期间进来的输入了。
@@ -44,18 +44,21 @@ func (a *Agent) StartMainRuntime() {
 	// Construct 的类型都能被恢复。
 	a.RestoreChildren()
 
-	go a.schedulerLoop()
+	go a.SchedulerLoop()
 	a.startPeriodic()
 	a.ReembedStaleMedia()
 	a.MigrateLegacyGraphMedia()
 }
 
-// StopMainRuntime 停主 agent 的运行期：回收驻留子（子不得比父活得久）。
+// StopMainRuntime 停主 agent 的运行期。
+//
+// ★ 这里**不回收任何子**：子不得比父活得久的约束由 `Agent.Stop` 的内核侧
+//
+//	统一执行（`children.StopAll`），不是主 agent 的职责 —— 主 agent 不认识
+//	任何具体类型的存在（2026-11-19 删掉 `a.StopResidents()`）。
 //
 // 待办任务的终态由基座 Stop 统一补（任何有队列的类型都需要，不该各写一遍）。
-func (a *Agent) StopMainRuntime() {
-	a.StopResidents()
-}
+func (a *Agent) StopMainRuntime() {}
 
 // RestoreChildren 恢复上次运行时的子 agent（实例表驱动）。
 //
@@ -70,13 +73,11 @@ func (a *Agent) RestoreChildren() int {
 	if m == nil {
 		return 0
 	}
-	// ★ 顺序：先隔离孤儿目录 → 再迁旧登记表 → 最后按实例表恢复。
+	// 恢复走**实例表**：每个类型的 `Descriptor.Construct` 负责把实例装起来。
 	//
-	// 为什么隔离必须在恢复之前：孤儿目录里的 graph.db/context.json 会让
-	// 一个"看起来该恢复"的实例指向一段来历不明（可能是崩溃残留）的记忆。
-	// 先挪到 _legacy/ 再恢复，恢复到的每个实例都有明确来源。
-	a.QuarantineLegacyResidentDirs()
-	migrateLegacyResidentRegistry(a.dataDir, m)
+	// ★ 这里**没有**任何"驻留子专属"的准备工作（隔离孤儿目录 / 迁旧登记表）。
+	//   那些是驻留子类型自己的恢复前置，由它在 `Construct` 里做 —— 基座
+	//   不认识任何类型的恢复语义（2026-11-19 删掉这两句具名调用）。
 	n, errs := m.Restore()
 	for _, e := range errs {
 		a.Logf("restore child skipped: %s", e)

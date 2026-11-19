@@ -266,7 +266,7 @@ func formatRecallRelations(relations []model.Relation, max int) []string {
 		}
 		line := fmt.Sprintf("- %s →(%s)→ %s", r.SourceName, r.RelationType, r.TargetName)
 		if s := strings.TrimSpace(r.SentenceText); s != "" {
-			line += "  原句: \"" + truncateStr(s, 60) + "\""
+			line += "  原句: \"" + TruncateStr(s, 60) + "\""
 		}
 		out = append(out, line)
 	}

@@ -14,6 +14,7 @@ type (
 	ResidentInfo       = agenttypes.ResidentInfo
 	ResidualPolicy     = agenttypes.ResidualPolicy
 	ChannelDisposition = agenttypes.ChannelDisposition
+	OffloadOptions     = agenttypes.OffloadOptions
 )
 
 const (

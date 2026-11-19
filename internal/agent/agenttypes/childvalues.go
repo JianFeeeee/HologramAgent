@@ -6,7 +6,9 @@ package agenttypes
 //   rtchild）都要用它们。若定义在类型包里，基座就得 import 类型包 ——
 //   反向依赖，成环。值类型不带任何行为，放这里零风险。
 
-import "time"
+import (
+	"time"
+)
 
 // InputchRecord 是 inputch 处理表的一条记录（子持有，父 pull）。
 type InputchRecord struct {
@@ -170,3 +172,15 @@ const (
 	// 目标由 ResidentOptions/控制面给出；缺省目标 = 父（原 ChannelTakeover 的语义）。
 	ChannelHandover ChannelDisposition = "handover"
 )
+
+// OffloadOptions 是自动转投的判定与执行参数。
+type OffloadOptions struct {
+	// BusyAfter：运行任务已持续多久算"长时间工作"（0 = 用默认）。
+	BusyAfter time.Duration
+	// MinPending：至少要积压多少条才值得拉起驻留子（0 = 用默认）。
+	MinPending int
+	// MaxResidents：为转投而拉起的驻留子上限（0 = 用默认）。
+	MaxResidents int
+	// Enabled 为 false 时完全关闭（默认关：见 DefaultOffloadOptions 的说明）。
+	Enabled bool
+}

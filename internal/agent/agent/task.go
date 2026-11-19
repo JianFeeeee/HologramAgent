@@ -348,7 +348,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// 带媒体时跳过——媒体输入的 alt 文案（"[从 qq 收到了 image]"）对不同图片
 	// 是同一句，拿它去重会把连发的两张图误判成重复。
 	if len(in.blocks) == 0 && a.isDuplicateInput(evt.Source, in.text) {
-		log.Printf("[agent] dropped duplicate input from %s: %s", evt.Source, truncateStr(in.text, 60))
+		log.Printf("[agent] dropped duplicate input from %s: %s", evt.Source, TruncateStr(in.text, 60))
 		// 去重是「不处理」而不是「不回」，否则同步调用方（cli/clawhub 无超时）
 		// 会永久挂起（设计文档 §7 不变量 I5、§11.3 X2/X4）。
 		a.EmitSkippedReply(evt, "duplicate")
@@ -509,9 +509,9 @@ func (a *Agent) FinishInputTask(f *TaskFrame, out stepOutcome) {
 		return
 	}
 
-	// inputch 处理表：本轮**未主动写入**时由系统自动写（保证每轮必有记录）。
-	// 只有驻留子会用到（根 agent 的 children 为 0 时这只是几个空操作）。
-	a.AutoRecordInputch(f)
+	// ★ 这里**没有**"自动写 inputch 处理表"：那张表是驻留子自己的语义。
+	//   它由驻留子的 agentloop（`resident.Loop`）在轮次结束时自己写 ——
+	//   基座不认识"谁有处理表"（2026-11-19 删掉这里的具名调用）。
 
 	elapsed := time.Since(f.StartedAt)
 	log.Printf("[agent] %s from %s → response (%dms, tools=%v)",
@@ -633,7 +633,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	// 依次在这里短路——不进 LLM、不执行工具，直接以一条说明收尾。
 	// 配额是停止时的快照，消费完即止；停止之后新到的输入不受影响。
 	if a.sched.ConsumeCancel() {
-		log.Printf("[agent] cancelled queued task at pre-action (input=%q)", truncateStr(f.Input, 40))
+		log.Printf("[agent] cancelled queued task at pre-action (input=%q)", TruncateStr(f.Input, 40))
 		f.Response = "已取消（用户停止）。"
 		return outcomeDone
 	}
@@ -1054,7 +1054,7 @@ func (a *Agent) stepToolBegin(f *TaskFrame) stepOutcome {
 		// 可能被直接传明文（例如模型自己拼了一个 key）。日志是永久的，
 		// 一旦落盘就再也收不回来。
 		a.Logf("tool %s raw_arguments: %s", tc.Name,
-			a.scrubForLog(truncateStr(tc.RawArguments, 300), "raw_args:"+tc.Name))
+			a.scrubForLog(TruncateStr(tc.RawArguments, 300), "raw_args:"+tc.Name))
 	}
 
 	sdkTC := sdk.ToolCall{ID: tc.ID, Name: tc.Name, Plugin: pluginName, Arguments: tc.Arguments}
@@ -1197,7 +1197,7 @@ func (a *Agent) stepToolExec(f *TaskFrame) stepOutcome {
 	// ★ 工具输出可能含服务端回显的凭据（实测场景：enc_shell 跑 curl 拿 200，
 	// 响应体里带着上游 key 的完整值）。这一行以前原样打印。
 	a.Logf("tool %s result: %s", f.CurTool.Name,
-		a.scrubForLog(truncateStr(result, 100), "tool_result:"+f.CurTool.Name))
+		a.scrubForLog(TruncateStr(result, 100), "tool_result:"+f.CurTool.Name))
 
 	// Success 此前是**唯一**赋值点且硬编码 true ⇒ 该字段恒真、结构上不可能为
 	// false。工具失败是以 nil error + 错误**值**返回的，所以判据必须看返回值。

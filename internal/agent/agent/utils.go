@@ -71,7 +71,8 @@ func getStringSlice(m map[string]interface{}, key string) []string {
 	return out
 }
 
-func truncateStr(s string, max int) string {
+// TruncateStr 截断字符串（日志/摘要预览用）。
+func TruncateStr(s string, max int) string {
 	if utf8.RuneCountInString(s) <= max {
 		return s
 	}

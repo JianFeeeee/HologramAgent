@@ -1,4 +1,4 @@
-package agent
+package resident
 
 // 驻留子的**存活登记表**持久化（2026-11-17）。
 //
@@ -6,7 +6,7 @@ package agent
 //
 // 驻留子的状态原本有三层，重启时**三层全丢**：
 //
-//	① 登记表（a.children）      只在内存         ⇒ 重启后父不知道有过哪些子
+//	① 登记表（m.A.Children()）      只在内存         ⇒ 重启后父不知道有过哪些子
 //	② temp 图记忆（graph.db）   落盘但停机被删    ⇒ 记忆没了
 //	③ 普通上下文（context.json）从不落盘         ⇒ 对话现场没了
 //
@@ -16,7 +16,7 @@ package agent
 //
 // ## 本文件负责 ①：登记表
 //
-// 只存「有哪些驻留子 + 重建它们所需的全部参数」（`ResidentOptions`），
+// 只存「有哪些驻留子 + 重建它们所需的全部参数」（`agenttypes.ResidentOptions`），
 // 不存运行态（轮次、处理表、contextfull 标记）—— 那些属于子自己的
 // context.json / graph.db，由它们各自的持久化负责。
 //
@@ -48,6 +48,7 @@ package agent
 
 import (
 	"encoding/json"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"log"
 	"os"
 	"path/filepath"
@@ -142,16 +143,16 @@ func saveResidentRecords(dataDir string, recs []residentRecord) {
 //
 // 何时调用：创建成功后、销毁/回收成功后。不放在轮次循环里 ——
 // 登记表的变动是低频事件（创建/销毁），而每轮写一次是白耗 IO。
-func (a *Agent) PersistResidents() {
-	if a == nil || a.dataDir == "" {
+func (m *M) PersistResidents() {
+	if m == nil || m.A == nil || m.A.DataDir() == "" {
 		return
 	}
-	m := a.EnsureInstanceManager()
-	if m == nil {
+	im := m.A.EnsureInstanceManager()
+	if im == nil {
 		return
 	}
 	seen := map[string]bool{}
-	for _, e := range a.children.ByKind(childpkg.KindResident) {
+	for _, e := range m.A.Children().ByKind(childpkg.KindResident) {
 		rc, ok := e.(*residentChild)
 		if !ok {
 			continue
@@ -161,15 +162,15 @@ func (a *Agent) PersistResidents() {
 			continue
 		}
 		seen[rc.ID] = true
-		m.remember(kindResident, rc.ID, rc.toAdminArg())
+		im.Remember(kindResident, rc.ID, rc.toAdminArg())
 	}
 	// 已经不在登记表里的（被销毁/回收）从实例表摘掉。
-	for _, r := range m.Records() {
+	for _, r := range im.Records() {
 		if r.Type != kindResident {
 			continue
 		}
 		if !seen[r.ID] {
-			m.forget(r.ID)
+			im.Forget(r.ID)
 		}
 	}
 }
@@ -220,13 +221,13 @@ func (rc *residentChild) toAdminArg() map[string]interface{} {
 // 重建要在插件就绪之后（inputch 得先存在）。Agent.Start() 的时机由
 // bootstrap 决定，本函数跟着同一个时机即可 —— 但**不能**自动跑，
 // 因为判据与独立工具构造 Agent 时不希望它去读生产目录。
-func (a *Agent) RestoreResidents() int {
+func (m *M) RestoreResidents() int {
 	// ① 首次升级路径：老版本只有 <data>/residents/registry.json。
 	//    把它迁进实例表后再删旧文件（否则下轮又会被读一遍）。
-	migrateLegacyResidentRegistry(a.dataDir, a.EnsureInstanceManager())
+	migrateLegacyResidentRegistry(m.A.DataDir(), m.A.EnsureInstanceManager())
 
 	// ② 统一恢复：实例表里的全部类型（不只驻留子）。
-	n, _ := a.EnsureInstanceManager().Restore()
+	n, _ := m.A.EnsureInstanceManager().Restore()
 	return n
 }
 
@@ -236,8 +237,8 @@ func (a *Agent) RestoreResidents() int {
 //
 //	用户的驻留子定义。直接换格式会让它们"突然全部消失"—— 与本次要修的
 //	缺陷同形，只是成因不同。
-func migrateLegacyResidentRegistry(dataDir string, m *InstanceManager) {
-	if dataDir == "" || m == nil {
+func migrateLegacyResidentRegistry(dataDir string, im *agent.InstanceManager) {
+	if dataDir == "" || im == nil {
 		return
 	}
 	recs := loadResidentRecords(dataDir)
@@ -249,7 +250,7 @@ func migrateLegacyResidentRegistry(dataDir string, m *InstanceManager) {
 			continue
 		}
 		tempPath := filepath.Join(dataDir, "residents", r.ID, "graph.db")
-		m.remember(kindResident, r.ID, map[string]interface{}{
+		im.Remember(kindResident, r.ID, map[string]interface{}{
 			"id":                 r.ID,
 			"task_prompt":        r.TaskPrompt,
 			"input_chs":          strings.Join(r.InputChs, ","),
@@ -280,17 +281,17 @@ func migrateLegacyResidentRegistry(dataDir string, m *InstanceManager) {
 //
 // 所以：**不按目录发现**（只认登记表），并把这类孤儿归档到 `_legacy/`
 // 让人能看见与清理，而不是静默留在原地冒充"某个子的记忆"。
-func (a *Agent) QuarantineLegacyResidentDirs() int {
-	if a == nil || a.dataDir == "" {
+func (m *M) QuarantineLegacyResidentDirs() int {
+	if m == nil || m.A == nil || m.A.DataDir() == "" {
 		return 0
 	}
-	root := filepath.Join(a.dataDir, "residents")
+	root := filepath.Join(m.A.DataDir(), "residents")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return 0
 	}
 	known := map[string]bool{}
-	for _, rec := range loadResidentRecords(a.dataDir) {
+	for _, rec := range loadResidentRecords(m.A.DataDir()) {
 		known[rec.ID] = true
 	}
 	legacy := filepath.Join(root, "_legacy")

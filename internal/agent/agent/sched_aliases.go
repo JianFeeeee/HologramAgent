@@ -19,6 +19,7 @@ type (
 	SchedulerStats    = standard.SchedulerStats
 	SchedulerSnapshot = standard.SchedulerSnapshot
 	offloadCandidate  = standard.OffloadCandidate
+	OffloadCandidate  = standard.OffloadCandidate
 	suspendedTask     = standard.SuspendedTask
 	nextSelection     = standard.NextSelection
 )
@@ -43,13 +44,28 @@ const (
 
 	// schedStopTimeout 是等调度器停下的上限。
 	schedStopTimeout = standard.StopTimeout
+	// SchedStopTimeout 同上（导出形态，类型包要等自己的调度器停）。
+	SchedStopTimeout = standard.StopTimeout
 )
 
 // newScheduler 构造一个调度器实例（主 agent / 驻留子各自一份）。
 func newScheduler(maxQueue int) *Scheduler { return standard.New(maxQueue) }
 
+// NewScheduler 造一个**本类型自己的**调度器实例（不进基座字段）。
+//
+// ★ 主 agent 与驻留子当前调度语义相同，但**各自持有一份实例**：
+//
+//	任一方未来改自己的抢占/挂起语义时，不需要回基座改、也不影响另一方。
+func NewScheduler(maxQueue int) *Scheduler { return standard.New(maxQueue) }
+
 func newInputTask(evt *agentIO.InputEvent) *Task { return standard.NewInputTask(evt) }
-func newSelfTask(msg SelfInputMsg) *Task         { return standard.NewSelfTask(msg) }
+
+// NewInputTask 是 `newInputTask` 的导出形态（类型包要构造自己的排队任务）。
+func NewInputTask(evt *agentIO.InputEvent) *Task { return standard.NewInputTask(evt) }
+
+// NewSelfTask 是 `newSelfTask` 的导出形态（类型自投 self input）。
+func NewSelfTask(msg SelfInputMsg) *Task { return standard.NewSelfTask(msg) }
+func newSelfTask(msg SelfInputMsg) *Task { return standard.NewSelfTask(msg) }
 func newInterruptTask(evt *agentIO.InputEvent, level Level) *Task {
 	return standard.NewInterruptTask(evt, level)
 }
@@ -63,3 +79,14 @@ func interruptLevel(evt *agentIO.InputEvent) Level { return standard.InterruptLe
 func isKernelNotice(evt *agentIO.InputEvent) bool  { return standard.IsKernelNotice(evt) }
 func sourceOf(t *Task, f *TaskFrame) string        { return standard.SourceOf(t, f) }
 func describeTask(t *Task) string                  { return standard.DescribeTask(t) }
+
+// Scheduler 返回本 agent 的调度器实例。
+//
+// ⚠️ **过渡态**：`a.sched` 字段仍在基座（`task.go` 的 52 处引用尚未搬走）。
+// 终态是调度器随类型的 agentloop 进类型包，基座零持有 —— 见 todo.md N-11。
+func (a *Agent) Scheduler() *Scheduler {
+	if a == nil {
+		return nil
+	}
+	return a.sched
+}

@@ -35,7 +35,6 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +66,9 @@ type InstanceManager struct {
 	// 这个答案写在 `InstanceHost` 的五个方法里。
 	host InstanceHost
 
+	// deps 是宿主在装配期交给的**外部动作**（见 HostDeps 的说明）。
+	deps HostDeps
+
 	// own / ownMu 是**独立使用时**的私有记录表（内核未提供 FacAgentRegistry）。
 	ownMu sync.Mutex
 	own   kernelapi.AgentRegistry
@@ -96,10 +98,6 @@ type InstanceHost interface {
 	AgentsRegistry() kernelapi.AgentRegistry
 	// Logf 写一行带身份标签的日志。
 	Logf(format string, args ...any)
-	// DisposeResident 按类型语义销毁一个驻留子（残余处置 + 通道去向）。
-	DisposeResident(id, policy string) (string, error)
-	// DestroyRTChild 停止一个 rt 子。
-	DestroyRTChild(id string) error
 }
 
 // NewInstanceManager 构造实例管理器（根 agent 装配期一次）。
@@ -197,35 +195,80 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 	if m == nil || m.host == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
-	if _, ok := m.host.Children().Get(id); !ok {
+	e, ok := m.host.Children().Get(id)
+	if !ok {
 		return "", fmt.Errorf("instances: 实例 %q 不存在", id)
 	}
-	policy := "keep"
-	if strings.EqualFold(residual, "drop") {
-		policy = "drop"
-	}
-	// 复用驻留子的销毁路径（它已处理残余/通道处置/策略撤销三条语义）。
-	// rt 走自己的；两者都经 child.Registry.Cleanup，所以这里按类型分派。
-	kind := ""
-	if e, ok := m.host.Children().Get(id); ok {
-		kind = string(e.Kind())
-	}
-	switch childpkg.Kind(kind) {
-	case childpkg.KindResident:
-		// 残余处置由类型自己的 FinishResident 一步完成（停止 + 取 + 处置 + 销毁），
-		// 否则"取完到销毁之间"子还会收新任务，那些结果随销毁丢失。
-		if _, err := m.host.DisposeResident(id, policy); err != nil {
+	kind := string(e.Kind())
+
+	// ★ 类型独有语义（残余处置 + 通道去向）走它自己的 Admin：
+	//   内核只按 type 查表调用，**不认识任何 type**。
+	//
+	//   原先这里有一个 `switch Kind { case KindResident: ... case KindRT: ... }`
+	//   —— 每加一种类型就要回来加一条 case，且基座被迫 import 两个类型包。
+	if d, ok := registry.Lookup(kind); ok && d.Admin != nil {
+		if _, err := d.Admin(m, "destroy", map[string]interface{}{
+			"id":       id,
+			"residual": residual,
+		}); err != nil {
 			return "", err
 		}
-	case childpkg.KindRT:
-		if err := m.host.DestroyRTChild(id); err != nil {
+	}
+	// 骨架级清理（Entry.Dispose + 策略撤销 + 注销入站登记）只写一遍。
+	//
+	// ★ 类型的 Admin 可能已经把实例**完整拆除**（驻留子的 destroy 要
+	//   先取残余再拆，中间不许它再收新任务 —— 那必须是原子的一步）。
+	//   所以这里只在实例仍在登记表里时才补骨架清理。
+	if _, still := m.host.Children().Get(id); still {
+		if err := m.host.Children().StopOne(id, childStopDeps(m)); err != nil {
 			return "", err
 		}
-	default:
-		return "", fmt.Errorf("instances: 未知子 agent 类型 %q（无法销毁）", kind)
 	}
-	m.forget(id)
+	m.Forget(id)
 	return fmt.Sprintf("已销毁 %s。", id), nil
+}
+
+// HostDeps 是宿主（根 agent）在装配期交给实例管理器的**外部动作**。
+//
+// ★ 为什么不是 `InstanceHost` 接口的新方法：那会让"实例管理器需要父的什么"
+//
+//	无限增长（每加一种收尾动作就加一格），而接口是实现者必须全填的契约。
+//	这些是**装配期给进来的函数值**：没给就跳过（骨架自己那部分照做）。
+//
+// ★ 为什么必须由父提供 `RevokePolicy`：主体表以调用方给的名字为键，
+//
+//	同名重建会继承旧策略，且表随 create/destroy 单调增长（lessons §3.2）。
+type HostDeps struct {
+	// RevokePolicy 撤销父为该子声明的主体策略。
+	RevokePolicy func(childID string)
+	// UnregisterInbound 注销该子在父侧的入站 inputch（复数路径曾漏过）。
+	UnregisterInbound func(channelName string)
+	// OnDispose 类型 Dispose 之后的父侧收尾（如把残余转回父队列）。
+	OnDispose func(e childpkg.Entry)
+	// ChannelRegistry 是通道登记表（注销入站要用）。
+	ChannelRegistry *agentIO.ChannelRegistry
+}
+
+// childStopDeps 收集"停止一个子还需要什么"（骨架不 import agent 包）。
+//
+// ★ 三项都由宿主提供：
+//
+//	RevokePolicy      撤销父为该子声明的主体策略（同名重建会继承旧策略）
+//	UnregisterInbound 注销该子在父侧的入站 inputch（复数路径曾漏过这一步）
+//	OnDispose         类型 Dispose 之后的父侧收尾（如把残余转回父队列）
+func childStopDeps(m *InstanceManager) childpkg.StopDeps {
+	d := m.deps
+	out := childpkg.StopDeps{}
+	if d.RevokePolicy != nil {
+		out.RevokePolicy = d.RevokePolicy
+	}
+	if d.UnregisterInbound != nil {
+		out.UnregisterInbound = d.UnregisterInbound
+	}
+	if d.OnDispose != nil {
+		out.OnDispose = d.OnDispose
+	}
+	return out
 }
 
 // SendToChild 向实例注入一条输入（复用现有 inputch 注入原语）。
@@ -287,7 +330,9 @@ func (m *InstanceManager) RecreateChild(typeName, id string) (string, error) {
 // ★ 落点是 **agent 记录**（`AgentRecord.Arg`）：创建参数与父声明事实是同一条
 //
 //	记录的两个字段，所以"重建所需信息"和"授权约束"不会各存一处。
-func (m *InstanceManager) remember(typeName, id string, arg map[string]interface{}) {
+//
+// Remember 记录一个实例的创建参数（类型的持久化路径用）。
+func (m *InstanceManager) Remember(typeName, id string, arg map[string]interface{}) {
 	if m == nil || id == "" {
 		return
 	}
@@ -324,7 +369,8 @@ func (m *InstanceManager) remember(typeName, id string, arg map[string]interface
 }
 
 // forget 忘掉一个实例（**创建参数与父声明事实一并消失**）。
-func (m *InstanceManager) forget(id string) {
+// Forget 从记录表摘掉一个实例。
+func (m *InstanceManager) Forget(id string) {
 	if m == nil || id == "" {
 		return
 	}
@@ -400,6 +446,14 @@ func (a *Agent) Instances() *InstanceManager {
 }
 
 // InstallInstanceManager 装入实例管理器（根 agent 装配期一次）。
+// WithDeps 由宿主在装配期注入外部动作（可为零值）。
+func (m *InstanceManager) WithDeps(d HostDeps) *InstanceManager {
+	if m != nil {
+		m.deps = d
+	}
+	return m
+}
+
 func (a *Agent) InstallInstanceManager(m *InstanceManager) {
 	if a != nil {
 		a.instances = m

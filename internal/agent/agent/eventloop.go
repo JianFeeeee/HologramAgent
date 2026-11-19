@@ -128,7 +128,7 @@ func (a *Agent) handleInterruptEvent(evt *agentIO.InputEvent) {
 		// 带注释的停止（/stop 说句话）：注释本身仍作为中断处理，
 		// 走下面的正常路径——用户想看模型对被停下话题的回应。
 	}
-	log.Printf("[agent] interrupt from %s/%s: %s", evt.Source, evt.OutputChannel, truncateStr(text, 80))
+	log.Printf("[agent] interrupt from %s/%s: %s", evt.Source, evt.OutputChannel, TruncateStr(text, 80))
 
 	clone := &agentIO.InputEvent{
 		RequestID:     evt.RequestID,

@@ -893,7 +893,7 @@ func (a *Agent) InjectSelfChannel(msg selfInputMsg) {
 	select {
 	case a.selfInputCh <- msg:
 	default:
-		a.Logf("self input channel full, dropping task: %s", truncateStr(msg.Text, 80))
+		a.Logf("self input channel full, dropping task: %s", TruncateStr(msg.Text, 80))
 	}
 }
 

@@ -26,6 +26,10 @@ import (
 	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
 )
 
+// defaultMaxContextTokens 是内核的**模型窗口默认值**（不是类型策略）。
+// 类型算水位时用它作分母，数据来自内核配置。
+const defaultMaxContextTokens = 32768
+
 // accumulatedTokens 估算**未裁剪**的积累上下文 token 数。
 //
 // ⚠️ 判据必须用积累量，不能用 f.Msgs：后者已被 buildMessages 按

@@ -1,4 +1,4 @@
-package agent
+package resident
 
 // 驻留子的**工具面**（对照设计 §7 控制面与 §8 处理表）。
 //
@@ -6,6 +6,8 @@ package agent
 // 子侧两个小工具：`notify_parent`（L3 主动汇报）与 `inputch_note`（主动写处理表）。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"path/filepath"
 	"strings"
@@ -35,23 +37,25 @@ func splitArg(s string) []string {
 
 // reclaimKeepAll 是回收时的默认策略：把子 temp 的活跃记录全部纳入主记忆
 // （"哪些纳入"由父的模型决定——这里给的是"全要"这一档）。
-func reclaimKeepAll(_ []InputchRecord, triples []model.Triple) []model.Triple { return triples }
+func reclaimKeepAll(_ []agenttypes.InputchRecord, triples []model.Triple) []model.Triple {
+	return triples
+}
 
 // residualPolicyOf 从工具参数读残余任务的处置策略（keep/drop）。
 //
 // 默认 keep：父没明确说丢时，一律转回自己而不是丢弃。
 // "宁可多做一件，不可默默丢一条"——吞掉一条输入比多处理一条更糟。
-func residualPolicyOf(tc agentAPI.ToolCall) ResidualPolicy {
+func residualPolicyOf(tc agentAPI.ToolCall) agenttypes.ResidualPolicy {
 	switch strings.ToLower(strArg(tc, "residual")) {
 	case "drop", "discard":
-		return ResidualDrop
+		return agenttypes.ResidualDrop
 	case "stash", "park":
 		// 暂存到原通道，等通道被接回时放出。
-		return ResidualStash
+		return agenttypes.ResidualStash
 	case "takeover", "take_over", "take":
-		return ResidualTakeover
+		return agenttypes.ResidualTakeover
 	default:
-		return ResidualKeep
+		return agenttypes.ResidualKeep
 	}
 }
 
@@ -65,13 +69,13 @@ func residualPolicyOf(tc agentAPI.ToolCall) ResidualPolicy {
 // ★ 旧的 `suspend`/`park` 参数值**仍被接受**并映射到 orphan —— 不能因为
 // 内部收敛就把模型已经学会的参数名变成报错（那会让存量行为突然失效）。
 // 但它们现在与 orphan 完全同义，不再声称有额外语义。
-func channelDispositionOf(tc agentAPI.ToolCall) ChannelDisposition {
+func channelDispositionOf(tc agentAPI.ToolCall) agenttypes.ChannelDisposition {
 	switch strings.ToLower(strArg(tc, "channels")) {
 	case "handover", "takeover", "take_over", "take":
-		return ChannelHandover
+		return agenttypes.ChannelHandover
 	default:
 		// orphan / suspend / park / 空 —— 都是悬空。
-		return ChannelOrphan
+		return agenttypes.ChannelOrphan
 	}
 }
 
@@ -95,23 +99,23 @@ func intArg(tc agentAPI.ToolCall, key string) int {
 }
 
 // executeNotifyParent 是子的"主动向父发消息"（父侧阶梯 = **L3 中断**）。
-func (a *Agent) ExecuteNotifyParent(tc agentAPI.ToolCall) string {
-	return a.NotifyParentFrom(strArg(tc, "text"))
+func (m *M) ExecuteNotifyParent(tc agentAPI.ToolCall) string {
+	return m.NotifyParentFrom(strArg(tc, "text"))
 }
 
 // executeInputchNote 是子"主动写入本轮 inputch 的处理信息"。
 // 主动写过 ⇒ 本轮系统不再自动写（见 autoRecordInputch）。
-func (a *Agent) ExecuteInputchNote(tc agentAPI.ToolCall) string {
+func (m *M) ExecuteInputchNote(tc agentAPI.ToolCall) string {
 	text := strArg(tc, "text")
 	if text == "" {
 		return "text 不能为空"
 	}
-	a.RecordInputchNote(text)
+	m.RecordInputchNote(text)
 	return "已记录本轮 inputch 处理信息（本轮系统不会再自动写）"
 }
 
 // childInboundChannelHint 是给子看的"父会怎么把消息投给你"的提示（不参与调度）。
-func childInboundChannelHint(a *Agent) string { return "sub/" + string(a.id) }
+func childInboundChannelHint(a *agent.Agent) string { return "sub/" + string(a.ID()) }
 
 // residentTempDir 返回某个驻留子 temp 存储所在目录（销毁时连同目录丢弃）。
 func residentTempDir(tempPath string) string { return filepath.Dir(tempPath) }

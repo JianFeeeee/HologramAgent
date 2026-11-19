@@ -1108,7 +1108,7 @@ func (a *Agent) executeDocTool(tc agentAPI.ToolCall) string {
 			return "content is required"
 		}
 		if summary == "" {
-			summary = truncateStr(content, 100)
+			summary = TruncateStr(content, 100)
 		}
 
 		doc := &model.ColdDoc{
@@ -1256,7 +1256,7 @@ func (a *Agent) recallByBlocks(query string) string {
 			tag = "symbol"
 		}
 		parts = append(parts, fmt.Sprintf("- [%s %.2f] %s",
-			tag, score, truncateStr(text, 160)))
+			tag, score, TruncateStr(text, 160)))
 	}
 	return strings.Join(parts, "\n")
 }

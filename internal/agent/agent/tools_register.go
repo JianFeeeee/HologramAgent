@@ -62,30 +62,11 @@ func init() {
 	//   （internal/agent/worker 的 init 里调 registry.RegisterTool）：
 	//   那是它的能力，基座只按表渲染与分派。
 
-	// ── 子侧：向上汇报 + 写处理表 ──
-	//
-	// 侧别由**注册声明**，不是基座里的 `if a.isChildAgent()` ——
-	// 后者会让基座重新认识"谁是子"这个类型结论。
-	registerTool("notify_parent",
-		"向主 agent 汇报（以 L3 中断投给它）。用于主动报告进展/结论，而不是等它来问。",
-		registry.SideChild,
-		map[string]interface{}{
-			"text": map[string]interface{}{"type": "string", "description": "汇报内容"},
-		}, []string{"text"},
-		func(c registry.ToolCtx, tc agentAPI.ToolCall) string {
-			return hostAgent(c).ExecuteNotifyParent(tc)
-		})
+	// ★ `notify_parent` / `inputch_note` 由**驻留子类型包**自己注册
+	//   （internal/agent/resident 的 init 里调 registry.RegisterTool）：
+	//   它们读的是子自己的 inputch 处理表与上报通路，那是驻留子语义。
+	//   基座这里只留内核统一入口（admin_child 三件套）。
 
-	registerTool("inputch_note",
-		"为**本轮** inputch 主动写入处理信息（主 agent 会查这张表判断你的进度）。"+
-			"写了就不会再被系统自动记录；不写则本轮结束时系统自动写。",
-		registry.SideChild,
-		map[string]interface{}{
-			"text": map[string]interface{}{"type": "string", "description": "本轮处理信息摘要"},
-		}, []string{"text"},
-		func(c registry.ToolCtx, tc agentAPI.ToolCall) string {
-			return hostAgent(c).ExecuteInputchNote(tc)
-		})
 }
 
 // registerTool 是 registerTool 的简写包装（失败即装配错误）。

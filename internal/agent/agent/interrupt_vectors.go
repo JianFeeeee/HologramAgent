@@ -42,16 +42,15 @@ type VectorID string
 const (
 	// VectorTaskPanic：任务 panic。带递归保护（见 interruptVectors）。
 	VectorTaskPanic VectorID = "task_panic"
-	// VectorChildContextFull：驻留子上下文已满，父据此决定压缩/回收/销毁。
-	VectorChildContextFull VectorID = "child_ctxfull"
-	// VectorRTChildClosed：rtchild 回收，父据此**自行选择**要保留哪些上下文。
-	VectorRTChildClosed VectorID = "rtchild_closed"
 )
 
 // vectorArgs 是一次中断向量调用的全部入参。
 //
 // 用显式结构体而不是 `any`：每种中断用哪些字段一眼可见，
 // 且新增字段时编译器会提醒所有构造点。
+// VectorArgs 是一次中断向量调用的全部入参（导出给类型包）。
+type VectorArgs = vectorArgs
+
 type vectorArgs struct {
 	// Task 是发生 panic 的任务（VectorTaskPanic 使用）。
 	Task *Task
@@ -111,37 +110,6 @@ var interruptVectors = map[VectorID]interruptVector{
 				a.Task.ID, a.Panic)
 		},
 	},
-
-	VectorRTChildClosed: {
-		ID:     VectorRTChildClosed,
-		Level:  LevelCritical,
-		Source: func(a vectorArgs) string { return "rtchild/" + a.RTID },
-		Guard:  func(vectorArgs) bool { return true },
-		Build: func(a vectorArgs) string {
-			// ★ 父子协议同驻留子 contextfull：**只推信号，不塞正文**。
-			//
-			// 用户裁定（2026-10-30）：「交还是类似驻留式子 agent 的 contextfull
-			// 中断，让主 agent **自行选择**保留的内容。」
-			//
-			// 所以这里**不**把通话原文灌进 payload —— 那等于替主 agent 做了
-			// "全都要"的决定，且会把几十万字符直接顶进它的上下文。正文由
-			// RTTranscript 按需拉取（"推信号 + 拉状态"），与驻留子同一套协议。
-			return fmt.Sprintf("内核事件：实时子 agent %s 已回收，本次通话共 %d 条消息（约 %d 字符）。"+
-				"如需复盘，可调用 admin_child(type=rt, action=transcript) 取回原文并按需选取保留内容。", a.RTID, a.RTCount, a.RTChars)
-		},
-	},
-
-	VectorChildContextFull: {
-		ID:     VectorChildContextFull,
-		Level:  LevelCritical,
-		Source: func(a vectorArgs) string { return "child/" + a.ChildID },
-		Guard:  func(vectorArgs) bool { return true },
-		Build: func(a vectorArgs) string {
-			// 父子协议：只推信号，细节靠"查看"拉状态面。
-			return fmt.Sprintf("内核事件：驻留子 %s 上下文已满（contextfull）。"+
-				"请【查看】其状态面后决定【压缩】/【回收】/【销毁】。", a.ChildID)
-		},
-	},
 }
 
 // lookupVector 取一个向量；未登记时返回 false（**不静默降级**）。
@@ -159,6 +127,7 @@ func lookupVector(id VectorID) (interruptVector, bool) {
 // 正文构造全部来自向量表，调用点只声明"哪一类中断 + 载荷"。
 //
 // 返回 true 表示中断真的占了 immediate 槽（会立即生效）。
+// RaiseVector 按登记表产生一条内核级中断。
 func (a *Agent) RaiseVector(id VectorID, args vectorArgs) bool {
 	v, ok := lookupVector(id)
 	if !ok {

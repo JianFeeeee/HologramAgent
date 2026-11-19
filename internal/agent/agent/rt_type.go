@@ -24,6 +24,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
@@ -177,7 +178,7 @@ func (a *Agent) spawnRTChildForAdmin(arg map[string]interface{}) (string, error)
 		return "", err
 	}
 	if m := a.Instances(); m != nil {
-		m.remember(kindRT, got, arg)
+		m.Remember(kindRT, got, arg)
 	}
 	return "已创建实时子 agent（rtchild）: " + got, nil
 }
@@ -309,14 +310,14 @@ func (a *Agent) PersistRTChildren() {
 			continue
 		}
 		seen[rc.ID] = true
-		m.remember(kindRT, rc.ID, rc.toAdminArg())
+		m.Remember(kindRT, rc.ID, rc.toAdminArg())
 	}
 	for _, r := range m.Records() {
 		if r.Type != kindRT {
 			continue
 		}
 		if !seen[r.ID] {
-			m.forget(r.ID)
+			m.Forget(r.ID)
 		}
 	}
 }
@@ -344,4 +345,49 @@ func installRTHooks(a *Agent) {
 		h.ContextBudget = func(_ *Agent, b kit.TokenBudget) int { return b.MaxContext }
 	}
 	a.SetHooks(h)
+}
+
+// ── arg map 读取小工具（rt 自己的管理动作参数） ──
+
+func strOf(m map[string]interface{}, k string) string {
+	if m == nil {
+		return ""
+	}
+	s, _ := m[k].(string)
+	return strings.TrimSpace(s)
+}
+
+func intOf(m map[string]interface{}, k string) int {
+	if m == nil {
+		return 0
+	}
+	switch v := m[k].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+func splitComma(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// rtChildClosedText 是"rt 回收"这条内核级中断的正文（模型能看到的唯一内容）。
+func rtChildClosedText(id string, n, chars int) string {
+	return "rt 子 " + id + " 已回收：" + strconv.Itoa(n) + " 条消息（" +
+		strconv.Itoa(chars) + " 字符）已留档，可用 admin_child(type=\"rt\", action=\"transcript\") 按需取回原文。"
 }

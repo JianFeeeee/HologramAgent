@@ -63,3 +63,17 @@ type GraphMemory interface {
 	// Commit 写入三元组（子的实现只落自己的 temp 空间）。
 	Commit(triples []model.Triple, sessionID string, turnID int) (int, int, error)
 }
+
+// MainGraph 返回本 agent 的图记忆**共同面**（根 = 同一个 GraphDB；
+// 驻留子 / rt = 自己的 LightMemory）。
+//
+// ★ 这是基座字段 `a.graph` 的读入口。句柄由类型经 `AgentConfig` 交给基座
+//
+//	存放（§6.2 #5），基座不认识它的实现类型 —— 所以返回的是**共同面**
+//	`GraphMemory`（Recall/RecallSorted/Commit 三个方法），不是完整图库。
+func (a *Agent) MainGraph() GraphMemory {
+	if a == nil {
+		return nil
+	}
+	return a.graph
+}

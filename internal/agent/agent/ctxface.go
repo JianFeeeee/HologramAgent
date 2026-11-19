@@ -37,3 +37,11 @@ func (a *Agent) contextMgr() *ContextMgr {
 	}
 	return a.ctxHolder
 }
+
+// ContextMgr 返回本 agent 的上下文管理器（类型的 agentloop 要读写它）。
+func (a *Agent) ContextManager() *ContextMgr {
+	if a == nil {
+		return nil
+	}
+	return a.contextMgr()
+}

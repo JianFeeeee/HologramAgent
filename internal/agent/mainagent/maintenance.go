@@ -42,6 +42,6 @@ func registerMaintenance(a *agent.Agent) {
 	// ④ 关系复审
 	reg(a.ReviewTask())
 	// ⑤ 积压任务转投（未启用时返回零值，注册被拒）
-	reg(a.OffloadTask())
+	reg(offloadTask(a))
 	a.Logf("registered %d periodic task(s): %v", len(names), names)
 }

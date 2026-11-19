@@ -83,6 +83,13 @@ func (a *Agent) ExecuteAdminChildList() string {
 
 // strArg 取字符串参数（去空白）。
 //
-// ★ 与 resident_tools.go 的 strArg 同名同义 —— 这里重新声明会冲突，
-//   所以本文件不重复定义（见下方注释）。
-// var _ = strArg
+// ★ 本文件的本地小工具：`admin_child` 的参数本来就是平铺进 map 的，
+//
+//	与任何类型的 `strArg` 无关（那些在类型包里，各管自己的工具参数）。
+func strArg(tc agentAPI.ToolCall, key string) string {
+	if tc.Arguments == nil {
+		return ""
+	}
+	s, _ := tc.Arguments[key].(string)
+	return strings.TrimSpace(s)
+}

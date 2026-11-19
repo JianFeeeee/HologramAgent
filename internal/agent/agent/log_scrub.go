@@ -15,9 +15,9 @@ package agent
 //
 // ## 具体泄漏点（2026-10-18 审计）
 //
-//	task.go:1031  log.Printf("[agent] tool %s result: %s", ..., truncateStr(result, 100))
+//	task.go:1031  log.Printf("[agent] tool %s result: %s", ..., TruncateStr(result, 100))
 //	              ← 工具输出可能含服务端回显的凭据（enc_shell 跑 curl 拿 200）
-//	task.go:967   log.Printf("[agent] tool %s raw_arguments: %s", ..., truncateStr(tc.RawArguments, 300))
+//	task.go:967   log.Printf("[agent] tool %s raw_arguments: %s", ..., TruncateStr(tc.RawArguments, 300))
 //	              ← 模型给的原始参数。正常是别名，但插件工具可能被直接传明文
 //
 // 两处都**原样打印**，没有经过 security.Replace。

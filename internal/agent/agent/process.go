@@ -252,7 +252,7 @@ func malformedArgsError(name, raw string) string {
 		"工具 %s 的参数不是合法 JSON，本次调用未执行（这是参数格式问题，不是工具故障）。"+
 			"请重新生成完整参数并注意：所有字符串值必须带引号 —— 特别是超时/时长这种"+
 			"带单位的值，要写成 \"20s\" 而不是 20s。收到 %d 字节，开头是：%s",
-		name, len(raw), truncateStr(raw, 160))
+		name, len(raw), TruncateStr(raw, 160))
 }
 
 // accumulateStream 消费 chunk channel，累积为完整 CompletionResponse，
@@ -273,7 +273,7 @@ func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *Ag
 			return
 		}
 		if acc.name == "" {
-			log.Printf("[agent] stream tool_call idx=%d flushed with EMPTY name (args=%q) — dropped", idx, truncateStr(acc.argsRaw.String(), 120))
+			log.Printf("[agent] stream tool_call idx=%d flushed with EMPTY name (args=%q) — dropped", idx, TruncateStr(acc.argsRaw.String(), 120))
 			delete(accs, idx)
 			return
 		}
@@ -281,7 +281,7 @@ func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *Ag
 		raw := strings.TrimSpace(acc.argsRaw.String())
 		// 空参诊断：区分「上游没发分片」(raw="")、「混拼污染」(解析失败) 与「合法空对象」({})。
 		if !argsOK {
-			log.Printf("[agent] stream tool_call %s (idx=%d) argument fragments invalid JSON: %q", acc.name, idx, truncateStr(raw, 200))
+			log.Printf("[agent] stream tool_call %s (idx=%d) argument fragments invalid JSON: %q", acc.name, idx, TruncateStr(raw, 200))
 		} else if raw == "" {
 			log.Printf("[agent] stream tool_call %s (idx=%d) received NO argument fragments", acc.name, idx)
 		}

@@ -6,6 +6,7 @@ package test
 
 import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/resident"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
@@ -80,11 +81,11 @@ func TestRealtimeFlag(t *testing.T) {
 // TestEmptyCollectionsOnFreshAgent：新 agent 的驻留子 / rt 子 / 队列视图为空。
 func TestEmptyCollectionsOnFreshAgent(t *testing.T) {
 	a := newAgent(t, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), IO: io.NewIOManager()})
-	if got := a.Residents(); len(got) != 0 {
-		t.Fatalf("★ Residents() = %v，期望空", got)
-	}
-	if got := a.RTChildren(); len(got) != 0 {
-		t.Fatalf("★ RTChildren() = %v，期望空", got)
+	// ★ 子 agent 的视图走**唯一协议**（`ListChildren` 只读简报），
+	//   不再有 `Residents()` / `RTChildren()` 这种按类型具名的访问器 ——
+	//   那种访问器每加一种类型就要加一个（正是要消灭的形态）。
+	if got := a.ListChildren(""); len(got) != 0 {
+		t.Fatalf("★ ListChildren() = %v，期望空", got)
 	}
 	snap := a.DumpScheduler()
 	if snap.Running != nil || len(snap.Queue) != 0 {
