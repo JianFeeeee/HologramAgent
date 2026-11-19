@@ -1,4 +1,4 @@
-package agent
+package standard
 
 // 中断管理器 —— 只负责"进入中断"这件事本身：**现场保护**与**中断屏蔽**。
 //
@@ -41,6 +41,7 @@ package agent
 // 判据见 interrupt_invariant_test.go。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"sync/atomic"
 	"time"
 )
@@ -57,7 +58,7 @@ import (
 type interruptState struct {
 	// suspendStack：**中断栈**。被抢占后保存现场的任务压栈（LIFO）。
 	// 只有**栈顶**参与恢复选择，栈内不做优先级重排。
-	suspendStack []*suspendedTask
+	suspendStack []*SuspendedTask
 
 	// preemptArmed/preemptLevel：运行任务的"让位信号"。
 	// 表示"已有更高优先级的中断被判定，请在下一个安全点让位"。
@@ -84,30 +85,30 @@ type interruptState struct {
 	stackNotify func()
 }
 
-// suspendedTask 是一个被抢占任务的现场。
+// SuspendedTask 是一个被抢占任务的现场。
 //
-// 现场保护的粒度是**整个 TaskFrame**（含 f.Msgs）：恢复时不能复用超限/过期的
+// 现场保护的粒度是**整个 agenttypes.Frame**（含 f.Msgs）：恢复时不能复用超限/过期的
 // 那份消息数组，必须由 rebaseFramePrefix 重建（见 resumeTask 的注释）。
-type suspendedTask struct {
+type SuspendedTask struct {
 	Task  *Task
-	Frame *TaskFrame
+	Frame *agenttypes.Frame
 }
 
-// nextSelection 标识 nextRef 从哪个集合取出任务。
-type nextSelection int
+// NextSelection 标识 nextRef 从哪个集合取出任务。
+type NextSelection int
 
 const (
-	nextNone nextSelection = iota
-	nextReady
-	nextInterrupt
-	nextImmediate
-	nextSuspended
+	NextNone NextSelection = iota
+	NextReady
+	NextInterrupt
+	NextImmediate
+	NextSuspended
 )
 
 // ── 让位协议 ──
 
 // preemptGrantedFor 报告是否有已判定的让位请求（安全点据此决定是否挂起）。
-func (s *scheduler) preemptGrantedFor() bool {
+func (s *Scheduler) PreemptGrantedFor() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.preemptArmed || s.running == nil {
@@ -117,7 +118,7 @@ func (s *scheduler) preemptGrantedFor() bool {
 }
 
 // clearPreempt 清除让位信号（抢占者已开始执行）。
-func (s *scheduler) clearPreempt() {
+func (s *Scheduler) ClearPreempt() {
 	s.mu.Lock()
 	s.preemptArmed = false
 	s.preemptLevel = 0
@@ -127,13 +128,13 @@ func (s *scheduler) clearPreempt() {
 // ── 现场保护 ──
 
 // suspend 保存现场压栈。
-func (s *scheduler) suspend(t *Task, f *TaskFrame) {
+func (s *Scheduler) Suspend(t *Task, f *agenttypes.Frame) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.suspendStack) >= s.maxInterruptFrames {
 		s.stats.Rejected++
 	}
-	s.suspendStack = append(s.suspendStack, &suspendedTask{Task: t, Frame: f})
+	s.suspendStack = append(s.suspendStack, &SuspendedTask{Task: t, Frame: f})
 	s.stats.Suspended++
 	// 饥饿防护：抢占计数 +1（提升有效级）并记录冷却起点。
 	t.PreemptCount++
@@ -148,7 +149,7 @@ func (s *scheduler) suspend(t *Task, f *TaskFrame) {
 	s.preemptLevel = 0
 
 	// 栈状态已变化 → 通告调度器（钩子在持锁下调用，只做记录+唤醒）。
-	s.notifyStackLocked()
+	s.NotifyStackLocked()
 }
 
 // popSuspendLocked 弹出中断栈顶并交出现场（调用方须持锁且确认非空）。
@@ -159,7 +160,7 @@ func (s *scheduler) suspend(t *Task, f *TaskFrame) {
 //
 // 弹栈是**机制**；"该不该弹、弹出来给谁跑"是策略（在调度器）。
 // 中断管理器不判断优先级，只负责把栈顶原样交出去。
-func (s *scheduler) popSuspendLocked() *suspendedTask {
+func (s *Scheduler) PopSuspendLocked() *SuspendedTask {
 	n := len(s.suspendStack)
 	if n == 0 {
 		return nil
@@ -168,7 +169,7 @@ func (s *scheduler) popSuspendLocked() *suspendedTask {
 	s.suspendStack = s.suspendStack[:n-1]
 	// Resumed 不在这里计：只有真正恢复执行时（resumeTask）才算一次，
 	// 否则"排空后 Suspended == Resumed"这条不变量会因弹栈而虚高。
-	s.notifyStackLocked()
+	s.NotifyStackLocked()
 	return top
 }
 
@@ -177,7 +178,7 @@ func (s *scheduler) popSuspendLocked() *suspendedTask {
 // 钩子的语义是"通告"，不是"决策"：中断管理器不知道也不关心调度器会怎么做，
 // 它只说"栈变了"。这正是两者解耦的关键——将来换掉调度器的选取策略，
 // 或给中断子系统加向量表/多栈，都不需要改对方。
-func (s *scheduler) notifyStackLocked() {
+func (s *Scheduler) NotifyStackLocked() {
 	if s.stackNotify != nil {
 		s.stackNotify()
 	}
@@ -189,8 +190,8 @@ func (s *scheduler) notifyStackLocked() {
 // 这是"中断栈的操作者只有中断管理器"这条不变量的落点。
 //
 // 返回被恢复的现场；栈空时返回 nil。
-func (s *scheduler) restoreTopLocked() *suspendedTask {
-	top := s.popSuspendLocked()
+func (s *Scheduler) RestoreTopLocked() *SuspendedTask {
+	top := s.PopSuspendLocked()
 	if top == nil {
 		return nil
 	}
@@ -201,14 +202,14 @@ func (s *scheduler) restoreTopLocked() *suspendedTask {
 // ── 栈状态查询（调度器据此决策；**不提供任何操作栈的方法**）──
 
 // stackDepthLocked 返回中断栈深度。
-func (s *scheduler) stackDepthLocked() int { return len(s.suspendStack) }
+func (s *Scheduler) StackDepthLocked() int { return len(s.suspendStack) }
 
 // stackTopLocked 返回栈顶现场的**只读快照**（Task + Frame 指针）。
 //
 // 只读：调度器拿它做优先级比较，但**不能**用它弹栈——弹栈只能由
 // 中断管理器在 restoreTopLocked 里做。这样"中断栈的操作者只有中断管理器"
 // 这条不变量在类型层面就无法被绕过。
-func (s *scheduler) stackTopLocked() *suspendedTask {
+func (s *Scheduler) StackTopLocked() *SuspendedTask {
 	n := len(s.suspendStack)
 	if n == 0 {
 		return nil
@@ -217,7 +218,7 @@ func (s *scheduler) stackTopLocked() *suspendedTask {
 }
 
 // canSuspend 报告中断栈是否还能压入新帧。
-func (s *scheduler) canSuspend() bool {
+func (s *Scheduler) CanSuspend() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.suspendStack) < s.maxInterruptFrames
@@ -226,7 +227,7 @@ func (s *scheduler) canSuspend() bool {
 // suspendDepth 返回当前中断栈深度（仅用于日志）。
 //
 // 单独一个方法而不是让调用方直接读 s.suspendStack：那个字段只允许在 s.mu 下访问。
-func (s *scheduler) suspendDepth() int {
+func (s *Scheduler) SuspendDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.suspendStack)

@@ -320,7 +320,7 @@ func installResidentHooks(a *Agent) {
 
 	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现。
 	if h.Loop == nil {
-		h.Loop = func(x *Agent, f *TaskFrame) stepOutcome { return LoopStandard(x, f) }
+		h.Loop = func(x *Agent, f *TaskFrame) stepOutcome { return RunTaskSteps(x, f) }
 	}
 
 	a.SetHooks(h)

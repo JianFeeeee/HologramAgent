@@ -89,9 +89,7 @@ func offloadNotice(count int, residentID string) string {
 // 只有**纯排队输入**（TaskQueued + KindInput）可转投：
 //   - 中断任务带级别语义（可能正在等待抢占时机），转投会打乱中断阶梯；
 //   - self 任务是内核内部记账（记忆整理等），与父的记忆面绑定，不能换 agent。
-type offloadCandidate struct {
-	Event *agentIO.InputEvent
-}
+// offloadCandidate 见 sched_aliases.go（类型在 standard）。
 
 // drainInboxToQueue 把 io 输入 channel 里**已经到达但尚未被搬运**的输入
 // 搬进就绪队列（非阻塞；取空为止）。
@@ -105,11 +103,11 @@ func (a *Agent) drainInboxToQueue() {
 	for {
 		select {
 		case evt := <-a.io.InputChan():
-			if !a.sched.enqueue(newInputTask(evt)) {
+			if !a.sched.Enqueue(newInputTask(evt)) {
 				// 队列满：放不进去。不能丢，也不能阻塞（我们是后台 goroutine，
 				// 阻塞会把这个循环永远卡住）——给同步调用方一个终态后丢弃，
 				// 与 pumpInbox 的 queue_full 处置一致。
-				a.sched.noteBackpressure()
+				a.sched.NoteBackpressure()
 				a.EmitSkippedReply(evt, "queue_full")
 				return
 			}
@@ -136,11 +134,11 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 	}
 
 	// ① 判定：运行任务是否已忙够久。运行任务为空说明压根不忙，不做。
-	running := a.sched.runningTask()
+	running := a.sched.RunningTask()
 	if running == nil {
 		return 0
 	}
-	busyFor := a.sched.runningFor()
+	busyFor := a.sched.RunningFor()
 	if busyFor < opts.BusyAfter {
 		return 0
 	}
@@ -158,7 +156,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 	a.drainInboxToQueue()
 
 	// ③ 收集可转投的排队任务；不够量就不值得拉起一个 agent。
-	cands := a.sched.takeQueuedInputs(opts.MinPending)
+	cands := a.sched.TakeQueuedInputs(opts.MinPending)
 	if len(cands) == 0 {
 		return 0
 	}
@@ -168,7 +166,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 	if err != nil {
 		// 拉不起来就把任务**放回队列**，绝不能丢：丢一条输入比多处理一条更糟
 		// （与 routeInputByOwner 的兜底同一条理由）。
-		a.sched.requeueFront(cands)
+		a.sched.RequeueFront(cands)
 		log.Printf("[offload] cannot prepare resident child for %d backlogged task(s), returned to queue: %v", len(cands), err)
 		return 0
 	}
@@ -184,7 +182,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 		}
 		if err := a.forwardInputToResident(residentID, c.Event); err != nil {
 			// 某条投不进去：放回原队列，其余继续（部分成功好过全部回滚）。
-			a.sched.requeueFront([]offloadCandidate{c})
+			a.sched.RequeueFront([]offloadCandidate{c})
 			log.Printf("[offload] forwarding task to resident child %s failed, returned to queue: %v", residentID, err)
 			continue
 		}
@@ -198,7 +196,7 @@ func (a *Agent) offloadPendingTasks(opts OffloadOptions) int {
 	//
 	// 为什么留在队列里而不是只记日志：队列顺序就是主 agent 接下来要处理的事；
 	// 用户看会话记录时，需要在这里就看到"那几条去哪儿了"，而不是去翻内核日志。
-	a.sched.requeueFront([]offloadCandidate{
+	a.sched.RequeueFront([]offloadCandidate{
 		{Event: a.syntheticEvent(offloadNotice(moved, residentID))},
 	})
 

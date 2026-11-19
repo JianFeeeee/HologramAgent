@@ -45,7 +45,7 @@ func (a *Agent) InterceptLoop() {
 					a.Logf("input dropped: this type has no queue (rt uses its own slot), source=%s", evt.Source)
 					continue
 				}
-				if !a.sched.enqueue(newInputTask(evt)) {
+				if !a.sched.Enqueue(newInputTask(evt)) {
 					a.EmitSkippedReply(evt, "queue_full")
 				}
 				continue
@@ -112,7 +112,7 @@ func (a *Agent) handleInterruptEvent(evt *agentIO.InputEvent) {
 		if a.io != nil {
 			pending = a.io.PendingInputs()
 		}
-		n := a.sched.armStop(pending)
+		n := a.sched.ArmStop(pending)
 		log.Printf("[agent] stop requested by %s/%s (queued=%d will be short-circuited at pre-action)",
 			evt.Source, evt.OutputChannel, n)
 		a.CancelCurrentLLM()
@@ -152,7 +152,7 @@ func (a *Agent) handleInterruptEvent(evt *agentIO.InputEvent) {
 	// 未声明一律 L1。L4（“立即打断”）只有内核级插件能声明，
 	// 外部插件即便报了 L4 也会被夹到 L3；内核自身另有 raiseKernelInterrupt。
 	level := interruptLevel(evt)
-	if a.sched.requestPreempt(clone, level) {
+	if a.sched.RequestPreempt(clone, level) {
 		a.CancelCurrentLLM()
 	}
 }

@@ -19,19 +19,3 @@
 // （处理输入事件路由，输出事件，维持定时器，维持健康心跳），agentloop 才是
 // 各个 agent 的循环」。
 package standard
-
-import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
-)
-
-// Loop 是**标准同步 agentloop**（主 agent / 驻留子的实现）。
-//
-// 它把"逐 step 推进"交给基座的 `LoopStandard`：那个状态机属于"阶段"，
-// 而"用不用它、怎么包一层"属于类型。rt 注册自己的异步实现，与本函数无关。
-func Loop(a *agent.Agent, f *agenttypes.Frame) agenttypes.Outcome {
-	return agent.LoopStandard(a, f)
-}
-
-// RunToolBatch is the kernel tool-request boundary. It is not a
-// type-specific tool runner.

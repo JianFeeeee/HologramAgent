@@ -145,7 +145,7 @@ func (a *Agent) RunTaskSteps(f *TaskFrame) stepOutcome {
 //
 //	（rt 的异步 loop 就只能靠覆盖默认值来表达），而用户要求基座**不假设**
 //	任何样式。注册是显式的、可审计的。
-func LoopStandard(a *Agent, f *TaskFrame) stepOutcome {
+func RunTaskSteps(a *Agent, f *TaskFrame) stepOutcome {
 	// 步数上限只是防"转移缺失导致死循环"的护栏；正常任务远达不到。
 	const maxSteps = 1 << 20
 	for i := 0; i < maxSteps; i++ {
@@ -154,8 +154,8 @@ func LoopStandard(a *Agent, f *TaskFrame) stepOutcome {
 		//
 		// 先「重新求值」再判让位：临界区（或抢占冷却期）内被拦成入队的中断，
 		// 必须在这里重新武装——否则它只能等当前任务自然结束（设计 §4.3/§5.2）。
-		a.sched.rearmPending()
-		if !isCriticalChannel(f.OutputChannel) && a.sched.preemptGrantedFor() && a.sched.canSuspend() {
+		a.sched.RearmPending()
+		if !isCriticalChannel(f.OutputChannel) && a.sched.PreemptGrantedFor() && a.sched.CanSuspend() {
 			return outcomeSuspended
 		}
 		// 工具轮次硬上限（设计文档 D6）：在发起下一轮 LLM 前收尾。
@@ -213,7 +213,7 @@ func (a *Agent) process(input string, stageCtx *sdk.StageContext) (response stri
 func (a *Agent) RunInputTask(evt *agentIO.InputEvent) (*TaskFrame, stepOutcome) {
 	// 临界区标记由调度器 goroutine 维护，任务结束（含挂起）即清。
 	// interceptLoop 读它来决定“能不能取消”，因此必须是原子的。
-	defer a.sched.setCritical(false)
+	defer a.sched.SetCritical(false)
 
 	// ★ 安全轮次边界（2026-10-31 收敛）。
 	//
@@ -359,7 +359,7 @@ func (a *Agent) prepareInputTask(evt *agentIO.InputEvent) (*TaskFrame, taskTermi
 	// （见 outputChannelOf；这消除了中断任务覆盖它导致被打断任务串台的整类问题）。
 	// 进入本任务的临界区属性（记忆整理整任务不可抢占）。
 	// 必须在 processConsolidation 之前设置——它就在下面同步执行。
-	a.sched.setCritical(isCriticalChannel(outputChannelOf(evt)))
+	a.sched.SetCritical(isCriticalChannel(outputChannelOf(evt)))
 
 	if in.selfKind != "" {
 		// ★ 标签**优先于通道**判定：带标签的自输入不是"整理任务"，
@@ -632,7 +632,7 @@ func (a *Agent) stepPrepare(f *TaskFrame) stepOutcome {
 	// 停止的第二个半边（用户明确的设计）：对**停止那一刻已排队**的消息，
 	// 依次在这里短路——不进 LLM、不执行工具，直接以一条说明收尾。
 	// 配额是停止时的快照，消费完即止；停止之后新到的输入不受影响。
-	if a.sched.consumeCancel() {
+	if a.sched.ConsumeCancel() {
 		log.Printf("[agent] cancelled queued task at pre-action (input=%q)", truncateStr(f.Input, 40))
 		f.Response = "已取消（用户停止）。"
 		return outcomeDone
@@ -756,7 +756,7 @@ func (a *Agent) stepLLM(f *TaskFrame) stepOutcome {
 			// 默认行为（下面的 outcomeContinue 重跑本步）是给「被更高中断抢占」用的：
 			// 取消只是把现场交出去，稍后还要继续。而停止是用户明确的“不要了”，
 			// 重跑会让停止按钮看起来没反应（已实测：取消后又发了一次完整请求）。
-			if a.sched.takeStop() {
+			if a.sched.TakeStop() {
 				log.Printf("[agent] stop: LLM cancelled, task terminated without retry")
 				if strings.TrimSpace(f.Response) == "" {
 					f.Response = "已停止生成。"

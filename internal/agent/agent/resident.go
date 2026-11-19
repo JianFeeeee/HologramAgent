@@ -582,7 +582,7 @@ func (a *Agent) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
 	if rc == nil || rc.agent == nil {
 		return nil, fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	return rc.agent.sched.takeAllPendingEvents(), nil
+	return rc.agent.sched.TakeAllPendingEvents(), nil
 }
 
 // FinishResident 是**驻留子终结的唯一入口**：停止调度 → 回收残余任务 →
@@ -640,10 +640,10 @@ func (a *Agent) FinishResidentWithTarget(id string, policy ResidualPolicy, disp 
 	// ① 停止调度：关 ctx.Done。调度循环在下次取任务前退出。
 	child.cancel()
 	// ② 等它真的停下（已在执行的那条会跑完，不再取新的）。
-	child.sched.waitSchedulerStopped(schedStopTimeout, id)
+	child.sched.WaitSchedulerStopped(schedStopTimeout, id)
 
 	// ③ 此刻队列静止，回收残余任务没有歧义。
-	events := child.sched.takeAllPendingEvents()
+	events := child.sched.TakeAllPendingEvents()
 	n, msg, err = a.applyResidualEvents(id, events, policy)
 	if err != nil {
 		return n, msg, err
@@ -679,7 +679,7 @@ func (a *Agent) ApplyResidual(id string, policy ResidualPolicy) (int, string, er
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	events := rc.agent.sched.takeAllPendingEvents()
+	events := rc.agent.sched.TakeAllPendingEvents()
 	return a.applyResidualEvents(id, events, policy)
 }
 
@@ -742,9 +742,9 @@ func (a *Agent) applyResidualEvents(id string, events []*agentIO.InputEvent, pol
 		if evt == nil {
 			continue
 		}
-		a.sched.enqueue(newInputTask(evt))
+		a.sched.Enqueue(newInputTask(evt))
 	}
-	a.sched.signalWake()
+	a.sched.SignalWake()
 	return len(events), fmt.Sprintf("已把 %d 条残余任务转回主 agent 队列", len(events)), nil
 }
 
@@ -866,10 +866,10 @@ func (a *Agent) teardownResidentWith(rc *residentChild, disp ChannelDisposition,
 						} else {
 							for _, evt := range drained {
 								if evt != nil {
-									a.sched.enqueue(newInputTask(evt))
+									a.sched.Enqueue(newInputTask(evt))
 								}
 							}
-							a.sched.signalWake()
+							a.sched.SignalWake()
 						}
 					} else {
 						// 交给另一个子 ⇒ 交出来的任务必须投给那个子，

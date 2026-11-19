@@ -31,7 +31,6 @@ import (
 	"fmt"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/standard"
 )
 
 // TypeName 是主 agent 的类型名（与基座注册表里的名字一致）。
@@ -60,7 +59,10 @@ func New(cfg agent.AgentConfig) (*agent.Agent, error) {
 	h.OverflowHandler = enforceOverflowMain
 
 	// ── 槽位 6：agent loop（主 agent 用**标准同步**实现）──
-	h.Loop = standard.Loop
+	//
+	// ★ 同步状态机是**主 agent 自己的**（与驻留子共享同一实现，但各持一份
+	//   的语义），它住本包（见 loop.go），不在基座也不在某个中立库。
+	h.Loop = Loop
 
 	// Tool execution is provided by the base/kernel boundary and is not a
 	// registered type callback.

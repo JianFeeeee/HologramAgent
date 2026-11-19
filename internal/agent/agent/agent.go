@@ -183,7 +183,8 @@ type Agent struct {
 
 	// 输入调度器：就绪队列、任务抽象与快照（见 scheduler.go）。
 	// M2 起取代 eventLoop 的隐式 channel 排队。
-	sched *scheduler
+	// sched 见 Agent 的构造：主 agent 与驻留子各自一份 *standard.Scheduler。
+	sched *Scheduler
 
 	// 工具轮次硬上限（0 = 不限）；见 AgentConfig.MaxToolTurns。
 	maxToolTurns int
@@ -675,7 +676,7 @@ func (a *Agent) drainPendingInterrupts(reason string) {
 	if a.sched == nil {
 		return
 	}
-	pending := a.sched.pendingEvents()
+	pending := a.sched.PendingEvents()
 	if len(pending) == 0 {
 		return
 	}
