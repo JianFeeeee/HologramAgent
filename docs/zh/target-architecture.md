@@ -50,7 +50,7 @@ stdlib（fmt/log/os/runtime/sync/time）
 | 层 | 物理位置 | 持有 | 零持有 |
 |---|---|---|---|
 | **内核** | `internal/kernelloop` + `internal/kstate` + `internal/kernelapi` + `internal/kernelboot` + `internal/kernelmod/*` | 模块产物（唯一一份）、事件投递、输入路由**推动**、定时器刻度、心跳、工具执行设施、agents 实例表 | **任何 agent 私有状态**；任何 agent 类型 |
-| **基座** | `internal/agent/agent` | 构造面 + **4 个槽位** + 生命周期 + 工具表**渲染** | 记忆模型、类型语义、模块句柄副本、`context`/`sched`/`sub` 实现、agentloop 风格 |
+| **基座** | `internal/agent/agent` | 构造面 + **4 个槽位** + 生命周期 + **请求/结果搬运** | 记忆模型、类型语义、模块句柄副本、`context`/`sched`/`sub` 实现、agentloop 风格、**任何渲染** |
 | **类型** | `internal/agent/{mainagent,resident,rtchild,worker}` | agentloop、context 实现、记忆策略、overflow 处置、中断处置、定时任务、持久化/恢复 | 内核设施内部细节 |
 
 ### 1.2 判归属的唯一判据
@@ -179,7 +179,7 @@ kernelapi  →  stdlib + model + agent/api + agent/io
 | `supervisor` | `Supervisor` | `kernelmod/supervisor` | 装配侧 |
 | `lua` | `LuaVM` | `kernelmod/lua` | provider 层 |
 | `syncbus` | `SyncBus` / `SyncState` | `kernelboot` | 模块间同步 |
-| `prompt.sections` | `PromptSections` | `kernelmod/stagehost` | 基座渲染 |
+| `prompt.sections` | `PromptSections` | `kernelmod/stagehost` | 类型渲染（基座只搬原始信息） |
 | `migration.preflight` | — | `kernelmod/migration` | 启动早期 |
 
 ### 3.2.1 `LLMClient`：内核给基座的稳定抽象
@@ -195,27 +195,47 @@ type LLMClient interface {
     // Stream 同上，按块回
     Stream(ctx context.Context, req *CompletionRequest) (<-chan StreamChunk, error)
 
-    // Batch 一轮内的**多条并发请求**，按请求索引返回（长度同入参、顺序同入参）。
-    // 它是一次请求边界，不是一个新的执行器：并发度、重试、fallback、
-    // 每条的取消都在内核内部完成；基座只在结果就绪时按需取用。
-    Batch(ctx context.Context, reqs []*CompletionRequest) ([]CompletionResult, error)
-
-    // Wait 取一批中"已就绪"的结果（索引 → 结果），不阻塞未就绪项。
-    // 基座据此实现自己的调度语义（主 agent 按步取，rt 取最新丢弃旧）。
-    Wait(ctx context.Context, batchID string) (map[int]CompletionResult, bool, error)
 }
 ```
 
-**一轮内的并发是内核的事，怎么用是类型的事**：
+**对 agentloop 而言，`Complete` / `Stream` 是阻塞调用**（用户裁定 2026-11-19）：
+
+> 「agentloop 自身就是普通的接受，处理，渲染，调用，哪有发几条何时取的问题？
+>   它就是阻塞死的，llms 响应不回来它本身也无法工作」
+
+```
+agentloop = 接受 → 处理 → 渲染 → 调用 → 阻塞等待这一轮的响应 → 下一轮
+```
 
 | 谁 | 做什么 |
 |---|---|
-| 内核 eventloop | 每轮并行发出全部 LLM 调用，维护每条的取消/重试/fallback，结果按索引就绪 |
-| 基座 | 只暴露上述面（`Complete` / `Stream` / `Batch` / `Wait`），不排并发、不重试、不改活动源 |
-| 类型 agentloop | 决定"要发几条、何时取第几条、取到后怎么落状态机"（同步逐 step / rt 取最新 / worker 串行） |
+| 类型 agentloop | 接受输入、跑自己的状态机、渲染**完整上下文**、交基座、**阻塞等这一轮** |
+| 基座 | 只做转发：把渲染好的请求递交内核，把结果交回；不排序并发、不重试、不改活动源 |
+| 内核 eventloop | 并行发出、维护**逐条**的取消/重试/fallback/记账、多路复用等待结果，交回各自调用方 |
 
-★ 当前实现里没有 `Batch`/`Wait`（`callLLMWithFallback` 是单条同步、`streamWithFallback` 是单条流式），
-本表是**终态**；落地时这两条由 `kernelmod/llm` 提供，基座侧只做 5 行转发。
+★ 终态**没有** `Batch` / `Wait`。它们是我按"类型有调度权"的错误思路加进去的：
+"按索引取就绪结果"是把内核的并发机制暴露给类型，而类型根本不需要它 ——
+它阻塞等自己的那一轮即可。
+
+**请求的递交是"呈交缓冲区"，不是"调用并等待"**（用户原话 2026-11-19）：
+
+```
+类型 agentloop 渲染好完整上下文
+   ↓ 呈交
+基座：把请求放进该 agent 的**请求缓冲区**（不阻塞、不等待）
+   ↓
+内核 eventloop：按自己的节奏取出、并行发出、多路复用等待各条响应
+   ↓ 逐条归位
+类型 agentloop：自己那一轮响应回来了才继续
+```
+
+**并发与多路复用是内核 eventloop 的存在理由**：一个进程一个 eventloop，
+服务 N 个各自阻塞等待的 agentloop。**N 份阻塞在调用方，1 份多路复用在驱动层**，
+这正是它能服务 N 个 agent 的原因。
+
+★ 类型的差异落在**中断与输入处置**（四级抢占 / 单槽覆盖 / 串行子任务），
+**不落在 LLM 结果的取用次序**。rt 的"最新者胜"是输入侧单槽覆盖 + 取消当前轮
+（`rtSlot` + cancel），不是"取第几条结果"。
 
 **错误分类是契约的一部分**（类型要按类别做不同处置，不能靠字符串匹配）：
 
@@ -430,6 +450,7 @@ L1–L4 的行为契约完全归类型 —— 基座/内核**只搬运标签**�
 | **输出** | `StartOutputConsumer` 推动 iobus 的输出泵 | 产出 `response` 交回槽位 0 的契约 |
 | **定时器** | 刻度（`runPeriodic`） | **不持有定时器**（定时动作由装配侧注册，闭包捕获 a） |
 | **工具执行** | **提供执行设施**（`kernelapi.ToolExecutor`） | **只提交批请求，拿回同序结果** |
+| **LLM 调用** | 并行发出 + 多路复用 + 逐条重试/fallback/记账 | **阻塞等自己那一轮**（接受→处理→渲染→调用→等） |
 | **中断** | 只搬 `priority` 标签 | `priority` → 排队/抢占/覆盖，全自定 |
 | **生命周期** | `Start`/`Stop` 一次 | `RuntimeHooks.Start/Stop` 每实例 |
 | **停机顺序** | 先 `UnregisterInputSink`，再 `Stop` | 先 `ctx.Done` 退循环，再归还 sink |
@@ -613,6 +634,29 @@ type Descriptor struct {
          底层都是「inputch + InjectInterruptTextOpts + Priority L1–L4」
 ```
 
+★ **`admin_child` 的顶层参数只有四个：`type` / `action` / `meta` / `arg`**（用户裁定 2026-11-18）。
+`id` / `text` / `residual` 以及某个动作要的任何键，**全在 `arg` 里**：
+
+```
+admin_child(type="resident", action="destroy", arg={"id":"kb17","residual":"keep"})
+```
+
+把通用动作的入参摊到顶层（曾实现成 `type/action/id/text/residual/arg/meta` 七个）
+是错的：**动作需要什么由类型声明**（`Actions[].Args` / `Required`），
+内核只按声明取值；顶层每多一个键，就是内核多认识一种动作语义。
+
+★ **父子交互只有两条协议，没有第二条路径**：
+
+| 方向 | 唯一入口 | 谁能用 |
+|---|---|---|
+| 父 → 子 | `admin_child` 族（`Action` / `admin_child_help` / `admin_child_list`） | 模型调用**与**类型代码内部发起，**同一条路** |
+| 子 → 父 | `CallParent(level, kind, text, meta)`（`notify_parent` 工具） | 子类型的 agentloop |
+
+`child.Registry` / `InstanceManager` 是**内核骨架的内部实现**（`Add`/`Get`/`StopOne`/`Cleanup`），
+**不是任何 agent 类型的 API**。类型（含主 agent）不得直接 `children.Get(id)`、
+不得调 `InstanceManager.DestroyChild`、不得调 `Agent.StopResidents` ——
+那些都是绕过协议。凡是要动子，就构造一个 admin_child 请求走 `registry.Dispatch`。
+
 **所以 `callparent_kind` 零消费者不是设计债务** ——
 它零消费者是**实现落后于设计**：父侧认领表应当由 `Reports` 生成（与 `admin_child`
 从 `Actions` 生成表严格同源），而这一步还没实现。
@@ -766,11 +810,29 @@ const (
 
 | 判据 | 用途 | 归属 | `PostureUnguarded` 时 |
 |---|---|---|---|
-| **范围**（父声明白名单） | **渲染**：进不进工具表 | 基座 | **照旧过滤**（= 缺失渲染） |
+| **范围**（父声明白名单） | **渲染**：进不进工具表 | **类型**（照 `Config().AllowedTools` 过滤） | **照旧过滤**（= 缺失渲染） |
 | **闸门**（`CheckOutput`/`CheckTool`） | **调用**：过不过 | 安全模块 | **恒放行** |
 
-`allowedTools` / `denyTools` 从 `residentChild` 提到基座（渲染层要读），
-数据归属仍是 agents 表的 `AgentRecord.Facts`（§3.2.2）。
+`allowedTools` / `denyTools` 从 `residentChild` 提到 `AgentConfig`
+（**类型的渲染层**要读），数据归属仍是 agents 表的 `AgentRecord.Facts`（§3.2.2）。
+
+★ **渲染一律归类型**（用户裁定 2026-11-19）：
+「各个提示词包括注入的 skill、注入的系统提示词等，都是基座提供原始信息，
+agent 类型内部处理渲染，然后把渲染好的东西交给基座由基座去调内核走流程发 llm 调用」
+
+落到代码：
+
+| 现在住基座 | 归属 |
+|---|---|
+| `BuildSystemPrompt` / `renderSystemPrompt` / `kernelSections` / 插件段拼装 | 类型（主 agent） |
+| `BuildMessages` / `renderL1Messages` | 类型（L1 渲染是主 agent 的上下文哲学） |
+| `BuildToolDefs` / `BuildToolCatalog` / `cleanParams` | 类型（含白/黑名单过滤） |
+| `BuildTaskMemoryContext` | 类型（记忆上下文是主 agent 的记忆装配） |
+| `isOutputDeliveryTool`（"交付"标记语义） | 类型（**agentloop 自己解释工具标记**） |
+
+基座留给「提示词/工具/标记」的只有**通道**：把类型交来的完整上下文
+（`[]Message` + `[]ToolDef` + 选项）原样递交给内核。基座不拼段、不裁历史、
+不认识人格、不认识插件段、不认识 `output_send__` 算不算交付。
 
 ---
 
