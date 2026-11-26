@@ -1,5 +1,6 @@
-// Package test 的 restore 时序判据（2026-11-25 实测回归）。
 package test
+
+// restore 时序判据（2026-11-25 实测回归）。
 
 // TestRestoreWaitsForPluginsReady：子 agent 恢复必须等**插件就绪**之后。
 //

@@ -611,19 +611,6 @@ func (m *M) SpawnRTChild(opts RTChildOptions) (string, error) {
 		sysPrompt = rtChildDefaultPrompt
 	}
 
-	// ★ 图记忆装配（用户裁定 2026-11-04：参照驻留子接入）。
-	//
-	// 形态与驻留子**逐项对齐**（resident.go 的 SpawnResident ①）：
-	//
-	//	主库受限只读句柄  memory.OpenGraphDBReadOnly(m.A.MainGraph().Path())
-	//	temp 实例（可选）  memory.NewLightMemory(ro, TempPath, AllowGraphWrite)
-	//
-	// 三处差异是刻意的，且都有理由：
-	//  ① TempPath 可为空：rt 常常只读（通话中不写记忆），此时不开 temp，
-	//     只给受限只读句柄 —— 驻留子必须有 temp（它是长期干活的）。
-	//  ② AllowGraphWrite 默认 false：一次通话几十轮高频写入会把图谱灌满噪声
-	//     （与 rtvoice 插件给 inputch 标 NoMemory 同一条考虑）。
-	//  ③ 失败**必须回滚**：与驻留子同样拒绝创建一个"记忆装配半残"的执行体。
 	// ★ 记忆：**不装配任何东西**。rt 的图记忆能力就是两个普通工具
 	//   （`graph_recall` / `graph_commit`），由主 agent 注册、模型自己调。
 	//   ⇒ 没有 OpenReadOnly / OpenLight / temp 库 / handle / AllowGraphWrite。

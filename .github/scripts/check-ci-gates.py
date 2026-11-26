@@ -415,8 +415,19 @@ check(_m is not None, "go.mod 里找不到 go 指令")
 _gover = "%s.%s" % (_m.group(1), _m.group(2))
 
 _allgo = open("internal/plugins/all.go", encoding="utf-8").read()
+# ★ 内置插件有两处注册点（2026-11-26 修正）：
+#
+#	internal/plugins/<name>           插件实现本身（11 个）
+#	internal/plugin/builtin/<name>    装配侧注册适配器（knowledge 走这条：
+#	                                  它不能 import sdk/plugin，会成环）
+#
+# 原先只数前一处 ⇒ README 写 12（事实）而门禁坚持 11（少数了一个），
+# 于是门禁本身成了假红来源。两处都数。
 _builtin_imports = _re3.findall(
     r'^\t_ "github\.com/JianFeeeee/HologramAgent/internal/plugins/([a-z0-9_]+)"',
+    _allgo, _re3.M)
+_builtin_imports += _re3.findall(
+    r'^\t_ "github\.com/JianFeeeee/HologramAgent/internal/plugin/builtin/([a-z0-9_]+)"',
     _allgo, _re3.M)
 _nbuiltin = len(_builtin_imports)
 

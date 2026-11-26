@@ -82,6 +82,3 @@ func init() {
 // ★ 判据是登记表里的 Owner (`core`)，不是名字前缀 —— 前缀判定在改名时
 //
 //	静默失效。本函数只是给"Owner == core"一个可读的名字。
-func IsKernelFamilyTool(name string) bool {
-	return registry.OwnerOf(name) == "core"
-}

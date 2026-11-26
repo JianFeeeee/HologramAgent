@@ -28,7 +28,7 @@ import (
 //	LayerInput    on_input                    整条输入一次
 //	LayerLLM      pre_action / post_action    一轮一次
 //	LayerTool     before/after_toolcall       **内核驱动**，每个工具一次
-//	                                          （不在 agentloop 里跑，见 DriverOfStage）
+//	                                          （不在 agentloop 里跑，见 StageLayerOf）
 //	LayerOutput   before/after_output         整条输出一次
 //
 // 层决定"基座一次跑几个 ctx"；**层内**按 Order 依次跑（后跑的看到前面的结果）。
@@ -47,7 +47,18 @@ func (a *Agent) RunStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
 	if a == nil || ctx == nil {
 		return false
 	}
-	if DriverOfStage(stage) == DrivenByKernel {
+	// ★ 分层调度：先判**这个 stage 属于哪一层**，再决定能不能由 agentloop 发起
+	//   （2026-11-26 补齐 —— 此前只判了"是不是工具层"，"4 层"是注释里的
+	//   承诺而实现里没有落点：未登记的 stage 会被静默当成 agentloop 阶段跑掉）。
+	layer, known := a.stageLayerOf(stage)
+	if !known {
+		// 未登记的 stage ⇒ 不是 SDK 定义的 7 个之一。响亮记下并拒绝：
+		// 静默放行会让"写错 stage 名"表现为"钩子永远不被调用"，
+		// 而两边都不报错。
+		a.Logf("stage %q is not a declared stage (SDK has 7); refusing to run it", stage)
+		return false
+	}
+	if layer == LayerTool {
 		// ★ 工具类阶段由**内核工具执行链**驱动，不由 agentloop 发起。
 		//
 		//   agentloop 提交批请求（`RunToolBatch`），内核在每个工具前后各驱动
@@ -113,10 +124,20 @@ func (a *Agent) RunKernelDrivenStage(stage sdk.Stage, ctx *sdk.StageContext) boo
 	if a == nil || ctx == nil {
 		return false
 	}
-	if DriverOfStage(stage) != DrivenByKernel {
+	// ★ 与 `RunStage` 同一套分层判断，方向相反：这里只接受 **LayerTool**。
+	//
+	// 用层（而不是 `DriverOfStage`）作判据的理由：层是**声明**，driver 是
+	// 从层推出来的派生结论。判层不会出现"两者不一致时信谁"的问题；
+	// 而未登记的 stage 会在这里被明确拒绝，而不是被当作"非 tool 层"放过去。
+	layer, known := a.stageLayerOf(stage)
+	if !known {
+		a.Logf("stage %q is not a declared stage (SDK has 7); kernel-driven entry refuses it", stage)
+		return false
+	}
+	if layer != LayerTool {
 		// 只有工具层阶段由内核链驱动。其余阶段由调用方经 `RunStage` 发起 ——
 		// 走错入口是装配/接线错误，响亮记下而不是静默跑。
-		a.Logf("stage %q is not kernel-driven; RunKernelDrivenStage must only be used for the tool layer", stage)
+		a.Logf("stage %q is layer %q (not tool); RunKernelDrivenStage must only be used for the tool layer", stage, layer)
 		return false
 	}
 	ctx.Phase = stage

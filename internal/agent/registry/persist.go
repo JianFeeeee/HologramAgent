@@ -35,9 +35,6 @@ import (
 // instanceFile 是实例登记表文件名（相对 <data>/agents/）。
 const instanceFile = "instances.json"
 
-// InstanceFile 是落盘文件名（导出，供判据与状态面引用）。
-func FileName() string { return instanceFile }
-
 // persistedInstance 是落盘的一条。
 type persistedInstance struct {
 	Type    string                 `json:"type"`

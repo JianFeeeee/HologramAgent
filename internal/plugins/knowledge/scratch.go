@@ -75,23 +75,3 @@ func readScratch(path string) (string, error) {
 	}
 	return string(data), nil
 }
-
-// WriteScratch 供**调用方**（webui/proc）落一个大正文，返回可传给 /write 的路径。
-//
-// 它与 readScratch 成对：写的一侧也只允许落在 scratch 目录内，
-// 于是"能传什么路径"在两侧是同一套规则（不会一边宽松一边严格）。
-func WriteScratch(name string, content []byte) (string, error) {
-	dir, err := scratchDir()
-	if err != nil {
-		return "", err
-	}
-	base := strings.ReplaceAll(strings.TrimSpace(name), string(filepath.Separator), "_")
-	if base == "" {
-		base = "body"
-	}
-	path := filepath.Join(dir, base+"-"+genToken()[:8]+".txt")
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		return "", fmt.Errorf("knowledge scratch: 写 %s: %w", path, err)
-	}
-	return path, nil
-}

@@ -335,7 +335,13 @@ func containsStr(list []string, s string) bool {
 // ★ 这一道是**运行期事实**（谁能承载 Go 函数值），静态策略表表达不了。
 func TestRegisterEventRejectsNonBuiltinPublisher(t *testing.T) {
 	var mark []string
-	payload := registry.NewRegisterPayload("some-lua-plugin", regTestType("evt-type", &mark))
+	// ★ 载荷按**真实发布路径**的形态构造（internal/plugin/registry.go 的
+	//   `PublishAs` 就是这么发的）：`plugin` + `descriptor` 两个键。
+	//   用构造器的话，测试测的是构造器而不是发布链路的实际载荷。
+	payload := map[string]interface{}{
+		"plugin":                 "some-lua-plugin",
+		registry.EventPayloadKey: regTestType("evt-type", &mark),
+	}
 
 	_, _, err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(name string) bool {
 		return name == "webui" // 只把 webui 当内置
@@ -352,7 +358,10 @@ func TestRegisterEventRejectsNonBuiltinPublisher(t *testing.T) {
 // TestRegisterEventAcceptsRealDescriptorFromBuiltin：内置插件携带真结构体可注册。
 func TestRegisterEventAcceptsRealDescriptorFromBuiltin(t *testing.T) {
 	var mark []string
-	payload := registry.NewRegisterPayload("webui", regTestType("evt-builtin", &mark))
+	payload := map[string]interface{}{
+		"plugin":                 "webui",
+		registry.EventPayloadKey: regTestType("evt-builtin", &mark),
+	}
 
 	_, def, err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(string) bool { return true })
 	if err != nil {
@@ -468,7 +477,7 @@ func TestLoadCorruptedFileIsLoud(t *testing.T) {
 	if err := os.MkdirAll(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(p, registry.FileName()), []byte("{坏掉的 json"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(p, "instances.json"), []byte("{坏掉的 json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := registry.Load(dir); err == nil {

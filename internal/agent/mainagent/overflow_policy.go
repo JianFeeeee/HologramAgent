@@ -61,9 +61,6 @@ const overflowRatio = 1.25
 // a clear message, exposing the problem to the user and the status surface.
 var overflowRecoverBudget = 2
 
-// OverBudgetRatio is the "already over the window budget" predicate.
-func OverBudgetRatio(a *agent.Agent) bool { return Wrap(a).OverflowRatioNow() >= overflowRatio }
-
 // PruneByQuery prunes by relevance (strategic-pruning type).
 //
 // ★ It calls the base **primitive** `PruneContext` (which executes the prune),
@@ -151,10 +148,6 @@ func SingleEventFitsBudget(a *agent.Agent) bool {
 // frame self-oversized", "does the average event fit", the counters, and issuing
 // the preemption — lives in this package, because it is the type's policy.
 // HasOversizedFrame / SingleEventFitsBudget / OverflowStat all moved here.
-func EnforceOverflowStandard(a *agent.Agent, f *TaskFrame, req agent.OverflowRequest) (bool, int) {
-	return EnforceOverflowWith(a, f, req, defaultLedger)
-}
-
 // enforceOverflowMain 是本类型注册进 `Hooks.OverflowHandler` 的那一个：
 // 记的是**主 agent 自己的账**（状态面 `"context"` 段读的就是这份）。
 func enforceOverflowMain(a *agent.Agent, f *TaskFrame, req agent.OverflowRequest) (bool, int) {

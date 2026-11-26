@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/textmem"
 	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
@@ -128,6 +129,21 @@ func (m *Module) archiveOneColdDoc(coldDoc *model.ColdDoc, st *archiveStats) {
 
 	// ── 第一步：三元组（关系层，派生加工）──
 	triples := coldDocToTriples(coldDoc, m.extractor, m.norm, m.toolDeclaresNoMemory)
+	// ★ 噪音闸门必须在**自动填充的入口**（2026-11-26 实测：这条闸门从未接线）。
+	//
+	// `memory.FilterNoiseTriples` 的注释写明「闸门开在产生噪声的那一端」，
+	// 而这一句以下就是那端 —— 归档是无人在环的批量产出，三元组里
+	// 「结果 --是--> X」这类模板串与代词主语没有任何人在筛。
+	//
+	// 为什么不放 `CommitTriplesWithMedia` 里：它同时是 `graph_commit`
+	// 工具（模型显式写入）的落库口，模型主动写什么是它的自由。
+	if before := len(triples); before > 0 {
+		triples = memory.FilterNoiseTriples(triples)
+		if after := len(triples); after < before {
+			log.Printf("[agent] coldcontext->graph: %s filtered %d noise triple(s) (%d -> %d)",
+				coldDoc.ID, before-after, before, after)
+		}
+	}
 	written := 0
 	if len(triples) > 0 {
 		w, _, err := m.CommitTriplesWithMedia(triples, string(m.a.ID())+"_doc_archival", 0, coldDoc.Blocks)

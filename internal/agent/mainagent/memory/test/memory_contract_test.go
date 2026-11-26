@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/scene"
 )
 
 // ─────────── 纯函数：输入文本 → 输出 ───────────
@@ -35,8 +36,8 @@ func TestChannelScene(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		if got := memory.ChannelScene(c.in); got != c.want {
-			t.Errorf("★ ChannelScene(%q)=%q，期望 %q", c.in, got, c.want)
+		if got := scene.Channel(c.in); got != c.want {
+			t.Errorf("★ scene.Channel(%q)=%q，期望 %q", c.in, got, c.want)
 		}
 	}
 }
@@ -144,30 +145,4 @@ func TestCommitThenRecallAfterReopen(t *testing.T) {
 		}
 	}
 	t.Fatalf("committed fact missing after reopen: %+v", result)
-}
-
-// TestReadOnlyHandleRejectsWrite：OpenGraphDBReadOnly 必须在 SQLite 层拒写。
-//
-// 这是「子 agent 改不了主记忆」的结构性保证，不是靠调用方自觉。
-func TestReadOnlyHandleRejectsWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "graph.db")
-	main, err := memory.NewGraphDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer main.Close()
-
-	ro, err := memory.OpenGraphDBReadOnly(path)
-	if err != nil {
-		t.Fatalf("OpenGraphDBReadOnly: %v", err)
-	}
-	defer ro.Close()
-	// 实体名要合法（否则会被 validEntityName 提前拒掉，走不到 SQL 层）
-	_, _, err = ro.Commit([]memory.Triple{
-		{Subject: "billing服务", Relation: "端口", Object: "8499",
-			SentenceText: "billing服务端口是8499"},
-	}, "contract", 1)
-	if err == nil {
-		t.Fatal("★ 只读句柄接受了写入 —— 子 agent 能改主记忆")
-	}
 }

@@ -981,7 +981,7 @@ func (m *M) runOneTool(f *ResidentFrame, idx int) batchItemResult {
 	tctx.ToolResults = nil
 
 	// ★ 工具阶段（before_toolcall）由**内核**在工具执行链里驱动
-	//   （见 agent/stagehooks.go 的 DriverOfStage）—— agentloop 不重复驱动。
+	//   （见 agent/stagehooks.go 的 StageLayerOf）—— agentloop 不重复驱动。
 	tc.Arguments = tctx.ToolCalls[0].Arguments
 
 	// ★ 插件崩溃态跳过是**主 agent 的语义**（它持有插件健康表）。
@@ -1045,7 +1045,7 @@ func (m *M) stepToolBegin(f *ResidentFrame) Outcome {
 	tctx.ToolResults = nil
 
 	// ★ 工具阶段（before_toolcall）由**内核**在工具执行链里驱动
-	//   （见 agent/stagehooks.go 的 DriverOfStage）—— agentloop 不重复驱动。
+	//   （见 agent/stagehooks.go 的 StageLayerOf）—— agentloop 不重复驱动。
 	//   如果内核在那一层拒绝了本工具，这里拿到的是拒绝结果。
 	if denied, result := kernelToolDenied(f, tc); denied {
 		ensureBatchAssistant(f)

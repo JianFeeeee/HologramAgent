@@ -115,22 +115,6 @@ func decodeRegisterPayload(payload map[string]interface{}) (any, error) {
 	return raw, nil
 }
 
-// NewRegisterPayload 构造一条注册事件的载荷（内置插件用）。
-func NewRegisterPayload(plugin string, d Descriptor) map[string]interface{} {
-	return map[string]interface{}{
-		"plugin":        plugin,
-		EventPayloadKey: d,
-	}
-}
-
-// NewUnregisterPayload 构造一条撤销事件的载荷。
-func NewUnregisterPayload(plugin, typeName string) map[string]interface{} {
-	return map[string]interface{}{
-		"plugin": plugin,
-		"type":   typeName,
-	}
-}
-
 // str 取字符串字段（去空白）。
 func str(m map[string]interface{}, k string) string {
 	if m == nil {
@@ -152,20 +136,4 @@ func trim(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
-}
-
-// RegisterTypesFrom 是**装配期**的批量注册入口（内置类型模块用 init()）。
-//
-// ★ 与事件路径的关系：内置类型（resident / rt / 其他）在包的 init() 里
-//
-//	直接调它，不必绕事件总线 —— 它们在编译期就存在，"运行期登记"这件事
-//	对它们没有意义。而**运行期**新增的类型（插件提供的）才走事件。
-//	两条路最终都到 Register，所以只有一张表。
-func RegisterTypesFrom(plugin string, ds ...Descriptor) error {
-	for _, d := range ds {
-		if err := Register(d); err != nil {
-			return fmt.Errorf("%s: %w", plugin, err)
-		}
-	}
-	return nil
 }

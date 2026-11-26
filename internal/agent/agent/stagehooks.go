@@ -95,31 +95,20 @@ var stageLayers = map[sdk.Stage]StageLayer{
 	sdk.StageAfterOutput:    LayerOutput,
 }
 
-// StageDriver 声明某个 stage 由**谁驱动**。
-type StageDriver int
-
-const (
-	// DrivenByAgent：agentloop 在阶段点上发起（输入 / LLM / 输出）。
-	DrivenByAgent StageDriver = iota
-	// DrivenByKernel：**内核工具执行链**驱动（每个工具各一次）。
-	//
-	// ★ 为什么工具阶段的驱动不在 agentloop：工具执行链本身就在内核
-	//   （toolroute 路由 → security 授权闸 → device 通道授权 → 结果清洗）。
-	//   `before_toolcall` / `after_toolcall` 是那条链的**内部**阶段，
-	//   由内核在每个工具前后各驱动一次 —— agentloop 只提交批请求、拿回结果。
-	DrivenByKernel
-)
-
-// DriverOfStage 返回某个 stage 由谁驱动。
-func DriverOfStage(stage sdk.Stage) StageDriver {
-	if stageLayers[stage] == LayerTool {
-		return DrivenByKernel
-	}
-	return DrivenByAgent
+// StageLayerOf 返回 (层, 是否已登记)。
+//
+// ★ 两值形式是**唯一正确的用法**：`LayerOfStage` 返回空串时无法区分
+//
+//	"未登记的 stage"与"某个恰好等于空串的层"，而那正是拼错 stage 名
+//	静默不被发现的原因。基座自己的调度判断都走这里 ——
+//	它是"7 stage → 4 层"这张唯一映射表的读取口。
+func StageLayerOf(stage sdk.Stage) (StageLayer, bool) {
+	l, ok := stageLayers[stage]
+	return l, ok
 }
 
-// LayerOfStage 返回某个 stage 所属的层（未登记的 stage ⇒ 空）。
-func LayerOfStage(stage sdk.Stage) StageLayer { return stageLayers[stage] }
+// stageLayerOf 是 StageLayerOf 的实例形式（基座内部调用点用）。
+func (a *Agent) stageLayerOf(stage sdk.Stage) (StageLayer, bool) { return StageLayerOf(stage) }
 
 // StageScope 声明钩子的**作用范围**（与 SDK 的 StageScope 同构）。
 type StageScope int

@@ -48,12 +48,6 @@ const maxSceneKeyLen = scene.MaxKeyLen
 // NormalizeSceneKey 转发 scene.Normalize。
 func NormalizeSceneKey(key string) string { return scene.Normalize(key) }
 
-// ChannelScene 转发 scene.Channel。
-func ChannelScene(source string) string { return scene.Channel(source) }
-
-// ToolScene 转发 scene.Tool。
-func ToolScene(tool string) string { return scene.Tool(tool) }
-
 // SceneStat 是单个场景的规模摘要（供 introspection / 运维观察）。
 type SceneStat struct {
 	Key       string `json:"key"`

@@ -97,7 +97,7 @@ func TestOnlyAssemblyPointImportsTheTypes(t *testing.T) {
 		//
 		// ⚠️ `kernelmod/agenttype` 目前仍在允许列表里，但它**是债务不是许可**：
 		//    它借 `mainagent.SchedulerLoop` 驱动插件类型。R-3 完成后它要
-		//    有自己的驱动，这行豁免随之删除（判据见 todo.md R-3）。
+		//    有自己的驱动，这行豁免随之删除。
 		if strings.Contains(importer, "/internal/agent/") ||
 			strings.HasSuffix(importer, "/test") ||
 			importer == "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agent" ||

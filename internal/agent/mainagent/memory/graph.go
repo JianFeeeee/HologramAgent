@@ -135,29 +135,6 @@ func NewGraphDB(dbPath string) (*GraphDB, error) {
 	return g, nil
 }
 
-// OpenGraphDBReadOnly 以**受限句柄**打开图库：可读、可恢复 WAL，但**一切写入被拒**。
-//
-// 这是"子 agent 改不了主记忆"的**结构性**保证（设计 docs/zh/resident-subagent-design.md
-// §5）：不是靠调用方自觉不写，而是把写入在 SQLite 这一层就关掉
-// （`PRAGMA query_only=1` —— 任何 INSERT/UPDATE/DELETE 都会直接报错）。
-//
-// 为什么不用 DSN 的 `mode=ro`：只读模式的连接在 WAL 库上无法自行恢复 -wal，
-// 而主库在父 agent 手里是持续写入的。query_only 让连接保持正常打开能力，
-// 同时**只堵写**，语义正是我们要的。
-//
-// 注意：不建表、不迁移 —— 受限句柄假定库已存在（由父 agent 建好）。
-func OpenGraphDBReadOnly(dbPath string) (*GraphDB, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_foreign_keys=on")
-	if err != nil {
-		return nil, fmt.Errorf("open graph db (readonly): %w", err)
-	}
-	if _, err := db.Exec("PRAGMA query_only=1"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set query_only: %w", err)
-	}
-	return &GraphDB{db: db, dbPath: dbPath}, nil
-}
-
 func (g *GraphDB) initSchema() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

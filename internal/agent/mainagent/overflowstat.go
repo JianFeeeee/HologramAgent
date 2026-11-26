@@ -112,13 +112,6 @@ func (l *OverflowLedger) Upstream() {
 	l.mu.Unlock()
 }
 
-// defaultLedger 是未注入账本时的进程内默认账本。
-//
-// ★ 为什么留一个默认值（而基座不留默认实现）：账本只影响**观测**，
-// 不影响任何行为判定；类型模块注入自己那份之后，读取者拿到的是它自己的账。
-// 与"基座不许有默认 Loop / 默认裁剪"不冲突 —— 那两类默认会改变行为。
-var defaultLedger = &OverflowLedger{}
-
 // mainLedger 是主 agent 的类型账本（handler 记账与状态面读的是同一份）。
 //
 // ★ "同一份"很重要：状态面显示"触发了几次/裁了几条"，必须就是策略实际

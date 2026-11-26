@@ -250,18 +250,6 @@ func DispatchTool(c ToolCtx, tc api.ToolCall) (string, bool) {
 	return t.Handle(c, tc), true
 }
 
-// ToolNames 返回全部已注册工具名（判据与状态面用）。
-func ToolNames() []string {
-	toolMu.RLock()
-	defer toolMu.RUnlock()
-	out := make([]string, 0, len(toolTable))
-	for n := range toolTable {
-		out = append(out, n)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // errf 是本文件内部用的错误构造（避免为了一个 fmt.Errorf 反复 import）。
 func errf(format string, args ...any) error { return fmt.Errorf(format, args...) }
 
@@ -340,6 +328,3 @@ func OwnerOf(name string) string {
 	}
 	return ""
 }
-
-// HasOwnership 报告某工具是否已声明归属（诊断用）。
-func HasOwnership(name string) bool { return OwnerOf(name) != "" }
