@@ -9,7 +9,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
-	"github.com/JianFeeeee/HologramAgent/internal/scene"
 	"log"
 	"strings"
 	"time"
@@ -212,7 +211,7 @@ func (m *Module) archiveOneColdDoc(coldDoc *model.ColdDoc, st *archiveStats) {
 	// 这是可以接受的：PutMemoryBlocks 是 upsert、AddMemoryBlockEdge 显式查重，
 	// 下一轮重试幂等收敛（补上缺的边），不会产生重复块。
 	if len(coldDoc.Blocks) > 0 {
-		bound := m.LinkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, scene.Channel(coldDoc.Source))
+		bound := m.LinkBlocksToDocument(coldDoc.ID, coldDoc.Blocks, memory.ChannelScene(coldDoc.Source))
 		if bound != len(coldDoc.Blocks) {
 			// 迁移不完整：此时 L3 里已有一部分块，L2 仍是全量。
 			// 重试是靠 PutMemoryBlocks/AddMemoryBlockEdge 的幂等性收敛的
@@ -591,7 +590,7 @@ func coldDocToTriples(coldDoc *model.ColdDoc, extractor artifacts.Extractor, nor
 	// 文档归档的知识是有**来源场面**的：来自 QQ 的对话归档，其三元组就该
 	// 钉在 chan:qq 上。这样「又来一条 QQ 消息」时，这批知识靠场景就能取回，
 	// 不必指望本轮措辞与它们字面重合。
-	docScene := scene.Channel(coldDoc.Source)
+	docScene := memory.ChannelScene(coldDoc.Source)
 
 	isArchivedContext := coldDoc.Meta != nil && coldDoc.Meta["is_archived_context"] == "true"
 

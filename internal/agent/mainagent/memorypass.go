@@ -2,8 +2,8 @@ package mainagent
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
-	"github.com/JianFeeeee/HologramAgent/internal/scene"
 	"log"
 	"strconv"
 	"time"
@@ -34,7 +34,7 @@ func (m *Module) SceneKeysFor(evt *agentIO.InputEvent, toolName string) []string
 	add := func(k string) {
 		// 显式声明的场景键来自插件，大小写/空白/标点都不可控；归一化后再去重，
 		// 否则「chan:QQ」与「chan:qq」会变成两个场景，各自只召回一半记忆。
-		k = scene.Normalize(k)
+		k = memory.NormalizeSceneKey(k)
 		if k == "" || seen[k] {
 			return
 		}
@@ -60,10 +60,10 @@ func (m *Module) SceneKeysFor(evt *agentIO.InputEvent, toolName string) []string
 	}
 
 	if evt != nil {
-		add(scene.Channel(evt.Source))
+		add(memory.ChannelScene(evt.Source))
 	}
 	if toolName != "" {
-		add(scene.Tool(toolName))
+		add(memory.ToolScene(toolName))
 	}
 	return keys
 }

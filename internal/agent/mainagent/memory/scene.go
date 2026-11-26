@@ -3,10 +3,10 @@ package memory
 import (
 	"database/sql"
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/scene"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ──────────────────────────────────────────────
@@ -36,17 +36,101 @@ import (
 // （`chan:qq/...`）——越窄的场景越具体，不该被漏掉；反向不成立。
 // ──────────────────────────────────────────────
 
-// ★ 场景键的**构造规则**已提到 `internal/scene`（判据 §8 第 3 条）：
+// ★ 场景键的**构造规则就在这里**（2026-11-26 从 `internal/scene` 迁回）。
 //
-//	基座（distill / memorypass）也要用它们，而基座不能 import 本包
-//	（它带 SQLite 与 ONNX）。规则住在零依赖叶子，两侧共用同一份实现。
+// 那个顶层叶子包的存在理由是「基座（distill / memorypass）也要用它，
+// 而基座不能 import 本包」。该理由已失效：`internal/memory` 不复存在，
+// 而 distill / memorypass **不是基座**，它们就在 `mainagent`（主 agent
+// 这一类型）内部。场景记忆是主 agent 自己的领域，规则不该住在顶层。
 //
-// 这里改为**转发**，于是既有调用点（`memory.ChannelScene` …）逐字不变。
+// 因此：规则即实现，不再有转发层；`ChannelScene` / `ToolScene` 是
+// 本包对外的场景键入口（测试与类型内部都用它）。
+// MaxKeyLen 是场景键的长度上限。场景键要进索引、要参与前缀比较，
+// 过长只说明有人把正文塞进了键里（那就该用句子/实体，而不是场景）。
+const MaxKeyLen = 96
 
-const maxSceneKeyLen = scene.MaxKeyLen
+// Normalize 规范化场景键：按 `/` 分层、每层小写、层内空白与非法字符
+// 归一成 `_`（连续多个只留一个）。
+//
+// 为什么要归一：场景键是**索引键**，`chan:QQ` 与 `chan:qq` 必须是同一个场景，
+// 否则同一条规则会因为写入时大小写不同而分裂成两个召不齐的场景。
+//
+// 归一结果为空（全是非法字符）时返回空串，调用方应视为「没有场景」。
+func Normalize(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	key = strings.ToLower(key)
 
-// NormalizeSceneKey 转发 scene.Normalize。
-func NormalizeSceneKey(key string) string { return scene.Normalize(key) }
+	parts := strings.Split(key, "/")
+	segs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		seg := normalizeSegment(p)
+		if seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	out := strings.Join(segs, "/")
+	if len(out) > MaxKeyLen {
+		out = strings.TrimRight(out[:MaxKeyLen], "/")
+	}
+	return out
+}
+
+// normalizeSegment 归一单层场景：小写、空白与非法字符 → `_`（压缩连续）。
+func normalizeSegment(seg string) string {
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range seg {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r >= '\u4e00' && r <= '\u9fff',
+			r == ':' || r == '-' || r == '.':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r == '_' || unicode.IsSpace(r):
+			if !lastUnderscore && b.Len() > 0 {
+				b.WriteRune('_')
+				lastUnderscore = true
+			}
+		default:
+			// 其它字符（标点、表情）归一成 `_` 而不是静默丢弃：
+			// 「A/B」与「A_B」是两个不同的来源，不能塌成一个场景。
+			if !lastUnderscore && b.Len() > 0 {
+				b.WriteRune('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+// Channel 由输入/输出通道名构造场景键（`qq` → `chan:qq`）。
+func Channel(source string) string {
+	s := Normalize(source)
+	if s == "" {
+		return ""
+	}
+	return "chan:" + s
+}
+
+// Tool 由工具名构造场景键（`qq_get_message` → `tool:qq_get_message`）。
+func Tool(tool string) string {
+	s := Normalize(tool)
+	if s == "" {
+		return ""
+	}
+	return "tool:" + s
+}
+
+// NormalizeSceneKey 是 Normalize 的本包名（调用点在类型内部，语义更清楚）。
+func NormalizeSceneKey(key string) string { return Normalize(key) }
+
+// ChannelScene 由输入/输出通道名构造场景键（`qq` → `chan:qq`）。
+func ChannelScene(source string) string { return Channel(source) }
+
+// ToolScene 由工具名构造场景键（`qq_get_message` → `tool:qq_get_message`）。
+func ToolScene(tool string) string { return Tool(tool) }
 
 // SceneStat 是单个场景的规模摘要（供 introspection / 运维观察）。
 type SceneStat struct {

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/scene"
 )
 
 // ─────────── 纯函数：输入文本 → 输出 ───────────
@@ -36,8 +35,8 @@ func TestChannelScene(t *testing.T) {
 		{"", ""},
 	}
 	for _, c := range cases {
-		if got := scene.Channel(c.in); got != c.want {
-			t.Errorf("★ scene.Channel(%q)=%q，期望 %q", c.in, got, c.want)
+		if got := memory.ChannelScene(c.in); got != c.want {
+			t.Errorf("★ ChannelScene(%q)=%q，期望 %q", c.in, got, c.want)
 		}
 	}
 }
