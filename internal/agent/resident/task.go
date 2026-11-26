@@ -536,9 +536,6 @@ func (m *M) FinishInputTask(f *ResidentFrame, out Outcome) {
 
 	m.EmitResponse(evt, f.Response, f.TurnUsage)
 
-	if !f.StageCtx.NoMemory {
-		// 记忆候选是主 agent 的（见上）。
-	}
 	f.Terminal = terminalOK
 }
 
@@ -834,9 +831,6 @@ func (m *M) stepLLM(f *ResidentFrame) Outcome {
 			sessPayload["cache_hit_rate"] = rate
 		}
 		chainPayload["usage_session"] = sessPayload
-	}
-
-	if resp.ReasoningContent != "" {
 	}
 
 	// ★ 必须放在分支**之前**：下一行的 len(ToolCalls)==0 会直接 return，

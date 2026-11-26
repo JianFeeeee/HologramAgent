@@ -818,9 +818,6 @@ func (m *Module) stepLLM(f *TaskFrame) Outcome {
 		chainPayload["usage_session"] = sessPayload
 	}
 
-	if resp.ReasoningContent != "" {
-	}
-
 	// ★ 必须放在分支**之前**：下一行的 len(ToolCalls)==0 会直接 return，
 	// 那条路径也要记下 reasoning（否则纯文本收尾轮的思维链丢失，而它同样
 	// 属于“带 tools 的请求历史”，DeepSeek 照样要它）。
