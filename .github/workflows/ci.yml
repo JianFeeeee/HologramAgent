@@ -91,12 +91,18 @@ jobs:
         run: |
           set -euo pipefail
           M=github.com/JianFeeeee/HologramAgent
+          # ★ 包名随重构更新（2026-11-26）：`internal/agent/core` 已随
+          #   「内核解耦 + agent 模块化」拆掉 —— 基座改为 `internal/agent/agent`，
+          #   各类型各自成包（mainagent / resident / rtchild）。
+          #   旧名字留在表里会让 `go list -deps` 对一个不存在的包失败，
+          #   整道门直接红（实测 CI 就是在这里卡的），而它想守的约束
+          #   **一条都没在检**。
           forbidden_pairs="
-            internal/agent/core|internal/kernelboot
+            internal/agent/agent|internal/kernelboot
             internal/plugin|internal/kernelboot
             internal/sdk|internal/kernelboot
             internal/security|internal/kernelboot
-            internal/kstate|internal/agent/core
+            internal/kstate|internal/agent/agent
             internal/kstate|internal/kernelboot
             internal/kstate|internal/kernelmod
             internal/kstate|cmd
