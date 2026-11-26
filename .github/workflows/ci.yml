@@ -131,9 +131,14 @@ jobs:
               fail=1
             fi
           done <<< "$forbidden_pairs"
-          # 显式断言 kstate 能反向被 core 引用（环不存在）
-          if ! go build "$M/internal/agent/core"; then
-            echo "::error::core 无法编译（kstate 叶子性可能已破）"
+          # 显式断言基座包能编译（它反向依赖 kstate ⇒ 环不存在）
+          #
+          # ★ 2026-11-26：原为 `internal/agent/core`，该包已随重构拆掉。
+          #   不改成新包名的后果是这道门**永远不会真的检查**：
+          #   `go build` 一个不存在的包失败 ⇒ 固定报「core 无法编译」并 exit 1，
+          #   看起来像分层退化，实际只是包名过期。
+          if ! go build "$M/internal/agent/agent"; then
+            echo "::error::基座包 internal/agent/agent 无法编译（kstate 叶子性可能已破）"
             exit 1
           fi
           exit $fail
