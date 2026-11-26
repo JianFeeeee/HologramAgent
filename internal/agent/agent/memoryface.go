@@ -44,9 +44,9 @@ func (a *Agent) ContextTokenBudget(b kit.TokenBudget) int {
 
 // GraphMemory 是任意 agent 都能用的图记忆面。
 //
-// 实现者：
-//   - 根 agent：直接就是 *memory.GraphDB
-//   - 驻留子：*memory.LightMemory（读 temp∪main，只写 temp）
+// 实现者只有**主 agent**（`*memory.GraphDB`）。
+// 子 agent 不再持有任何实现 —— 它们的记忆能力来自主 agent 注册的
+// `graph_recall` / `graph_commit` 工具（docs §6.4）。
 type GraphMemory interface {
 	// Recall 按关键词/种子实体召回（子的实现是两空间并集）。
 	Recall(keywords []string, seedEntities []string, depth int, sessionFilter string) (*model.RecallResult, error)
@@ -64,16 +64,7 @@ type GraphMemory interface {
 	Commit(triples []model.Triple, sessionID string, turnID int) (int, int, error)
 }
 
-// MainGraph 返回本 agent 的图记忆**共同面**（根 = 同一个 GraphDB；
-// 驻留子 / rt = 自己的 LightMemory）。
-//
-// ★ 这是基座字段 `a.graph` 的读入口。句柄由类型经 `AgentConfig` 交给基座
-//
-//	存放（§6.2 #5），基座不认识它的实现类型 —— 所以返回的是**共同面**
-//	`GraphMemory`（Recall/RecallSorted/Commit 三个方法），不是完整图库。
-func (a *Agent) MainGraph() GraphMemory {
-	if a == nil {
-		return nil
-	}
-	return a.graph
-}
+// ★ 已删 `MainGraph()` / `GraphMem()` / `GraphDB()`（2026-11-20）：
+//   图记忆是**主 agent 的私有实现**（`mainagent/memory.GraphDB`），
+//   基座不认识它（docs §3.2「不许出现的方法」）。
+//   子 agent 的记忆能力来自主 agent 注册的槽内工具（§6.4）。

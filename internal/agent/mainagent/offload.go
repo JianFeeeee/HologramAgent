@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	sched "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/sched"
 )
 
 // 默认参数。
@@ -44,7 +44,7 @@ const (
 	defaultOffloadMaxResident = 2
 )
 
-func normalizedOffload(o agenttypes.OffloadOptions) agenttypes.OffloadOptions {
+func normalizedOffload(o OffloadOptions) OffloadOptions {
 	if o.BusyAfter <= 0 {
 		o.BusyAfter = defaultOffloadBusyAfter
 	}
@@ -73,12 +73,12 @@ func offloadNotice(count int, residentID string) string {
 		count, residentID)
 }
 
-// agent.OffloadCandidate 是一条可被转投的排队任务。
+// sched.OffloadCandidate 是一条可被转投的排队任务。
 //
 // 只有**纯排队输入**（TaskQueued + KindInput）可转投：
 //   - 中断任务带级别语义（可能正在等待抢占时机），转投会打乱中断阶梯；
 //   - self 任务是内核内部记账（记忆整理等），与父的记忆面绑定，不能换 agent。
-// agent.OffloadCandidate 见 sched_aliases.go（类型在 standard）。
+// sched.OffloadCandidate 见 sched_aliases.go（类型在 standard）。
 
 // drainInboxToQueue 把 io 输入 channel 里**已经到达但尚未被搬运**的输入
 // 搬进就绪队列（非阻塞；取空为止）。
@@ -92,7 +92,7 @@ func (m *Module) drainInboxToQueue() {
 	for {
 		select {
 		case evt := <-m.Agent().IO().InputChan():
-			if !m.sched.Enqueue(agent.NewInputTask(evt)) {
+			if !m.sched.Enqueue(sched.NewInputTask(evt)) {
 				// 队列满：放不进去。不能丢，也不能阻塞（我们是后台 goroutine，
 				// 阻塞会把这个循环永远卡住）——给同步调用方一个终态后丢弃，
 				// 与 pumpInbox 的 queue_full 处置一致。
@@ -116,7 +116,7 @@ func (m *Module) drainInboxToQueue() {
 // ❗并发前提：本函数会被 offloadLoop 在**任务执行期间**调用（那正是它的意义），
 // 因此它与 schedulerLoop 是并发跑的。所有对队列的读写都经 scheduler 的锁，
 // 而"取走哪些任务"与"放回什么"都在同一次锁内完成，不存在丢任务的窗口。
-func (m *Module) offloadPendingTasks(opts agenttypes.OffloadOptions) int {
+func (m *Module) offloadPendingTasks(opts OffloadOptions) int {
 	opts = normalizedOffload(opts)
 	if !opts.Enabled {
 		return 0
@@ -171,7 +171,7 @@ func (m *Module) offloadPendingTasks(opts agenttypes.OffloadOptions) int {
 		}
 		if err := m.forwardInputToResident(residentID, c.Event); err != nil {
 			// 某条投不进去：放回原队列，其余继续（部分成功好过全部回滚）。
-			m.sched.RequeueFront([]agent.OffloadCandidate{c})
+			m.sched.RequeueFront([]sched.OffloadCandidate{c})
 			log.Printf("[offload] forwarding task to resident child %s failed, returned to queue: %v", residentID, err)
 			continue
 		}
@@ -185,7 +185,7 @@ func (m *Module) offloadPendingTasks(opts agenttypes.OffloadOptions) int {
 	//
 	// 为什么留在队列里而不是只记日志：队列顺序就是主 agent 接下来要处理的事；
 	// 用户看会话记录时，需要在这里就看到"那几条去哪儿了"，而不是去翻内核日志。
-	m.sched.RequeueFront([]agent.OffloadCandidate{
+	m.sched.RequeueFront([]sched.OffloadCandidate{
 		{Event: m.syntheticEvent(offloadNotice(moved, residentID))},
 	})
 
@@ -200,7 +200,7 @@ func (m *Module) offloadPendingTasks(opts agenttypes.OffloadOptions) int {
 // 而 cli / a2a / webui 这些**同步**调用方正阻塞等它。重建事件（如用
 // InjectInputTo）会把 ResponseCh 丢掉 ⇒ 任务被子处理完、调用方却永远收不到回执。
 // 实测：转投生效、子也正常处理（各 ~3s 日志可见），但 HTTP 请求一直挂着不返回。
-// 仓库反复警告同一件事（见 Agent.Stop 对 drainPendingInterrupts 的注释：
+// 仓库反复警告同一件事（见 agent.Agent.Stop 对 drainPendingInterrupts 的注释：
 // “带 ResponseCh 的同步注入方会永久挂起”），这里必须走既有的跨 agent 投递原语。
 //
 // 用排队语义（isInterrupt=false）：转投的是"待办工作"，不是"打断子"。
@@ -224,7 +224,7 @@ func (m *Module) forwardInputToResident(residentID string, evt *agentIO.InputEve
 //
 // 复用规则：优先复用"内核为转投而建"且仍 running、还没满的驻留子；
 // 都不可用时（在 MaxResidents 内）新建一个。
-func (m *Module) ensureOffloadResident(opts agenttypes.OffloadOptions) (string, error) {
+func (m *Module) ensureOffloadResident(opts OffloadOptions) (string, error) {
 	// 复用候选：只经由**协议**看得到的简报（不碰任何类型的内部）。
 	var reusable []string
 	for _, c := range m.Agent().ListChildren(elderKind) {
@@ -385,7 +385,14 @@ func (m *Module) spawnResidentViaAdmin(arg map[string]interface{}) (string, erro
 
 // offloadTask 返回"积压任务转投"这个周期任务（未启用时返回零值，注册被拒）。
 func offloadTask(a *agent.Agent) agent.PeriodicTask {
-	cfg := a.Config().Offload
+	// ★ 配置**现读**（用户裁定：配置项一律 a.CfgXxx("core.…") 现读，
+	//   不进 AgentConfig）。这些键在 config 注册表里本来就有。
+	cfg := OffloadOptions{
+		Enabled:      a.CfgBool(agent.CfgKeyOffloadEnabled, false),
+		BusyAfter:    a.CfgDuration(agent.CfgKeyOffloadBusy, defaultOffloadBusyAfter),
+		MinPending:   a.CfgInt(agent.CfgKeyOffloadMinPend, defaultOffloadMinPending),
+		MaxResidents: a.CfgInt(agent.CfgKeyOffloadMaxRes, defaultOffloadMaxResident),
+	}
 	if !cfg.Enabled {
 		return agent.PeriodicTask{}
 	}
@@ -396,14 +403,6 @@ func offloadTask(a *agent.Agent) agent.PeriodicTask {
 	return agent.PeriodicTask{
 		Name:     "offload",
 		Interval: interval,
-		Run:      func(x *agent.Agent) { m := wrap(x); m.offloadPendingTasks(cfg) },
+		Run:      func(x *agent.Agent) { Wrap(x).offloadPendingTasks(cfg) },
 	}
-}
-
-// wrap 取回（或创建）本类型的载体。
-func wrap(a *agent.Agent) *Module {
-	if a == nil {
-		return nil
-	}
-	return &Module{a: a, sched: a.Scheduler()}
 }

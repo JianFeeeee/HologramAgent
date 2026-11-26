@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
@@ -46,8 +45,39 @@ type RuntimeHooks struct {
 	// Initialize wires type-owned runtime state into the kernel-owned Agent.
 	// It runs during type instantiation, before Start.
 	Initialize func(a *Agent) error
-	Start      func(a *Agent)
-	Stop       func(a *Agent)
+	// Restore 从 `dir`（**内核传入的本实例工作目录**）读回自己的运行数据。
+	//
+	// ## 用户裁定（2026-11-19）
+	//
+	// > 「恢复也是基座提供挂点每个 agent 自己挂自己的恢复回调函数，
+	// >    agentloop 持久化数据是由内核传入的路径下存储的，恢复对应的 agent
+	// >    时，该回调会被传入对应的路径，也就是说 agent 是把恢复函数挂到这个
+	// >    回调由内核驱动恢复的」
+	//
+	// > 「内核持有的 agent 表里就有 agent 的工作数据目录」
+	//
+	// > 「agent 初始化包括运行时的数据目录是内核传入的参数，相当于目录是
+	// >    内核统一管理的」
+	//
+	// ⇒ 类型**不拼路径**、**不自己决定何时恢复**：内核在构造/重启实例之后
+	// 调本回调，并把该实例的目录交过来。目录里存什么、怎么解析，是类型的事。
+	//
+	// nil ⇒ 本类型没有需要恢复的数据（明确事实，不是漏接线）。
+	Restore func(a *Agent, dir string) error
+	Start   func(a *Agent)
+	Stop    func(a *Agent)
+	// DrainTerminal 给**从未运行**的待办任务补终态（停机时）。
+	//
+	// ★ 为什么是槽位而不是基座代码：队列归类型（docs §0.3），基座不认识
+	//   队列，也就不能枚举里面的任务。类型交出的这个钩子做这件事 ——
+	//   带 ResponseCh 的同步注入方（cli / a2a 无超时）否则会永久挂起。
+	//
+	// nil ⇒ 本类型没有队列（rt / worker），跳过。
+	DrainTerminal func(a *Agent, reason string)
+	// InterruptPending 报告是否有待处理的中断（类型自己的队列状态）。
+	InterruptPending func(a *Agent) bool
+	// RoundsExecuted 返回本类型已执行的轮次数（状态面用）。
+	RoundsExecuted func(a *Agent) int
 }
 
 type Hooks struct {
@@ -82,13 +112,17 @@ type Hooks struct {
 	//
 	// nil ⇒ 本类型不做超页处置。那是**明确的策略**（整窗型靠 contextfull
 	// 上报父 agent 决策，父来决定压缩/回收/销毁），不是漏接线。
-	OverflowHandler func(a *Agent, f *TaskFrame, req agenttypes.OverflowRequest) (handled bool, pruned int)
+	// ★ 签名里的帧是 `any`（docs §0.3：基座不认识帧）。
+	//   类型把自己的帧传进来并自己断言回去 —— 基座只负责"在正确的时机叫它"。
+	OverflowHandler func(a *Agent, frame any, req OverflowRequest) (handled bool, pruned int)
 
 	// ── 槽位 6：agent loop ──
 
-	// Loop 驱动一帧任务直到终态（`runTaskSteps` 的标准实现挂这里）。
-	// rt 模块注册异步版；主/驻留注册 standard 同步版。
-	Loop func(a *Agent, f *TaskFrame) agenttypes.Outcome
+	// ── 已删：Loop 槽位（2026-11-20，docs §0.3）──
+	//
+	// 它带 `TaskFrame` 签名 ⇒ 基座必须认识"帧"这个概念，而帧是**类型内部
+	// 的数据结构**（主 agent 一份、驻留子一份、rt 根本没有）。
+	// 删掉之后，类型在 `Runtime.Start` 里起自己的循环，基座只调 Start。
 
 	// ── 槽位 7（已删）：stage ──
 	//
@@ -112,7 +146,7 @@ type Hooks struct {
 //
 // 这里刻意区分"必填"与"合法为空"：
 //
-// 必填：ContextBudget / Loop / SecurityGate / Runtime
+// 必填：ContextBudget / SecurityGate / Runtime
 // Tool execution is a base/kernel service and is not a hook.
 //
 //	合法为空：OverflowHandler（整窗策略由「上报父」处置）
@@ -127,7 +161,7 @@ func (h Hooks) Validate(who string) error {
 	}
 	slots := []slot{
 		{"ContextBudget", h.ContextBudget != nil, "由类型模块注册（主：RelevanceContext；驻留/rt：整窗）"},
-		{"Loop", h.Loop != nil, "由类型模块注册（kit.Loop 或 rt 的 Asyncloop）"},
+
 		{"Runtime", h.Runtime.Initialize != nil && h.Runtime.Start != nil && h.Runtime.Stop != nil, "由类型模块注册完整 runtime 生命周期对象"},
 	}
 	for _, s := range slots {
@@ -160,12 +194,13 @@ func (e *MissingHookError) Error() string {
 // （两份会让"哪份才是契约"变成不可判定）。
 type SecurityGate = kernelapi.SecurityGate
 
-// Embedder 是共享词嵌入的窄面（蒸馏与上下文语义相似度用）。
+// Embedder 是共享词嵌入的**计算面**（docs §3.4：句进 → 向量出，批量）。
 //
-// 实现者：`*memory.StaticEmbedder`。方法名带 Map：接口包/本包都不能
-// import vector 实现包，而 `vector.Vector` 底层就是 `map[string]float64`。
+// 实现者：`kernelapi/semantic` 的 `*StaticEmbedder`（内核设施 FacEmbedder）。
+// 基座只按这个窄接口持用 —— 它不认识 fastText / jieba / 模型文件。
 type Embedder interface {
-	VectorizeMap(text string) map[string]float64
-	VectorizeCleanMap(text string) map[string]float64
+	// EmbedTexts 一次输入 N 个句子，返回 N 个稀疏向量（索引一一对应）。
+	EmbedTexts(texts []string) []map[string]float64
+	// Loaded 报告模型是否真加载（否则只有 TF-IDF 词频回退，仍可算余弦）。
 	Loaded() bool
 }

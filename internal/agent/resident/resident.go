@@ -14,7 +14,6 @@ package resident
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"log"
 	"os"
@@ -26,10 +25,9 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	childpkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
+	sched "github.com/JianFeeeee/HologramAgent/internal/agent/resident/sched"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
 
@@ -41,16 +39,15 @@ type residentChild struct {
 	agent *agent.Agent
 	// parentAgent 是**父的**基座句柄（子到这里来反查父的载体 M）。
 	parentAgent *agent.Agent
+	// ctx 是本实例的上下文实现（驻留子整窗策略）。
+	ctx ContextMgr
 	// opener 是图记忆装配面（Dispose 里关句柄要用；不持有 *agent.Agent 的实现细节）。
-	opener kernelapi.GraphMemoryOpener
 	// light / mainRO 用**契约接口**而不是实现类型（判据 §8 第 3 条）：
 	//
 	//	light  读 temp∪main、只写 temp（LightMemory 的方法集是 GraphMemory 的子集）
 	//	mainRO 主库的**结构上写不进**只读视图
 	//
 	// 类型模块只关心"能不能 Recall/Commit"，不关心它是 SQLite 还是别的实现。
-	light    any
-	mainRO   kernelapi.GraphMemory
 	tempPath string
 	dir      string
 	inputChs []string
@@ -65,7 +62,7 @@ type residentChild struct {
 
 	// ── 创建参数（2026-11-17 新增：登记表持久化需要它们）──
 	//
-	// ★ 为什么在 residentChild 上再存一份（agenttypes.ResidentOptions 本来就在形参里）：
+	// ★ 为什么在 residentChild 上再存一份（ResidentOptions 本来就在形参里）：
 	// 登记表要写回「重建这个子所需的全部参数」，而那些只在 SpawnResident
 	// 的形参里出现过 —— 子建起来之后就没了。运行态（轮次/处理表）可以由
 	// context.json 恢复，但**父的决定**（任务提示词、授权范围、工具白名单）
@@ -102,7 +99,7 @@ func (rc *residentChild) Channels() []string { return rc.inputChs }
 
 // Disposition 返回通道处置策略：驻留子默认**悬空**（父可在销毁时显式指定
 // handover，那条路径由 DestroyResidentWithTarget 传入，不走本默认值）。
-func (rc *residentChild) Disposition() string { return string(agenttypes.ChannelOrphan) }
+func (rc *residentChild) Disposition() string { return string(ChannelOrphan) }
 
 // OffloadOwned 报告本实例是否由转投拉起。
 func (rc *residentChild) OffloadOwned() bool { return rc.offloadOwned }
@@ -114,7 +111,7 @@ func (rc *residentChild) OffloadOwned() bool { return rc.offloadOwned }
 //	rt       ：无残余（未处理输入是过期状态，丢弃）；通道**悬空**不归还
 //	驻留子   ：残余 keep/drop（不丢活）；通道按父的决定 **三选一**释放/挂起/接回
 //
-// 这三种通道处置是驻留子独有的语义（agenttypes.ChannelDisposition），
+// 这三种通道处置是驻留子独有的语义（ChannelDisposition），
 // 由父在销毁时决定，写在 `residentDisposition` 上供本方法读取。
 func (rc *residentChild) Dispose() string {
 	// 关记忆句柄：temp 与子同生共死（连同目录一起丢弃）。
@@ -123,14 +120,7 @@ func (rc *residentChild) Dispose() string {
 	// 转进父的队列），而 residentChild 只有子自己的载体。所以那一段留在
 	// Agent 侧（teardownResidentWith），由骨架的 OnDispose 钩子调用 ——
 	// 强行搬进来会让本类型持有对父的隐式反向引用，比现在更糟。
-	if rc.light != nil {
-		_ = agent.CloseGraphWith(rc.opener, rc.light)
-		rc.light = nil
-	}
-	if rc.mainRO != nil {
-		_ = agent.CloseGraphWith(rc.opener, rc.mainRO)
-		rc.mainRO = nil
-	}
+
 	// ★ 这里**不删** temp 目录（2026-11-17 改）。
 	//
 	// 原先 Dispose 与 teardownResidentWith 两处都 RemoveAll —— 而 Dispose 是
@@ -168,63 +158,31 @@ func residentOf(m *M, id string) *residentChild {
 	return rc
 }
 
-// mainGraph 返回父自己的完整图记忆库（驻留子的受限句柄由它派生）。
-func (m *M) MainGraph() kernelapi.GraphMemory { return m.A.GraphDB() }
-
 // SpawnResident 创建一个驻留子（父的"创建"动作）。
-func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentInfo, error) {
+func (m *M) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	if strings.TrimSpace(opts.ID) == "" {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("驻留子必须有 id")
+		return ResidentInfo{}, fmt.Errorf("驻留子必须有 id")
 	}
-	if strings.TrimSpace(opts.TempPath) == "" {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("驻留子必须给出 temp 图记忆路径")
-	}
-	main := m.A.GraphDB()
-	if main == nil {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("父没有图记忆，无法为驻留子提供主库只读视图")
-	}
+	// ★ TempPath 不再需要（2026-11-20）：子 agent 不建自己的图库。
+	// ★ 也不再检查"父有没有图记忆"：驻留子的图能力来自**主 agent 注册的
+	//   槽内工具**（graph_recall / graph_commit），那由内核执行；父没有图库
+	//   ⇒ 工具调用返回"无记忆"，而不是创建失败。让创建条件依赖父的内部
+	//   实现，就是类型之间互相认识（docs §0.3 禁止）。
 
 	if _, dup := m.A.Children().Get(opts.ID); dup {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("驻留子 %s 已存在（%w）", opts.ID, childpkg.ErrChildExists)
+		return ResidentInfo{}, fmt.Errorf("驻留子 %s 已存在（%w）", opts.ID, childpkg.ErrChildExists)
 	}
 
-	// ① 轻量内核的记忆装配：主库**受限句柄**（结构上写不进）+ 自己的 temp 实例。
-	// temp 目录由内核创建（调用方只给路径）——与子同生共死，销毁时整目录丢弃。
-	if dir := filepath.Dir(opts.TempPath); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return agenttypes.ResidentInfo{}, fmt.Errorf("创建 temp 目录: %w", err)
-		}
-	}
-	// ★ 经**装配面**开关句柄（实现构造在 memory 模块里，基座只调接口）。
-	opener := m.A.GraphOpener()
-	if opener == nil {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("驻留子需要图记忆装配面（AgentConfig.GraphOpener 未注入）")
-	}
-	mainDB := m.A.GraphDB()
-	if mainDB == nil {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("父没有完整图库句柄（GraphDB 为 nil）")
-	}
-	mainRO, err := opener.OpenReadOnly(mainDB.Path())
-	if err != nil {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("打开主库受限句柄: %w", err)
-	}
-	lightAny, err := opener.OpenLight(mainRO, opts.TempPath, true)
-	if err != nil {
-		_ = opener.Close(mainRO)
-		return agenttypes.ResidentInfo{}, err
-	}
-	light := lightAny
-	// 轻量实例的**共同面**（Recall/Commit 那一面）用于 graphMemoryOf。
-	// 它由装配面给出：基座不 import memory，所以不认识 LightMemory 的类型。
-	lightGraph := opener.LightCommon(light)
+	// ① 记忆：**不装配任何东西**。子 agent 的图记忆能力就是两个普通工具
+	//    （`graph_recall` / `graph_commit`），由主 agent 注册、模型自己调。
+	//    数据全在主 agent 那边，权限与只读隔离在工具的闭包里实现。
+	//    ⇒ 这里没有 OpenReadOnly / OpenLight / temp 库 / handle。
 
 	// ② 划入 inputch（登记表里记归属；一个插件的多个 inputch 可分别划给不同子）。
 	if reg := m.A.IO().ChannelRegistry(); reg != nil {
 		for _, ch := range opts.InputChs {
 			if err := reg.Assign(ch, opts.ID, opts.Capacity); err != nil {
-				_ = m.A.CloseGraph(light)
-				_ = m.A.CloseGraph(mainRO)
-				return agenttypes.ResidentInfo{}, fmt.Errorf("划入 inputch %s: %w", ch, err)
+				return ResidentInfo{}, fmt.Errorf("划入 inputch %s: %w", ch, err)
 			}
 		}
 	}
@@ -243,7 +201,10 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 
 	parentID := string(m.A.ID())
 	child := agent.New(agent.AgentConfig{
-		ID: types.AgentID(opts.ID),
+		ID:       types.AgentID(opts.ID),
+		TypeName: string(kindResident),
+		// ★ 能力面（docs §8.1.1）：驻留子承接文本。
+		AgentCap: agentIO.CapText,
 		// SystemPrompt 必须**继承父的**：
 		//
 		// 拿不到它时子只能用 buildSystemPrompt 里的兜底句（一句人格描述）。
@@ -255,22 +216,28 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 		//
 		// 实测（2026-09-19）：webui 这类**同步**通道能回，是因为走 ResponseCh；
 		// 而 QQ 是异步通道、必须子主动 output_send —— 这正是本字段必须接上的理由。
-		SystemPrompt:    m.A.SystemPrompt(),
-		Provider:        m.A.Provider(),
-		ProviderManager: m.A.ProviderManager(),
+		// ★ 子实例**只继承设施句柄**，不继承裸 provider / 源表。
+		//   设施是内核的一份，各 agent 靠自己 ID 分开记账与选源；
+		//   类型不该看见"有几条源"这件事。
+		//
+		// ★ 设施句柄必须继承：只给裸 provider 的话，子实例的
+		//   `LLM()` 是 nil ⇒ `CompleteLLMNoRetry` 落到"单源直调"分支，
+		//   候选链、回退、可用性标记、错误分类全部失效（这正是
+		//   "类型在裸调 provider"的真因，不是类型写错了调用）。
+		//   设施是**内核的一份**，各 agent 只靠自己 ID 分开记账。
 		// 驻留子可以有自己的优先源；留空则继承父的（父再留空 ⇒ 总默认源）。
-		PreferredProvider: firstNonEmpty(opts.PreferredProvider, m.A.PreferredProvider()),
-		IO:                childIO,
-		StageHost:         nil,
 		// ★ 同一个注册表指针（不是拷贝）：插件运行时更新的段立刻对子 agent 生效。
 		// ★ 普通上下文也要落盘（2026-11-17）：与 temp 图记忆同一目录。
 		//
 		// 不接的后果：重启后子的 RelevanceContext 是空的 —— 它连「上一轮
 		// 聊到哪」都不知道，等于每次重启丢失全部对话现场（图记忆也一起丢，
 		// 见 teardownResidentWith 的保留语义）。
-		ContextSavePath: filepath.Join(filepath.Dir(opts.TempPath), "context.json"),
-		LightMemory:     lightGraph, // 轻量内核：只有图记忆共同面
-		AllowedOutputs:  opts.AllowedOutputs,
+		// ★ 工作目录由**内核**分配（`WorkDir`），本类型只给文件名。
+		//   与 temp 图库同目录：一个实例的现场就该在一起。
+		WorkDir: opts.WorkDir,
+		// ★ **不给 LightMemory**：驻留子的图记忆经由主 agent 的 `graph_*`
+		//   槽内工具（handle + map），它不认识 GraphDB / LightMemory。
+		AllowedOutputs: opts.AllowedOutputs,
 		// ★ 白/黑名单进 AgentConfig（基座渲染侧要读；原先只存在子载体上，
 		//   于是模型看得见父禁用的工具，执行时才被拒）。
 		AllowedTools: opts.AllowedTools,
@@ -283,30 +250,40 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 		// 驻留子是长期挂着、无人盯的执行体：它自己跑调度器、接自己的输入、
 		// 长时间不被人工审阅。它是本仓**最需要闸门**的一类 agent，
 		// 而原先它是唯一**完全没有闸门**的（子从 New 起 m.security 就是 nil）。
-		Security: m.A.Gate(),
 		// ★ 子的记录必须落进**同一张表**（父的记录表）：安全模块判定时读它，
 		//   实例管理器持久化时也读它 —— 一张表，一个清理点（§3.2.2）。
-		Agents: m.A.AgentsRegistry(),
 	})
 
 	// ★ 注册**驻留子自己**的 runtime 回调（用户裁定：类型注册自己的运行行为）。
 	//   基座只持有一个槽位；主 agent 填 main 版，这里填 resident 版。
 	//   漏了这一步的后果是"子 Start 之后什么都不跑"，而基座不会替它猜。
-	// ★ Initialize 必须一起注册：驻留子有队列，调度器由**它的类型**装配。
-	//   只给 Start/Stop 的后果是 `schedulerLoop` 撞 nil 调度器（子起来但
-	//   永远不处理输入，且 panic 被 recover 吞掉，现场没有任何报错）。
-	if d, ok := registry.Lookup(kindResident); ok && d.Initialize != nil {
-		if err := d.Initialize(child); err != nil {
-			child.Stop()
-			_ = m.A.CloseGraph(light)
-			_ = m.A.CloseGraph(mainRO)
-			_ = os.RemoveAll(filepath.Dir(opts.TempPath))
-			return agenttypes.ResidentInfo{}, fmt.Errorf("驻留子 %s 运行时初始化失败: %w", opts.ID, err)
-		}
-	}
+	// ★ **不在这里自己调 Initialize**（2026-11-25）：
+	// 它由 `registry.Instantiate` 在 construct 返回后统一调 —— 类型不必
+	// 查注册表、不必知道"我是怎么被造的"。此前这里 `registry.Lookup(kind)`
+	// 再调一次，是"类型为了让自己工作必须知道注册表怎么查"的倒挂。
 	h := child.Hooks()
 	h.Runtime.Start = StartRuntime
 	h.Runtime.Stop = StopRuntime
+	// ★ 恢复回调：内核把本实例目录交过来（用户裁定 2026-11-19）。
+	//   驻留子要恢复的是**整窗上下文**（它不裁，所以现场就是全部历史）。
+	h.Runtime.Restore = func(x *agent.Agent, dir string) error {
+		if x == nil {
+			return nil
+		}
+		rc, ok := m.residentEntryOf(string(x.ID()))
+		if !ok || rc == nil {
+			return nil
+		}
+		return rc.loadContext(dir)
+	}
+	// ★ 面：子实例继承父的 IO 面（共享通道登记表 + 父视图回退）、阶段管道、
+	//   安全闸、记录表。**不继承** Provider/ProviderManager（docs §9.6 硬边界 2）。
+	child.MountSurface(childIO, m.A.StageHost(), m.A.Gate(), m.A.AgentsRegistry(), nil, "", m.A.LLM())
+	// ★ 插件工具登记簿**继承父的**：工具是同一个内核的（归属不变），
+	//   子只在自己的 io 上看到自己那条通道的工具。
+	child.MountToolRegistry(m.A.ToolRegistry())
+	child.SetSystemPrompt(m.A.SystemPrompt())
+	child.SetPreferredProvider(firstNonEmpty(opts.PreferredProvider, m.A.PreferredProvider()))
 	child.SetHooks(h)
 
 	rc := &residentChild{
@@ -320,7 +297,7 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 			Cancel:   child.Cancel(),
 			ParentID: string(m.A.ID()),
 		},
-		agent: child, parentAgent: m.A, light: light, mainRO: mainRO,
+		agent: child, parentAgent: m.A,
 		tempPath: opts.TempPath, dir: filepath.Dir(opts.TempPath),
 		inputChs:     append([]string(nil), opts.InputChs...),
 		allowed:      append([]string(nil), opts.AllowedOutputs...),
@@ -342,12 +319,8 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 	// 比创建失败危险得多（而创建失败是可重试的）。
 	if err := m.A.DeclareChildPolicy(opts.ID, opts.AllowedTools, opts.DenyTools); err != nil {
 		child.Stop()
-		if light != nil {
-			_ = m.A.CloseGraph(light)
-		}
-		_ = m.A.CloseGraph(mainRO)
 		_ = os.RemoveAll(filepath.Dir(opts.TempPath))
-		return agenttypes.ResidentInfo{}, fmt.Errorf("为驻留子 %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
+		return ResidentInfo{}, fmt.Errorf("为驻留子 %s 声明安全策略失败（拒绝创建一个无约束的子执行体）: %w", opts.ID, err)
 	}
 
 	// ④ 子 → 父的主动消息（**L3 中断**，带子标识）：投进父的 inputch。
@@ -369,19 +342,25 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 	//   子此后只调 CallParent —— 通道名与注入点都由父提供，子不拼、不猜。
 	child.InstallCallParent(agent.BuildCallParent(m.A, opts.ID, parentInCh))
 	m.mkResident(child, func(text string) {
-		// 子主动汇报（notify_parent 工具）：父该尽快看到，L3。
+		// 子主动汇报（CallParent 唯一上行出口）：父该尽快看到，L3。
 		_ = child.CallParent(agent.CallLevelInteractive, agent.CallKindNotify, text, nil)
 	}, func() { m.handleChildContextFull(rc) })
 
 	if err := m.A.Children().Add(rc); err != nil {
 		child.Stop()
-		_ = m.A.CloseGraph(light)
-		_ = m.A.CloseGraph(mainRO)
 		_ = os.RemoveAll(filepath.Dir(opts.TempPath))
-		return agenttypes.ResidentInfo{}, fmt.Errorf("登记驻留子 %s 失败: %w", opts.ID, err)
+		return ResidentInfo{}, fmt.Errorf("登记驻留子 %s 失败: %w", opts.ID, err)
+	}
+	// ★ 交出"刚造的那个"给宿主：registry.Instantiate 要用它跑 Initialize。
+	// 这一步是**交接**（与 Children().Add 同层），不是"类型知道注册表怎么查"。
+	if im := m.A.EnsureInstanceManager(); im != nil {
+		im.MarkCreated(child)
 	}
 
-	child.Start()
+	// ★ **不在这里 Start**（2026-11-25）：内核在"面挂好"之后统一调
+	// （`registry.StartInstance`）。construct 里 Start 会让运行期在 IO/
+	// StageHost 还是 nil 时起来 —— 此前靠 `StartRuntime` 的 `sched == nil`
+	// 兜底掩盖了，那不是正确性，是巧合。
 
 	// ⑥ create 即开工：把任务提示词作为**第一条排队输入**投给子。
 	//
@@ -390,7 +369,17 @@ func (m *M) SpawnResident(opts agenttypes.ResidentOptions) (agenttypes.ResidentI
 	// （日志 `[agent] r1 started, waiting for IO interrupts` 之后无事发生）。
 	// 走排队输入（非中断）：创建是"安排工作"，不是"打断它正在做的事"。
 	if strings.TrimSpace(opts.TaskPrompt) != "" {
-		child.IO().InjectInputTo(m.residentParentSource(), parentInCh, "text",
+		// ★ 第二个参数是**输出通道**，不是入站通道名。
+		//
+		// `InjectInputTo(source, outputChannel, ...)`：它落进事件的
+		// `OutputChannel` 字段，而类型侧 `outputChannelOf(evt)` 用它决定
+		// "这一轮的回复往哪发"。
+		//
+		// 这里曾经传 `parentInCh`（`child/<id>`）—— 那是**父的入站**通道名，
+		// 不是输出设备。后果（实测）：每次流式增量都打
+		// `[io] no output device "child/z9" ... dropped`，用户在界面上
+		// 看不到驻留子说话，而子以为自己已经说了。
+		child.IO().InjectInputTo(m.residentParentSource(), m.residentTaskOutputChannel(opts), "text",
 			map[string]interface{}{"content": opts.TaskPrompt})
 	}
 	registered = true
@@ -426,21 +415,21 @@ func (m *M) residentInboundChannel(childID string) string {
 //
 // 销毁是父**随时**可做的；父退出时由 StopResidents 对全部子执行。
 func (m *M) DestroyResident(id string) error {
-	return m.DestroyResidentWith(id, agenttypes.ChannelOrphan)
+	return m.DestroyResidentWith(id, ChannelOrphan)
 }
 
 // DestroyResidentWith 按父的决定处置通道后销毁驻留子。
-func (m *M) DestroyResidentWith(id string, disp agenttypes.ChannelDisposition) error {
+func (m *M) DestroyResidentWith(id string, disp ChannelDisposition) error {
 	return m.DestroyResidentWithTarget(id, disp, "")
 }
 
 // DestroyResidentWithTarget 是 DestroyResidentWith 的完整版：额外给出
-// **交接目标**（disp=agenttypes.ChannelHandover 时生效；空 = 父自己）。
+// **交接目标**（disp=ChannelHandover 时生效；空 = 父自己）。
 //
 // ★ 为什么需要单独一个入口：`DestroyResidentWith` 已有多个调用方（工具面、
 // 回收、判据），给它们全加一个参数是纯噪声。而"划拨给别的子"是新能力，
 // 只有显式要交接的调用点才需要它。
-func (m *M) DestroyResidentWithTarget(id string, disp agenttypes.ChannelDisposition, handoverTarget string) error {
+func (m *M) DestroyResidentWithTarget(id string, disp ChannelDisposition, handoverTarget string) error {
 	e := m.A.Children().Remove(id)
 	if e == nil {
 		return fmt.Errorf("驻留子 %s 不存在", id)
@@ -495,8 +484,8 @@ func (m *M) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
 // 现在：cancel 关 ctx.Done ⇒ 调度循环在**下一次取任务前**就退出
 // （不再取新任务），已在执行的那一条跑完后循环自然结束。
 // 等它真正停下，再回收队列 —— 此刻队列是静止的，回收没有歧义。
-func (m *M) FinishResident(id string, policy agenttypes.ResidualPolicy, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
-	return m.FinishResidentWith(id, policy, agenttypes.ChannelOrphan, onDestroy)
+func (m *M) FinishResident(id string, policy ResidualPolicy, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
+	return m.FinishResidentWith(id, policy, ChannelOrphan, onDestroy)
 }
 
 // FinishResidentWith 是 FinishResident 的完整版：残余任务策略 + **通道处置**一次定。
@@ -507,12 +496,12 @@ func (m *M) FinishResident(id string, policy agenttypes.ResidualPolicy, onDestro
 //
 // 若拆成两次调用，中间窗口里通道可能已被别人接管，暂存任务就跑到了
 // 一个跟它无关的 agent 手里。**一次定完，没有窗口。**
-func (m *M) FinishResidentWith(id string, policy agenttypes.ResidualPolicy, disp agenttypes.ChannelDisposition, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
+func (m *M) FinishResidentWith(id string, policy ResidualPolicy, disp ChannelDisposition, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
 	return m.FinishResidentWithTarget(id, policy, disp, "", onDestroy)
 }
 
 // FinishResidentWithTarget 是 FinishResidentWith 的完整版：额外给出交接目标。
-func (m *M) FinishResidentWithTarget(id string, policy agenttypes.ResidualPolicy, disp agenttypes.ChannelDisposition, handoverTarget string, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
+func (m *M) FinishResidentWithTarget(id string, policy ResidualPolicy, disp ChannelDisposition, handoverTarget string, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
 	rc := residentOf(m, id)
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
@@ -522,7 +511,7 @@ func (m *M) FinishResidentWithTarget(id string, policy agenttypes.ResidualPolicy
 	// ① 停止调度：关 ctx.Done。调度循环在下次取任务前退出。
 	child.Cancel()()
 	// ② 等它真的停下（已在执行的那条会跑完，不再取新的）。
-	m.sched.WaitSchedulerStopped(agent.SchedStopTimeout, id)
+	m.sched.WaitSchedulerStopped(sched.StopTimeout, id)
 
 	// ③ 此刻队列静止，回收残余任务没有歧义。
 	events := m.sched.TakeAllPendingEvents()
@@ -551,7 +540,7 @@ func (m *M) FinishResidentWithTarget(id string, policy agenttypes.ResidualPolicy
 //
 // 无论哪种，带 ResponseCh 的都要给终态，否则 cli/a2a 这类无超时同步调用方
 // 会永久挂起（设计 §7 I5）。
-func (m *M) ApplyResidual(id string, policy agenttypes.ResidualPolicy) (int, string, error) {
+func (m *M) ApplyResidual(id string, policy ResidualPolicy) (int, string, error) {
 	// ⚠️ 本函数只取残余、**不终止子**，因此取完之后子仍在运行 ——
 	// 控制面工具请用 FinishResident（停止调度 + 取 + 处置 + 销毁，一步完成），
 	// 否则"取完到销毁之间"子还会收新任务，那些任务的结果随销毁丢失。
@@ -566,11 +555,11 @@ func (m *M) ApplyResidual(id string, policy agenttypes.ResidualPolicy) (int, str
 }
 
 // applyResidualEvents 按策略处置已取走的残余任务（keep 转回父 / drop 留痕丢弃）。
-func (m *M) applyResidualEvents(id string, events []*agentIO.InputEvent, policy agenttypes.ResidualPolicy) (int, string, error) {
+func (m *M) applyResidualEvents(id string, events []*agentIO.InputEvent, policy ResidualPolicy) (int, string, error) {
 	if len(events) == 0 {
 		return 0, "无残余任务", nil
 	}
-	if policy == agenttypes.ResidualDrop {
+	if policy == ResidualDrop {
 		for _, evt := range events {
 			// 丢弃必须留痕：异步通道（qq/wechat）没有 ResponseCh，
 			// 不记日志的话“这条消息为什么没人回”永远查不出来。
@@ -585,7 +574,7 @@ func (m *M) applyResidualEvents(id string, events []*agentIO.InputEvent, policy 
 	// ★ 必须逐条按其自身 OutputChannel 归位，不能整批塞进一个通道 ——
 	// 一个驻留子可能同时收 qq 和 webui 的消息，混存会导致接回 qq 的人
 	// 拿到本该给 webui 的活。
-	if policy == agenttypes.ResidualStash {
+	if policy == ResidualStash {
 		reg := m.A.IO().ChannelRegistry()
 		if reg == nil {
 			return 0, "", fmt.Errorf("无通道登记表，无法暂存残余任务")
@@ -624,7 +613,7 @@ func (m *M) applyResidualEvents(id string, events []*agentIO.InputEvent, policy 
 		if evt == nil {
 			continue
 		}
-		m.sched.Enqueue(agent.NewInputTask(evt))
+		m.sched.Enqueue(sched.NewInputTask(evt))
 	}
 	m.sched.SignalWake()
 	return len(events), fmt.Sprintf("已把 %d 条残余任务转回主 agent 队列", len(events)), nil
@@ -640,12 +629,12 @@ func inputTextOf(evt *agentIO.InputEvent) string {
 }
 
 func (m *M) teardownResident(rc *residentChild) {
-	m.teardownResidentWith(rc, agenttypes.ChannelOrphan, "", false, nil)
+	m.teardownResidentWith(rc, ChannelOrphan, "", false, nil)
 }
 
 // teardownResidentWith 是 teardownResident 的完整版：额外决定**通道去向**，
 // 并在 takeover 时把释放出来的暂存任务转进父队列。
-func (m *M) teardownResidentWith(rc *residentChild, disp agenttypes.ChannelDisposition, handoverTarget string, persistTemp bool, onDrained func([]*agentIO.InputEvent)) {
+func (m *M) teardownResidentWith(rc *residentChild, disp ChannelDisposition, handoverTarget string, persistTemp bool, onDrained func([]*agentIO.InputEvent)) {
 	rc.mu.Lock()
 	rc.state = "stopped"
 	rc.mu.Unlock()
@@ -658,12 +647,7 @@ func (m *M) teardownResidentWith(rc *residentChild, disp agenttypes.ChannelDispo
 	m.A.RevokeChildPolicy(rc.ID)
 
 	rc.agent.Stop() // 停子的调度器（取消其运行中的任务）
-	if rc.light != nil {
-		_ = m.A.CloseGraph(rc.light) // 关掉 temp 实例
-	}
-	if rc.mainRO != nil {
-		_ = m.A.CloseGraph(rc.mainRO)
-	}
+
 	// ★ temp 目录的处置**分两种情况**（2026-11-17 改）。
 	//
 	// 原语义是「temp 与子同生共死，回收/销毁都丢弃」—— 那对**显式销毁**是对的
@@ -682,7 +666,7 @@ func (m *M) teardownResidentWith(rc *residentChild, disp agenttypes.ChannelDispo
 	if reg := m.A.IO().ChannelRegistry(); reg != nil {
 		for _, ch := range rc.inputChs {
 			switch disp {
-			case agenttypes.ChannelHandover:
+			case ChannelHandover:
 				// 显式交接：通道归属改为**目标 agent**，并交出暂存任务。
 				//
 				// 目标缺省是父（原 ChannelTakeover 的语义）；handoverTarget 非空时
@@ -706,7 +690,7 @@ func (m *M) teardownResidentWith(rc *residentChild, disp agenttypes.ChannelDispo
 						} else {
 							for _, evt := range drained {
 								if evt != nil {
-									m.sched.Enqueue(agent.NewInputTask(evt))
+									m.sched.Enqueue(sched.NewInputTask(evt))
 								}
 							}
 							m.sched.SignalWake()
@@ -729,7 +713,7 @@ func (m *M) teardownResidentWith(rc *residentChild, disp agenttypes.ChannelDispo
 						}
 					}
 				}
-			default: // agenttypes.ChannelOrphan（默认，悬空）
+			default: // ChannelOrphan（默认，悬空）
 				// 悬空：Owner 清空 + Orphaned 标记 ⇒ 期间输入写进 stash，
 				// 等父显式接回/划拨。**不**留给根 agent 兜底。
 				if err := reg.Orphan(ch); err != nil {
@@ -761,16 +745,16 @@ func (m *M) StopResidents() int {
 		if rc, ok := e.(*residentChild); ok {
 			// ★ 进程停机 ⇒ 保留 temp（供重启后重建复用）。
 			// 显式 Destroy/Reclaim 走另一条路径，那里才删。
-			m.teardownResidentWith(rc, agenttypes.ChannelOrphan, "", true, nil)
+			m.teardownResidentWith(rc, ChannelOrphan, "", true, nil)
 		}
 	}
 	return len(all)
 }
 
 // Residents 返回登记表的快照（按 id 排序，便于断言与展示稳定）。
-func (m *M) Residents() []agenttypes.ResidentInfo {
+func (m *M) Residents() []ResidentInfo {
 	entries := m.A.Children().ByKind(childpkg.KindResident)
-	out := make([]agenttypes.ResidentInfo, 0, len(entries))
+	out := make([]ResidentInfo, 0, len(entries))
 	for _, e := range entries {
 		if rc, ok := e.(*residentChild); ok {
 			out = append(out, rc.info())
@@ -781,11 +765,27 @@ func (m *M) Residents() []agenttypes.ResidentInfo {
 }
 
 // ResidentTable 是父**查看**子的 inputch 处理表（pull，不打断子）。
-func (m *M) ResidentTable(id string) ([]agenttypes.InputchRecord, error) {
-	if _, ok := m.residentEntryOf(id); !ok {
+//
+// ★ 表是**那个实例自己的内部数据**（2026-11-26 修）。
+//
+// 记账发生在子的运行期（`driver.go` 的 `executeNewTask`），写在**子的载体**上。
+// 本方法跑在 handle 所在的载体上（内核把 `InstanceManager` 交给
+// `Descriptor.Admin`，resident 的 handle 用 `Of(host)` 取根载体），
+// 所以 `m.st` 是**父侧**的表 —— 它永远是空的。
+//
+// 正确取法：经**内核实例表**定位该 id 对应的实例，再取它自己的载体。
+// 数据没有离开 resident 类型的作用域（两边都是本包的 `M`），
+// 父子之间也没有直连通道 —— 定位走的是 `m.A.Children()`（内核的实例表）。
+func (m *M) ResidentTable(id string) ([]InputchRecord, error) {
+	rc, ok := m.residentEntryOf(id)
+	if !ok {
 		return nil, fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	return m.inputchTableSnapshot(), nil
+	sub := wrapOf(rc)
+	if sub == nil {
+		return nil, fmt.Errorf("驻留子 %s 的运行期未装配", id)
+	}
+	return sub.inputchTableSnapshot(), nil
 }
 
 // SendToResident 是父的"发送消息"：经输出通道寻址到该子的 inputch，
@@ -831,7 +831,7 @@ func (m *M) CompressResident(id string) (int, error) {
 		return 0, fmt.Errorf("驻留子 %s 不存在", id)
 	}
 
-	ctx := rc.agent.ContextManager()
+	ctx := rc.ctx
 	compacted := 0
 
 	if ctx != nil {
@@ -870,38 +870,15 @@ func (m *M) CompressResident(id string) (int, error) {
 // → 丢弃 temp → **取消**该驻留子。
 //
 // keep 由父决定"哪些纳入记忆"；为 nil 时表示全部合入。
-// harvestResidentMemory 把子 temp 里的活跃三元组收割进主记忆，返回合入条数。
-//
-// 必须在 Destroy **之前**调用：Destroy 会 Close 掉 temp。
-func (m *M) HarvestResidentMemory(rc *residentChild, keep ...func([]agenttypes.InputchRecord, []model.Triple) []model.Triple) (int, error) {
-	if rc == nil || rc.light == nil || rc.opener == nil || m.A.GraphDB() == nil {
-		return 0, nil
-	}
-	temp := rc.opener.LightTemp(rc.light)
-	if temp == nil {
-		return 0, nil
-	}
-	exported, err := rc.opener.ExportTriples(temp, 0)
-	if err != nil {
-		return 0, fmt.Errorf("读取子 temp 失败: %w", err)
-	}
-	selected := exported
-	if len(keep) > 0 && keep[0] != nil {
-		selected = keep[0](rc.info().Table, exported)
-	}
-	if len(selected) == 0 {
-		return 0, nil
-	}
-	if _, _, err := m.A.GraphDB().Commit(selected, "reclaim/"+rc.ID, 0); err != nil {
-		return 0, fmt.Errorf("合入主记忆失败: %w", err)
-	}
-	return len(selected), nil
-}
+// ★ 已删 `HarvestResidentMemory`（2026-11-20）：它读子 agent 的 temp 图库
+// 并合进主记忆。而现在**没有子 temp 库** —— 子 agent 的写入由
+// `graph_commit` 直接落主库（按调用方打归属标记）。所以"收割"这件事
+// 从结构上不存在了。
 
-func (m *M) ReclaimResident(id string, keep func([]agenttypes.InputchRecord, []model.Triple) []model.Triple) (agenttypes.ResidentInfo, error) {
+func (m *M) ReclaimResident(id string, keep func([]InputchRecord, []model.Triple) []model.Triple) (ResidentInfo, error) {
 	rc, ok := m.residentEntryOf(id)
 	if !ok {
-		return agenttypes.ResidentInfo{}, fmt.Errorf("驻留子 %s 不存在", id)
+		return ResidentInfo{}, fmt.Errorf("驻留子 %s 不存在", id)
 	}
 	info := rc.info()
 
@@ -909,7 +886,9 @@ func (m *M) ReclaimResident(id string, keep func([]agenttypes.InputchRecord, []m
 	//
 	// 逻辑抽到 harvestResidentMemory，供 FinishResident 的 onDestroy 复用 ——
 	// 那里也必须**在 Destroy 之前**收割（Destroy 会关掉 temp）。
-	promoted, herr := m.HarvestResidentMemory(rc, keep)
+	// ★ 不再有 temp 库可收割（见 HarvestResidentMemory 的删除说明）。
+	promoted := 0
+	var herr error
 	if herr != nil {
 		return info, herr
 	}
@@ -928,7 +907,7 @@ func (m *M) handleChildContextFull(rc *residentChild) {
 	rc.mu.Lock()
 	rc.state = "contextfull"
 	rc.mu.Unlock()
-	m.A.RaiseKernelInterruptAt("child/"+rc.ID, "kernel", residentContextFullText(rc.ID), agent.LevelCritical)
+	m.raiseKernelInterruptAt("child/"+rc.ID, "kernel", residentContextFullText(rc.ID), sched.LevelCritical)
 }
 
 // checkContextFull 的实现已搬到 resident 自己的 OverflowHandler 里。
@@ -938,22 +917,9 @@ func (m *M) handleChildContextFull(rc *residentChild) {
 
 // ---- 子侧：inputch 处理表（子持有，父 pull） ----
 
-// recordInputchNote 是子**主动写入**本轮 inputch 的处理信息（工具 inputch_note）。
-func (m *M) RecordInputchNote(text string) {
-	r := m.st
-	if r == nil {
-		return
-	}
-	r.tableMu.Lock()
-	defer r.tableMu.Unlock()
-	r.pending = &agenttypes.InputchRecord{
-		InputCh: r.currentInputch, At: time.Now(), Proactive: true, Text: text,
-	}
-}
-
 // autoRecordInputch 是**系统自动写**兜底：本轮未主动写时，把该轮 inputch 的处理信息写入。
 // 保证每一轮必有记录，父不会看到空洞。
-func (m *M) AutoRecordInputch(f *agent.TaskFrame) {
+func (m *M) AutoRecordInputch(f *ResidentFrame) {
 	if f == nil {
 		return
 	}
@@ -974,19 +940,19 @@ func (m *M) AutoRecordInputch(f *agent.TaskFrame) {
 	if f.Response != "" {
 		text += "；产出=" + agent.TruncateStr(f.Response, 120)
 	}
-	r.table = append(r.table, agenttypes.InputchRecord{
+	r.table = append(r.table, InputchRecord{
 		InputCh: r.currentInputch, At: time.Now(), Proactive: false, Text: text,
 	})
 }
 
-func (m *M) inputchTableSnapshot() []agenttypes.InputchRecord {
+func (m *M) inputchTableSnapshot() []InputchRecord {
 	r := m.st
 	if r == nil {
 		return nil
 	}
 	r.tableMu.Lock()
 	defer r.tableMu.Unlock()
-	return append([]agenttypes.InputchRecord(nil), r.table...)
+	return append([]InputchRecord(nil), r.table...)
 }
 
 func (m *M) clearInputchTable() {
@@ -1000,19 +966,11 @@ func (m *M) clearInputchTable() {
 	r.pending = nil
 }
 
-// ---- 子侧：主动向父发消息（L3） ----
-
-func (m *M) NotifyParentFrom(text string) string {
-	r := m.st
-	if r == nil || r.notifyParent == nil {
-		return "本 agent 没有上级，无法发送消息"
-	}
-	if strings.TrimSpace(text) == "" {
-		return "消息内容不能为空"
-	}
-	r.notifyParent(text)
-	return "已发送给主 agent"
-}
+// ---- 子侧：主动向父发消息 ----
+//
+// ★ 上行只有一条路：`CallParent`。曾经有个 `NotifyParentFrom` + `notify_parent`
+//   工具，与它并存 —— 两条上行路径意味着"有的消息带 level/kind，有的不带"，
+//   父侧无法统一处置。已删（用户反复裁定：父子只有两条协议）。
 
 func firstNonEmpty(a, b string) string {
 	if a != "" {
@@ -1032,15 +990,15 @@ const contextFullRatio = 0.9
 // defaultMaxContextTokens 是 provider 未报告窗口时的兜底（与 ComputeTokenBudget 一致）。
 const defaultMaxContextTokens = 32768
 
-func (rc *residentChild) info() agenttypes.ResidentInfo {
+func (rc *residentChild) info() ResidentInfo {
 	rc.mu.Lock()
 	state, full := rc.state, rc.state == "contextfull"
 	rc.mu.Unlock()
 	table := wrapOf(rc).inputchTableSnapshot()
 	// 子自己的调度器积压（per-agent 负载展示用）。schedulerStatus 只读快照，
 	// 每次状态轮询为每个子算一次，成本可忽略（驻留子数量是个位数）。
-	sc := rc.agent.SchedulerStatus()
-	info := agenttypes.ResidentInfo{
+	sc := wrapOf(rc).SchedulerStatus()
+	info := ResidentInfo{
 		ID: rc.ID, State: state, InputChs: append([]string(nil), rc.inputChs...),
 		AllowedOutputs: append([]string(nil), rc.allowed...),
 		ContextFull:    full, CreatedAt: time.Unix(0, rc.CreatedAt), TableSize: len(table),
@@ -1066,7 +1024,7 @@ func (rc *residentChild) info() agenttypes.ResidentInfo {
 }
 
 // MarshalResidentInfo 便于工具输出（单工具多视图用 JSON 视图）。
-func MarshalResidentInfo(info agenttypes.ResidentInfo) string {
+func MarshalResidentInfo(info ResidentInfo) string {
 	b, err := json.Marshal(info)
 	if err != nil {
 		return fmt.Sprintf("%+v", info)
@@ -1110,7 +1068,7 @@ func (m *M) summarizeForCompaction(text string) (string, error) {
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("没有可压缩的内容")
 	}
-	if m == nil || m.A.Provider() == nil {
+	if m == nil {
 		return "", fmt.Errorf("本 agent 没有可用的 LLM provider")
 	}
 
@@ -1135,4 +1093,62 @@ func (m *M) summarizeForCompaction(text string) (string, error) {
 		return "", fmt.Errorf("摘要器返回空内容")
 	}
 	return out, nil
+}
+
+// loadContext 从**内核传入的实例目录**恢复本实例的整窗上下文。
+//
+// ★ 驻留子的上下文归**子自己的载体**（不是父的）：它有自己的调度循环，
+//
+//	读写的是自己的 RelevanceContext。
+//
+// 目录里没有 context.json ⇒ 首次启动，正常。
+func (rc *residentChild) loadContext(dir string) error {
+	if rc == nil || rc.agent == nil || dir == "" {
+		return nil
+	}
+	p := filepath.Join(dir, contextFileName)
+	if _, err := os.Stat(p); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	m := Of(rc.agent)
+	if m == nil {
+		return nil
+	}
+	m.OpenContext()
+	if m.ctx != nil {
+		rc.ctx = m.ctx
+	}
+	return nil
+}
+
+// residentTaskOutputChannel 是"给这个驻留子投任务时，回复该走哪个输出通道"。
+//
+// 两级取法，都不留空：
+//
+//	① 父为它授权的第一个输出通道（`allowed_outputs`）
+//	② 父自己的第一个输出通道（父怎么说话，子就怎么说话）
+//
+// ★ 返回空串是**不允许**的：`outputChannelOf(evt)` 在 OutputChannel 为空时
+//
+//	会回落到 `evt.Source`（`parent/main`），那是个来源名不是通道 ——
+//	于是流式增量全被 io 丢弃（`no output device "parent/main"`）。
+//	所以必须有兜底，且兜底要从真实的通道表里取。
+func (m *M) residentTaskOutputChannel(opts ResidentOptions) string {
+	for _, ch := range opts.AllowedOutputs {
+		if ch = strings.TrimSpace(ch); ch != "" {
+			return ch
+		}
+	}
+	if m.A == nil || m.A.IO() == nil {
+		return ""
+	}
+	for _, ch := range m.A.IO().ListChannels() {
+		if ch.Type == agentIO.DeviceOutput || ch.Type == agentIO.DeviceIO {
+			return ch.Name
+		}
+	}
+	return ""
 }

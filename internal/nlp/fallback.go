@@ -3,7 +3,7 @@ package nlp
 import (
 	"strings"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/semantic"
 )
 
 // fallbackParser 使用 gojieba 分词 + POS 做降级句法分析
@@ -19,7 +19,7 @@ func (p *fallbackParser) Parse(text string) (*ParseResult, error) {
 		return &ParseResult{}, nil
 	}
 
-	x := memory.GetJieba()
+	x := semantic.GetJieba()
 	if x == nil {
 		return nil, nil
 	}

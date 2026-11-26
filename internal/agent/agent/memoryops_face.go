@@ -16,25 +16,24 @@ package agent
 // ★ 这与 artifacts.Norm 的零值语义同一纪律：缺能力时**退化**，而不是崩。
 
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
-func (a *Agent) cleanText(text string) string {
+func (a *Agent) CleanText(text string) string {
 	if a == nil || a.memOps == nil {
 		return text
 	}
 	return a.memOps.CleanText(text)
 }
 
-func (a *Agent) extractKeywords(text string) []string {
+func (a *Agent) ExtractKeywords(text string) []string {
 	if a == nil || a.memOps == nil {
 		return nil
 	}
 	return a.memOps.ExtractKeywords(text)
 }
 
-func (a *Agent) mediaBlockID(mime string, data []byte) string {
+func (a *Agent) MediaBlockID(mime string, data []byte) string {
 	if a == nil || a.memOps == nil {
 		return ""
 	}
@@ -48,7 +47,8 @@ func (a *Agent) sentenceBlockID(text string) string {
 	return a.memOps.SentenceBlockID(text)
 }
 
-func (a *Agent) parseSortMode(s string) string {
+// ParseSortMode 解析排序模式（记忆族工具用）。
+func (a *Agent) ParseSortMode(s string) string {
 	if a == nil || a.memOps == nil {
 		return "recent"
 	}
@@ -62,50 +62,19 @@ func (a *Agent) sortRecent() string {
 	return a.memOps.SortRecent()
 }
 
-func (a *Agent) situationKeys(s model.Situation) []string {
+func (a *Agent) SituationKeys(s model.Situation) []string {
 	if a == nil || a.memOps == nil {
 		return nil
 	}
 	return a.memOps.SituationKeys(s)
 }
 
-func (a *Agent) newSituation(features ...model.SituationFeature) model.Situation {
+func (a *Agent) NewSituation(features ...model.SituationFeature) model.Situation {
 	if a == nil || a.memOps == nil {
 		return model.Situation{}
 	}
 	return a.memOps.NewSituation(features...)
 }
 
-// closeGraph 关闭一个图记忆句柄（经**装配面**，未装配时退化为反射式 Close）。
-//
-// ★ 为什么走 opener 而不是直接调 `.Close()`：`kernelapi.GraphMemory` 契约里
-//
-//	没有 Close（它是"读面"）。关闭是**生命周期动作**，属于装配面
-//	（`GraphMemoryOpener.Close`）—— 谁开的谁关。
-func (a *Agent) closeGraph(m any) error {
-	if a == nil || m == nil {
-		return nil
-	}
-	if a.graphOpener != nil {
-		return a.graphOpener.Close(m)
-	}
-	if c, ok := m.(interface{ Close() error }); ok {
-		return c.Close()
-	}
-	return nil
-}
-
-// closeGraphWith 用给定的装配面关闭句柄（结构体方法里没有 *Agent 时用）。
-// CloseGraphWith 关闭一个图记忆句柄（类型包在自己装配记忆时用）。
-func CloseGraphWith(opener kernelapi.GraphMemoryOpener, m any) error {
-	if m == nil {
-		return nil
-	}
-	if opener != nil {
-		return opener.Close(m)
-	}
-	if c, ok := m.(interface{ Close() error }); ok {
-		return c.Close()
-	}
-	return nil
-}
+// ★ 已删 closeGraph / CloseGraphWith（2026-11-20）：子 agent 不再自己开库，
+//   图句柄的关闭发生在**主 agent 的 graph_close 槽内工具**里。

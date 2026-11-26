@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,36 @@ const (
 
 func (c OutputCapability) Supports(cap OutputCapability) bool {
 	return c&cap != 0
+}
+
+// capabilityByName 是**能力名 ↔ 位**的唯一映射表。
+//
+// ★ 名字是插件侧的中立词（sdk 声明的 `Capabilities`），位是内核侧类型；
+//
+//	这张表是两者之间唯一的一次转换。加第三种能力只加一行常量 + 一行表项。
+var capabilityByName = map[string]OutputCapability{
+	"text":       CapText,
+	"file":       CapFile,
+	"image":      CapImage,
+	"audio":      CapAudio,
+	"structured": CapStructured,
+	"rt":         CapRT,
+}
+
+// CapabilityByName 把中立能力名解析成能力位。
+func CapabilityByName(name string) (OutputCapability, bool) {
+	c, ok := capabilityByName[strings.ToLower(strings.TrimSpace(name))]
+	return c, ok
+}
+
+// CapabilityNames 返回全部已知能力名（错误文案用，顺序稳定）。
+func CapabilityNames() string {
+	names := make([]string, 0, len(capabilityByName))
+	for n := range capabilityByName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func (c OutputCapability) String() string {
@@ -146,6 +177,7 @@ type IOManager struct {
 	devices    map[string]Device
 	inputCh    chan *InputEvent
 	outputCh   chan *OutputEvent
+	outputOnce sync.Once
 	nextReqID  int64
 	channelReg *ChannelRegistry
 
@@ -1012,4 +1044,155 @@ func bindExecCtx(ctx context.Context, args map[string]interface{}) map[string]in
 	}
 	out[execCtxArgKey] = ctx
 	return out
+}
+
+// ChannelConsolidation 是「记忆整理」这类**自输入**的通道名。
+//
+// ★ 为什么归 io：它是**通道名**（IO 契约的一部分），不是某个类型的私有值。
+//
+//	状态机、子 agent 实现、事件循环三条线都要判它。
+const ChannelConsolidation = "_consolidation_"
+
+// PayloadKeyPriority 是优先级标记的键（"L1".."L4"）。
+const PayloadKeyPriority = "priority"
+
+// ───────────────────────── 标记（payload 键）契约 ─────────────────────────
+//
+// ★ 这些是**内核与注入方之间的契约**：键叫什么、取什么值由内核定义，
+//   **怎么解释归类型**（docs §7）。同一个 priority="L4"：
+//
+//	主 agent  抢占：取消当前 LLM + 现场入栈
+//	驻留子    高优先级入队（不挂起）
+//	rt        任何输入都覆盖当前轮（它没有"级别"概念）
+//	插件类型  插件自己的 Loop 定义
+//
+// 所以本文件只提供**取值原语**，不提供任何级别映射或中断判定。
+
+// Marks 是输入事件 payload 的标记视图（本类型只读）。
+type Marks map[string]interface{}
+
+// MarksOf 取一条 payload 的标记（nil 安全）。
+func MarksOf(payload map[string]interface{}) Marks {
+	if payload == nil {
+		return nil
+	}
+	return Marks(payload)
+}
+
+// Flag 读一个布尔标记（如 `stop` / `interrupt` / `kernel`）。
+func (m Marks) Flag(key string) bool {
+	if m == nil {
+		return false
+	}
+	v, _ := m[key].(bool)
+	return v
+}
+
+// Priority 返回**已授权**的优先级原始字符串（"L1".."L4"，空 = 非中断）。
+//
+// ★ 只有取值，没有映射：把 "L4" 翻成"第几级中断"是类型自己的策略。
+//
+//	L4→L3 的夹取发生在注入时刻（安全闸门），到这里字符串已经可信。
+func (m Marks) Priority() string {
+	if m == nil {
+		return ""
+	}
+	s, _ := m[PayloadKeyPriority].(string)
+	return s
+}
+
+// IsInterrupt 报告这条输入是否**声明了自己是中断**。
+//
+// ★ 这是"是否为中断"这个**事实**（注入方声明的），不是"该怎么处理"。
+func (m Marks) IsInterrupt() bool {
+	if m == nil {
+		return false
+	}
+	if v, ok := m["interrupt"].(bool); ok && v {
+		return true
+	}
+	return m.Priority() != ""
+}
+
+// StartOutputDispatch 启动**输出通道分发器**：把 `outputCh` 上的每条事件
+// 送到 `OutputChannel` 指向的 device handler。
+//
+// ## 为什么它必须存在（2026-11-25 实测缺口）
+//
+// `EmitOutputTo` 只是把事件塞进 `outputCh`。这条链路上**没有人消费** ——
+// 于是 docs §9.2「输出通道调用本身就是流式载体」这句话在实践中不成立：
+// 事件进队列后原地蒸发，插件的通道 handler 一次都不被调。
+//
+// ## 为什么在 io 层而不是 kernelloop
+//
+// 分发是"IO 面的实现"，不是"推动机制"：它读的是本 IOManager 自己的
+// device 表与自己的队列。`kernelloop.StartOutputConsumer` 只是**载体**
+// （随循环生命周期、可秀回收），语义仍在这里。
+//
+// idempotent：重复启动只起一个 goroutine。
+func (m *IOManager) StartOutputDispatch(stop <-chan struct{}) {
+	if m == nil {
+		return
+	}
+	m.outputOnce.Do(func() {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				case evt, ok := <-m.outputCh:
+					if !ok {
+						return
+					}
+					m.dispatchOutput(evt)
+				}
+			}
+		}()
+	})
+}
+
+// dispatchOutput 把一条输出事件交给对应通道的 handler。
+//
+// ★ 找不到通道 ⇒ 响亮记日志，**不静默丢**：那通常意味着插件没注册
+// (RegisterOutputChannel 失败) 或通道名拼错，静默丢弃会让"agent 说了话
+// 但用户看不到"变成一个无从排查的现象。
+func (m *IOManager) dispatchOutput(evt *OutputEvent) {
+	if evt == nil {
+		return
+	}
+	name := evt.OutputChannel
+	if name == "" {
+		name = evt.Target
+	}
+	if name == "" {
+		log.Printf("[io] output event without channel (target=%q type=%q) — dropped", evt.Target, evt.Type)
+		return
+	}
+	dev := m.lookupDevice(name)
+	if dev == nil && evt.Target != "" && evt.Target != name {
+		dev = m.lookupDevice(evt.Target)
+	}
+	if dev == nil {
+		log.Printf("[io] no output device %q for output event (type=%q) — dropped "+
+			"(plugin failed to RegisterOutputChannel?)", name, evt.Type)
+		return
+	}
+	// ★ handler 的入参形状沿用既有约定：payload 字段**展平**到顶层
+	//   （cli/webui 的 handler 都按 `args["payload"]` / `args["delta"]` /
+	//   `args["type"]` 读）。这是插件侧的既有契约，不能改。
+	args := make(map[string]interface{}, len(evt.Payload)+2)
+	for k, v := range evt.Payload {
+		args[k] = v
+	}
+	args["type"] = evt.Type
+	if evt.Payload != nil {
+		if p, ok := evt.Payload["payload"]; ok {
+			args["payload"] = p
+		} else if p, ok := evt.Payload["content"]; ok {
+			args["payload"] = p
+		}
+	}
+	if _, err := dev.Execute("output", args); err != nil {
+		log.Printf("[io] output device %q handler failed: %v", name, err)
+	}
 }

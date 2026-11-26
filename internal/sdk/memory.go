@@ -25,49 +25,26 @@ type MemoryBlockView struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// MemoryAPI 是内置插件使用的全量图记忆接口。
-type MemoryAPI interface {
-	pubsdk.MemoryAPI
-	// GraphData 返回整个知识图谱的完整快照。
-	GraphData() (map[string]interface{}, error)
-	// BlocksChangedSince 返回自 since 之后创建或更新过的块（供星图轻量轮询）。
-	//
-	// ★ 为何单开一个方法而不复用 GraphData：后者是全量快照（生产实测
-	//   3190 块 + 2692 边，JSON 约 3.3MB、135ms），而轮询端点只想知「有新东西」。
-	//   原先 pulse 端点是先取全量再过滤 —— 实测与全量端点同价（145ms），
-	//   「轻量端点」名不副实。库侧 SQL 过滤后响应体差两个数量级。
-	//
-	// 属内置接口（非 pubsdk），与 GraphData 同理，不影响外部插件。
-	BlocksChangedSince(since time.Time, limit int) ([]MemoryBlockView, error)
-	// MediaBytes 按**块引用**取回媒体块的字节与 MIME。
-	//
-	// ★ 这是 CAS 淘汰后插件取媒体的唯一入口：块 ID 就是媒体的身份
-	//   （内容派生 blk_media_<hash>），不再有独立的 digest 寻址层。
-	//   ref 可以是完整块 ID，也可以是唯一前缀（模型/跨进程只带短引用）。
-	//
-	// 取不到（无唯一对应块、或块无负载）时返回 (nil, "", false, nil) ——
-	// 「这个引用没有媒体」是调用方能自己处理的常态，不是错误。
-	MediaBytes(ref string) (data []byte, mime string, ok bool, err error)
-}
-
+// 纯值类型别名（插件边界上的中立形状，不是内核实现）。
 type Entity = pubsdk.Entity
 type Relation = pubsdk.Relation
 type Triple = pubsdk.Triple
-
-// TextMemoryAPI 是内置插件使用的全量文本记忆接口。
-type TextMemoryAPI interface {
-	pubsdk.TextMemoryAPI
-	// RecentEvents 返回最近 n 条记忆事件。
-	RecentEvents(n int) ([]TextEvent, error)
-	// Stats 返回文本记忆的运行统计。
-	Stats() map[string]interface{}
-}
-
 type TextEvent = pubsdk.TextEvent
+
+// ★ 已删 `MemoryAPI` / `TextMemoryAPI` / `DocMemoryAPI`（docs §12.1）。
+//
+// 插件不再有记忆面：读写记忆要么走 agent 的工具（`graph_recall` /
+// `graph_commit`），要么按公开路径规则自己开 SQLite 只读。
+// 留着这三个接口等于给"插件依赖内核实现"留一条后门。
 
 // MediaAttachment 是记忆附件（媒体）在插件边界上的表示。
 // 与公共 SDK 同一类型，内置插件与外部插件用同一套字段。
 type MediaAttachment = pubsdk.MediaAttachment
 
+// ★ `DocMemoryAPI` 在公共 SDK 里是**一篇文档的值类型**（字段：id/title/content，
+//
+//	与 `Doc` 同源），**不是**本仓删掉的那个"插件记忆面接口"。
+//	同名不同物 —— 判据里查 "DocMemoryAPI" 会命中这一行，那是正常的。
+//	真正的接口（可读可写的记忆面）已删，理由见上面那段。
 type DocMemoryAPI = pubsdk.DocMemoryAPI
 type Doc = pubsdk.Doc

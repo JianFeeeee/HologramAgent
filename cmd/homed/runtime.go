@@ -64,6 +64,20 @@ func startRuntime(ks *kstate.State, logDir string, ctx context.Context,
 		loop.StartOutputConsumer("memory-candidate", ioOutputSource{iom: iom}, outputConsumer)
 	}
 
+	// ②b **输出通道分发器**（2026-11-25 补）。
+	//
+	// ★ 为什么必须有：`EmitOutputTo` 只是把事件塞进 `outputCh`。这条链路上
+	//   此前**没有任何消费者** —— 于是 docs §9.2「输出通道调用本身就是
+	//   流式载体」在实践里不成立：事件进队列后原地蒸发，插件的通道 handler
+	//   （cli 的终端输出、webui 的 SSE、memory-candidate 之外的每一条通道）
+	//   一次都不会被调。
+	//
+	// ★ 为什么在 iom 上而不是在这里：分发读的是 iom 自己的 device 表与
+	//   自己的队列，是 IO 面的实现；循环只提供"随它生灭"的载体。
+	if iom != nil {
+		iom.StartOutputDispatch(loop.StopChan())
+	}
+
 	// ③ 各类型注册的定时任务（装配期已登记，这里统一刻度）。
 	for _, t := range periodic {
 		loop.RegisterPeriodic(t)

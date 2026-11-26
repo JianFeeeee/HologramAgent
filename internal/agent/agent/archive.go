@@ -15,7 +15,8 @@ package agent
 import "fmt"
 
 // archiveBeforeWrite 在写文件前留一份备份（返回备份路径）。
-func (a *Agent) archiveBeforeWrite(path string) (bool, error) {
+// ArchiveBeforeWrite 执行写前留档（类型在写路径上调用）。
+func (a *Agent) ArchiveBeforeWrite(path string) (bool, error) {
 	if a == nil {
 		return false, nil
 	}

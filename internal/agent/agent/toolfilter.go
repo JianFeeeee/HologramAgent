@@ -80,7 +80,8 @@ func matchToolPattern(pattern, name string) bool {
 // if 就会漏一处 —— 而漏掉的那一处正是"模型看得见禁用工具"的入口。
 //
 // 白/黑名单都为空时**原样返回**（零成本，绝大多数 agent 是这种）。
-func (a *Agent) filterToolDefsForRender(tools []interface{}) []interface{} {
+// FilterToolDefsForRender 按白/黑名单过滤工具表（渲染侧，类型调用）。
+func (a *Agent) FilterToolDefsForRender(tools []interface{}) []interface{} {
 	if a == nil || (len(a.toolAllowSet) == 0 && len(a.toolDenySet) == 0) {
 		return tools
 	}
@@ -113,4 +114,13 @@ func toolNameOfDef(raw interface{}) string {
 		return n
 	}
 	return ""
+}
+
+// ToolAllowedForRender 是对外可用的"这个工具要不要渲染进清单"判据。
+//
+// ★ 为什么导出：**类型自己的渲染面**要按同一个判据过滤（docs §6.2 第三条
+// 硬规则 —— 主 agent 在 admin_child 创建子 agent 时用参数划定暴露哪些
+// 槽内工具）。类型不能自己实现一份，否则两处判据必然漂移。
+func (a *Agent) ToolAllowedForRender(name string) bool {
+	return a.toolAllowedForRender(name)
 }

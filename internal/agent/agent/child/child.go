@@ -50,6 +50,12 @@ const (
 	KindResident Kind = "resident"
 	// KindRT 是实时通话子 agent（单槽覆盖、最新者胜、可饿死、丢现场）。
 	KindRT Kind = "rt"
+	// KindWorker 是一次性局部子 agent（干完就退役，不接通道）。
+	//
+	// ★ 加这个常量不是"骨架认识新类型"：骨架只把它当**标签**存进
+	//   `Child.Kind`（状态面/日志要可读）。真正的类型语义在
+	//   `internal/agent/worker` 自己的 Entry 实现里。
+	KindWorker Kind = "worker"
 )
 
 // Child 是一个**已建立**的子 agent 实例的公共部分。

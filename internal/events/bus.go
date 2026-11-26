@@ -18,24 +18,23 @@ import (
 type EventType = model.EventType
 
 const (
-	EventRawInput      EventType = "raw_input"
-	EventAgentOutput   EventType = "agent_output"
 	EventAgentLLMChain EventType = "agent_llm_chain"
-	EventToolCall      EventType = "tool_call"
 	EventReasoning     EventType = "reasoning"
-	EventStage         EventType = "stage"
 	// EventScheduler 是输入调度器的状态变更事件（抢占/挂起/恢复），
 	// 供状态页与诊断订阅（设计文档 §11 O2）。
 	EventScheduler      EventType = "scheduler"
 	EventSystem         EventType = "system"
 	EventTerminalOutput EventType = "terminal_output"
 
-	// 流式增量事件（LLM token 级）：核心改为流式后每收到一个增量块发布。
-	// 订阅者可选订；不认识的旧订阅者自然忽略（Bus 按 EventType 精确匹配分发）。
-	// 聚合事件 EventReasoning / EventAgentLLMChain 仍照常在每轮结束时全文发布，
-	// 插件体系行为不变。
-	EventReasoningDelta EventType = "reasoning_delta"
-	EventContentDelta   EventType = "content_delta"
+	// ★ 已删六个事件类型（2026-11-25，docs §9.5 第 3 条）：
+	//
+	//	EventRawInput    → on_input 阶段钩子（RawMessage / UserID / GroupID / Extra）
+	//	EventAgentOutput → before_output / after_output 阶段 + EmitOutputTo 本身
+	//	EventStage       → 各插件自己在 stage handler 里通知自己的客户端
+	//	EventContentDelta    → 输出通道逐 chunk 调用（payload{"delta": true}）
+	//	EventReasoningDelta  → 同上（payload{"kind": "reasoning"}）
+	//
+	// 判据：它们是 agent 状态，不是内核事实。总线只服务**内核模块之间**。
 
 	// skill_detected：clawhubadapter（OpenClaw 兼容层）扫描 skills 目录时
 	// 发现纯 SKILL 类型插件后发布，由原生 skillmgr 插件订阅并接管注册。

@@ -15,46 +15,19 @@ package agent
 // （api.ToolHost），拿不到 Agent 内部字段，也就绕过不了这条链。
 
 import (
-	"sort"
-
-	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 )
 
 // ToolDefinitions 实现 api.ToolHost：返回当前可见的工具定义。
 //
-// ★ 复用 buildToolDefs 的同一批生成逻辑 —— 两处各写一份必然漂移
-// （历史上就出现过"模型看得到但插件查不到"的两套语义）。
-func (a *Agent) ToolDefinitions() []api.ToolDefinition {
-	if a == nil {
+// ★ 渲染归类型：基座只调类型注册的只读面（`AgentConfig.ToolDefs`）。
+//
+//	两处各写一份必然漂移 —— 历史上出现过"模型看得到但插件查不到"。
+func (a *Agent) ToolDefinitions() []agentAPI.ToolDefinition {
+	if a == nil || a.toolDefsFace() == nil {
 		return nil
 	}
-	raw := a.BuildToolDefs()
-	out := make([]api.ToolDefinition, 0, len(raw))
-	for _, item := range raw {
-		m, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		fn, ok := m["function"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		name, _ := fn["name"].(string)
-		if name == "" {
-			continue
-		}
-		desc, _ := fn["description"].(string)
-		out = append(out, api.ToolDefinition{
-			Name:        name,
-			Description: desc,
-			// 并发资格与超时**不在这里重算**：它们由 argvalidate.go 的
-			// batchRunnable / resolveToolTimeout 统一判定（单一事实来源）。
-			ParallelSafe: a.ToolParallelSafe(name),
-			Timeout:      "",
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return a.toolDefsFace()()
 }
 
 // ExecuteTool 实现 api.ToolHost：走完整执行链执行一次工具调用。
@@ -65,11 +38,20 @@ func (a *Agent) ExecuteTool(name string, args map[string]interface{}) (string, e
 	if a == nil {
 		return "", errNoAgentForDevice
 	}
-	return a.ExecuteToolCall(api.ToolCall{
-		ID:        "device_" + name,
-		Name:      name,
-		Arguments: args,
-	}, a.DefaultChannelForBuiltin()), nil
+	// ★ 走**同一条执行链**：与本 agent 的模型发起工具调用完全一致
+	//   （路由 → 安全闸 → 并发 → 超时/取消 → 恢复 → 脱敏 → 审查）。
+	//
+	// 曾经这里是 `registry.DispatchTool` 直调：于是经 device/ToolAPI 的调用
+	// **绕过了安全闸**（D4 实测缺口：cli 插件的 /terminal 就直接经它调工具）。
+	// 现在统一入口，判据 TestCanUseAgreesWithInnerPath 钉住两条路一致。
+	results := a.RunToolBatch([]ToolCall{{
+		ID: "device_" + name, Name: name, Arguments: args,
+		// 通道用内置标记：工具执行本身不产出"用户可见输出"。
+	}}, BatchOpts{Channel: DefaultChannelForBuiltin()})
+	if len(results) == 0 {
+		return "", errNoAgentForDevice
+	}
+	return results[0].Text, nil
 }
 
 // MountDevice 挂载 device 数据面。
@@ -78,23 +60,20 @@ func (a *Agent) ExecuteTool(name string, args map[string]interface{}) (string, e
 // kernelmod/device 的具体类型 —— 否则 core ↔ kernelboot ↔ device 会成环。
 //
 // 幂等：重复挂载只覆盖（装配期可能因重建 Agent 而重挂）。
-func (a *Agent) MountDevice(d api.DeviceSurface) {
+func (a *Agent) MountDevice(d agentAPI.DeviceSurface) {
 	if a == nil {
 		return
 	}
-	// 挂载同时接上路由适配器：device 由此拿到"选族后调谁"。
-	//
-	// ★ 适配器只在类型**没注册自己的**内部工具时兜底（裸 agent / 单测）。
-	if a.builtinTools == nil {
-		a.builtinTools = builtinHandlers{a: a}
-	}
+	// ★ 这里**不构造**族适配器：内置工具族（memory/social/doc/persona/plugin…）
+	//   是**类型自己的能力**，由类型在装配期用 `SetBuiltinTools` 注册。
+	//   没注册 ⇒ 该族在这台内核上不可用（明确的装配事实）。
 	a.deviceMu.Lock()
 	a.device = d
 	a.deviceMu.Unlock()
 }
 
 // Device 返回已挂载的数据面（未挂载时为 nil）。
-func (a *Agent) Device() api.DeviceSurface {
+func (a *Agent) Device() agentAPI.DeviceSurface {
 	if a == nil {
 		return nil
 	}
@@ -116,7 +95,7 @@ func (e *deviceHostErr) Error() string { return e.msg }
 //
 //	主 agent 注册 memory/persona/social/doc/secret/output/plugin 七族；
 //	驻留子可能只注册其中两三族。基座只按接口调用，不认识谁实现了什么。
-func (a *Agent) SetBuiltinTools(h api.BuiltinToolHandlers) {
+func (a *Agent) SetBuiltinTools(h agentAPI.BuiltinToolHandlers) {
 	if a == nil {
 		return
 	}
@@ -124,50 +103,9 @@ func (a *Agent) SetBuiltinTools(h api.BuiltinToolHandlers) {
 }
 
 // BuiltinTools 返回当前注册的族处理器（未注册 ⇒ 兜底适配器）。
-func (a *Agent) BuiltinTools() api.BuiltinToolHandlers {
+func (a *Agent) BuiltinTools() agentAPI.BuiltinToolHandlers {
 	if a == nil {
 		return nil
 	}
 	return a.builtinTools
-}
-
-// builtinHandlers 把 Agent 的族处理器暴露成 api.BuiltinToolHandlers。
-//
-// 为什么用适配器而不是把 Agent 的方法全部导出：
-//   - 导出只会让"谁都能调内置工具"，绕过 executeToolCall 的授权闸
-//   - 适配器只在 core 内部构造，然后交给 device 的路由层
-type builtinHandlers struct{ a *Agent }
-
-func (h builtinHandlers) ExecutePersonaTool(tc api.ToolCall) string {
-	return h.a.executePersonaTool(tc)
-}
-func (h builtinHandlers) ExecuteMemoryTool(tc api.ToolCall, scenes []string) string {
-	return h.a.executeMemoryTool(tc, scenes)
-}
-func (h builtinHandlers) ExecuteSocialTool(tc api.ToolCall) string {
-	return h.a.executeSocialTool(tc)
-}
-func (h builtinHandlers) ExecuteColdContextTool(tc api.ToolCall) string {
-	return h.a.executeDocTool(tc)
-}
-func (h builtinHandlers) ExecuteSecretTool(tc api.ToolCall) string {
-	return h.a.executeSecretTool(tc)
-}
-func (h builtinHandlers) ExecuteOutputSendHelp(tc api.ToolCall) string {
-	return h.a.executeOutputSendHelp(tc)
-}
-func (h builtinHandlers) ExecuteOutputSend(tc api.ToolCall) string {
-	return h.a.executeOutputSendTool(tc)
-}
-func (h builtinHandlers) ExecuteOutputListChannels() string {
-	return h.a.executeOutputListChannels()
-}
-func (h builtinHandlers) ExecuteInputChannels(tc api.ToolCall) string {
-	return h.a.ExecuteInputChannels(tc)
-}
-func (h builtinHandlers) ExecutePluginReload() string {
-	return h.a.executePluginReload()
-}
-func (h builtinHandlers) ExecuteGetPluginTools(pluginName string) string {
-	return h.a.ExecuteGetPluginTools(pluginName)
 }

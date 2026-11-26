@@ -22,6 +22,43 @@ type Plugin interface {
 	Stop() error
 }
 
+// ── 子 agent 类型注册（内置插件专用）──
+//
+// ★ 全部转发到公开 SDK 的中立契约：内置插件只需要认识 `sdk.AgentTypeDef`
+//
+//	这一套**抽象接口**（回调 + 声明），不认识内核的 `*agent.Agent`。
+//	组装在内核侧做（`kernelmod/agenttype`）。
+type AgentTypeDef = pubsdk.AgentTypeDef
+type AgentTypeAction = pubsdk.AgentTypeAction
+type AgentTypeSpec = pubsdk.AgentTypeSpec
+type AgentTypeAPI = pubsdk.AgentTypeAPI
+type AgentTypeRegistrar = pubsdk.AgentTypeRegistrar
+type AgentTypeUnregistrar = pubsdk.AgentTypeUnregistrar
+type AgentRuntime = pubsdk.AgentRuntime
+type AgentFrame = pubsdk.AgentFrame
+type AgentLoopFunc = pubsdk.AgentLoopFunc
+type AgentAdminFunc = pubsdk.AgentAdminFunc
+type AgentHelpFunc = pubsdk.AgentHelpFunc
+type AgentOutcome = pubsdk.AgentOutcome
+
+const (
+	SchedulerNone     = pubsdk.SchedulerNone
+	SchedulerStandard = pubsdk.SchedulerStandard
+
+	ContextNone      = pubsdk.ContextNone
+	ContextWindow    = pubsdk.ContextWindow
+	ContextRelevance = pubsdk.ContextRelevance
+
+	MemoryNone  = pubsdk.MemoryNone
+	MemoryLight = pubsdk.MemoryLight
+	MemoryFull  = pubsdk.MemoryFull
+
+	AgentOutcomeDone      = pubsdk.AgentOutcomeDone
+	AgentOutcomeContinue  = pubsdk.AgentOutcomeContinue
+	AgentOutcomeSuspended = pubsdk.AgentOutcomeSuspended
+	AgentOutcomeFailed    = pubsdk.AgentOutcomeFailed
+)
+
 type ToolHandler = pubsdk.ToolHandler
 type StageHandler = pubsdk.StageHandler
 
@@ -31,6 +68,7 @@ const (
 	StageOnInput        = pubsdk.StageOnInput
 	StagePreAction      = pubsdk.StagePreAction
 	StagePostAction     = pubsdk.StagePostAction
+	StageOnToolcall     = pubsdk.StageOnToolcall
 	StageBeforeToolcall = pubsdk.StageBeforeToolcall
 	StageAfterToolcall  = pubsdk.StageAfterToolcall
 	StageBeforeOutput   = pubsdk.StageBeforeOutput
@@ -188,9 +226,6 @@ type PluginSDK struct {
 	// 不带身份会被当成内核内部而一律放行，等于给所有插件开了伪造后门。
 	name       string
 	settings   SettingsAPI
-	memory     MemoryAPI
-	textMem    TextMemoryAPI
-	docMem     DocMemoryAPI
 	know       KnowledgeAPI
 	multimodal kernelapi.MultimodalSpace
 	llm        LLMAPI
@@ -207,7 +242,6 @@ type PluginSDK struct {
 	tracker    TrackerAPI
 	config     ConfigAPI
 	tool       ToolAPI
-	indexer    IndexerAPI
 
 	selftestMu sync.Mutex
 	selftest   *VirtualInstance
@@ -223,10 +257,7 @@ func (s *PluginSDK) Settings() SettingsAPI { return s.settings }
 //
 // 与直接拿 *events.Bus 的区别：只能发布白名单类型或自己的命名空间
 // （`plugin.<name>.*`），载荷出向经 security 过闸，订阅只开只读事件。
-func (s *PluginSDK) Events() pubsdk.EventsAPI  { return s.events }
-func (s *PluginSDK) Memory() MemoryAPI         { return s.memory }
-func (s *PluginSDK) TextMemory() TextMemoryAPI { return s.textMem }
-func (s *PluginSDK) DocMemory() DocMemoryAPI   { return s.docMem }
+func (s *PluginSDK) Events() pubsdk.EventsAPI { return s.events }
 
 // Knowledge 返回知识库能力。
 //
@@ -411,9 +442,6 @@ type SDKConfig struct {
 	// ★ 为什么经 SDK 给：向量空间是**共享基础设施**，插件要用它不该知道
 	//   内核怎么装配（onnx 模块 / 配置键 / 关闭时机都在内核侧）。
 	Multimodal kernelapi.MultimodalSpace
-	Memory     MemoryAPI
-	TextMemory TextMemoryAPI
-	DocMemory  DocMemoryAPI
 	Knowledge  KnowledgeAPI
 	LLM        LLMAPI
 	Settings   SettingsAPI
@@ -421,15 +449,21 @@ type SDKConfig struct {
 	// Security 是**策略声明面**（插件声明安全档位；判定由内核执行）。
 	//
 	// ★ 只声明、不判定：本接口没有 CheckTool 之类的方法 —— 那属于内核。
-	Security       pubsdk.SecurityAPI
-	RawFiles       pubsdk.RawFilesAPI
-	RegTool        ToolRegistrar
-	RegStage       StageRegistrar
-	RegAPI         APIRegistrar
-	RegOutput      OutputChannelRegistrar
-	RegOutputUnreg OutputChannelUnregistrar
-	RegInput       InputChannelRegistrar
-	PluginMgr      PluginManager
+	Security pubsdk.SecurityAPI
+	RawFiles pubsdk.RawFilesAPI
+	RegTool  ToolRegistrar
+	RegStage StageRegistrar
+	// RegAgentType / RegAgentTypeUnreg 是**子 agent 类型注册面**（内置插件专用）。
+	//
+	// 装配侧注入；nil ⇒ 插件的 AgentTypes().Register 响亮失败
+	// （外部插件结构上无法注册类型：载荷要携带 Go 函数值）。
+	RegAgentType      AgentTypeRegistrar
+	RegAgentTypeUnreg AgentTypeUnregistrar
+	RegAPI            APIRegistrar
+	RegOutput         OutputChannelRegistrar
+	RegOutputUnreg    OutputChannelUnregistrar
+	RegInput          InputChannelRegistrar
+	PluginMgr         PluginManager
 	// KernelControl 是内核重启/关机通道（WebUI 用）。nil = 未接该能力。
 	KernelControl KernelControlAPI
 
@@ -439,7 +473,6 @@ type SDKConfig struct {
 	Tracker    TrackerAPI
 	Config     ConfigAPI
 	Tool       ToolAPI
-	Indexer    IndexerAPI
 }
 
 func New(name string, cfg SDKConfig) *PluginSDK {
@@ -459,6 +492,8 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	if cfg.RawFiles != nil {
 		base.SetRawFilesAPI(cfg.RawFiles)
 	}
+	// ★ 子 agent 类型注册面（内置插件专用）。注入即启用。
+	base.SetAgentTypeRegistrar(cfg.RegAgentType, cfg.RegAgentTypeUnreg)
 	// 反代声明收集：内置插件（无 plugin.json）在 Start 里用 RegisterProxy
 	// 声明自己的服务，落到本包的登记表；外部插件走 plugin.json 自动发现。
 	base.SetProxyRegistrar(func(svc string, d pubsdk.ProxyDef) { RegisterBuiltinProxy(name, svc, d) })
@@ -479,9 +514,6 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 	if cfg.RegOutputUnreg != nil {
 		base.SetOutputChannelUnregistrar(cfg.RegOutputUnreg)
 	}
-	base.SetMemoryAPI(cfg.Memory)
-	base.SetTextMemoryAPI(cfg.TextMemory)
-	base.SetDocMemoryAPI(cfg.DocMemory)
 	base.SetKnowledgeAPI(cfg.Knowledge)
 	base.SetLLMAPI(cfg.LLM)
 	if cfg.KernelControl != nil {
@@ -491,9 +523,6 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 		PluginSDK:  base,
 		name:       name,
 		settings:   cfg.Settings,
-		memory:     cfg.Memory,
-		textMem:    cfg.TextMemory,
-		docMem:     cfg.DocMemory,
 		know:       cfg.Knowledge,
 		multimodal: cfg.Multimodal,
 		llm:        cfg.LLM,
@@ -510,7 +539,6 @@ func New(name string, cfg SDKConfig) *PluginSDK {
 		tracker:    cfg.Tracker,
 		config:     cfg.Config,
 		tool:       cfg.Tool,
-		indexer:    cfg.Indexer,
 	}
 }
 
@@ -556,7 +584,6 @@ func (s *PluginSDK) Adapter() AdapterAPI       { return s.adapter }
 func (s *PluginSDK) Tracker() TrackerAPI       { return s.tracker }
 func (s *PluginSDK) Config() ConfigAPI         { return s.config }
 func (s *PluginSDK) Tool() ToolAPI             { return s.tool }
-func (s *PluginSDK) Indexer() IndexerAPI       { return s.indexer }
 
 func (s *PluginSDK) InjectInput(source, channel, eventType string, payload map[string]interface{}) {
 	if s.iom != nil {

@@ -21,14 +21,29 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
 
-// completeLLMNoRetry 与 completeLLM 相同，但关闭同源瞬时错误重试。
+// CompleteLLM 走**内核 LLM 设施**做一次非流式补全。
+//
+// ★ 类型只调这一个（或 StreamLLM），不许碰 `a.LLM()` / `a.Provider()`。
+// 回退链、同源重试、可用性标记、活动源、错误分类全在设施内部。
+func (a *Agent) CompleteLLM(ctx context.Context, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+	return a.completeLLM(ctx, req, false)
+}
+
+// CompleteLLMNoRetry 同上，但关闭同源瞬时错误重试。
+//
+// 短生命周期的子任务用它：重试只会把一个已经抖动的时间窗拉长。
 func (a *Agent) CompleteLLMNoRetry(ctx context.Context, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+	return a.completeLLM(ctx, req, true)
+}
+
+// completeLLM 是两条补全入口的唯一实现。
+func (a *Agent) completeLLM(ctx context.Context, req *agentAPI.CompletionRequest, noRetry bool) (*agentAPI.CompletionResponse, error) {
 	if a.llm != nil {
 		return a.llm.Complete(ctx, &kernelapi.LLMRequest{
 			AgentID:   string(a.id),
-			Preferred: a.preferredProvider,
+			Preferred: a.PreferredProvider(),
 			Request:   req,
-			NoRetry:   true,
+			NoRetry:   noRetry,
 		})
 	}
 	if a.provider == nil {
@@ -41,7 +56,9 @@ func (a *Agent) CompleteLLMNoRetry(ctx context.Context, req *agentAPI.Completion
 	return resp, nil
 }
 
-// streamLLM 建立一条流（RT 的路径）。
+// StreamLLM 建立一条流（类型的唯一流式入口）。
+//
+// 与 CompleteLLM 同构：候选链、回退、标记都在设施内部。
 //
 // ★ 与 `completeLLM` 同构：候选链、回退、标记都在设施内部。
 //
@@ -51,7 +68,7 @@ func (a *Agent) streamLLM(ctx context.Context, req *agentAPI.CompletionRequest) 
 	if a.llm != nil {
 		return a.llm.Stream(ctx, &kernelapi.LLMRequest{
 			AgentID:   string(a.id),
-			Preferred: a.preferredProvider,
+			Preferred: a.PreferredProvider(),
 			Request:   req,
 			NoRetry:   true,
 		})
@@ -66,8 +83,61 @@ func (a *Agent) streamLLM(ctx context.Context, req *agentAPI.CompletionRequest) 
 	return ch, nil
 }
 
+// LLMMaxContextTokens 返回当前源的上下文窗口（0 = 未知）。
+//
+// ★ 类型算 token 预算要它。窗口是源的属性，源表归内核，基座只转发。
+func (a *Agent) LLMMaxContextTokens() int {
+	if a.llm != nil {
+		return a.llm.MaxContextTokens()
+	}
+	if a.provider != nil {
+		return a.provider.MaxContextTokens()
+	}
+	return 0
+}
+
+// LLMSources 返回候选源快照（名字/声明能力/可用性）。
+//
+// ★ 类型按能力挑源时读它（主模型看不了图 ⇒ 换一个声明了 vision 的源），
+// 然后把自己的选择放进 `CompletionRequest.Source`。类型不碰 ProviderManager。
+// 未装配设施 ⇒ 只有一条源（裸 agent / 单测），能力靠类型断言。
+func (a *Agent) LLMSources() []kernelapi.LLMSourceInfo {
+	if a.llm != nil {
+		return a.llm.Sources()
+	}
+	if a.provider == nil {
+		return nil
+	}
+	name := a.provider.Name()
+	return []kernelapi.LLMSourceInfo{{
+		Name:      name,
+		Vision:    agentAPI.ProviderSupportsVision(a.provider),
+		Audio:     agentAPI.ProviderSupportsAudio(a.provider),
+		Available: true,
+	}}
+}
+
+// LLMSourceSupports 回答"当前活动源声明了这个能力吗"（kind: image / audio）。
+//
+// 快照里找不到活动源（尚未调用过 / 单源裸装配）⇒ false：
+// 宁可多走一次回退，也不要让主模型收下一个它看不懂的块。
+func (a *Agent) LLMSourceSupports(kind string) bool {
+	active := a.ActiveLLMSource()
+	for _, si := range a.LLMSources() {
+		if si.Name != active {
+			continue
+		}
+		if kind == "audio" {
+			return si.Audio
+		}
+		return si.Vision
+	}
+	return false
+}
+
 // activeLLMSource 返回**当前活动源**（内核的事实；空 = 尚未成功调用过）。
-func (a *Agent) activeLLMSource() string {
+// ActiveLLMSource 返回当前活动 LLM 源名（类型诊断用）。
+func (a *Agent) ActiveLLMSource() string {
 	if a.llm == nil {
 		if a.provider != nil {
 			return a.provider.Name()
@@ -78,8 +148,8 @@ func (a *Agent) activeLLMSource() string {
 		return name
 	}
 	// 设施还没记过 ⇒ 用配置里的默认/优先源（状态面要能回答"打算用哪个"）。
-	if a.preferredProvider != "" {
-		return a.preferredProvider
+	if a.PreferredProvider() != "" {
+		return a.PreferredProvider()
 	}
 	if a.provider != nil {
 		return a.provider.Name()

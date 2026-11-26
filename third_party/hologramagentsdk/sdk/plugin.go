@@ -60,9 +60,20 @@ type StageHandler func(ctx *StageContext) error
 type Stage string
 
 const (
-	StageOnInput        Stage = "on_input"
-	StagePreAction      Stage = "pre_action"
-	StagePostAction     Stage = "post_action"
+	StageOnInput    Stage = "on_input"
+	StagePreAction  Stage = "pre_action"
+	StagePostAction Stage = "post_action"
+	// StageOnToolcall 是**内核执行链**驱动的工具阶段：内核在真正执行每个
+	// 工具**之前**触发，把「正在执行的工具调用 + 它的参数」推给注册方。
+	//
+	// ★ 与 before/after_toolcall 的区别：那两个是**围绕执行**的前后钩子
+	//   （可以改写、可以拦下）；本阶段推的是**执行事实**——它已经进了内核
+	//   执行链（路由/授权/超时/清洗都在跑），注册方看到的是正在发生的事。
+	//
+	// ★ 为什么由内核驱动而不是 agentloop：工具执行链在内核里
+	//   （toolroute → security → device → 清洗）。只有那条链知道自己手里
+	//   正握着哪一个工具，agentloop 只提交批请求、拿回结果。
+	StageOnToolcall     Stage = "on_toolcall"
 	StageBeforeToolcall Stage = "before_toolcall"
 	StageAfterToolcall  Stage = "after_toolcall"
 	StageBeforeOutput   Stage = "before_output"
@@ -664,6 +675,8 @@ type PluginSDK struct {
 	sysPrompt      SystemPromptAPI
 	rawFiles       RawFilesAPI
 	events         EventSubscriber
+	regAgentType   AgentTypeRegistrar
+	unregAgentType AgentTypeUnregistrar
 	plgMgr         PluginMgrAPI
 	kernelCtl      KernelControlAPI
 
@@ -805,6 +818,65 @@ func (s *PluginSDK) Social() SocialAPI {
 }
 
 // Events returns the event subscriber for listening to kernel events (may be nil if not available).
+// AgentTypes 返回**子 agent 类型注册面**（内置插件专用）。
+//
+// ★ 只有内置插件（线程化、同地址空间）能真正注册成功：
+//
+//	载荷要携带真正的 Go 函数值，跨进程插件结构上送不进。
+//	内核侧还会再查一次 IsBuiltinPlugin（运行期事实，静态策略表表达不了）。
+func (s *PluginSDK) AgentTypes() AgentTypeAPI {
+	return agentTypeAPI{s: s}
+}
+
+// SetAgentTypeRegistrar 由**运行时**注入注册口（插件业务代码不用调它）。
+func (s *PluginSDK) SetAgentTypeRegistrar(r AgentTypeRegistrar, u AgentTypeUnregistrar) {
+	s.apiMu.Lock()
+	s.regAgentType = r
+	s.unregAgentType = u
+	s.apiMu.Unlock()
+}
+
+// AgentTypeAPI 是 s.AgentTypes() 返回的注册面。
+type AgentTypeAPI interface {
+	// Register 登记一个子 agent 类型（含特化的 agentloop）。
+	Register(def AgentTypeDef) error
+	// Unregister 撤销（仍有存活实例 ⇒ 拒绝并列出 id）。
+	Unregister(typeName string) error
+}
+
+// agentTypeAPI 是 AgentTypeAPI 的实现（转发到注入的 registrar）。
+type agentTypeAPI struct{ s *PluginSDK }
+
+func (a agentTypeAPI) Register(def AgentTypeDef) error {
+	a.s.apiMu.RLock()
+	reg := a.s.regAgentType
+	a.s.apiMu.RUnlock()
+	if reg == nil {
+		// 未注入 = 宿主不支持（外部插件 / 裁剪版内核）。响亮失败，不静默。
+		return errAgentTypeUnavailable
+	}
+	// 声明者身份由**运行时**补（插件不该能冒充别的插件）。
+	return reg(def)
+}
+
+func (a agentTypeAPI) Unregister(typeName string) error {
+	a.s.apiMu.RLock()
+	unreg := a.s.unregAgentType
+	a.s.apiMu.RUnlock()
+	if unreg == nil {
+		return errAgentTypeUnavailable
+	}
+	return unreg(typeName)
+}
+
+// errAgentTypeUnavailable 表示宿主不提供类型注册面。
+var errAgentTypeUnavailable = errTypeUnavailable("子 agent 类型注册不可用：宿主未注入注册面" +
+	"（外部插件结构上无法注册类型 —— 载荷需要携带 Go 函数值）")
+
+type errTypeUnavailable string
+
+func (e errTypeUnavailable) Error() string { return string(e) }
+
 func (s *PluginSDK) Events() EventSubscriber {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()

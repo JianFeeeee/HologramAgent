@@ -19,10 +19,9 @@ package mainagent
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 )
 
-// Loop 是标准同步 loop 的注册入口（基座把它填进 `Hooks.Loop`）。
-func Loop(a *agent.Agent, f *agenttypes.Frame) agenttypes.Outcome {
-	return agent.RunTaskSteps(a, f)
+// Loop 是标准同步 loop 的注册入口（基座把它填进 `agent.Hooks.Loop`）。
+func Loop(a *agent.Agent, f *TaskFrame) Outcome {
+	return RunTaskSteps(a, f)
 }

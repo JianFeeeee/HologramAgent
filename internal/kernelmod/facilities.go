@@ -9,7 +9,7 @@ import (
 //
 // ★ 全部转发到 internal/kernelapi：设施名与能力的**接口定义**必须在同一个
 // 叶子上（消费方 import 接口包就够了），而本包 import kernelboot（agent 子包
-// 不许依赖它）。转发常量让既有 `kernelmod.FacMemory` 写法逐字不变。
+// 不许依赖它）。转发常量的目的：消费方写 `kernelmod.FacXxx` 而不是裸字符串。
 //
 // ★ 为什么用常量而不是裸字符串：拼错依赖名时**编译不过**，而不是"永远等不到
 // 就绪"（运行期表现是静默挂起 / 静默拿到 nil，极难排查）。
@@ -18,19 +18,19 @@ import (
 // 那是插件的对外契约（`requires_facilities`）。CI 门禁守这个一致性。
 const (
 	// ── 插件可依赖的设施（与公开 SDK 的 sdk.Facility* 逐字一致） ──
-	FacConfig        = kernelapi.FacConfig
-	FacKernelIO      = kernelapi.FacKernelIO
-	FacMemory        = kernelapi.FacMemory
-	FacLua           = kernelapi.FacLua
-	FacSupervisor    = kernelapi.FacSupervisor
-	FacTracker       = kernelapi.FacTracker
-	FacTextMem       = kernelapi.FacTextMem
-	FacLLM           = kernelapi.FacLLM
-	FacLLMClient     = kernelapi.FacLLMClient
-	FacDocStore      = kernelapi.FacDocStore
-	FacMultimodal    = kernelapi.FacMultimodal
-	FacONNX          = kernelapi.FacONNX
-	FacStageHost     = kernelapi.FacStageHost
+	FacConfig     = kernelapi.FacConfig
+	FacKernelIO   = kernelapi.FacKernelIO
+	FacLua        = kernelapi.FacLua
+	FacSupervisor = kernelapi.FacSupervisor
+	FacTracker    = kernelapi.FacTracker
+	FacLLM        = kernelapi.FacLLM
+	FacLLMClient  = kernelapi.FacLLMClient
+	FacMultimodal = kernelapi.FacMultimodal
+	FacEmbedder   = kernelapi.FacEmbedder
+	FacONNX       = kernelapi.FacONNX
+	FacStageHost  = kernelapi.FacStageHost
+	// FacToolReg 是**插件工具登记簿**（tool-reg 模块提供，2026-11-25 拆出）。
+	FacToolReg       = kernelapi.FacToolReg
 	FacAgent         = kernelapi.FacAgent
 	FacAgentRegistry = kernelapi.FacAgentRegistry
 	FacAgentIndex    = kernelapi.FacAgentIndex
@@ -50,6 +50,12 @@ const (
 	// 需要按版本行事的模块（healthcheck 上报版本、pluginhost 判插件兼容性）
 	// 应 Requires 它，否则可能读到升级前那个已被回滚的版本。
 	FacVersion = "kernel.version"
+
+	// FacSyncBus 是内核就绪状态总线（kernelboot 提供）。
+	//
+	// ★ 消费方用它等"插件就绪"（PluginsReady），而不是靠模块层序 ——
+	//   插件加载发生在 KernelComplete 之后，与模块装配不同步。
+	FacSyncBus = kernelapi.FacSyncBus
 
 	// FacSecurity 是**安全防火墙**设施（security 模块提供）。
 	//

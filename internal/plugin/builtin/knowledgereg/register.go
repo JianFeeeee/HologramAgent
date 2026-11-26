@@ -10,9 +10,13 @@
 package knowledgereg
 
 import (
+	"database/sql"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	_ "github.com/mattn/go-sqlite3"
+	"path/filepath"
+	"strings"
 )
 
 func init() {
@@ -69,12 +73,61 @@ func (h hostAdapter) Settings() knowledge.Settings { return settingsAdapter{st: 
 
 func (h hostAdapter) Status() knowledge.Status { return statusAdapter{st: h.sdk.Status()} }
 
+// Media 返回媒体字节的取回面。
+//
+// ★ 插件自己按公开路径规则读库（docs §12.1）：不再从 sdk.Memory 拿句柄。
+//
+//	路径：<data_dir>/memory/graph.db，块 ID 前缀定位（至少 12 字符）。
 func (h hostAdapter) Media() knowledge.MediaSource {
-	mem := h.sdk.Memory()
-	if mem == nil {
+	dir := ""
+	if h.sdk != nil && h.sdk.Settings() != nil {
+		dir = h.sdk.Settings().DataDir()
+	}
+	if dir == "" {
 		return nil
 	}
-	return mem
+	return mediaReader{dataDir: dir}
+}
+
+// mediaReader 是 knowledge 插件自己的媒体读取实现。
+type mediaReader struct{ dataDir string }
+
+func (m mediaReader) MediaBytes(ref string) ([]byte, string, bool, error) {
+	ref = strings.TrimSpace(ref)
+	if len(ref) < 12 {
+		return nil, "", false, nil
+	}
+	path := filepath.Join(m.dataDir, "memory", "graph.db")
+	db, err := sql.Open("sqlite3", path+"?mode=ro&_journal_mode=WAL")
+	if err != nil {
+		return nil, "", false, err
+	}
+	defer db.Close()
+	var id, mime string
+	rows, qerr := db.Query(`SELECT id, COALESCE(mime,'') FROM memory_blocks WHERE id LIKE ? LIMIT 2`, ref+"%")
+	if qerr != nil {
+		return nil, "", false, qerr
+	}
+	n := 0
+	for rows.Next() {
+		if err := rows.Scan(&id, &mime); err != nil {
+			rows.Close()
+			return nil, "", false, err
+		}
+		n++
+	}
+	rows.Close()
+	if n != 1 {
+		return nil, "", false, nil
+	}
+	var data []byte
+	if err := db.QueryRow(`SELECT data FROM memory_blocks WHERE id = ?`, id).Scan(&data); err != nil {
+		return nil, "", false, err
+	}
+	if len(data) == 0 {
+		return nil, "", false, nil
+	}
+	return data, mime, true, nil
 }
 
 func (h hostAdapter) Multimodal() knowledge.VectorSpace {

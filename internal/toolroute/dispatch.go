@@ -55,10 +55,15 @@ func Dispatch(h api.BuiltinToolHandlers, tc api.ToolCall, turnScenes []string) (
 		return h.ExecuteOutputListChannels(), true
 	case tc.Name == "input_channels":
 		return h.ExecuteInputChannels(tc), true
-	// ★ 子 agent 管理面与 spawn_child / notify_parent / inputch_note 等
-	//   **都不在这张表里**：它们由各自的注册者登记到 registry，
+	// ★ 子 agent 管理面（admin_child 族）
+	//   不在本表里：它由注册者登记到 registry，
 	//   分发由 registry.DispatchTool 完成（见 agent/toolcall.go）。
 	//   本模块只保留"device 拥有的族"—— 记忆/知识/文档/人格/安全/输出通道。
+	// ★ `llm_*` 族（读 AgentConfig.LLM / ProviderManager）。
+	//   此前路由表里没有它 ⇒ 基座有 ExecuteLLMTool 却没人调
+	//   ⇒ llm_list_sources / llm_set_source 落到兜底"不存在或未注册"。
+	case strings.HasPrefix(tc.Name, "llm_"):
+		return h.ExecuteLLMTool(tc), true
 	case tc.Name == "plgreload":
 		return h.ExecutePluginReload(), true
 	case tc.Name == "get_plugin_tools":

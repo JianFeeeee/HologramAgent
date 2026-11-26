@@ -8,8 +8,6 @@ package resident
 
 import (
 	"sync"
-
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 )
 
 // state 是驻留子的运行状态（inputch 处理表 / contextfull 去重 / 上报通路）。
@@ -25,7 +23,7 @@ type state struct {
 
 	// tableMu 保护处理表（子持有，父 pull）。
 	tableMu        sync.Mutex
-	table          []agenttypes.InputchRecord
-	pending        *agenttypes.InputchRecord
+	table          []InputchRecord
+	pending        *InputchRecord
 	currentInputch string
 }

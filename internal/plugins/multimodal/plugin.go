@@ -33,8 +33,10 @@ package multimodal
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -355,10 +357,7 @@ func (p *Plugin) resolveMedia(args map[string]interface{}, kind string) (string,
 
 	case strings.TrimSpace(ref) != "":
 		// ★ CAS 淘汰：digest 参数现收**媒体块引用**，由记忆层按块取字节。
-		if p.sdk.Memory() == nil {
-			return "", fmt.Errorf("记忆系统不可用，无法按块引用取媒体")
-		}
-		b, mime, ok, err := p.sdk.Memory().MediaBytes(strings.TrimSpace(ref))
+		b, mime, ok, err := mediaBlockBytes(p.sdk.Settings().DataDir(), strings.TrimSpace(ref))
 		if err != nil {
 			return "", fmt.Errorf("按块引用取媒体失败 %s: %w", ref, err)
 		}
@@ -397,4 +396,46 @@ func mimeByExt(p string) string {
 		return "audio/aac"
 	}
 	return ""
+}
+
+// mediaBlockBytes 按媒体块引用从图库里取回字节与 MIME（**自己读 SQLite**）。
+//
+// 路径规则见 docs §12.2：<data_dir>/memory/graph.db。
+// 块 ID 是内容派生的（blk_media_<hash>），前缀足以唯一定位
+// （与内核同口径：至少 12 字符；0 个或多义都不猜）。
+func mediaBlockBytes(dataDir, ref string) (data []byte, mime string, ok bool, err error) {
+	ref = strings.TrimSpace(ref)
+	if dataDir == "" || len(ref) < 12 {
+		return nil, "", false, nil
+	}
+	path := filepath.Join(dataDir, "memory", "graph.db")
+	db, oerr := sql.Open("sqlite3", path+"?mode=ro&_journal_mode=WAL")
+	if oerr != nil {
+		return nil, "", false, oerr
+	}
+	defer db.Close()
+	var id, m string
+	rows, qerr := db.Query(`SELECT id, COALESCE(mime,'') FROM memory_blocks WHERE id LIKE ? LIMIT 2`, ref+"%")
+	if qerr != nil {
+		return nil, "", false, qerr
+	}
+	n := 0
+	for rows.Next() {
+		if err := rows.Scan(&id, &m); err != nil {
+			rows.Close()
+			return nil, "", false, err
+		}
+		n++
+	}
+	rows.Close()
+	if n != 1 {
+		return nil, "", false, nil
+	}
+	if err := db.QueryRow(`SELECT data FROM memory_blocks WHERE id = ?`, id).Scan(&data); err != nil {
+		return nil, "", false, err
+	}
+	if len(data) == 0 {
+		return nil, "", false, nil
+	}
+	return data, m, true, nil
 }

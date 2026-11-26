@@ -5,6 +5,7 @@ package multimodal
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/semantic"
 	"log"
 	"strings"
 
@@ -19,7 +20,13 @@ type Module struct{}
 
 func (Module) Name() string       { return "multimodal" }
 func (Module) Requires() []string { return []string{kernelmod.FacConfig} }
-func (Module) Provides() []string { return []string{kernelmod.FacMultimodal} }
+func (Module) Provides() []string {
+	// ★ 两条档位同住一个模块：
+	//   稠密空间（FacMultimodal，provider 为空 ⇒ 禁用）
+	//   稀疏词嵌入（FacEmbedder，永远可用 —— fastText 词向量 + jieba）
+	// 它们都是**语义计算能力**（docs §3.4），与记忆无关。
+	return []string{kernelmod.FacMultimodal, kernelmod.FacEmbedder}
+}
 
 func (Module) Init(ks *kstate.State) error {
 	cfgReg := ks.CfgReg
@@ -29,10 +36,10 @@ func (Module) Init(ks *kstate.State) error {
 	var mmProviderName, mmErr string
 	var closeAdapted func()
 
-	if mmProvider := cfgReg.GetString("core.memory.multimodal_space.provider", ""); mmProvider != "" {
+	if mmProvider := cfgReg.GetString("core.multimodal.provider", ""); mmProvider != "" {
 		mmProviderName = mmProvider
 		opts := map[string]string{}
-		const optPrefix = "core.memory.multimodal_space.options."
+		const optPrefix = "core.multimodal.options."
 		for _, key := range cfgReg.List(optPrefix) {
 			opts[strings.TrimPrefix(key, optPrefix)] = cfgReg.GetString(key, "")
 		}
@@ -60,6 +67,16 @@ func (Module) Init(ks *kstate.State) error {
 	}
 
 	ks.Provide(kernelapi.FacMultimodal, multimodalSpace)
+
+	// 稀疏词嵌入：**永远提供**（这是与稠密空间的关键差别）。
+	//
+	// 稠密空间缺 provider 就禁用（要 0.89GB 模型），而词嵌入是每条记忆路径的
+	// 最小可用能力：图记忆的关键词抽取、文档 TF-IDF 分词、实体语义相似度、
+	// L1 事件裁剪的稀疏余弦 —— 没有它整条链路退化成"什么都不相关"。
+	// 模型缺失时 StaticEmbedder 自己退成 TF-IDF 词频（仍然可算余弦）。
+	embedder := semantic.NewStaticEmbedder(
+		strings.Split(cfgReg.GetString("core.agent.embedding_model_path", ""), ",")...)
+	ks.Provide(kernelapi.FacEmbedder, embedder)
 	ks.Provide(kernelapi.FacMultimodalStatus, &kernelapi.MultimodalStatus{Provider: mmProviderName, Error: mmErr})
 	if closeAdapted != nil {
 		ks.AddCloser(closeAdapted)

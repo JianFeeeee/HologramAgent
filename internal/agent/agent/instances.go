@@ -34,7 +34,9 @@ package agent
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +70,9 @@ type InstanceManager struct {
 
 	// deps 是宿主在装配期交给的**外部动作**（见 HostDeps 的说明）。
 	deps HostDeps
+	// lastCreated 是"最近一次 construct 造出来的实例"（两阶段装配用）。
+	createdMu   sync.Mutex
+	lastCreated any
 
 	// own / ownMu 是**独立使用时**的私有记录表（内核未提供 FacAgentRegistry）。
 	ownMu sync.Mutex
@@ -102,7 +107,33 @@ type InstanceHost interface {
 
 // NewInstanceManager 构造实例管理器（根 agent 装配期一次）。
 func NewInstanceManager(host InstanceHost) *InstanceManager {
-	return &InstanceManager{host: host}
+	m := &InstanceManager{host: host}
+	// ★ 装配宿主交给的**外部动作**（docs §10：生命周期全部内核执行）。
+	//
+	// 这三件事原先写在 `Agent.Stop()` 里（基座各自清自己的），于是
+	// "谁负责清理"有两个答案 —— 实测已出现同名重建漏撤销安全视图
+	// （继承上一代 guest 档 = 提权）。现在只有一个执行点：本管理器的销毁链。
+	//
+	// 钩子都是**宿主自己的动作**（它才知道自己的通道名、策略视图、记录表），
+	// 所以由宿主在装配期交出来；管理器不认识任何 agent 类型的语义。
+	if a, ok := host.(*Agent); ok {
+		m.deps = HostDeps{
+			RevokePolicy: func(childID string) {
+				if reg := a.agentsRegistry(); reg != nil {
+					reg.Remove(childID)
+				}
+			},
+			// UnregisterInbound：注销该子在父侧登记的入站 inputch。
+			// 通道名由子的 Entry 自己给出（那是类型知识），这里只按名注销。
+			UnregisterInbound: func(channelName string) {
+				if a.io == nil || a.io.ChannelRegistry() == nil {
+					return
+				}
+				a.io.ChannelRegistry().Unregister(channelName)
+			},
+		}
+	}
+	return m
 }
 
 // registry 取 agent 记录表的写面（未装配 ⇒ nil）。
@@ -149,6 +180,51 @@ func (m *InstanceManager) DataDir() string {
 		return ""
 	}
 	return m.host.DataDir()
+}
+
+// WorkDirOf 返回某个实例的**工作数据目录**（内核派生，类型只消费）。
+//
+// ## 用户裁定（2026-11-19）
+//
+// > 「内核持有的 agent 表里就有 agent 的工作数据目录」
+// > 「目录是内核统一管理的」
+//
+// 布局：`<DataDir>/agents/<Type>/<ID>/`。三个组成部分都来自内核知道的事实
+// （数据根、类型名、实例 id），所以**任何类型都不需要也不允许自己拼**。
+//
+// ★ 为什么按 type 分一层：同一 id 换个类型重建时不继承上一代的残留文件
+//
+//	（那些文件属于另一种语义，读了就是错的状态）。这是内核的目录纪律，
+//	不是任何类型的约定。
+//
+// 未配置 DataDir ⇒ 返回空（单测/独立工具不落盘）。
+func (m *InstanceManager) WorkDirOf(typeName, id string) string {
+	if m == nil || id == "" {
+		return ""
+	}
+	root := m.DataDir()
+	if strings.TrimSpace(root) == "" {
+		return ""
+	}
+	t := strings.TrimSpace(typeName)
+	if t == "" {
+		t = "unknown"
+	}
+	// 目录名不能带路径分隔符（类型名来自注册表，但仍做一次规范化：
+	// 一个坏类型名不该把数据写到根外面去）。
+	return filepath.Join(root, "agents", sanitizeDirName(t), sanitizeDirName(id))
+}
+
+// sanitizeDirName 把任意标识符规范成安全的单层目录名。
+func sanitizeDirName(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, string(filepath.Separator), "_")
+	if s == "" || s == "." || s == ".." {
+		return "unknown"
+	}
+	return s
 }
 
 // ListChildren 列出实例简报（按 type 过滤，空 = 全部）。
@@ -297,32 +373,78 @@ func (m *InstanceManager) SendToChild(id, text string) (string, error) {
 	return fmt.Sprintf("已向 %s 注入一条输入（会打断它当前处理）。", id), nil
 }
 
-// RecreateChild 用保存的创建参数重建实例（软重启用）。
+// ── 软重启：**快照必须在销毁之前取**（2026-11-26 实测缺陷） ──
+//
+// # 缺陷实况
+//
+// `restartChild`（registry 包）的序列是「先 DestroyChild，再 RecreateChild」。
+// 而 `DestroyChild` 末尾会调 `m.Forget(id)` —— 那是**正确的**：
+// 被销毁的实例不该在重启后被恢复。
+//
+// 但两者合起来就成了：
+//
+//	DestroyChild → Forget(id)     ← 创建参数快照被删
+//	RecreateChild → 读快照        ← 已经不在了
+//	⇒「实例 %q 没有创建参数快照（无法重建）」
+//
+// 也就是说 **软重启永远不可能成功**，而它在功能清单里是“主 agent 跑飞时
+// 唯一的止血手段”。日志里的报错指向“没有快照”，看起来像记录没写，
+// 实际是记录刚被销毁路径删掉。
+//
+// # 修法
+//
+// 重启不是“销毁 + 创建”两个独立动作，而是一个**原子语义**：
+// 快照在销毁前取出，销毁的那次 Forget 记为“本次重启的内部动作”，
+// 重建时用预先取出的快照。让管理器拥有这个语义，而不是让调用方
+// 记住“先备份再销毁”——那正是会忘的形态。
+
+// RecreateChild 完成一次**软重启**：快照 → 销毁 → 用快照重建。
+//
+// 实现 `registry.RestartHost`。整个序列在本函数内完成，因为“销毁会删掉
+// 创建参数快照”这件事只有本类型知道（见上面「快照必须在销毁之前取」）。
 func (m *InstanceManager) RecreateChild(typeName, id string) (string, error) {
-	reg := m.registry()
-	if reg == nil {
-		return "", fmt.Errorf("instances: 记录表未装配（无法重建 %q）", id)
-	}
-	var found model.AgentRecord
-	for _, r := range reg.Records() {
-		if r.ID == id {
-			found = r
-			break
-		}
-	}
-	if found.ID == "" {
+	// ① 先取快照 —— 必须在销毁之前。销毁链末尾的 `Forget(id)` 会删掉它。
+	snap := m.snapshotOf(id)
+	if snap == nil {
 		return "", fmt.Errorf("instances: 实例 %q 没有创建参数快照（无法重建）", id)
 	}
-	arg := found.Arg
-	if arg == nil {
-		arg = map[string]interface{}{}
+
+	// ② 销毁现有实例（Forget 在这里发生，属预期）。
+	if _, err := m.DestroyChild(id, "drop"); err != nil {
+		return "", fmt.Errorf("instances: 重启 %q 失败于销毁阶段: %w", id, err)
 	}
-	arg["id"] = id
+
+	// ③ 用**预先取出的**快照重建（不能再读记录表：那张条目已被 ② 删掉）。
+	snap["id"] = id
 	d, ok := registry.Lookup(typeName)
 	if !ok {
 		return "", fmt.Errorf("instances: 类型 %q 未注册（无法重建 %q）", typeName, id)
 	}
-	return d.Construct(m, arg)
+	out, _, err := registry.Instantiate(d, m, snap)
+	if err != nil {
+		return "", err
+	}
+	// 面已挂好（construct 内部做的）⇒ 现在可以起运行期。
+	registry.StartInstance(m.NewlyCreated())
+	return out, nil
+}
+
+// snapshotOf 取出一个实例的创建参数副本（不存在 ⇒ nil）。
+func (m *InstanceManager) snapshotOf(id string) map[string]interface{} {
+	reg := m.registry()
+	if reg == nil {
+		return nil
+	}
+	for _, r := range reg.Records() {
+		if r.ID == id && r.Arg != nil {
+			cp := make(map[string]interface{}, len(r.Arg))
+			for k, v := range r.Arg {
+				cp[k] = v
+			}
+			return cp
+		}
+	}
+	return nil
 }
 
 // remember 记录创建参数（软重启与持久化共用）。
@@ -343,6 +465,14 @@ func (m *InstanceManager) Remember(typeName, id string, arg map[string]interface
 	cp := make(map[string]interface{}, len(arg))
 	for k, v := range arg {
 		cp[k] = v
+	}
+	// ★ 工作目录**由内核分配**，调用方给的一律丢弃（见 WorkDirOf 的注释）。
+	//   这样"一条记录 = 一个实例 = 一个目录"不会被模型参数破坏。
+	wd := m.WorkDirOf(typeName, id)
+	if wd != "" {
+		cp[registry.ArgWorkDir] = wd
+	} else {
+		delete(cp, registry.ArgWorkDir)
 	}
 	// ★ 用 **Register**（upsert）而不是 Update：创建流程里记录的落点可能
 	//   晚于本调用（子的 New 在本函数之后才跑），Update 会因"记录还不存在"
@@ -392,7 +522,14 @@ func (m *InstanceManager) Records() []registry.Record {
 		if r.Type == "" {
 			continue
 		}
-		out = append(out, registry.Record{Type: r.Type, ID: r.ID, Arg: r.Arg, Created: r.Created})
+		wd := r.WorkDir
+		if wd == "" {
+			wd = m.WorkDirOf(r.Type, r.ID)
+		}
+		out = append(out, registry.Record{
+			Type: r.Type, ID: r.ID, Arg: r.Arg, Created: r.Created,
+			WorkDir: wd, Lifecycle: r.Lifecycle,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -425,13 +562,65 @@ func (m *InstanceManager) Restore() (int, []string) {
 		log.Printf("[instances] %v（跳过恢复，避免把坏表当成空表）", err)
 		return 0, []string{err.Error()}
 	}
+	// ★ 记下"恢复之前谁已经在跑"：只对**本次新建出来**的实例调恢复回调。
+	//   否则热重载路径（实例已存在 ⇒ Construct 被判重跳过）会被重复恢复，
+	//   把运行中的数据在内存里叠加一遍。
+	before := map[string]bool{}
+	for _, e := range m.host.Children().All() {
+		before[e.Base().ID] = true
+	}
+
 	ok, errs := registry.Restore(m, recs)
 	for _, e := range errs {
 		log.Printf("[instances] 恢复跳过: %s", e)
 	}
-	if ok > 0 {
-		m.host.Logf("restored %d child agent(s) from instances.json", ok)
+
+	// ★ 恢复回调由**内核驱动**（用户裁定 2026-11-19）：
+	//   实例建好之后，把它的工作目录交给它自己挂的 `RuntimeHooks.Restore`。
+	//   内核不认识目录里存什么，也不替类型决定读的顺序。
+	for _, e := range m.host.Children().All() {
+		if before[e.Base().ID] {
+			continue
+		}
+		if ag, isAgent := e.Agent().(*Agent); isAgent && ag != nil {
+			if err := ag.RestoreInstance(m.WorkDirOf(string(e.Kind()), e.Base().ID)); err != nil {
+				log.Printf("[instances] %s(%s) 恢复回调失败: %v", e.Base().ID, e.Kind(), err)
+			}
+		}
 	}
+	// ★ **根实例自己也走同一个回调**（2026-11-25）。
+	//
+	// 此前主 agent 的上下文是靠 `Initialize` 里 `OpenContext()` 顺带读盘恢复的
+	// —— 那是**第二条路径**：子走 `RestoreInstance(dir)`、主走 `OpenContext()`，
+	// 两种时机、两种失败语义。而"要不要恢复、从哪读"对类型来说完全一样。
+	//
+	// 现在：内核把根实例的目录也交给它自己的 `Runtime.Restore`。
+	// 主 agent 于是**没有任何特殊接口** —— 它只是"被内核选中、被默认拉起的
+	// 那个类型"（docs §0.1：按 `core.agent.main_type` 选定主 agent）。
+	if rootHost := m.Root(); rootHost != nil {
+		if ag, isAgent := rootHost.(*Agent); isAgent && ag != nil {
+			// 目录由内核派生（与子实例同一条规则）。
+			dir := m.WorkDirOf(ag.TypeName(), string(ag.ID()))
+			if err := ag.RestoreInstance(dir); err != nil {
+				log.Printf("[instances] 根实例 %s 恢复回调失败: %v", ag.ID(), err)
+			}
+		}
+	}
+
+	// ★ 成功数与失败数必须**互斥**（2026-11-25 实测缺陷）。
+	//
+	// 此前这里无条件报 `restored %d`，而 `ok` 计的是 Instantiate 返回成功；
+	// 现场却有 6 条「划入 inputch cli: inputch 未注册」—— 于是日志同时说
+	// "恢复了 6 个"和"跳过了 6 个"。两个数字都来自同一次循环，却矛盾。
+	//
+	// 计数说谎比不报更糟：它让人相信恢复成功了（本次就是靠它一度误判
+	// "重启恢复没问题"）。
+	// ★ 不在这里打"恢复了几条"：调用方（内核的恢复挂载点）负责报告。
+	//
+	// 两处都报的后果（实测）：同一次恢复打出两行
+	// `restored 6 child agent(s) from instances.json` +
+	// `restored 6 child agent(s) after plugins ready` —— 看起来像恢复了 12 个。
+	// **一个事实只报一次**，报在哪一层由"谁最清楚完整上下文"决定。
 	return ok, errs
 }
 
@@ -443,15 +632,6 @@ func (a *Agent) Instances() *InstanceManager {
 		return nil
 	}
 	return a.instances
-}
-
-// InstallInstanceManager 装入实例管理器（根 agent 装配期一次）。
-// WithDeps 由宿主在装配期注入外部动作（可为零值）。
-func (m *InstanceManager) WithDeps(d HostDeps) *InstanceManager {
-	if m != nil {
-		m.deps = d
-	}
-	return m
 }
 
 func (a *Agent) InstallInstanceManager(m *InstanceManager) {
@@ -518,10 +698,11 @@ func (m *InstanceManager) RestartInstance(id string) (string, error) {
 	if !found {
 		return "", fmt.Errorf("instances: 类型 %q 已撤销（无法重建 %q）", rec.Type, id)
 	}
-	out, err := d.Construct(m, arg)
+	out, _, err := registry.Instantiate(d, m, arg)
 	if err != nil {
 		return "", fmt.Errorf("instances: 软重启 %q 失败于重建阶段: %w", id, err)
 	}
+	registry.StartInstance(m.NewlyCreated())
 	return out, nil
 }
 
@@ -535,4 +716,57 @@ func (m *InstanceManager) Root() InstanceHost {
 		return nil
 	}
 	return m.host
+}
+
+// ── registry.NewlyCreatedHost 的实现（两阶段装配用）──
+
+// NewlyCreated 返回**刚刚由 construct 造出来的**实例（any）。
+//
+// ★ 为什么要这个：`registry.Instantiate` 要在 construct 之后调
+//
+//	`Descriptor.Initialize(instance)`，而注册表不 import agent 包（会让
+//	注册表变成基座的一部分）。所以"刚造的那个"由宿主交出去。
+//
+// ★ 怎么算"刚造"：construct 走 `Children().Add` 登记，所以"登记时间最新
+//
+//	且之前不存在"的那个就是它。这里记一个游标比遍历更可靠。
+func (m *InstanceManager) NewlyCreated() any {
+	if m == nil {
+		return nil
+	}
+	m.createdMu.Lock()
+	defer m.createdMu.Unlock()
+	return m.lastCreated
+}
+
+// MarkCreated 由**类型的 construct** 在登记成功后调用，交出刚造的实例。
+//
+// ★ 类型自己调它看起来像"多一步"，但那是**交接**而不是"知道注册表怎么查"：
+//
+//	实例管理器是宿主的公开能力（`host.(*agent.InstanceManager).MarkCreated(a)`），
+//	与 `Children().Add(...)` 同层。类型不需要 registry.Lookup 自己。
+func (m *InstanceManager) MarkCreated(a *Agent) { m.markCreated(a) }
+
+// markCreated 由 construct 路径在登记成功后调用（见 markCreatedFromChildren）。
+func (m *InstanceManager) markCreated(a *Agent) {
+	if m == nil || a == nil {
+		return
+	}
+	m.createdMu.Lock()
+	m.lastCreated = a
+	m.createdMu.Unlock()
+}
+
+// RollbackConstruct 回滚一次失败的装配（Initialize 失败时由 registry 调）。
+//
+// ★ 必须做：实例已经 children.Add、可能已 Assign 了 inputch。不回滚就是
+//
+//	"创建成功但跑不了"的僵尸 —— 它占着 id 与通道，重建时报"已存在"。
+func (m *InstanceManager) RollbackConstruct(typeName, id string) {
+	if m == nil || id == "" {
+		return
+	}
+	if _, err := m.DestroyChild(id, "drop"); err != nil {
+		log.Printf("[instances] 回滚 %s(%s) 失败: %v", typeName, id, err)
+	}
 }

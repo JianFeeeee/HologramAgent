@@ -64,6 +64,57 @@ func (c *client) ActiveSource(agentID string) string {
 	return c.activeByAgent[agentID]
 }
 
+// MaxContextTokens 返回默认源的上下文窗口（0 = 未知/未装配）。
+func (c *client) MaxContextTokens() int {
+	if c == nil || c.mgr == nil {
+		return 0
+	}
+	p := c.mgr.Default()
+	if p == nil {
+		return 0
+	}
+	return p.MaxContextTokens()
+}
+
+// SetDefault 切换总默认源（空/未注册 ⇒ 报错，调用方原样呈现给模型）。
+func (c *client) SetDefault(name string) error {
+	if c == nil || c.mgr == nil {
+		return fmt.Errorf("llm: provider manager not available")
+	}
+	return c.mgr.SetDefault(name)
+}
+
+// Sources 返回候选源快照（内核排序 + 声明能力 + 可用性）。
+//
+// 这是**唯一的**源清单出口：类型不再持有 ProviderManager，也不做能力探测。
+func (c *client) Sources() []kernelapi.LLMSourceInfo {
+	if c == nil || c.mgr == nil {
+		return nil
+	}
+	all := c.mgr.OrderedProviders()
+	if len(all) == 0 {
+		if d := c.mgr.Default(); d != nil {
+			all = []agentAPI.Provider{d}
+		}
+	}
+	out := make([]kernelapi.LLMSourceInfo, 0, len(all))
+	for _, p := range all {
+		name := p.Name()
+		info := kernelapi.LLMSourceInfo{Name: name, Available: c.mgr.IsAvailable(name)}
+		if caps, ok := c.mgr.Capabilities(name); ok {
+			info.Vision = caps.Vision
+			info.Audio = caps.Audio
+		} else {
+			// 配置没声明能力 ⇒ 退回类型断言（adapter/装饰器漏实现方法时
+			// 让能力凭空消失比"多认一次"更糟）。
+			info.Vision = agentAPI.ProviderSupportsVision(p)
+			info.Audio = agentAPI.ProviderSupportsAudio(p)
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func (c *client) setActive(agentID, name string) {
 	if c == nil || agentID == "" {
 		return
@@ -96,7 +147,13 @@ func (c *client) resolve(req *kernelapi.LLMRequest) []agentAPI.Provider {
 			out = []agentAPI.Provider{d}
 		}
 	}
-	return preferByName(out, req.Preferred, req.AgentID)
+	// 请求点名了源（按能力选源）⇒ 它排在候选链最前，但不独占：
+	// 点名源不可用/失败时仍走其余源（回退链不因点名而关闭）。
+	want := req.Preferred
+	if req.Request != nil && req.Request.Source != "" {
+		want = req.Request.Source
+	}
+	return preferByName(out, want, req.AgentID)
 }
 
 // preferByName 把指定源提到候选链最前（**优先，不是独占**）。

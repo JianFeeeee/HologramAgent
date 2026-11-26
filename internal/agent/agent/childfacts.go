@@ -52,3 +52,7 @@ func FirstNonEmpty(a, b string) string {
 	}
 	return b
 }
+
+// DefaultChannelForBuiltin 是内置工具族执行时用的**稳定来源标识**
+// （工具执行不产出用户可见输出，但记忆写入需要一个固定 source）。
+func DefaultChannelForBuiltin() string { return "core.builtin" }

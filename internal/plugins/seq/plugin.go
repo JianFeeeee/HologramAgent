@@ -28,8 +28,8 @@ func blacklisted(name string) bool {
 	switch {
 	case strings.HasPrefix(name, "output_send__"):
 		return true // 序列不负责对外发消息
-	case name == "spawn_child":
-		return true // 防子 agent 递归
+	case name == "admin_child":
+		return true // 防子 agent 递归（创建工作式子/驻留子会派生新的执行体）
 	case name == "plgreload":
 		return true // 改插件注册表会与当前执行交错
 	case name == "seq_run":

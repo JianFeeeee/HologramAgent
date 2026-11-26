@@ -141,3 +141,10 @@ dist/
 # 入库后要么产生一堆"改文档"提交，要么与实际实现漂移。
 # 实际实现落地时，结论会进 docs/zh/ 下的正式设计文档。
 /dshplgadapter-plan.md
+/todo.md
+
+# 测试产物：记忆/文档落盘文件（每次跑判据都会新建，零代码引用）。
+# 历史上误提交过 120 个，不再增。
+internal/**/test/memory/text/*.jsonl
+internal/**/test/memory/documents/*.json
+/rplan.md

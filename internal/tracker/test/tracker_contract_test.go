@@ -11,6 +11,15 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 )
 
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
 func newTracker(t *testing.T) (*tracker.Tracker, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,15 +39,6 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(b)
 }
 
 // TestPostActionRecordsRealFileChange：真实新建文件后 PostAction 必须记录该文件。

@@ -596,7 +596,7 @@ func (s *Store) SearchIn(query, category string, topK int) []*Knowledge {
 
 	// ——— 退化路径：未注入多模态空间 ———
 	//
-	// 有意保留，不是遗漏：把 core.memory.multimodal_space.provider 留空的
+	// 有意保留，不是遗漏：把 core.multimodal.provider 留空的
 	// 部署仍需可检索，否则知识库直接变成「完全不能用」——那是比排序差
 	// 更严重的失败。此路径的排序质量与接入稠密路之前逐字一致
 	// （见 TestNoDenseSpaceKeepsLegacyBehavior）。

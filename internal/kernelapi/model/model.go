@@ -855,6 +855,17 @@ type AgentRecord struct {
 	ParentID string                 `json:"parent_id,omitempty"`
 	Arg      map[string]interface{} `json:"arg,omitempty"`
 	Facts    AgentFacts             `json:"facts"`
+	// WorkDir 是本 agent 的**工作数据目录**（内核派生并管理，类型只消费）。
+	//
+	// ## 为什么它是记录的一部分，而不是类型自己拼
+	//
+	// 目录是内核统一的资源分配：一条记录 = 一个实例 = 一个目录。
+	// 由记录持有 ⇒ ① 落盘后重启能算回同一个位置；② 改布局只需改内核一处；
+	// ③ 类型永远不写 `filepath.Join(dataDir, "residents", id, ...)` 这种
+	// 硬编码（那会让"加一种类型"变成"再拼一套目录规则"）。
+	//
+	// 空表示未分配（根 agent 或未落盘的临时实例）。
+	WorkDir string `json:"work_dir,omitempty"`
 	// Lifecycle 是运行态（running / contextfull / stopped）。
 	Lifecycle string `json:"lifecycle"`
 	// Created 是创建时刻（软重启与持久化共用）。

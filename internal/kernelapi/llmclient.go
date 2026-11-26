@@ -41,6 +41,19 @@ type LLMRequest struct {
 	NoRetry bool
 }
 
+// LLMSourceInfo 是一条候选源的**对外事实**：名字、声明能力、当前可用性。
+//
+// ★ 为什么类型需要它：主模型不支持视觉/音频时，回退要挑一个**声明了该能力**
+// 的源。挑选这一步归类型（它知道这批块是图还是音频），但"有哪些源、各自
+// 声明了什么能力、现在能不能用"是内核的事实 —— 类型只读这份快照，
+// 绝不碰 ProviderManager。
+type LLMSourceInfo struct {
+	Name      string
+	Vision    bool
+	Audio     bool
+	Available bool
+}
+
 // LLMClient 是内核给基座的稳定抽象。
 type LLMClient interface {
 	// Complete 一轮非流式请求。
@@ -59,6 +72,23 @@ type LLMClient interface {
 
 	// ActiveSource 返回**当前活动源**的名字（内核的事实，不是基座字段）。
 	ActiveSource(agentID string) string
+
+	// MaxContextTokens 返回**默认源**的上下文窗口（0 = 未知/未装配）。
+	//
+	// ★ 为什么由设施回答：窗口是源（provider）的属性，而源表归内核。
+	//   类型的 token 预算计算要读它，但类型不持有源表。
+	MaxContextTokens() int
+
+	// SetDefault 切换**总默认源**（`llm_set_source` 工具与配置面用它）。
+	//
+	// ★ 为什么它在这里而不在基座：源的选择是内核策略，基座不持有源表。
+	SetDefault(name string) error
+
+	// Sources 返回候选源快照（按内核排序），含声明能力与可用性。
+	//
+	// 类型按能力挑源时读它，然后把选中的名字放进 `LLMRequest.Request.Source`；
+	// 排序、可用性判定、回退仍归内核，类型只是**点名**。
+	Sources() []LLMSourceInfo
 }
 
 // ───────────────────────── 错误分类（契约的一部分） ─────────────────────────

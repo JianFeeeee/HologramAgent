@@ -72,7 +72,7 @@ type Host interface {
 	Media() MediaSource
 }
 
-// MediaSource 是媒体字节的取回面（`s.Memory().MediaBytes`）。
+// MediaSource 是媒体字节的取回面（**插件自己按块引用读 SQLite**，docs §12）。
 //
 // ★ 为什么知识库需要它：`knowledge_create` 的 media_digests 是**块引用**
 //

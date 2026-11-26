@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	mem "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	pubsdk "github.com/JianFeeeee/hologramagentsdk/sdk"
@@ -21,111 +21,41 @@ import (
 // 记忆面：图记忆 / 文档记忆 / 文本记忆 / 知识库 / LLM 源 / 变更追踪。
 
 func (h *Handler) handleMemory(w http.ResponseWriter, r *http.Request) {
-	if h.memory == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "memory system not available"})
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		userInput := r.URL.Query().Get("q")
-		keywords := strings.Split(userInput, ",")
-		depth, _ := strconv.Atoi(r.URL.Query().Get("depth"))
-		if depth <= 0 {
-			depth = 2
-		}
-		entities, relations, err := h.memory.Recall(keywords, depth)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"entities": entities, "relations": relations})
-	case http.MethodPost:
-		var req struct {
-			Triples []sdk.Triple `json:"triples"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-			return
-		}
-		if err := h.memory.Commit(req.Triples); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusCreated, map[string]interface{}{"status": "committed", "committed": len(req.Triples)})
-	case http.MethodDelete:
-		var req struct {
-			Criteria map[string]string `json:"criteria"`
-			Mode     string            `json:"mode"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-			return
-		}
-		deleted, err := h.memory.Purge(req.Criteria, req.Mode)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted})
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (h *Handler) handleMemoryContext(w http.ResponseWriter, r *http.Request) {
+	// ★ 面板是**只读观察者**（docs §12）：写记忆归 agent 的工具面
+	//   （`graph_commit`）与内核自己的整理流水线，不是 HTTP 面板的职责。
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.indexer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "indexer not available"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "只读面板：写记忆请用 agent 的 graph_commit 工具"})
 		return
 	}
 	userInput := r.URL.Query().Get("q")
-	injected, err := h.indexer.BuildContext(userInput)
+	keywords := strings.Split(userInput, ",")
+	depth, _ := strconv.Atoi(r.URL.Query().Get("depth"))
+	if depth <= 0 {
+		depth = 2
+	}
+	entities, relations, err := recallMemory(h.settings.DataDir(), keywords, depth)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"entities": entities, "relations": relations})
+}
+
+func (h *Handler) handleMemoryContext(w http.ResponseWriter, r *http.Request) {
+	// ★ 上下文拼装归 agent 自己的 agentloop（谁的预算、谁的渲染）——
+	//   面板不再复刻那份逻辑（docs §12.1）。
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"context":        h.indexer.FormatContext(injected),
-		"summary":        injected.Summary,
-		"entities":       injected.Entities,
-		"token_estimate": injected.TokenEstimate,
-		"tool_prompt":    h.indexer.BuildToolPrompt(),
+		"deprecated": "上下文拼装归 agentloop；用 stablemem_recall 工具或 /status 查看",
 	})
 }
 
 func (h *Handler) handleMemoryTools(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.indexer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "indexer not available"})
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"tools":       h.indexer.GetToolDefinitions(),
-		"tool_prompt": h.indexer.BuildToolPrompt(),
+		"deprecated": "工具表归内核注册表；用 get_plugin_tools 或 /status 查看",
 	})
 }
 
-// graphBlockView 是 memory_blocks 的**瘦身**下发视图。
-//
-// 为什么要瘦身（实测生产实例 1151 节点 / 866 边）：
-//
-//	原始 /memory/graph 响应 408,146 B，其中 memory_blocks[].vector 占 79,314 B
-//	（19%）。那是稠密向量 —— 检索侧（SearchIn / 稠密召回）才需要它，
-//	而星图是本接口**唯一**消费者，它只画节点/连线，压根不读 vector。
-//
-//	更大的问题是量级：每多一块记忆就多一份向量。8 块已经 79KB，
-//	200 块就是约 2MB 白白从库里查出来、序列化、走 socket、丢进浏览器堆，
-//	全程没有一行代码看过它。文本向量的维度还随模型走（数百到数千），
-//	换一次 embedder 就能让这个开销翻几倍。
-//
-// 所以这里显式裁掉 vector，而不是让 GraphData 返回值带个开关：
-// 本接口的语义就是「图谱的可视化数据」，让唯一调用方拿到它要的东西。
 type graphBlockView struct {
 	ID          string    `json:"id"`
 	Modality    string    `json:"modality"`
@@ -159,7 +89,7 @@ func graphDataForVisual(data map[string]interface{}) map[string]interface{} {
 	for k, v := range data {
 		out[k] = v
 	}
-	blocks, _ := out["memory_blocks"].([]memory.MemoryBlock)
+	blocks, _ := out["memory_blocks"].([]mem.MemoryBlock)
 	if blocks == nil {
 		// 可能是 []*memory.MemoryBlock 或空；两种都不是就直接跳过裁剪。
 		return out
@@ -193,11 +123,7 @@ func (h *Handler) handleMemoryGraph(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if h.memory == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "memory system not available"})
-		return
-	}
-	data, err := h.memory.GraphData()
+	data, err := graphDataFromDB(h.settings.DataDir())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -225,10 +151,6 @@ func (h *Handler) handleMemoryGraphPulse(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if h.memory == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "memory system not available"})
-		return
-	}
 	since := time.Now().Add(-defaultGraphPulseWindow)
 	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
 		if sec, err := strconv.Atoi(raw); err == nil && sec > 0 {
@@ -241,32 +163,19 @@ func (h *Handler) handleMemoryGraphPulse(w http.ResponseWriter, r *http.Request)
 	// 反序列化 → 才按时间过滤。实测与全量端点**同价**（145ms vs 135ms），
 	// 而本端点每 10s 被星图轮询一次 —— 「轻量端点」名不副实。
 	// 现在在库侧过滤，响应体只含窗口内的块（差两个数量级）。
-	blocks, err := h.memory.BlocksChangedSince(since, 200)
+	secs := int(time.Since(since).Seconds())
+	if secs <= 0 {
+		secs = int(defaultGraphPulseWindow.Seconds())
+	}
+	blocks, err := blocksChangedSince(h.settings.DataDir(), secs, 200)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	pulse := make([]map[string]interface{}, 0, len(blocks))
-	for _, b := range blocks {
-		pulse = append(pulse, map[string]interface{}{
-			"id":         b.ID,
-			"name":       b.Text,
-			"modality":   b.Modality,
-			"has_data":   b.HasData,
-			"mime":       b.MIME,
-			"tool":       b.Tool,
-			"scene":      b.Scene,
-			"source":     b.Source,
-			"updated_at": b.UpdatedAt,
-			"created_at": b.CreatedAt,
-		})
-	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
-		"data":    map[string]interface{}{"nodes": pulse},
+		"data":    map[string]interface{}{"nodes": blocks},
 	})
-	return
-
 }
 
 // defaultGraphPulseWindow 是 /memory/graph/pulse 不带 since 时的回看窗口。
@@ -516,7 +425,7 @@ func (h *Handler) handleKnowledgeUpload(w http.ResponseWriter, r *http.Request) 
 			//   条目目录（与 content.md 同生共灭）。Digest 仍按内容派生
 			//   （MediaBlockID 同构），但不再需要先 Put 进独立存储。
 			media = append(media, sdk.KnowledgeMediaRef{
-				Digest: memory.MediaBlockID(useMIME, data),
+				Digest: mem.MediaBlockID(useMIME, data),
 				MIME:   useMIME,
 				Kind:   mediaKindOf(useMIME),
 				File:   filepath.Base(fh.Filename),
@@ -583,14 +492,9 @@ func mediaKindOf(m string) string {
 }
 
 func (h *Handler) handleTextMemory(w http.ResponseWriter, r *http.Request) {
-	if h.textMem == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "text memory not available"})
-		return
-	}
 	switch r.Method {
 	case http.MethodGet:
-		recent, _ := h.textMem.RecentEvents(50)
-		stats := h.textMem.Stats()
+		recent, stats, _ := recentTextMemory(h.settings.DataDir(), 50)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"stats":  stats,
 			"recent": recent,

@@ -15,36 +15,44 @@ import (
 	"fmt"
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/toolexec"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
-	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
-	"github.com/JianFeeeee/HologramAgent/internal/tracker"
-	"github.com/JianFeeeee/HologramAgent/internal/vector"
 	"log"
 	"path/filepath"
 	"strings"
-	"time"
+	"sync"
 
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	agentRegistry "github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 	"github.com/JianFeeeee/HologramAgent/internal/config"
-	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 
 	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent"
+	mainmem "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
+	"github.com/JianFeeeee/HologramAgent/internal/nlp"
 	// ★ 空白导入**主 agent 类型模块**：它的 init 把工厂登记进类型表，
 	//   内核启动时 `Instantiate("main", …)` 才有实例（用户裁定：
 	//   「没有被调用就没有这个 agent 的实例」）。装配点不需要知道它怎么装。
-	// 类型模块的**装配注册**：import 即注册（每种类型在自己的 init() 里
-	// 注册 Descriptor / 工具 / Hook）。这是加新类型时**唯一**要改的装配点。
+	// ## 类型模块的**装配注册**（加新类型的唯一编辑点）
+	//
+	// import 即注册：每种类型在自己的 `init()` 里 `registry.Register(Descriptor)`。
+	// 加一种新类型 = ①新建 `internal/agent/<type>/` 包 ②**在这里加一行**。
+	// 基座 / 执行设施 / 既有类型一行都不用改。
+	//
+	// ★ 漏加一行的后果是**静默的**：`admin_child(type="<type>")` 会报
+	//   "类型未注册"，而编译期什么都不报（Go 不会因为"这个包没被 import"报错）。
+	//   实测已经漏过一次（resident / rtchild 搬成独立包后忘了加），
+	//   所以有判据 `TestBuiltinAgentTypesAreRegistered` 钉住。
 	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/resident"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/rtchild"
 	_ "github.com/JianFeeeee/HologramAgent/internal/agent/worker"
 )
 
@@ -53,8 +61,7 @@ type Module struct{}
 
 func (Module) Name() string { return "agent" }
 func (Module) Requires() []string {
-	return []string{kernelmod.FacLLM, kernelmod.FacMemory, kernelmod.FacTracker,
-		kernelmod.FacDocStore, kernelmod.FacTextMem,
+	return []string{kernelmod.FacLLM, kernelmod.FacTracker,
 		kernelmod.FacStageHost,
 		// ★ FacSecurity（2026-10-30 补）：这是**真实存在**的依赖，
 		// 之前只是没在图上声明。
@@ -73,14 +80,21 @@ func (Module) Requires() []string {
 		// 那是 device 第二阶段的事（见 device/mod.go 包注释）。当前阶段 toolcall
 		// 仍在 core，所以依赖是真实的，就该如实声明。
 		kernelmod.FacSecurity,
+		// ★ FacToolReg（2026-11-25 补）：插件工具登记簿。
+		//
+		// 这是同一个教训的第三次（前两次：FacSecurity 漏声明、Mount* 漏接线）：
+		// **不声明依赖 ⇒ `MustValue` 返零值 ⇒ 挂了个 nil ⇒ 整块能力静默消失**。
+		// 实测：工具表从 104 掉到 44（少了全部插件工具），而没有任何报错，
+		// 所有单元判据都是绿的。
+		//
+		// 缺它时无法在运行期"响亮失败" —— `MountToolRegistry(nil)` 是个
+		// 合法调用（未挂载 = nil 是明确定义的状态）。所以只能靠图声明保证。
+		kernelmod.FacToolReg,
 	}
 }
 func (Module) Provides() []string { return []string{kernelmod.FacAgent} }
 
 func (Module) Init(k *kstate.State) error {
-	if !k.Has(kernelapi.FacMemory) {
-		return errMissing("agent", kernelmod.FacMemory)
-	}
 	if !k.Has(kernelapi.FacLLM) {
 		return errMissing("agent", kernelmod.FacLLM)
 	}
@@ -136,24 +150,7 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	providerMgr := kernelmod.MustValue[*agentProvider.ProviderManager](k, kernelapi.FacLLM)
 	provider, _ := providerMgr.Default(), true
 	iom := kernelmod.MustValue[*agentIO.IOManager](k, kernelapi.FacIO)
-	memDB := kernelmod.MustValue[*memory.GraphDB](k, kernelapi.FacMemory)
-	memIdx := kernelmod.MustValue[*memory.Indexer](k, kernelapi.FacMemoryIndexer)
-	trk := kernelmod.MustValue[*tracker.Tracker](k, kernelapi.FacTracker)
-	coldcontextStore := kernelmod.MustValue[*coldcontext.Store](k, kernelapi.FacDocStore)
-	socialStore := kernelmod.MustValue[*social.SocialStore](k, kernelapi.FacMemorySocial)
-	textMem := kernelmod.MustValue[*text.Memory](k, kernelapi.FacTextMem)
 	pluginReg := kernelmod.MustValue[*plugin.Registry](k, kernelapi.FacPluginRegistry)
-	embedder := kernelmod.MustValue[*memory.StaticEmbedder](k, kernelapi.FacEmbedder)
-	var multimodalSpace vector.MultimodalEmbedder
-	if impl, ok := k.Require(kernelapi.FacMultimodal); ok {
-		multimodalSpace, _ = impl.(vector.MultimodalEmbedder)
-	}
-	var mmProviderName, mmErr string
-	if impl, ok := k.Require(kernelapi.FacMultimodalStatus); ok {
-		if st, _ := impl.(*kernelapi.MultimodalStatus); st != nil {
-			mmProviderName, mmErr = st.Provider, st.Error
-		}
-	}
 	// StageHost 在挂载点里存 any（kstate 不持有模块类型），取用处断言回具体类型。
 	stageHost, _ := kernelmod.MustValueAny(k, kernelapi.FacStageHost).(*kit.StageHostType)
 	var evBus kernelapi.EventBus
@@ -161,8 +158,6 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 		evBus, _ = impl.(kernelapi.EventBus)
 	}
 	secRT := kernelmod.MustValue[*security.Runtime](k, kernelapi.FacSecurity)
-
-	personality := loadPersonality(cfg, cfgReg)
 
 	sysPrompt := cfgReg.GetString("core.agent.system_prompt", defaultSystemPrompt)
 	if sysPrompt == "" {
@@ -174,148 +169,120 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	// 而 registry 早于 agent 构造（故这里传的是晚绑定闭包）。
 	// 未注入时 ToolAPI 路径对设备放行：那是"授权可被绕过"的既成缺口。
 	// 注入后，cli 的 /terminal、seq 序列等一切走 ToolAPI 的调用都受同一道闸。
-	agent, instErr := agentCore.Instantiate(agentCore.TypeNameMain, agentCore.AgentConfig{
-		ID: "main",
-		// ★ 配置管理器注入基座（用户裁定）：各 agent 经它读写配置。
-		//   配置是**内核持有的事实**，不是 agent 的私有状态 —— 于是
-		//   "配置改要重启"与"同一份值两个落点"两条病同时消失。
-		Cfg:             cfgReg,
-		SystemPrompt:    sysPrompt,
-		Provider:        provider,
-		ProviderManager: providerMgr,
-		// ★ 记忆侧的**计算能力**经契约注入（判据 §8 第 3 条）：
-		//   基座不 import memory / nlp，只认识"提取器"与"归一化判定"这两件事。
-		Extractor:   nlp.NewArtifactsExtractor(vectorizerOf(k)),
-		Norm:        memory.ArtifactsNorm(),
-		MemoryOps:   memory.NewMemoryOps(),
-		GraphOpener: graphOpenerOf(k),
-		DepParser:   nlp.DepParserInfo(),
-		// ★ LLM 设施（§3.2.1）：重试/回退/记账/活动源/分类错误全在它内部。
-		//   基座只持句柄并转发 —— 它不再认识"有两个源"这件事。
-		LLM: llmClientOf(k),
-		// 主 agent 的优先模型源（空 = 用总默认 core.llm.provider）。
-		PreferredProvider: cfgReg.GetString("core.agent.llm.main_provider", ""),
-		IO:                iom,
-		Memory:            memDB,
-		Indexer:           memIdx,
-		Tracker:           trk,
-		DocStore:          coldcontextStore,
-		SocialStore:       socialStore,
-		TextMemory:        textMem,
-		// MediaStore 已随 CAS 淘汰：块自带负载。
-		Personality: personality,
-		// 人格落库面：首启门禁（任何通道都问一次）与 persona_set 工具用。
-		// 与 WebUI 向导共用 internal/config 的同一份落库逻辑。
-		PersonaStore: config.RegistryPersonaStore{Reg: cfgReg},
-		PluginReg:    pluginReg,
-		PluginDir:    cfg.Plugin.Dir,
-		// DataDir：驻留子的 temp 图库锚点（<data>/residents/<id>/graph.db）。
-		// 漏接时的现象是"工具存在、可调用、但创建必失败"——只有真实二进制才看得出来。
-		DataDir:         cfg.Daemon.DataDir,
-		DistillInterval: cfgReg.GetDuration("core.agent.distill_interval", 30*time.Minute),
-		ArchiveInterval: cfgReg.GetDuration("core.agent.archive_interval", 60*time.Minute),
-		ReviewInterval:  cfgReg.GetDuration("core.agent.review_interval", 120*time.Minute),
-		MergeInterval:   cfgReg.GetDuration("core.agent.merge_interval", 120*time.Minute),
-		MaxToolTurns:    cfgReg.GetInt("core.agent.max_tool_turns", 10),
-		// 上下文管理的可调阈值。此前这些值全部硬编码在 ComputeTokenBudget 里，
-		// 界面改不了、不同窗口的实例也没法各自调优。
-		CtxTuning: kit.ContextTuning{
-			UtilizationPercent: cfgReg.GetInt("core.agent.context.utilization_percent", 80),
-			MaxTargetTokens:    cfgReg.GetInt("core.agent.context.max_target_tokens", 600000),
-			MemoryRatioPercent: cfgReg.GetInt("core.agent.context.memory_ratio_percent", 0),
-			ProtectedCount:     cfgReg.GetInt("core.agent.context.protected_count", 10),
-		},
-		// ⚠️ 这条键此前被注册进配置面板、也有默认值，但**从未被读取** ——
-		// 界面上改它没有任何效果，且不报任何错。同一类「死配置」正是
-		// 本次把阈值接入配置系统时要一并修掉的。
-		MaxContextSize: cfgReg.GetInt("core.agent.max_context_size", 30),
-		// 默认值**不在这里写**：ConfigRegistry 的 GetXxx 会从已注册的
-		// ConfigDef.Default 取（见 registry.go 的 defDefault）。这里传的
-		// 字面量只是「连 ConfigDef 都没注册」时的兜底，正常路径不会用到。
+	// ★ AgentConfig 只剩**身份与父声明 + 配置读面**（docs §2 的 12 字段）。
+	//   设施句柄一律在构造之后挂载（MountSurface / MountProviders /
+	//   MountSemantic / SetToolExec）—— 那是 §2 结论 4 的落地形态。
+	rootCfg := agentCore.AgentConfig{
+		ID:      "main",
+		Cfg:     cfgReg,
+		DataDir: cfg.Daemon.DataDir,
+		// ★ 工作目录由**内核**派生（docs §10：实例目录内核分配，类型只消费）。
 		//
-		// 2026-10-18 的教训：把 busy_after 从 5m 改成 1m 时，同一个默认值
-		// 散落在 seedDBValues/sedCoreDefs/读取点 三处，得手工对齐一遍，
-		// 漏一处就是静默的行为漂移。现在只剩 ConfigDef 一处。
-		Offload: agentCore.OffloadOptions{
-			Enabled:      cfgReg.GetBool("core.agent.offload_enabled", false),
-			BusyAfter:    cfgReg.GetDuration("core.agent.offload_busy_after", 0),
-			MinPending:   cfgReg.GetInt("core.agent.offload_min_pending", 0),
-			MaxResidents: cfgReg.GetInt("core.agent.offload_max_residents", 0),
-		},
-		ContextSavePath:    filepath.Join(cfg.Daemon.DataDir, "memory", "context.json"),
-		EmbeddingModelPath: cfgReg.GetString("core.agent.embedding_model_path", ""),
-		Embedder:           embedder,
-		MultimodalSpace:    multimodalSpace,
-		EmbeddingProvider:  mmProviderName,
-		EmbeddingError:     mmErr,
-		StageHost:          stageHost,
-		EventBus:           evBus,
-		// ★ 安全运行时必须在**构造期**传入（2026-10-30）。
-		//
-		// 依赖链：security.Init → ks.Security → 这里 → AgentConfig.Security
-		//         → New() 写 a.security → securityDecisionFor → CheckTool。
-		//
-		// 判据 TestAgentAssemblyWiresSecurity 走真实登记表装配 + 真工具执行，
-		// 删掉本行或 Requires 里的 FacSecurity 都会红。
-		// ★ agent 记录表（§3.2.2 唯一事实来源）：父声明事实、创建参数、
-		//   生命周期都住在这里。安全模块读同一张表做判定。
-		Agents:          agentregOf(k),
-		Security:        secRT.AsGate(),
-		ThinkingEnabled: cfg.LLM.ThinkingEnabled,
-		InputProcessing: cfg.InputProcessing,
-	})
-
-	// 图记忆读写钩子 → 事件总线。
-	//
-	// ★ 为什么在这里接（而不是让各调用方自己发事件）：
-	//   图读写散在 26 个方法与 180+ 个 db 调用点上，各调用方自报必漏发；
-	//   而**图库自己就知道它碰了哪些块 ID**。星图此前只能靠工具名猜
-	//   节点（把 "stablemem_recall" 拆词去匹配中文实体名，实测命中 0），
-	//   于是每次都点亮同一批无关节点——这正是「星图没有读写反馈」的真身。
-	//
-	// ★ 只在 evBus 非 nil 时接：它把「内核进程」与「独立 CLI 工具」区分开
-	//   （homed-graph-migrate / memgc 等也用 NewGraphDB，但没有事件总线，
-	//   也不该为一次批量迁移向不存在的订阅者发几万条事件）。
-	//
-	// ★ 钩子**必须非阻塞**：它在记忆读写的同步路径上，发布到总线
-	//   是内存操作（各订阅者回调也都很短），实测开销可忽略。
-	if memDB != nil && evBus != nil {
-		memDB.SetAccessHook(func(ev memory.AccessEvent) {
-			payload := map[string]interface{}{
-				"op": ev.Op,
-			}
-			// 只在非空时带上字段：空数组会让前端白白重算一次。
-			if len(ev.Blocks) > 0 {
-				payload["blocks"] = ev.Blocks
-			}
-			if len(ev.Created) > 0 {
-				payload["created"] = ev.Created
-			}
-			if len(ev.Removed) > 0 {
-				payload["removed"] = ev.Removed
-			}
-			if len(ev.Merged) > 0 {
-				merged := make([]map[string]string, 0, len(ev.Merged))
-				for _, m := range ev.Merged {
-					merged = append(merged, map[string]string{"from": m.From, "to": m.To})
-				}
-				payload["merged"] = merged
-			}
-			if ev.Tool != "" {
-				payload["tool"] = ev.Tool
-			}
-			evBus.Publish(&events.Event{
-				Type:      events.EventMemoryAccess,
-				Source:    "main",
-				Payload:   payload,
-				Timestamp: time.Now().Unix(),
-			})
-		})
+		// 缺它的后果（实测）：`InstanceDir()` 返回空 ⇒ 上下文 savePath 为空
+		// ⇒ 超长工具结果落盘报「未配置持久化目录」⇒ 340k token 的召回正文
+		// 原样塞进上下文（正是§13 那条 single-event 超预算）。
+		WorkDir: filepath.Join(cfg.Daemon.DataDir, "agents", string(agentCore.TypeNameMain), "main"),
 	}
 
-	if instErr != nil {
-		return nil, instErr
+	// ★ 造主 agent：走**唯一那张类型表的 Construct**（所有 agent 对内核一致）。
+	//
+	// 内核把配置项放进 arg（`arg["cfg"]`），类型的 Construct 自己造实例并交回。
+	// 于是"谁来填这些配置项"的答案只有一个（内核），换主 agent 类型不改装配点。
+	rootHost := agentCore.NewRootHost(rootCfg)
+	mainType := cfgReg.GetString("core.agent.main_type", agentCore.TypeNameMain)
+	if mainType == "" {
+		mainType = agentCore.TypeNameMain
 	}
+	d, okType := agentRegistry.Lookup(mainType)
+	if !okType {
+		return nil, fmt.Errorf("agent: 主 agent 类型 %q 未注册（core.agent.main_type 配错了？已注册: %v）",
+			mainType, agentRegistry.Types())
+	}
+	// ★ 主 agent 私有值随**装配料**一起进 Construct（`arg` 就是装配料的
+	//   正当通道，不进 AgentConfig —— §2 结论 4）。
+	//
+	//   为什么必须在这一步给：`installState` 跑在 Initialize 期内，而
+	//   `MountMainValues` 若是"造完之后再挂"，人格在 installState 里读到的
+	//   还是 nil（2026-11-26 新旧对照实测 `personality=false`，旧内核 true）。
+	rootArg := map[string]interface{}{
+		"cfg":          rootCfg,
+		"id":           "main",
+		"fusionCfg":    nil,
+		"personality":  loadPersonality(cfg, cfgReg),
+		"personaStore": config.RegistryPersonaStore{Reg: cfgReg},
+	}
+	if _, _, cerr := agentRegistry.Instantiate(d, rootHost, rootArg); cerr != nil {
+		return nil, fmt.Errorf("agent: 造主 agent（类型 %q）失败: %w", mainType, cerr)
+	}
+	agentAny := rootHost.Root()
+	agent, _ := agentAny.(*agentCore.Agent)
+	if agent == nil {
+		return nil, fmt.Errorf("agent: 类型 %q 没有交回根实例（SetRoot 未调用）", mainType)
+	}
+
+	// ★ 语义计算设施挂载（docs §3.1 / §3.4）：装配点把它们交给**基座字段**，
+	//   不进 AgentConfig（§2 结论 4：AgentConfig 是配置项透传，不是依赖容器）。
+	//
+	//   两类东西来源不同，所以分两次挂：
+	//     MountSemantic     句→向量的计算（FacEmbedder / FacMultimodal）
+	//     MountSemanticOps  名字能否落库 / 文本→三元组（artifacts 契约的两个实现）
+	// ★ 面：IO / 阶段管道 / 安全闸 / 记录表 / 插件表 / LLM 设施。
+	agent.MountSurface(iom, stageHost, secRT.AsGate(), agentregOf(k), pluginReg, cfg.Plugin.Dir, llmClientOf(k))
+	// ★ **插件工具登记簿**（独立设施，2026-11-25 拆分）。
+	//
+	// 缺这一句的后果（本轮实测）：登记簿本身是好的（60 个插件工具全都
+	// 经 SetToolRegistrar 注册成功），但 `a.toolReg` 恒为 nil ⇒
+	// `PublicToolDefs()` 少掉整个插件来源 ⇒ 工具表从 104 掉到 44，
+	// 而所有判据都是绿的（判据自己 mount 了句柄）。
+	//
+	// 这是"新增挂载入口但没接进装配点"的第二次（第一次是
+	// `IOManager.StartOutputDispatch`）。共用一句教训：
+	// **凡是有 Mount* 的方法，装配点必须有一行对应的调用。**
+	agent.MountToolRegistry(kernelmod.MustValue[*kit.ToolRegistry](k, kernelapi.FacToolReg))
+	// ★ 模型源：只有根/主 agent 持源表（docs §9.6 硬边界 2；子只继承 LLM 句柄）。
+	agent.MountProviders(provider, providerMgr)
+
+	// ★ 主 agent 私有值已在上面随 `arg` 进 Construct（那里挂得比 installState 早）。
+	// ★ 工具执行设施（内核唯一执行链）：基座只转发，宿主每次随 BatchOpts 传入。
+	agent.SetToolExec(toolexec.New())
+
+	mountSemanticFacilities(k, agent)
+	// ★ **装配期只造实例，不启动**（2026-11-26 实测修复）。
+	//
+	// 此前这里有一行 `agentRegistry.StartInstance(agent)` ——
+	// 而运行期起点 `startRuntime` 又调一次 `agent.Start`（`main.go:322`）。
+	// 后果（真内核日志实测，冷启动就复现）：
+	//
+	//	[main:main] main started          ← 装配层，此时 kernelloop 还没建
+	//	[kernelloop] started
+	//	[main:main] main started          ← 运行期，这次才登记输入投递口
+	//	[agent] status section "security" re-registered ×3
+	//
+	// 三处真实损害：
+	//	① 类型运行期跑两遍 —— `StartMainRuntime` 里 `go m.SchedulerLoop()`
+	//	   没有幂等守卫 ⇒ **同一主 agent 两个调度循环并发**（压测里
+	//	   `max_concurrent=2`、响应时长成对出现，根因就是它）。
+	//	② 第一次的 `RegisterInputSink` 静默失效（`kernelloop.Current()` 还是 nil）。
+	//	③ 三个内核状态段被注册两遍（覆盖式注册的告警就是它报的）。
+	//
+	// 运行期起点只有一处：`cmd/homed/runtime.go` 的 `agentStarter()`。
+
+	// ★ **恢复子 agent 挂到"插件就绪"之后**（2026-11-25 实测修复）。
+	//
+	// 缺陷：恢复在 `StartMainRuntime` 里做，而那是 `StartInstance` 触发的
+	// （本模块 Init 期）；插件要到 `KernelComplete` 之后的 `loadRest` 才加载。
+	// 于是恢复时 `cli` 的 inputch 还不存在 ⇒ 6 个子实例全跳过
+	// （`划入 inputch cli: inputch 未注册`），日志却报 `restored 6`。
+	//
+	// 恢复要的是"通道已注册"，那是插件的产物 ⇒ 必须等 `PluginsReady`。
+	// 与 pluginhost 的 `loadRest` 用**同一个**就绪信号。
+	mountRestoreOnReady(k, agent)
+
+	// ★ 图记忆读写钩子 → 事件总线：**已搬走**（2026-11-20）。
+	//   图库归主 agent（`mainagent/memory`），事件总线归内核模块。
+	//   接线在主 agent 自己的装配里（`mainagent/services` → SetAccessHook），
+	//   内核不再认识图库类型。
+	_ = evBus
 
 	// D4：把「设备是否已授权」的判据注入插件侧（toolImpl.CanUse 消费它）。
 	//
@@ -343,7 +310,8 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	//
 	// 注入必须在此处（agent 构造之后）：内置工具的可见性由运行期状态门控
 	// （memory/knowledge 是否就绪），而 provider 持有的是 agent。
-	agent.InstallBuiltinToolProvider()
+	// ★ 内置工具族的 provider 现在由**类型自己**注入（mainagent 的 init 里），
+	//   装配点不再替所有类型装一份。
 
 	// ★ 主 agent 的标准实现由**它自己的类型工厂**挂齐（`agent/type_main.go`，
 	//   经 `Instantiate(main)` 一步到位）。装配点**不许**再 `SetHooks` ——
@@ -391,8 +359,25 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 func wirePluginSDK(k *kstate.State) {
 	// Agent 是本包自己的类型，构造期已知；不走挂载点断言。
 	a, _ := kernelmod.MustValueAny(k, kernelapi.FacAgent).(*agentCore.Agent)
-	if a != nil {
-		kernelmod.MustValue[*plugin.Registry](k, kernelapi.FacPluginRegistry).SetStatusProvider(a)
+	if a == nil {
+		return
+	}
+	// ★ 状态面 provider **必须**注入（2026-11-19 实测回归）。
+	//
+	// 重构时这里曾改成 `_ = a`（理由是"状态面由类型注册 RegisterStatusSection
+	// 就够了"）—— 错在混淆了两件事：
+	//
+	//	RegisterStatusSection  类型往**段表**里挂自己那段快照
+	//	SetStatusProvider      注册表能**取到整个状态**（GetKernelStatus）
+	//
+	// 插件的 `s.Status().GetKernelStatus()` 走第二条。不注入 ⇒ cli 的
+	// `/status`、`/kernel`、`/runtime` 三个命令全部返回
+	// "status provider not available"（现场实测）。
+	//
+	// ★ 1:1 对照旧内核发现的真实功能回归（旧内核 mod.go:317 有这一行）。
+	reg, _ := kernelmod.MustValueAny(k, kernelapi.FacPluginRegistry).(*plugin.Registry)
+	if reg != nil {
+		reg.SetStatusProvider(a)
 	}
 }
 
@@ -432,9 +417,6 @@ func errMissing(moduleName, facility string) error {
 		"② Provides/Requires 的设施名写得不一致（拼写漂移）", moduleName, facility)
 }
 
-var _ = events.EventMemoryAccess
-var _ = memory.AccessEvent{}
-
 // agentregOf 取 agent 记录表的写面（未装配 ⇒ nil：基座会用私有表，行为一致）。
 func agentregOf(k *kstate.State) kernelapi.AgentRegistry {
 	if impl, ok := k.Require(kernelapi.FacAgentRegistry); ok {
@@ -455,22 +437,115 @@ func llmClientOf(k *kstate.State) kernelapi.LLMClient {
 	return nil
 }
 
-// vectorizerOf 取共享词嵌入，转成 nlp 需要的 Vectorizer（未装配 ⇒ nil）。
-func vectorizerOf(k *kstate.State) nlp.Vectorizer {
+// mountSemanticFacilities 把内核侧的语义计算设施挂到基座字段上。
+//
+// ★ 为什么在这里（而不是 AgentConfig）：AgentConfig 只装配置项透传，
+//
+//	设施句柄由装配点直接交给基座（docs §2 结论 4 / §0.1 结论 5）。
+//
+// ★ 为什么每一项都允许缺失：这是"装配事实"而不是错误 ——
+//
+//	缺 FacEmbedder ⇒ 词嵌入退 TF-IDF 词频；缺 FacMultimodal ⇒ 稠密检索禁用；
+//	缺提取器 ⇒ 归档只写元数据三元组。三者都是**明确的降级**，
+//	日志里各自说清原因（不静默）。
+func mountSemanticFacilities(k *kstate.State, a *agentCore.Agent) {
+	if k == nil || a == nil {
+		return
+	}
+
+	// ① 句 → 向量：稀疏词嵌入（永远有，输出可能是 TF-IDF 词频）+ 稠密空间（可选）。
+	var emb agentCore.Embedder
 	if impl, ok := k.Require(kernelapi.FacEmbedder); ok {
-		if e, _ := impl.(*memory.StaticEmbedder); e != nil {
-			return e
+		if e, _ := impl.(agentCore.Embedder); e != nil {
+			emb = e
 		}
 	}
-	return nil
+	var mm kernelapi.MultimodalSpace
+	if impl, ok := k.Require(kernelapi.FacMultimodal); ok {
+		if m, _ := impl.(kernelapi.MultimodalSpace); m != nil && m.Loaded() {
+			mm = m
+		}
+	}
+	if emb == nil {
+		log.Printf("[homed] warning: no FacEmbedder provided — sparse similarity falls back to raw tokens " +
+			"(memory recall, L1 pruning and entity dedup will be coarse)")
+	}
+	a.MountSemantic(emb, mm)
+
+	// ② 判定面：归一化（名字能否落库）+ 三元组提取器 + 纯函数记忆算子。
+	//
+	// 三者的实现分别在 memory / nlp 包，基座只认识契约（artifacts / kernelapi）。
+	// 缺任何一个都是"这个部署不做那一档"，不是故障。
+	//
+	// ★ 三个实现包都由**装配点**直接 import（本文件在允许列表里）：
+	//   nlp     → 三元组提取器（带 ONNX 依存句法）
+	//   memory  → 名字归一化判定 + 纯函数记忆算子（本包已 import mainagent）
+	// ★ 提取器需要词嵌入（TransE 语义验证），所以装配顺序是先 MountSemantic
+	//   再构造提取器 —— 这里用同一个 emb 句柄。
+	var extractor artifacts.Extractor
+	if emb != nil {
+		extractor = nlp.NewArtifactsExtractor(emb)
+	} else {
+		extractor = nlp.NewArtifactsExtractor(nil)
+	}
+	a.MountSemanticOps(extractor, mainmem.ArtifactsNorm(), mainmem.NewMemoryOps())
 }
 
-// graphOpenerOf 取图记忆装配面（未装配 ⇒ nil：子 agent 起不来并响亮报错）。
-func graphOpenerOf(k *kstate.State) kernelapi.GraphMemoryOpener {
-	if impl, ok := k.Require(kernelapi.FacGraphOpener); ok {
-		if op, _ := impl.(kernelapi.GraphMemoryOpener); op != nil {
-			return op
-		}
+// mountRestoreOnReady 把"恢复子 agent"接到**插件全部注册完毕**之后。
+//
+// ## 两次失败换来的结论
+//
+// ① 原来在 `StartMainRuntime` 里恢复（`agent` 模块 Init 期）——
+//
+//	插件还没加载，`cli` 的 inputch 不存在 ⇒ 6 个子实例全跳过，
+//	而日志报 `restored 6`（计数说谎）。
+//
+// ② 改挂 `SyncBus.OnUpdate` + `KernelComplete()` —— **仍然太早**：
+//
+//	实测 `restored 0` 出现在 `[cli] unix socket listening` **之前**。
+//	原因：`KernelComplete` 是"模块装配完成"，而插件加载是**之后**的
+//	另一个阶段（pluginhost 的 `loadRest`）。
+//
+// ## 正确的信号是 `tools_ready`
+//
+// `pluginhost` 在 `loadRest` 的 `sync.Once` 里、内置插件加载完之后
+// `publishToolsReady(ks)`（`EventToolsReady`）。那是"工具已全部注册完毕"
+// 的唯一信号 —— 通道（`inputch`）也在此刻才全部就位。
+//
+// 订阅发生在**模块 Init 期**（早于任何插件加载），所以不存在漏收。
+func mountRestoreOnReady(k *kstate.State, agent *agentCore.Agent) {
+	bus, _ := kernelmod.MustValueAny(k, kernelapi.FacEventBus).(kernelapi.EventBus)
+	if bus == nil {
+		// 无事件总线（裁剪版内核 / 判据）：立即恢复 ——
+		// 那时也没有插件，不存在"通道未注册"的约束。
+		restoreChildren(agent)
+		return
 	}
-	return nil
+	var once sync.Once
+	bus.Subscribe(events.EventToolsReady, func(*events.Event) {
+		once.Do(func() { restoreChildren(agent) })
+	})
+}
+
+// restoreChildren 走实例表恢复全部子 agent（**基座能力，类型不参与决策**）。
+//
+// ★ 直接调 `EnsureInstanceManager().Restore()` 而不是经主 agent 的 `Wrap`：
+//
+//	恢复是内核的执行（docs §10），kernelmod 也不该 import 具体类型包
+//	（那会让依赖方向反了）。
+func restoreChildren(a *agentCore.Agent) {
+	if a == nil {
+		return
+	}
+	im := a.EnsureInstanceManager()
+	if im == nil {
+		return
+	}
+	n, errs := im.Restore()
+	if n > 0 || len(errs) > 0 {
+		a.Logf("restore: %d ok, %d skipped（等 tools_ready 之后执行）", n, len(errs))
+	}
+	for _, e := range errs {
+		a.Logf("restore child skipped: %s", e)
+	}
 }

@@ -2,12 +2,18 @@ package resident
 
 // 驻留子的**工具面**（对照设计 §7 控制面与 §8 处理表）。
 //
-// 单工具多动作：父侧的入口是 `admin_child(type="resident", action=...)`（list/create/send/inspect/compress/reclaim/destroy），
-// 子侧两个小工具：`notify_parent`（L3 主动汇报）与 `inputch_note`（主动写处理表）。
+// ## 父子通信只有两条协议（用户反复裁定）
+//
+//	父 → 子   admin_child(type, action, meta, arg) + admin_child_help + admin_child_list
+//	子 → 父   CallParent(level, kind, text, meta)
+//
+// 旧的 `notify_parent` / `inputch_note` 已删：
+//
+//	notify_parent  → 被 `CallParent` 取代（唯一的上行出口）
+//	inputch_note   → 子自己在 loop 里记账（模型不该替内核记账）
 
 import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"path/filepath"
 	"strings"
@@ -37,7 +43,7 @@ func splitArg(s string) []string {
 
 // reclaimKeepAll 是回收时的默认策略：把子 temp 的活跃记录全部纳入主记忆
 // （"哪些纳入"由父的模型决定——这里给的是"全要"这一档）。
-func reclaimKeepAll(_ []agenttypes.InputchRecord, triples []model.Triple) []model.Triple {
+func reclaimKeepAll(_ []InputchRecord, triples []model.Triple) []model.Triple {
 	return triples
 }
 
@@ -45,17 +51,17 @@ func reclaimKeepAll(_ []agenttypes.InputchRecord, triples []model.Triple) []mode
 //
 // 默认 keep：父没明确说丢时，一律转回自己而不是丢弃。
 // "宁可多做一件，不可默默丢一条"——吞掉一条输入比多处理一条更糟。
-func residualPolicyOf(tc agentAPI.ToolCall) agenttypes.ResidualPolicy {
+func residualPolicyOf(tc agentAPI.ToolCall) ResidualPolicy {
 	switch strings.ToLower(strArg(tc, "residual")) {
 	case "drop", "discard":
-		return agenttypes.ResidualDrop
+		return ResidualDrop
 	case "stash", "park":
 		// 暂存到原通道，等通道被接回时放出。
-		return agenttypes.ResidualStash
+		return ResidualStash
 	case "takeover", "take_over", "take":
-		return agenttypes.ResidualTakeover
+		return ResidualTakeover
 	default:
-		return agenttypes.ResidualKeep
+		return ResidualKeep
 	}
 }
 
@@ -69,13 +75,13 @@ func residualPolicyOf(tc agentAPI.ToolCall) agenttypes.ResidualPolicy {
 // ★ 旧的 `suspend`/`park` 参数值**仍被接受**并映射到 orphan —— 不能因为
 // 内部收敛就把模型已经学会的参数名变成报错（那会让存量行为突然失效）。
 // 但它们现在与 orphan 完全同义，不再声称有额外语义。
-func channelDispositionOf(tc agentAPI.ToolCall) agenttypes.ChannelDisposition {
+func channelDispositionOf(tc agentAPI.ToolCall) ChannelDisposition {
 	switch strings.ToLower(strArg(tc, "channels")) {
 	case "handover", "takeover", "take_over", "take":
-		return agenttypes.ChannelHandover
+		return ChannelHandover
 	default:
 		// orphan / suspend / park / 空 —— 都是悬空。
-		return agenttypes.ChannelOrphan
+		return ChannelOrphan
 	}
 }
 
@@ -96,22 +102,6 @@ func intArg(tc agentAPI.ToolCall, key string) int {
 		return v
 	}
 	return 0
-}
-
-// executeNotifyParent 是子的"主动向父发消息"（父侧阶梯 = **L3 中断**）。
-func (m *M) ExecuteNotifyParent(tc agentAPI.ToolCall) string {
-	return m.NotifyParentFrom(strArg(tc, "text"))
-}
-
-// executeInputchNote 是子"主动写入本轮 inputch 的处理信息"。
-// 主动写过 ⇒ 本轮系统不再自动写（见 autoRecordInputch）。
-func (m *M) ExecuteInputchNote(tc agentAPI.ToolCall) string {
-	text := strArg(tc, "text")
-	if text == "" {
-		return "text 不能为空"
-	}
-	m.RecordInputchNote(text)
-	return "已记录本轮 inputch 处理信息（本轮系统不会再自动写）"
 }
 
 // childInboundChannelHint 是给子看的"父会怎么把消息投给你"的提示（不参与调度）。

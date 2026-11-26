@@ -3,7 +3,7 @@ package test
 // internal/agent/agent 的**工具定义对外投影**判据 —— 面向接口的黑盒。
 //
 // 入口：kit.NewStageHost() 注册工具 → agent.New(AgentConfig{StageHost}) →
-// Agent.ToolDefinitions()（api.ToolDefinition 列表）。
+// mainagent.Wrap(Agent).ToolDefinitions()（api.ToolDefinition 列表）。
 //
 // ## 原判据的缺口
 //
@@ -12,7 +12,7 @@ package test
 // 而且它自己就把期望值从 `def.ParallelSafe && !def.Serial` 抄了一遍 ——
 // 那是把实现搬进判据。
 //
-// 真正决定行为的是 `Agent.ToolDefinitions()`：模型看到的那份清单，
+// 真正决定行为的是 `mainagent.Wrap(Agent).ToolDefinitions()`：模型看到的那份清单，
 // 其 ParallelSafe 位决定整批并发还是串行。这条**对外投影**零覆盖。
 //
 // ## 为什么 `Serial` 优先是必须的契约
@@ -36,16 +36,15 @@ import (
 func toolDefHarness(t *testing.T, defs ...sdk.ToolDef) *agent.Agent {
 	t.Helper()
 	sh := kit.NewStageHost()
+	// ★ 工具登记在**独立的登记簿**里（2026-11-25 拆分：阶段管道不再兼职工具）。
+	tr := kit.NewToolRegistry()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	for _, d := range defs {
-		if err := sh.RegisterTool(d.Name, d, noop); err != nil {
+		if err := tr.RegisterTool(d.Name, d, noop); err != nil {
 			t.Fatalf("RegisterTool(%s): %v", d.Name, err)
 		}
 	}
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "tooldef", StageHost: sh})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	a := faces{Security: security.NewDisabledRuntime().AsGate(), StageHost: sh, ToolReg: tr}.mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "tooldef"}))
 	t.Cleanup(a.Stop)
 	return a
 }
@@ -130,23 +129,20 @@ func TestUndeclaredToolsAreSerial(t *testing.T) {
 // 而残留的工具会让模型调到一个不存在的 handler（表现为执行时报错，
 // 但清单看起来一切正常）。
 func TestUnregisteredPluginToolsLeaveNoTrace(t *testing.T) {
-	sh := kit.NewStageHost()
+	tr := kit.NewToolRegistry()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
 	for _, name := range []string{"alpha_tool", "beta_tool"} {
-		if err := sh.RegisterTool(name, sdk.ToolDef{Name: name, Plugin: "acme"}, noop); err != nil {
+		if err := tr.RegisterTool(name, sdk.ToolDef{Name: name, Plugin: "acme"}, noop); err != nil {
 			t.Fatalf("RegisterTool: %v", err)
 		}
 	}
-	if err := sh.RegisterTool("keep_tool", sdk.ToolDef{Name: "keep_tool", Plugin: "other"}, noop); err != nil {
+	if err := tr.RegisterTool("keep_tool", sdk.ToolDef{Name: "keep_tool", Plugin: "other"}, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "tooldef", StageHost: sh})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	a := faces{Security: security.NewDisabledRuntime().AsGate(), ToolReg: tr}.mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "tooldef"}))
 	t.Cleanup(a.Stop)
 
-	sh.UnregisterPluginTools("acme")
+	tr.UnregisterPluginTools("acme")
 
 	names := map[string]bool{}
 	for _, d := range a.ToolDefinitions() {
@@ -170,22 +166,22 @@ func TestUnregisteredPluginToolsLeaveNoTrace(t *testing.T) {
 // 它与并行位是两件不同的事，但都属于"工具定义写下的声明真的被读到了吗"
 // 这个共同契约：写得下、读得到，中间没有白名单把字段吃掉。
 func TestNoMemoryDeclarationIsVisible(t *testing.T) {
-	sh := kit.NewStageHost()
+	tr := kit.NewToolRegistry()
 	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
-	if err := sh.RegisterTool("quiet", sdk.ToolDef{Name: "quiet", NoMemory: true}, noop); err != nil {
+	if err := tr.RegisterTool("quiet", sdk.ToolDef{Name: "quiet", NoMemory: true}, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
-	if err := sh.RegisterTool("loud", sdk.ToolDef{Name: "loud"}, noop); err != nil {
+	if err := tr.RegisterTool("loud", sdk.ToolDef{Name: "loud"}, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
 
-	if v, ok := sh.NoMemoryOf("quiet"); !ok || !v {
+	if v, ok := tr.NoMemoryOf("quiet"); !ok || !v {
 		t.Fatalf("★ 声明 NoMemory=true 的工具读回 %v（ok=%v）", v, ok)
 	}
-	if v, ok := sh.NoMemoryOf("loud"); !ok || v {
+	if v, ok := tr.NoMemoryOf("loud"); !ok || v {
 		t.Fatalf("★ 未声明 NoMemory 的工具读回 %v（ok=%v）", v, ok)
 	}
-	names := sh.NoMemoryToolNames()
+	names := tr.NoMemoryToolNames()
 	if !names["quiet"] {
 		t.Fatal("★ NoMemoryToolNames 里没有 quiet —— 记忆计算层拿不到这份清单")
 	}

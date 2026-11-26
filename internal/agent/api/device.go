@@ -56,6 +56,13 @@ type DeviceSurface interface {
 // 路由这一段不用再改。
 type BuiltinToolHandlers interface {
 	ExecutePersonaTool(tc ToolCall) string
+	// ExecuteLLMTool 是 `llm_*` 族（读 AgentConfig.LLM / ProviderManager）。
+	//
+	// ★ 此前缺这个方法 ⇒ `toolroute` 的路由表里也没有它 ⇒
+	//   `llm_list_sources` / `llm_set_source` 落到兜底"不存在或未注册"
+	//   （2026-11-20 真二进制实测）。基座有 `Agent.ExecuteLLMTool` 实现，
+	//   但没有任何路由指向它。
+	ExecuteLLMTool(tc ToolCall) string
 	ExecuteMemoryTool(tc ToolCall, turnScenes []string) string
 	ExecuteSocialTool(tc ToolCall) string
 	ExecuteColdContextTool(tc ToolCall) string

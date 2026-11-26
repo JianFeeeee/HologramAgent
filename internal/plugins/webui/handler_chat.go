@@ -133,25 +133,37 @@ func (h *Handler) subscribeChatEvents() {
 	if h.sdk == nil {
 		return
 	}
-	h.sdk.Subscribe(sdk.EventRawInput, func(ev *sdk.Event) {
-		content, _ := ev.Payload["content"].(string)
-		source, _ := ev.Payload["source"].(string)
+	// ★ 全通道对话历史改由 **on_input 阶段钩子**捕获（docs §9.2 第 1 行）。
+	//
+	// 此前订阅 `EventRawInput`：那条事件由内核在输入进队列时发到总线，
+	// 而"用户说了什么"是 **agent 的状态**，不是内核事实。现在走 stage ——
+	// 所有通道的输入都会经过 on_input（无论哪个 agent 接手）。
+	//
+	// payload 形状沿用原事件的键（content / source / upload_*），
+	// 下面的解析逻辑一行不改。
+	h.sdk.RegisterStage(sdk.StageOnInput, func(ctx *sdk.StageContext) error {
+		payload := map[string]interface{}{"content": ctx.RawMessage}
+		for k, v := range ctx.Extra {
+			payload[k] = v
+		}
+		content, _ := payload["content"].(string)
+		source, _ := payload["source"].(string)
 		// 用户上传的附件（handleChatFile 注入的 payload 携带 upload_* 字段）
 		var att *Attachment
-		if url, _ := ev.Payload["upload_url"].(string); url != "" {
-			ut, _ := ev.Payload["upload_type"].(string)
+		if url, _ := payload["upload_url"].(string); url != "" {
+			ut, _ := payload["upload_type"].(string)
 			var size int64
-			switch v := ev.Payload["upload_size"].(type) {
+			switch v := payload["upload_size"].(type) {
 			case int64:
 				size = v
 			case float64:
 				size = int64(v)
 			}
-			name, _ := ev.Payload["upload_name"].(string)
+			name, _ := payload["upload_name"].(string)
 			att = &Attachment{Type: ut, URL: url, Size: size, Name: name}
 		}
 		if content == "" {
-			return
+			return nil
 		}
 		h.chatMu.Lock()
 		h.pendingIdx = -1
@@ -160,29 +172,61 @@ func (h *Handler) subscribeChatEvents() {
 			Role:       "user",
 			Content:    content,
 			Source:     source,
-			Time:       time.Unix(ev.Timestamp, 0).Format(time.RFC3339),
+			Time:       time.Now().Format(time.RFC3339),
 			Attachment: att,
 		})
+		// 拓扑动画：只推通道名与来源，不背正文（用户消息可能几 KB）。
+		if source != "" {
+			h.sendToStreams("channel_input", fmt.Sprintf("ci-%d", time.Now().UnixNano()),
+				func() string {
+					b, _ := json.Marshal(map[string]interface{}{
+						"type":      "channel_input",
+						"source":    source,
+						"timestamp": time.Now().Unix(),
+					})
+					return string(b)
+				}())
+		}
+		return nil
 	})
-	h.sdk.Subscribe(sdk.EventToolCall, func(ev *sdk.Event) {
-		tool, _ := ev.Payload["tool"].(string)
-		if tool == "" {
-			return
+	// ★ 工具调用改走 **on_toolcall 阶段**（2026-11-26）：内核执行链握着
+	//   "正在执行哪个工具 + 参数"时触发它。原先订阅 `EventToolCall` 总线事件
+	//   是**老路径** —— 那条事件早已没有任何发布者，订阅方收的永远是空。
+	//
+	//   走 stage 的好处与 on_input 同：这里拿到的是执行现场（工具名、参数），
+	//   而且只对**经过本 agent 的**工具生效（不需要自己按 channel 过滤）。
+	h.sdk.RegisterStage(sdk.StageOnToolcall, func(ctx *sdk.StageContext) error {
+		if ctx == nil || len(ctx.ToolCalls) == 0 {
+			return nil
 		}
-		channel, _ := ev.Payload["channel"].(string)
-		if channel == "_consolidation_" {
-			return
+		tc0 := ctx.ToolCalls[0]
+		if tc0.Name == "" {
+			return nil
 		}
-		plugin, _ := ev.Payload["plugin"].(string)
-		status, _ := ev.Payload["status"].(string)
-		if status == "" {
-			status = "ok"
+		if ch, _ := ctx.Extra["output_channel"].(string); ch == "_consolidation_" {
+			return nil
 		}
+		tool := tc0.Name
+		// 终端视图归并（cmd_run 历史 / terminal_create 归并）：原先订阅
+		// EventToolCall 的那段逻辑搬到这里 —— 数据来源换成 stage ctx。
+		h.termView.OnToolCall(map[string]interface{}{
+			"tool":   tool,
+			"args":   tc0.Arguments,
+			"plugin": tc0.Plugin,
+		})
+		args := interface{}(tc0.Arguments)
+		var result interface{}
+		if len(ctx.ToolResults) > 0 {
+			result = ctx.ToolResults[0].Result
+		}
+		status := "ok"
+		plugin := tc0.Plugin
+		_ = args
 		tc := ChatToolCall{
 			Tool:   tool,
 			Name:   tool,
-			Args:   ev.Payload["args"],
-			Result: ev.Payload["result"],
+			Args:   args,
+			Result: result,
 			Status: status,
 			Plugin: plugin,
 		}
@@ -196,6 +240,7 @@ func (h *Handler) subscribeChatEvents() {
 		msg.ToolCalls = append(msg.ToolCalls, tc)
 		h.persistChatLocked()
 		h.chatMu.Unlock()
+		return nil
 	})
 	h.sdk.Subscribe(sdk.EventReasoning, func(ev *sdk.Event) {
 		content, _ := ev.Payload["content"].(string)
@@ -217,85 +262,7 @@ func (h *Handler) subscribeChatEvents() {
 		h.persistChatLocked()
 		h.chatMu.Unlock()
 	})
-	h.sdk.Subscribe(sdk.EventAgentOutput, func(ev *sdk.Event) {
-		content, _ := ev.Payload["content"].(string)
-		channel, _ := ev.Payload["channel"].(string)
-		kind, _ := ev.Payload["kind"].(string)
-		h.chatMu.Lock()
-		// 输出通道主动输出(output_send__{通道})作为独立气泡,不并入最终回复
-		if kind == "channel_output" {
-			h.pendingIdx = -1
-			// 附件输出（output_type=image/file）：存 attachment 字段供前端渲染，
-			// content 保留原始 payload 作为备选文案（历史兼容旧数据）。
-			var att *Attachment
-			if ot, _ := ev.Payload["output_type"].(string); ot == "image" || ot == "file" {
-				url, _ := ev.Payload["url"].(string)
-				size, _ := ev.Payload["size"].(int64)
-				if f, ok := ev.Payload["size"].(float64); ok && size == 0 {
-					size = int64(f)
-				}
-				name := url
-				if i := strings.LastIndexByte(url, '/'); i >= 0 {
-					name = url[i+1:]
-				}
-				att = &Attachment{Type: ot, URL: url, Size: size, Name: name}
-			}
-			if content == "" && att == nil {
-				h.chatMu.Unlock()
-				return
-			}
-			m := ChatMsg{
-				Role:       "assistant",
-				Seq:        h.bumpSeqLocked(),
-				Source:     channel,
-				Time:       time.Unix(ev.Timestamp, 0).Format(time.RFC3339),
-				Attachment: att,
-			}
-			// 附件消息不把本地路径当正文展示（如 "/tmp/homeagent.png"），置空
-			if att != nil {
-				m.Content = ""
-			} else {
-				m.Content = content
-			}
-			// 已持 chatMu：直接操作 chatHistory + persist，不可调 addChatMsg
-			//（内部会重入加锁导致死锁——output_send__webui 发图 60s 超时的根因）
-			h.chatHistory = append(h.chatHistory, m)
-			if len(h.chatHistory) > maxChatHistory {
-				drop := len(h.chatHistory) - maxChatHistory
-				h.chatHistory = h.chatHistory[drop:]
-				if h.pendingIdx >= 0 {
-					h.pendingIdx -= drop
-					if h.pendingIdx < 0 {
-						h.pendingIdx = -1
-					}
-				}
-			}
-			h.persistChatLocked()
-			h.chatMu.Unlock()
-			return
-		}
-		if msg := h.pendingAssistantLocked(); msg != nil && content != "" {
-			msg.Content = content
-			if channel != "" {
-				msg.Source = channel
-			}
-			h.pendingIdx = -1
-			h.persistChatLocked()
-			h.chatMu.Unlock()
-			return
-		}
-		h.pendingIdx = -1
-		h.chatMu.Unlock()
-		if content == "" {
-			return
-		}
-		h.addChatMsg(ChatMsg{
-			Role:    "assistant",
-			Content: content,
-			Source:  channel,
-			Time:    time.Unix(ev.Timestamp, 0).Format(time.RFC3339),
-		})
-	})
+
 }
 
 // pendingAssistantLocked 返回 chatHistory 中当前进行中的 assistant 消息（已持有 chatMu）。
@@ -678,7 +645,10 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	// 缓冲 2048：reasoning/content 增量是高频小包（LLM token 级），
 	// 512 时连续 tool_call + reasoning + delta 密集期会溢出导致前端丢帧。
 	// 写入侧用短超时(50ms)兜底，比立即丢弃更友好。
-	writeCh := make(chan string, 2048)
+	// ★ 连接登记在插件自己的表里（不是订阅总线）：输出通道 handler 与
+	//   stage handler 通过 `sendToStreams` 扇出到这些 writeCh。
+	writeCh, unregisterStream := h.addStream()
+	defer unregisterStream()
 	writerDone := make(chan struct{})
 	var writerDoneOnce sync.Once
 	go func() {
@@ -764,7 +734,7 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	//         客户端永远看不到插件崩溃。已补上。
 	//
 	//    判据见 handler_sse_protocol_test.go（两份清单必须互为子集）。
-	subTypes := []string{"agent_output", "reasoning", "tool_call", "stage", "agent_llm_chain", "terminal_output", "scheduler", "system",
+	subTypes := []string{"agent_output", "reasoning", "stage", "agent_llm_chain", "terminal_output", "scheduler", "system",
 		// memory_access：图记忆的真实读写（哪个块被读了/写了/删了/合了）。
 		//
 		// ★ 为何新增而不是用现有的 tool_call：tool_call 只带**工具名**
@@ -790,25 +760,13 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	// 避免重放 delta 与聚合内容重复追加。
 	var unsubs []func()
 	var seq int64
-	appendDeltaSub := func(evtType sdk.EventType) {
-		unsub := h.sdk.Subscribe(evtType, func(evt *sdk.Event) {
-			data, _ := json.Marshal(evt)
-			seq++
-			id := fmt.Sprintf("%d-%d", evt.Timestamp, seq)
-			sendSSE(writeCh, id, string(evt.Type), string(data))
-		})
-		unsubs = append(unsubs, unsub)
-	}
-	appendDeltaSub(sdk.EventReasoningDelta)
-	appendDeltaSub(sdk.EventContentDelta)
+	// ★ token 级流式增量**不在这里订阅**（docs §9.2 第 5 行）：
+	// 它们由输出通道调用触发，插件自己扇出到上面登记的 writeCh。
+	// 本文件的 unsubs 只处理**内核事件**（tool_call / raw_input / 更新进度…）。
 
 	for _, t := range subTypes {
 		t2 := t
 		unsub := h.sdk.Subscribe(sdk.EventType(t2), func(evt *sdk.Event) {
-			if evt.Type == sdk.EventToolCall {
-				toolName, _ := evt.Payload["tool"].(string)
-				log.Printf("[SSE] received tool_call event: tool=%s", toolName)
-			}
 			data, _ := json.Marshal(evt)
 			seq++
 			id := fmt.Sprintf("%d-%d", evt.Timestamp, seq)
@@ -817,10 +775,6 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 				h.sseEvents.Append(id, string(evt.Type), data)
 			}
 			sendSSE(writeCh, id, string(evt.Type), string(data))
-			if evt.Type == sdk.EventToolCall {
-				toolName, _ := evt.Payload["tool"].(string)
-				log.Printf("[SSE] wrote tool_call to writeCh: tool=%s", toolName)
-			}
 		})
 		unsubs = append(unsubs, unsub)
 	}
@@ -831,22 +785,11 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	// 为什么不直接把 raw_input 放进 subTypes：那条事件的 payload 带整条输入正文
 	// （用户消息，可能几 KB），而拓扑只需要 `source`（通道名）与发出者的 agent id。
 	// 全量转发会让每次用户说话都在 SSE 上多背一份正文。
-	unsubInput := h.sdk.Subscribe(sdk.EventRawInput, func(evt *sdk.Event) {
-		src, _ := evt.Payload["source"].(string)
-		if src == "" {
-			return
-		}
-		data, _ := json.Marshal(map[string]interface{}{
-			"type":      "channel_input",
-			"source":    src,
-			"agent":     evt.Source,
-			"timestamp": evt.Timestamp,
-		})
-		seq++
-		id := fmt.Sprintf("%d-%d", evt.Timestamp, seq)
-		sendSSE(writeCh, id, "channel_input", string(data))
-	})
-	unsubs = append(unsubs, unsubInput)
+	// ★ channel_input 也改由 **on_input stage** 推（拓扑动画只需要 source
+	//   与时间戳 —— 正文不进 SSE）。这条由 `subscribeChatEvents` 里同一个
+	//   stage 处理器负责，见该函数末尾的 `channel_input` 推送。
+	_ = seq
+	_ = writeCh
 	defer func() {
 		for _, unsub := range unsubs {
 			unsub()
@@ -866,4 +809,95 @@ func (h *Handler) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// recordChannelOutput 把**输出通道的一次完整输出**写进聊天历史。
+//
+// ★ 由输出通道 handler 直接调用（docs §9.2）：通道调用本身就是载体，
+// 不需要"通道发事件 → 自己再订阅回来"两圈。
+//
+// payload 形状与原事件的 payload **逐字一致**（content / channel / kind /
+// output_type / url / size），所以下面的判定逻辑与迁移前相同。
+func (h *Handler) RecordChannelOutput(payload map[string]interface{}) {
+	if h == nil || payload == nil {
+		return
+	}
+
+	content, _ := payload["content"].(string)
+	channel, _ := payload["channel"].(string)
+	kind, _ := payload["kind"].(string)
+	h.chatMu.Lock()
+	// 输出通道主动输出(output_send__{通道})作为独立气泡,不并入最终回复
+	if kind == "channel_output" {
+		h.pendingIdx = -1
+		// 附件输出（output_type=image/file）：存 attachment 字段供前端渲染，
+		// content 保留原始 payload 作为备选文案（历史兼容旧数据）。
+		var att *Attachment
+		if ot, _ := payload["output_type"].(string); ot == "image" || ot == "file" {
+			url, _ := payload["url"].(string)
+			size, _ := payload["size"].(int64)
+			if f, ok := payload["size"].(float64); ok && size == 0 {
+				size = int64(f)
+			}
+			name := url
+			if i := strings.LastIndexByte(url, '/'); i >= 0 {
+				name = url[i+1:]
+			}
+			att = &Attachment{Type: ot, URL: url, Size: size, Name: name}
+		}
+		if content == "" && att == nil {
+			h.chatMu.Unlock()
+			return
+		}
+		m := ChatMsg{
+			Role:       "assistant",
+			Seq:        h.bumpSeqLocked(),
+			Source:     channel,
+			Time:       time.Now().Format(time.RFC3339),
+			Attachment: att,
+		}
+		// 附件消息不把本地路径当正文展示（如 "/tmp/homeagent.png"），置空
+		if att != nil {
+			m.Content = ""
+		} else {
+			m.Content = content
+		}
+		// 已持 chatMu：直接操作 chatHistory + persist，不可调 addChatMsg
+		//（内部会重入加锁导致死锁——output_send__webui 发图 60s 超时的根因）
+		h.chatHistory = append(h.chatHistory, m)
+		if len(h.chatHistory) > maxChatHistory {
+			drop := len(h.chatHistory) - maxChatHistory
+			h.chatHistory = h.chatHistory[drop:]
+			if h.pendingIdx >= 0 {
+				h.pendingIdx -= drop
+				if h.pendingIdx < 0 {
+					h.pendingIdx = -1
+				}
+			}
+		}
+		h.persistChatLocked()
+		h.chatMu.Unlock()
+		return
+	}
+	if msg := h.pendingAssistantLocked(); msg != nil && content != "" {
+		msg.Content = content
+		if channel != "" {
+			msg.Source = channel
+		}
+		h.pendingIdx = -1
+		h.persistChatLocked()
+		h.chatMu.Unlock()
+		return
+	}
+	h.pendingIdx = -1
+	h.chatMu.Unlock()
+	if content == "" {
+		return
+	}
+	h.addChatMsg(ChatMsg{
+		Role:    "assistant",
+		Content: content,
+		Source:  channel,
+		Time:    time.Now().Format(time.RFC3339),
+	})
 }

@@ -9,7 +9,7 @@ package mainagent
 //	「空中断由内核发本身就是一种妥协」——
 //	妥协在内核（或基座）替 agent 发那条中断；正解是内核触发钩子、钩子自己发。
 //
-// 所以这里没有 `Agent.RaiseContextOverflow()`（已删），也没有
+// 所以这里没有 `agent.Agent.RaiseContextOverflow()`（已删），也没有
 // `VectorContextOverflow` 中断向量（已删）。主 agent 的超页策略
 // 自己往自己的 self input 投一条 `{kind: "air"}`，基座只按标签分派给
 // 本类型的 handler —— 基座不认识"air"是什么。
@@ -25,7 +25,9 @@ package mainagent
 // 由自己的 loop 在安全点处理。rt 子没有队列（滑窗即可）、驻留子整窗不裁
 // （上报父），它们的处置完全不同 —— 所以这条通路只属于主 agent。
 
-import "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+)
 
 // InjectSelfAirInterrupt 投一条**无正文**的空中断到本 agent 的自循环输入。
 //
@@ -36,5 +38,5 @@ func InjectSelfAirInterrupt(a *agent.Agent) {
 	if a == nil {
 		return
 	}
-	a.InjectSelfChannel(agent.SelfInputMsg{Kind: agent.SelfKindAir})
+	a.InjectSelfChannel(agent.SelfInputMsg{Kind: SelfKindAir})
 }

@@ -30,6 +30,7 @@ func (h *recordingHandlers) ExecuteSocialTool(tc api.ToolCall) string { return h
 func (h *recordingHandlers) ExecuteColdContextTool(tc api.ToolCall) string {
 	return h.hit("coldcontext")
 }
+func (h *recordingHandlers) ExecuteLLMTool(tc api.ToolCall) string    { return h.hit("llm") }
 func (h *recordingHandlers) ExecuteSecretTool(tc api.ToolCall) string { return h.hit("secret") }
 func (h *recordingHandlers) ExecuteOutputSendHelp(tc api.ToolCall) string {
 	return h.hit("output_help")
@@ -107,17 +108,60 @@ func TestDispatchNilHandlers(t *testing.T) {
 //
 // 它们由各自的注册者登记到 registry（谁拥有那个能力，谁注册那个工具），
 // 分发走 registry.DispatchTool。本判据钉住"device 不许把它们吞回去" ——
-// 一旦有人把 `resident_agents` / `rt_children` 之类塞回 Dispatch，
-// 模型看得到的两处事实就会再次分叉（这正是 2026-11-18 修掉的形态）。
+// 一旦有人把 `admin_child` 之类塞回 Dispatch，模型看到的两处事实就会再次分叉。
+//
+// ★ 类型专属入口（`rt_children` / `resident_agents` / `rt_transcript`）已删：
+//
+//	它们统一走 `admin_child(type=..., action=...)`（用户裁定：父子只有两条协议）。
 func TestSubAgentToolsLiveInRegistry(t *testing.T) {
 	for _, name := range []string{
 		"admin_child", "admin_child_help", "admin_child_list",
-		"spawn_child", "child_result", "notify_parent", "inputch_note",
-		"rt_children", "rt_transcript", "resident_agents",
 	} {
 		h := newHandlers()
 		if _, handled := toolroute.Dispatch(h, api.ToolCall{Name: name}, nil); handled {
 			t.Fatalf("★ %q 被 device 路由表接管了 —— 它应当由 registry 分发", name)
+		}
+	}
+}
+
+// TestEveryBuiltinFamilyHasARoute：**每个族都必须有路由**（2026-11-20 回归）。
+//
+// ## 事故
+//
+// `llm_*` 族在基座有执行体（`Agent.ExecuteLLMTool`）、在接口里有位置，
+// 但 `toolroute.Dispatch` 的 switch 里**没有分支** ⇒ 落到兜底
+// "不存在或未注册"。真二进制实测：
+//
+//	llm_list_sources → Tool llm_list_sources does not exist or is not registered
+//
+// 同类风险：接口新增方法后，路由表漏加分支是**编译期查不出**的
+// （方法在接口上，路由是运行时 switch）。
+//
+// 判据：拿每个 `BuiltinToolHandlers` 的方法名，逐一构造该族的一个工具名，
+// 确认 `Dispatch` 认它 —— 认不出来就是路由缺失。
+func TestEveryBuiltinFamilyHasARoute(t *testing.T) {
+	h := newHandlers()
+	cases := []struct {
+		tool string
+		want string
+	}{
+		{"persona_set", ""}, // 不比对具体返回值，只要求 handled=true
+		{"stablemem_recall", ""},
+		{"social_x", ""},
+		{"coldcontext_query", ""},
+		{"doc_x", ""},
+		{"llm_list_sources", ""},
+		{"secret_list", ""},
+		{"output_send__x_help", ""},
+		{"output_send__x", ""},
+		{"output_list_channels", ""},
+		{"input_channels", ""},
+		{"plgreload", ""},
+		{"get_plugin_tools", ""},
+	}
+	for _, c := range cases {
+		if _, handled := toolroute.Dispatch(h, api.ToolCall{Name: c.tool}, nil); !handled {
+			t.Fatalf("★ 工具 %q 没有任何族路由 —— 它会落到「不存在或未注册」", c.tool)
 		}
 	}
 }

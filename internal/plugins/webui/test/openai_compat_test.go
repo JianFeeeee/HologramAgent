@@ -54,8 +54,19 @@ func newOpenAITestServer(t *testing.T) (*httptest.Server, *agentIO.IOManager, *e
 		IOManager: iom,
 		EventBus:  bus,
 	})
+	// ★ 输出通道分发器必须起：增量经 `EmitOutputTo` → `outputCh` → device
+	//   handler（docs §9.2）。测试里没有 kernelloop，用独立 stop 通道。
+	//
+	// ★ 还要注册一个最小 device：生产里由插件的 `RegisterOutputChannel` 完成
+	//   （走 pluginhost 的 regOutput 闭包），测试不走那套装配，所以手工登记
+	//   一个"把 payload 交给 Handler 的 SSE 扇出"的 device。
+	stop := make(chan struct{})
+	iom.StartOutputDispatch(stop)
+	t.Cleanup(func() { close(stop) })
+
 	h := webui.NewHandler(cfg)
 	h.RegisterRoutes(http.NewServeMux())
+	_ = iom.RegisterDevice(&testOutputDevice{h: h})
 
 	srv := httptest.NewServer(h.Handler())
 	t.Cleanup(func() { srv.Close() })
@@ -143,7 +154,7 @@ func TestOpenAIModelsRequiresAuth(t *testing.T) {
 //
 // 所以断言「首帧远早于总计 700ms 的生成时间」就是判据的全部。
 func TestOpenAIStreamIsActuallyStreaming(t *testing.T) {
-	srv, iom, bus := newOpenAITestServer(t)
+	srv, iom, _ := newOpenAITestServer(t)
 
 	// 假内核：发 3 个内容增量（每 100ms 一个），**扣住**最终响应 700ms，
 	// 只有当消费者表现出「已经在读帧」时才放行。
@@ -157,11 +168,15 @@ func TestOpenAIStreamIsActuallyStreaming(t *testing.T) {
 			return
 		}
 		// 阶段 1：分片增量
+		//
+		// ★ 现在增量由**输出通道调用**承载（docs §9.2 第 5 行）：
+		// `EmitOutputTo(ch, ch, "text", {"delta": true, "content": ...})`。
+		// 此前是往总线 Publish(EventContentDelta) —— 那是被删的形态。
 		for i := 0; i < 3; i++ {
 			time.Sleep(100 * time.Millisecond)
-			bus.Publish(&sdk.Event{
-				Type:    sdk.EventContentDelta,
-				Payload: map[string]interface{}{"content": "片"},
+			iom.EmitOutputTo("webui", "webui", "text", map[string]interface{}{
+				"delta":   true,
+				"content": "片",
 			})
 		}
 		// 阶段 2：扣住最终响应，直到消费者已经在读帧（真流式会读）
@@ -293,4 +308,24 @@ func TestOpenAINonStreamUnchanged(t *testing.T) {
 	if strings.Contains(string(raw), "data: ") {
 		t.Error("非流式响应里出现 SSE 帧 —— 两种模式串了")
 	}
+}
+
+// testOutputDevice 是把输出通道调用交给 Handler 的最小 device。
+//
+// 生产路径由插件 `RegisterOutputChannel("webui", ...)` 注册真实 device
+// （内核 pluginhost 的 regOutput 闭包）；判据里没有那套装配，所以这里
+// 用同一个入口形状（`Execute("output", args)`）直连 Handler 的推送函数。
+type testOutputDevice struct{ h *webui.Handler }
+
+func (d *testOutputDevice) Name() string                                 { return "webui" }
+func (d *testOutputDevice) Type() agentIO.DeviceType                     { return agentIO.DeviceOutput }
+func (d *testOutputDevice) Description() string                          { return "webui test output" }
+func (d *testOutputDevice) Tools() []agentIO.ToolDef                     { return nil }
+func (d *testOutputDevice) Start() error                                 { return nil }
+func (d *testOutputDevice) Stop() error                                  { return nil }
+func (d *testOutputDevice) OutputCapabilities() agentIO.OutputCapability { return agentIO.CapText }
+func (d *testOutputDevice) ChannelDef() agentIO.ChannelDef               { return agentIO.ChannelDef{} }
+func (d *testOutputDevice) Execute(tool string, args map[string]interface{}) (interface{}, error) {
+	d.h.PushChannelOutput(args)
+	return map[string]interface{}{"status": "ok"}, nil
 }

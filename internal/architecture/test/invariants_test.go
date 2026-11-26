@@ -13,7 +13,8 @@
 //
 //   - 依赖方向：`go list -deps <pkg>`（Go 自己算的，最权威）
 //   - 符号是否消失：读源码文本（因为常量/字段名不导出，无法从外部断言）
-//   - 访问器数量：`grep -c` 等价
+//   - 结构体字段集 / 方法集：`reflect`（编译期事实，比读文本权威）
+//   - 访问器数量：`reflect` 数方法
 //
 // ★ 读源码文本做**结构**断言（"这个符号不存在"）与 §0 第 5 条禁止的
 //
@@ -24,13 +25,15 @@ package test
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 )
 
 // repoRoot 返回仓根（本判据在 internal/architecture/test 下）。
@@ -167,7 +170,7 @@ func TestKnownUnfinishedImportsAreListed(t *testing.T) {
 	deps := internalDeps(goListDeps(t, "./internal/agent/agent"))
 	got := map[string]bool{}
 	for _, d := range deps {
-		if strings.HasPrefix(d, "internal/memory") {
+		if strings.HasPrefix(d, "internal/agent/mainagent/memory") {
 			got[d] = true
 		}
 	}
@@ -189,58 +192,28 @@ func TestKnownUnfinishedImportsAreListed(t *testing.T) {
 //
 //	outputsByAgent · principals.byID · InstanceManager.recs · scopesByAgent 的 churn
 //
-// 表只剩 `AgentRecord`。判据读源码文本，因为这些字段不导出、无法从外部断言。
-func TestSingleAgentRecordTable(t *testing.T) {
-	root := repoRoot(t)
-	// 旧表的**标识符**。它们若还在（哪怕只剩定义），就说明有两份事实。
-	//
-	// ★ `scopesByAgent` 不在此列，且这是**刻意的**：它是 per-agent 视图表，
-	//   剩下的唯一内容是 `sessionProfile`（**本轮事实**，End 即清）——
-	//   它没有别的落点，也不随 agent 生命周期残留。
-	//   而 `longtimeProfile`（会残留、会提权的那一半）已搬进 `AgentRecord`。
-	dead := []string{"outputsByAgent", "principals.byID"}
-	for _, name := range dead {
-		hits := grepFiles(t, root, "internal/security", name)
-		if len(hits) > 0 {
-			t.Fatalf("★ 旧表 %q 仍在 security 包里（判据 15）：\n%s", name, strings.Join(hits, "\n"))
-		}
-	}
-}
+// TestSingleAgentRecordTable 已删除（2026-11-25）。
+//
+// 它用 `os.ReadFile` + `strings.Contains` 扫 security 包源码，断言
+// `outputsByAgent` / `principals.byID` 两个**私有字段名**不存在。
+//
+// 两个问题：
+//
+//	① 判据在测"某个名字别出现" —— 换名、换结构就静默失效；
+//	② 而它真正要防的东西（旧表活得比记录久 ⇒ 同名重建继承旧策略）
+//	   是**可观测的行为**，不需要读源码。
+//
+// 行为判据取代它，见 `internal/security/test/agentrecord_contract_test.go`：
+//
+//	TestPolicyDiesWithRecord      删除记录 ⇒ 收窄授权消失（qq 从拒变允）
+//	TestChildPolicyDiesWithRecord 删除记录 ⇒ 父为子声明的工具策略消失
+//
+// ★ 这两条比原判据更强：它们直接观测"旧表若还在会怎样"，
+//   而不是"某个字符串没出现"。
 
-// grepFiles 在目录下所有 .go 文件里找标识符，返回 "file:line"。
-func grepFiles(t *testing.T, root, dir, ident string) []string {
-	t.Helper()
-	var hits []string
-	base := filepath.Join(root, dir)
-	err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		for i, line := range strings.Split(string(data), "\n") {
-			// 只算**代码**行（注释里提到旧表名是合法的历史说明）。
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "//") {
-				continue
-			}
-			if strings.Contains(line, ident) {
-				rel, _ := filepath.Rel(root, path)
-				hits = append(hits, rel+":"+itoa(i+1))
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", base, err)
-	}
-	return hits
-}
+// grepFiles / itoa 已删除（2026-11-25）：唯一调用者
+// `TestSingleAgentRecordTable` 已由行为判据取代
+// （见 `internal/security/test/agentrecord_contract_test.go`）。
 
 func itoa(n int) string {
 	if n == 0 {
@@ -254,50 +227,73 @@ func itoa(n int) string {
 	return string(b)
 }
 
-// TestHooksHasExactlyFourSlots 判据 5：`Hooks` 只有 **4 个槽位**。
+// TestHooksHasExactlyFourSlots 判据 5：`Hooks` 只有 **3 个槽位**。
 //
-// 判据读 `hooks.go` 的**结构体字面量**（字段名与类型），因为槽位是装配契约，
-// 它的形状必须能被机械核对 —— 加第五个槽位时这条会红，逼人先想清楚
-// "它是不是某个类型自己的实现"（那正是 A2/E 删掉 9 个槽位的理由）。
+// ★ 黑盒（2026-11-25 改写）：观测**编译期可见的公开事实** —— 结构体字段名，
+//
+//	用 `reflect` 取，不读源码文本。
+//
+// 原实现 `os.ReadFile(hooks.go)` + 手写切分结构体字面量，有两个问题：
+//
+//	① 判据自己会漂：注释写"4 个槽位"、代码里是 `want = 3`，两处对不上；
+//	② 改注释/挪代码位置会误伤，而真正的契约（字段集）反而没被盯住。
+//
+// 字段集是编译期事实，`reflect` 就是它的权威读法。
+//
+// 加槽位前先问：它是不是某个类型自己的实现？（A2/E 删掉的 9 个都是）
 func TestHooksHasExactlyFourSlots(t *testing.T) {
-	root := repoRoot(t)
-	data, err := os.ReadFile(filepath.Join(root, "internal", "agent", "agent", "hooks.go"))
-	if err != nil {
-		t.Fatalf("read hooks.go: %v", err)
-	}
-	src := string(data)
-	start := strings.Index(src, "\ntype Hooks struct {")
-	if start < 0 {
-		t.Fatal("★ 找不到 `type Hooks struct {` —— 结构被改名了，请更新本判据")
-	}
-	end := strings.Index(src[start:], "\n}\n")
-	if end < 0 {
-		t.Fatal("★ 找不到 Hooks 结构体的结尾")
-	}
-	open := strings.Index(src[start:], "{")
-	body := src[start+open+1 : start+end]
+	typ := reflect.TypeOf(agent.Hooks{})
 
-	// 槽位 = 结构体里的**顶层字段**（`Name Type`）。
-	//
-	// ★ 包括 `Runtime RuntimeHooks`（它是**一个**槽位：类型的生命周期登记），
-	//   只数 `func(...)` 会把 4 数成 3 —— 那样判据就错了，
-	//   而错的判据比没有判据更糟（它会训练人改判据而不是改代码）。
-	var slots []string
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "//") || trimmed == "}" {
-			continue
+	var got []string
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if !f.IsExported() {
+			continue // 私有字段不是槽位（槽位是类型要填的东西）
 		}
-		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 {
-			slots = append(slots, fields[0])
+		got = append(got, f.Name)
+	}
+	sort.Strings(got)
+
+	// 三个槽位：生命周期登记 / 上下文预算 / 溢出处置。
+	want := []string{"ContextBudget", "OverflowHandler", "Runtime"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("★ Hooks 的槽位集变了：\n  实际 %v\n  期望 %v\n"+
+			"加槽位前先问：它是不是某个类型自己的实现？（A2/E 删掉的 9 个都是）",
+			got, want)
+	}
+}
+
+// TestRuntimeHooksSlotSet：`RuntimeHooks` 的槽位集（生命周期 + 队列状态）。
+//
+// ★ 与 `TestHooksHasExactlyFourSlots` 是一对：`Hooks` 是**三**个通用槽
+//
+//	（生命周期登记 / 上下文预算 / 溢出处置），`RuntimeHooks` 是生命周期
+//	本身那组。原先只在文档里写"4 个"（Initialize/Restore/Start/Stop），
+//	而代码实有 7 个 —— 文档过期了三个月没人发现，因为没有判据盯结构体。
+//
+// 加一个槽位前先问：它是不是某个类型的实现细节？
+func TestRuntimeHooksSlotSet(t *testing.T) {
+	typ := reflect.TypeOf(agent.RuntimeHooks{})
+	var got []string
+	for i := 0; i < typ.NumField(); i++ {
+		if f := typ.Field(i); f.IsExported() {
+			got = append(got, f.Name)
 		}
 	}
-	const want = 4
-	if len(slots) != want {
-		t.Fatalf("★ Hooks 有 %d 个槽位（应为 %d）: %v\n"+
-			"加槽位前先问：它是不是某个类型自己的实现？（A2/E 删掉的 9 个都是）",
-			len(slots), want, slots)
+	sort.Strings(got)
+
+	want := []string{
+		"DrainTerminal",    // 停机时给未运行的任务补终态（队列归类型）
+		"Initialize",       // 装配期一次
+		"InterruptPending", // 类型自己的队列是否还有中断
+		"Restore",          // 内核驱动的恢复（目录由内核给）
+		"RoundsExecuted",   // 状态面要的轮次数
+		"Start",            // 起自己的循环
+		"Stop",             // 停自己 + 排空队列
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("★ RuntimeHooks 槽位集变了：\n  实际 %v\n  期望 %v\n"+
+			"改动它意味着改了「类型交什么给内核」的契约 —— 先确认它不是某个类型的实现细节", got, want)
 	}
 }
 
@@ -305,7 +301,12 @@ func TestHooksHasExactlyFourSlots(t *testing.T) {
 //
 // `Config` / `Hooks` / `SetHooks` / `Ctx` / `Cancel`。
 //
-// ★ 判据刻意只数**这五个名字**，不去枚举全部导出方法：
+// ★ 黑盒（2026-11-25 改写）：观测 `*agent.Agent` 的**方法集**（`reflect`），
+//
+//	而不是读 `surface.go` 文本。方法集是编译期事实，谁把它挪到哪个文件、
+//	拆成几个文件都不该影响这条判据 —— 那本来也不是契约。
+//
+// ★ 判据刻意只钉**这五个名字存在**，不去枚举全部导出方法：
 //
 //	`*Agent` 上还有大量**能力**方法（`RunToolBatch` / `PruneContext` /
 //	`RegisterPeriodic` / `ExecuteTool` …），它们不是"构造面再导出"，
@@ -313,58 +314,34 @@ func TestHooksHasExactlyFourSlots(t *testing.T) {
 //	什么都管的红条，然后大家就开始往白名单里加东西 —— 那等于判据失效。
 //
 // 真正要防的回退是：有人把 `Provider()` / `Sched()` / `Sub()` 这类
-// **字段再导出**加回来。所以判据是"这个名字集合里只许有五个，
-// 且 surface.go 里只留 Ctx/Cancel"。
+// **字段再导出**加回来。所以判据是"这五个必须能调，且那几个必须不能调"。
 func TestSurfaceHasFiveAccessors(t *testing.T) {
-	root := repoRoot(t)
-	dir := filepath.Join(root, "internal", "agent", "agent")
+	typ := reflect.TypeOf(&agent.Agent{})
 
-	// ① surface.go 只剩 2 个（其余三个与各自实现同处，见 §6.3）。
-	data, err := os.ReadFile(filepath.Join(dir, "surface.go"))
-	if err != nil {
-		t.Fatalf("read surface.go: %v", err)
-	}
-	count := strings.Count(string(data), "func (a *Agent) ")
-	if count != 2 {
-		t.Fatalf("★ surface.go 有 %d 个访问器（应为 2：Ctx + Cancel）。"+
-			"§6.3 的 34 → 5 已落地，加回来就是回退", count)
+	for _, want := range []string{"Config", "Hooks", "SetHooks", "Ctx", "Cancel"} {
+		if _, ok := typ.MethodByName(want); !ok {
+			t.Fatalf("★ 构造面缺少 %q —— 基座对类型的最小面被改小了", want)
+		}
 	}
 
-	// ② 那五个名字必须存在（否则是"删过头"，类型模块会编译不过 ——
-	//    但这条判据让失败信息更直接）。
-	want := map[string]string{
-		"Config":   "install.go",
-		"Hooks":    "stages_exported.go",
-		"SetHooks": "agent.go",
-		"Ctx":      "surface.go",
-		"Cancel":   "surface.go",
-	}
-	decl := map[string]bool{}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		b, rerr := os.ReadFile(f)
-		if rerr != nil {
-			t.Fatal(rerr)
-		}
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "func (a *Agent) ") {
-				continue
-			}
-			rest := strings.TrimPrefix(line, "func (a *Agent) ")
-			name := rest
-			if i := strings.IndexAny(rest, "( "); i > 0 {
-				name = rest[:i]
-			}
-			decl[name] = true
-		}
-	}
-	for name := range want {
-		if !decl[name] {
-			t.Fatalf("★ 构造面访问器 %q 不存在了（判据 6 要求这五个都在）", name)
+	// 字段再导出（历史回退形态）：这些名字一旦出现在方法集上，
+	// 就意味着"类型可以直接摸基座的内部状态"，绕过 syscall 边界。
+	//
+	// ★ 清单取自 docs §3.2「不许出现的方法」，逐字对齐。
+	//
+	// 刻意**不含** `Provider` / `ProviderManager`：它们存在（装配点要读），
+	// 约束是"类型不许调用它们"（§9.6），那是**调用侧**的约束，不是方法集
+	// 的约束。用方法集去钉调用侧只会得到一个必须开白名单的假判据。
+	//
+	// ★ 也**不含** `InterruptPending` / `RoundsExecuted`：它们是 `RuntimeHooks`
+	//   的槽位（类型自己的队列状态与轮次），基座上的同名方法只是给状态面用的
+	//   转发。docs §3.2 把它们列进"不许出现"是**文档过期**（P7 要修），
+	//   而这里应该跟代码的终态一致 —— 判据不是用来固化过期文档的。
+	for _, banned := range []string{"Scheduler", "SetScheduler", "Publish", "EventBus", "Notify",
+		"GraphDB", "GraphMem", "GraphOpener", "LightMemory",
+		"RaiseKernelInterruptAt", "RaiseVector"} {
+		if _, ok := typ.MethodByName(banned); ok {
+			t.Fatalf("★ 方法集里出现了 %q —— 那是字段再导出（§3.2 明确禁止）", banned)
 		}
 	}
 }

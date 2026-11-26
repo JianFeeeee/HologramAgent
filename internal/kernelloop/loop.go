@@ -392,6 +392,16 @@ type OutputSource interface {
 	Output() <-chan OutputEvent
 }
 
+// StopChan 返回循环的停止信号（供"随循环生灭"的常驻消费者共用）。
+//
+// ★ 只读用途：调用方 SELECT 它来退出，不许关闭它 —— 关闭权只在 Stop()。
+func (l *Loop) StopChan() <-chan struct{} {
+	if l == nil {
+		return nil
+	}
+	return l.stop
+}
+
 // StartOutputConsumer 把一个常驻消费者挂到循环里（loop 停止时它一并退出）。
 //
 // ★ 语义：**推动**而不是"另起一个不受管的 goroutine"。消费者随循环生命周期，

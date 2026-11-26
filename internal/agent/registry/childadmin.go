@@ -41,7 +41,11 @@ func ChildAdminTools() []ToolDef {
 
 	var out []ToolDef
 
-	// ① admin_child：type + action + （id/text/residual/arg/meta）
+	// ① admin_child：**顶层只有四个参数**（type / action / meta / arg）。
+	//
+	// ★ 用户裁定（2026-11-18）："id / text / residual 以及某个动作要的任何键，
+	//   全在 arg 里"。此前 schema 里把它们摊在顶层，执行侧又跟着兜底收 ——
+	//   于是同一个动作有两种写法，参数合并顺序成了隐性约定。
 	actionEnum := []string{}
 	typeEnum := []string{}
 	var typeDocs []string
@@ -89,15 +93,11 @@ func ChildAdminTools() []ToolDef {
 				"enum":        actionEnum,
 				"description": "要执行的动作",
 			},
-			"id":   map[string]interface{}{"type": "string", "description": "实例 id（inspect/send/destroy/restart 必填）"},
-			"text": map[string]interface{}{"type": "string", "description": "send：要注入的内容"},
-			"residual": map[string]interface{}{
-				"type": "string", "enum": []string{"keep", "drop"},
-				"description": "destroy / reclaim：残余任务处置（keep=转回你的队列，默认 / drop=明确丢弃）",
-			},
 			"arg": map[string]interface{}{
-				"type":        "object",
-				"description": "动作参数（create 与类型独有动作用；键见 admin_child_help）",
+				"type": "object",
+				"description": "动作参数，**所有**动作的业务键都在这里：" +
+					"id（inspect/send/destroy/restart）、text（send）、residual（destroy/reclaim）、" +
+					"以及 create 与类型独有动作的参数（键见 admin_child_help）",
 			},
 			"meta": map[string]interface{}{
 				"type":        "object",

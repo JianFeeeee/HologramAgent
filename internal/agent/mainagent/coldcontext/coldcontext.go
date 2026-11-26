@@ -1,0 +1,1323 @@
+package coldcontext
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
+	"log"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/tfidf"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
+)
+
+// ChannelCleaner 按事件来源查找输入通道的 Cleaner 函数。
+// 返回 nil 表示不使用额外清洗。
+// ChannelCleaner 是 kernelapi 里同名类型的别名（声明点在接口包）。
+type ChannelCleaner = kernelapi.ChannelCleaner
+
+// ColdDoc — 记忆文档：由上下文提炼而来
+//
+// ## L1/L2 同构
+//
+// 文档的主体是 **Events**（事件列表），与 RelevanceContext 的事件列表同一结构。
+// 区别不在形态，而在是否被直接投喂给模型：L1 进 system prompt 时序，L2 要经召回才进去。
+//
+// Content 只是**渲染视图**（供摘要、人工阅读、SDK 的 ColdDoc.Content 字段），
+// 不是原文载体。原文在 Events 里，正文内联在文本块里。
+
+// ColdEvent 是一条被 L2 持有的**原始事件**，与 L1 的 ContextEvent 同构。
+//
+// ★ 为何正文不在字段里、而在块里
+//
+// 正文（含多媒体正文）内联在块里：文本块的 Text 是正文，媒体块的 Data 是字节。
+// 事件只是块的容器。因此本结构**不重复存一份正文字符串** ——
+// 那会出现「块里的正文」与「字段里的正文」两份真相。
+//
+// 读原文 = 读 Blocks 里文本块的 Text。
+
+// HasEvents 报告该文档是否持有可逐条回填的原始事件。
+//
+// 存量文档（Events 引入之前归档的）没有它 —— 调用方必须据此降级到
+// 「把 Content 塞进一条事件」，而不是假装能回填。
+//
+// ★ 它原本是 `ColdDoc` 的方法。DTO 声明已搬到 internal/kernelapi/model
+// （纯数据），而 Go 不允许跨包定义方法 ⇒ 按用户裁定（«funcs_in_memory»）
+// 降为本包的**包级函数**，行为逐字不变。
+// HasEvents 转发 colddoc.HasEvents（规则住在叶子包，基座与本包共用一份）。
+func HasEvents(d *ColdDoc) bool { return colddoc.HasEvents(d) }
+
+// coldcontextVectorAlgoVersion 是**文档向量算法**的版本标记。
+//
+// 为什么必需：DenseFP 只记录"哪个向量空间（模型）"，不记录"用什么文本算的"。
+// 2026-10-22 把输入从 `Summary + Content` 改成"事件正文"后，指纹不变
+// ⇒ 存量文档全部命中 `DenseFP == 指纹` 的跳过条件 ⇒ **永不重算**，
+// 修复对已有数据完全无效（实测：1055 篇存量仍是旧分数 0.78/0.79/0.76，
+// 区分度 0.003，与新算法的判据结果不符）。
+//
+// 所以把算法版本编进 DenseFP：算法一变，指纹后缀变，存量自动重算一次。
+//
+// 变更记录：
+//
+//	v1  初版：VectorizeDense(Summary + Content)
+//	v2  Summary 是 jieba 词袋且全库同质，改为事件正文（见 denseFor 注释）
+const coldcontextVectorAlgoVersion = "v2"
+
+// Store — 文档记忆存储。
+//
+// 主路径：denseSpace（稠密向量，与媒体共享的统一空间）。
+// Fallback：tfidf（TF-IDF 倒排索引，仅稠密空间不可用时加载）。
+//
+// ★ 关于 fallback 的定位（不要误删）：
+//
+//	它是「稠密空间没加载」时的兜底，**不是**「词袋当语义」的第二套真相。
+//	设计要求（ARCHITECTURE「向量层级：统一多模态空间（主）→ 词嵌入 → TF-IDF（回退）」）
+//	明确保留这条降级链：模型不可用时服务不能整个失去检索能力。
+//
+//	★ 但它**绝不能**是主路径：一旦稠密空间可用，jieba 词袋就不该参与
+//	  （实测主题不同的文档两两余弦 0.85~0.95，检索等同失效 —— 见 denseFor 注释）。
+type Store struct {
+	dir   string
+	mu    sync.RWMutex
+	docs  map[string]*ColdDoc
+	dirty bool
+
+	// fallback 路径（仅稠密空间不可用时加载）
+	tfidfEmb   *tfidf.Embedder
+	tfidfIdx   *tfidf.SearchableIndex
+	trainTexts []string // 缓存训练文本，延迟训练
+	tfidfOnce  sync.Once
+
+	// 主路径
+	denseSpace vector.MultimodalEmbedder
+
+	// secretStore 是变量库（落盘前脱敏）。可 nil = 未启用安全模块。
+	secretStore kernelapi.SecretStore
+}
+
+// NewStore 创建文档存储。tokenizer 由外层注入（如 jieba），供 TF-IDF 回退路径使用
+// （仅稠密空间不可用时加载；主路径不碰它）。
+func NewStore(dir string, tokenizer tfidf.Tokenizer) *Store {
+	return &Store{
+		dir:  dir,
+		docs: make(map[string]*ColdDoc),
+		// tfidf 延迟初始化：只在需要 fallback 时创建
+		tfidfEmb: tfidf.NewEmbedder(tokenizer, 4096),
+	}
+}
+
+// ensureTFIDF 延迟初始化 TF-IDF 索引（仅 fallback 路径）。
+// 调用方已持有 s.mu。
+func (s *Store) ensureTFIDF() {
+	s.tfidfOnce.Do(func() {
+		s.tfidfIdx = tfidf.NewSearchableIndex(s.tfidfEmb)
+		// 延迟训练：用缓存的文本建立索引
+		texts := make(map[string]string, len(s.trainTexts)/2)
+		for i := 0; i+1 < len(s.trainTexts); i += 2 {
+			texts[s.trainTexts[i]] = s.trainTexts[i+1]
+		}
+		s.tfidfIdx.Train(texts)
+		s.trainTexts = nil // 释放缓存
+		s.tfidfEmb.Train(func() []string {
+			out := make([]string, 0, len(texts))
+			for _, t := range texts {
+				out = append(out, t)
+			}
+			return out
+		}())
+		log.Printf("[coldcontext] tfidf fallback loaded: %d docs", len(texts))
+	})
+}
+
+func (s *Store) Start() error {
+	if err := os.MkdirAll(s.dir, 0755); err != nil {
+		return fmt.Errorf("document store dir: %w", err)
+	}
+	if err := s.loadAll(); err != nil {
+		log.Printf("[coldcontext] load error: %v", err)
+	}
+	log.Printf("[coldcontext] started with %d docs", len(s.docs))
+	return nil
+}
+
+func (s *Store) Stop() { s.flush() }
+
+// SetDenseSpace 设置稠密多模态向量空间（主路径）。
+func (s *Store) SetDenseSpace(ds kernelapi.MultimodalSpace) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.denseSpace = ds
+}
+
+// BuildDenseIndex 为所有文档计算稠密向量（文本 ⊕ 媒体块）。
+func (s *Store) BuildDenseIndex(ds kernelapi.MultimodalSpace) {
+	if ds == nil || !ds.Loaded() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	log.Printf("[coldcontext] building dense index for %d docs (dim=%d)", len(s.docs), ds.Dim())
+	count := 0
+	for _, doc := range s.docs {
+		if doc.DenseVec != nil && len(doc.DenseVec) == ds.Dim() && doc.DenseFP == s.vectorFingerprint() {
+			continue
+		}
+		vec := s.denseFor(doc)
+		if vec == nil {
+			continue
+		}
+		doc.DenseVec = vec
+		doc.DenseFP = s.vectorFingerprint()
+		count++
+	}
+	if count > 0 {
+		// 迁移结果必须落盘。否则磁盘上的 DenseFP 永远对不上当前空间，
+		// 判定条件永远成立：每次启动都重算同一批文档，磁盘状态永不收敛。
+		// 迁移是一次性的昂贵操作（实测 200 篇约 7s），所以当场写盘，
+		// 而不是只依赖关停时的 flush——被 kill -9 也不会白算。
+		s.dirty = true
+		s.flushLocked()
+	}
+	log.Printf("[coldcontext] dense index built: %d new vectors", count)
+}
+
+// denseFor 计算文档的稠密向量：**事件正文** ⊕ 同事件媒体块的向量。
+//
+// ## 为什么不能用 Summary
+//
+// 旧实现是 `VectorizeDense(doc.Summary + " " + doc.Content)`，而 Summary
+// 由 summarizeEntries → jieba 词袋生成，同一来源的摘要**逐字同质**：
+//
+//	来自 1 个来源的 1 条对话 (src0) 涉及: 用户, 提问
+//	来自 1 个来源的 1 条对话 (src1) 涉及: 用户, 提问
+//
+// 实测（真实 chineseclip，4 篇主题完全不同的短正文）两两余弦 0.85~0.95 ——
+// 几乎同向；查询分数全挤在 0.70~0.78，区分度 0.08 ⇒ 检索等同失效。
+//
+// 这与设计直接矛盾：ARCHITECTURE 写的是「统一多模态空间（主）」，而
+// Summary 属于主路径的输入，却由最末一级的词法分词产出。
+//
+// ## 媒体怎么办：不需要单独生成摘要
+//
+// 媒体块与文本块**在同一事件内**（ColdDoc.Events[i].Blocks），事件的正文进入
+// 向量即覆盖了它的语义。为媒体单独生成描述正是 CAS 时代「描述式索引」
+// 的错误（描述是模型生成的二手信息），已在 v1.2.0 整体拆除，不重走。
+//
+// 若将来要「按图搜图」，那是视觉路（RecallBlocks 读块自己的向量）的职责，
+// 已有独立通路，与本函数无关。
+//
+// ## 存量兼容
+//
+// 无 Events 的旧文档（本次改动前归档的）退回 Content —— 那是当时唯一的
+// 原文载体，虽然它是渲染视图，但比 Summary 更接近内容。
+func (s *Store) denseFor(doc *ColdDoc) []float64 {
+	if s.denseSpace == nil || !s.denseSpace.Loaded() {
+		return nil
+	}
+	fp := s.denseSpace.Fingerprint()
+	dim := s.denseSpace.Dim()
+	var parts [][]float64
+
+	// 文本路：用事件正文（原文），不用 Summary（jieba 词袋）。
+	// 媒体块的语义由同一事件的文本覆盖，因此这里不需要为媒体单独编码。
+	if text := coldcontextTextForVector(doc); text != "" {
+		if tv, err := s.denseSpace.VectorizeDense(text); err == nil && len(tv) > 0 {
+			parts = append(parts, tv)
+		}
+	}
+
+	// 媒体路：块自带的多模态向量（同空间同维度才参与融合）。
+	for _, b := range doc.Blocks {
+		// 只比指纹不够：指纹相同但**维度不同**的块会被 FuseVectors 按
+		// 「最大维度」拼成错维度向量（并覆盖掉文本向量），而结果又被
+		// 标上当前指纹——于是该文档在检索侧被长度守卫永久跳过，
+		// 且每次启动都会重算。维度不符的块一律不参与融合。
+		if len(b.Vector) == dim && b.Fingerprint == fp {
+			parts = append(parts, b.Vector)
+		}
+	}
+	return vector.FuseVectors(parts...)
+}
+
+// vectorFingerprint 返回「向量空间指纹 + 文档向量算法版本」。
+//
+// 只比空间指纹不够：换算法（同一模型、不同输入文本）时必须触发重算，
+// 否则存量数据永远停留在旧算法的结果上（实测后果见 coldcontextVectorAlgoVersion）。
+func (s *Store) vectorFingerprint() string {
+	if s.denseSpace == nil {
+		return ""
+	}
+	return s.denseSpace.Fingerprint() + "|" + coldcontextVectorAlgoVersion
+}
+
+// coldcontextTextForVector 取文档用于向量化的文本：**正文**。
+//
+// 有 Events 时按事件顺序拼原文（来自块里的正文）；无 Events 的存量文档
+// 退回 Content（渲染视图，但仍是原文最接近的载体）。
+// 绝不含 Summary —— 那是 jieba 词袋，会把全库拉向同一方向。
+func coldcontextTextForVector(doc *ColdDoc) string {
+	if doc == nil {
+		return ""
+	}
+	if !HasEvents(doc) {
+		return strings.TrimSpace(doc.Content)
+	}
+	var b strings.Builder
+	for _, ev := range doc.Events {
+		in, resp, _ := InOut(&ev)
+		if in != "" {
+			b.WriteString(in)
+			b.WriteString("\n")
+		}
+		if resp != "" {
+			b.WriteString(resp)
+			b.WriteString("\n")
+		}
+		for _, tr := range ev.ToolResults {
+			if tr.Output != "" {
+				b.WriteString(tr.Output)
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}
+
+// Reindex 重建 TF-IDF 索引（fallback 路径变更时调用）。
+func (s *Store) Reindex() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tfidfOnce = sync.Once{} // 重置延迟初始化
+	texts := make(map[string]string, len(s.docs))
+	for _, doc := range s.docs {
+		texts[doc.ID] = doc.Summary + " " + doc.Content
+	}
+	// 缓存文本供 ensureTFIDF 延迟训练
+	s.trainTexts = make([]string, 0, len(texts)*2)
+	for id, t := range texts {
+		s.trainTexts = append(s.trainTexts, id, t)
+	}
+	s.ensureTFIDF()
+}
+
+func (s *Store) Insert(doc *ColdDoc) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if doc.ID == "" {
+		doc.ID = fmt.Sprintf("doc_%d", time.Now().UnixNano())
+		doc.CreatedAt = time.Now()
+	}
+	doc.UpdatedAt = time.Now()
+	doc.LastAccess = time.Now()
+	if doc.AccessCount == 0 {
+		doc.AccessCount = 1
+	}
+	s.docs[doc.ID] = doc
+
+	text := doc.Summary + " " + doc.Content
+
+	// 主路径：稠密向量（文本 ⊕ 媒体块）
+	if s.denseSpace != nil && s.denseSpace.Loaded() && len(doc.DenseVec) == 0 {
+		doc.DenseVec = s.denseFor(doc)
+		doc.DenseFP = s.vectorFingerprint()
+	}
+
+	// Fallback 路径：缓存文本，延迟训练
+	if s.tfidfIdx != nil {
+		s.tfidfIdx.Add(doc.ID, text)
+	} else {
+		s.trainTexts = append(s.trainTexts, doc.ID, text)
+	}
+
+	path := filepath.Join(s.dir, doc.ID+".json")
+	data, _ := json.MarshalIndent(doc, "", "  ")
+	os.WriteFile(path, data, 0644)
+	s.dirty = true
+	return nil
+}
+
+// ContextToColdContext 将上下文对话历史提炼为文档。
+func (s *Store) ContextToColdContext(source string, entries []ContextEntry, embedder interface{}, cleanFn func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) (*ColdDoc, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	if cleanFn == nil {
+		cleanFn = func(text string) string { return text }
+	}
+
+	// ★★ 原文落位：正文进块，事件列表成为文档主体（L1/L2 同构）
+	//
+	// 此前这里把每条事件拍平成一行字符串，并对正文 truncate(..,100)、
+	// 对工具输出 truncate(..,200) —— 原文在落库那一刻就不存在了。
+	// 现在事件逐条保留，正文各自成为文本块（内联在块的 Text 里）。
+	//
+	// Content 只是渲染视图（见 contentFromEvents），不是原文载体。
+	events := docEventsFromEntries(entries)
+	content := contentFromEvents(events)
+	contentHash := simpleHash(content)
+	summary := summarizeEntries(entries, cleanFn, toolCleanFn, channelCleaner)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, d := range s.docs {
+		if d.Meta != nil && d.Meta["content_hash"] == contentHash {
+			d.UpdatedAt = time.Now()
+			d.LastAccess = time.Now()
+			d.Content = content
+			d.Events = events
+			d.Source = source
+			d.Summary = summary
+			d.Blocks = flattenEventBlocks(events)
+			d.DenseVec = s.denseFor(d)
+			if s.denseSpace != nil {
+				d.DenseFP = s.vectorFingerprint()
+			}
+			s.dirty = true
+			return d, nil
+		}
+	}
+
+	id := fmt.Sprintf("doc_%d", time.Now().UnixNano())
+	meta := map[string]string{"content_hash": contentHash}
+	if source == "context_archived" {
+		meta["is_archived_context"] = "true"
+	}
+	doc := &ColdDoc{
+		ID: id, Summary: summary, Content: content,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		LastAccess: time.Now(), AccessCount: 1, Source: source, Meta: meta,
+		Events: events,
+		Blocks: flattenEventBlocks(events),
+	}
+	s.docs[id] = doc
+	doc.DenseVec = s.denseFor(doc)
+	if s.denseSpace != nil {
+		doc.DenseFP = s.vectorFingerprint()
+	}
+	text := summary + " " + content
+	if s.tfidfIdx != nil {
+		s.tfidfIdx.Add(id, text)
+	} else {
+		s.trainTexts = append(s.trainTexts, id, text)
+	}
+
+	path := filepath.Join(s.dir, id+".json")
+	data, _ := json.MarshalIndent(doc, "", "  ")
+	os.WriteFile(path, data, 0644)
+	s.dirty = true
+	return doc, nil
+}
+
+// Consume 向量相似度查询并移除文档
+// Peek 检索匹配的文档，**只读不删**。
+//
+// ## ★ 为什么必须有它（2026-10-29 修「先删后灌」）
+//
+// 原实现 `Consume` 是**读+删一步完成**：
+//
+//	docs := coldcontextStore.Consume(query, topK)   // 此刻 L2 副本已没了
+//	for _, d := range docs {
+//	    n := a.restoreDocEvents(d)          // 若这里失败（panic/向量算错/被中断）
+//	}                                       // ⇒ L1 没进、L2 已删 ⇒ 三层都不在
+//
+// 「消费式检索」把「取回」和「删除」绑成一个不可分的动作，于是删除这个
+// **不可逆步骤**发生在确认之前。这正是第四个病：回灌失败
+// 就三层都不在了。
+//
+// 现在拆成两阶段（用户裁定 P4）：
+//
+//	docs := coldcontextStore.Peek(query, topK)      // ① 只读
+//	...确认每条都真的落进 L1...            // ② 校验
+//	coldcontextStore.Remove(id)                     // ③ 确认后才删副本
+//
+// **禁止先删后灌** —— 删除必须排在确认之后。
+func (s *Store) Peek(text string, topK int) []*ColdDoc {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.searchLocked(text, topK)
+}
+
+// searchLocked 是检索本体（调用方须持锁）。Peek 与 Consume 共用它，
+// 保证两条路径的**检索语义完全一致** —— 各自写一份必然漂移。
+func (s *Store) searchLocked(text string, topK int) []*ColdDoc {
+	if topK <= 0 {
+		topK = 5
+	}
+
+	// 主路径：稠密检索
+	if s.denseSpace != nil && s.denseSpace.Loaded() {
+		if qv, err := s.denseSpace.VectorizeDense(text); err == nil {
+			results := s.denseSearchScored(qv, topK)
+			var docs []*ColdDoc
+			for _, r := range results {
+				if d, ok := s.docs[r.Doc.ID]; ok {
+					docs = append(docs, d)
+				}
+			}
+			return docs
+		}
+	}
+
+	// Fallback：TF-IDF 倒排检索（延迟初始化）
+	s.ensureTFIDF()
+	results := s.tfidfIdx.Search(text, topK)
+	var docs []*ColdDoc
+	for _, r := range results {
+		if d, ok := s.docs[r.ID]; ok {
+			docs = append(docs, d)
+		}
+	}
+	return docs
+}
+
+// Consume 检索并**立即删除**匹配的文档。
+//
+// ⚠️ 保留它只为兼容：**新代码必须用 Peek + 确认 + Remove**。
+// 用 Consume 就是「先删后灌」，回灌失败即永久丢数据（见 Peek 的说明）。
+//
+// 现存调用点已全部改为两阶段（coldcontext_query）。本方法留给
+// 尚未迁移的测试与外部工具，且注释里标明它是错的用法。
+func (s *Store) Consume(text string, topK int) []*ColdDoc {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	docs := s.searchLocked(text, topK)
+	for _, d := range docs {
+		s.removeDoc(d.ID)
+		s.dirty = true
+	}
+	return docs
+}
+
+func (s *Store) Query(text string, topK int) []*ColdDoc {
+	hits := s.QueryScored(text, topK)
+	out := make([]*ColdDoc, len(hits))
+	for i, h := range hits {
+		out[i] = h.Doc
+	}
+	return out
+}
+
+// ColdHit 是一篇文档记忆的相似度候选及原始分数。
+
+func (s *Store) QueryScored(text string, topK int) []ColdHit {
+	if topK <= 0 {
+		topK = 5
+	}
+
+	var hits []ColdHit
+
+	// 主路径：稠密检索。只读，持读锁。
+	s.mu.RLock()
+	if s.denseSpace != nil && s.denseSpace.Loaded() {
+		if qv, err := s.denseSpace.VectorizeDense(text); err == nil {
+			hits = s.denseSearchScored(qv, topK)
+		}
+	}
+	s.mu.RUnlock()
+
+	// Fallback（需要写锁来 ensureTFIDF）
+	if hits == nil {
+		s.mu.Lock()
+		s.ensureTFIDF()
+		results := s.tfidfIdx.Search(text, topK)
+		for _, r := range results {
+			if d, ok := s.docs[r.ID]; ok {
+				hits = append(hits, ColdHit{Doc: d, Score: r.Score})
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	// 访问计数是**写**：必须离开读锁后再取写锁更新。
+	//
+	// 此前在 RLock 下直接 `d.AccessCount++` / `d.LastAccess = time.Now()`，
+	// 与 FindColdContexts / flush 的读并发构成数据竞争（-race 实测），且不置脏 ——
+	// 计数只在内存里涨，优雅关停也不落盘，FindColdContexts 的「≤2 次访问」
+	// 冷度判据跨重启失真。
+	s.markAccess(hits)
+	return hits
+}
+
+// markAccess 记录一次检索命中：累加访问计数、刷新最后访问时间并置脏等待落盘。
+// 调用方不得持有 s.mu。
+func (s *Store) markAccess(hits []ColdHit) {
+	if len(hits) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for _, h := range hits {
+		if h.Doc == nil {
+			continue
+		}
+		if d, ok := s.docs[h.Doc.ID]; ok {
+			d.AccessCount++
+			d.LastAccess = now
+		}
+	}
+	s.dirty = true
+}
+
+func (s *Store) denseSearchScored(queryVec []float64, topK int) []ColdHit {
+	if len(queryVec) == 0 {
+		return nil
+	}
+	type scored struct {
+		did   string
+		score float64
+	}
+	var results []scored
+	for _, doc := range s.docs {
+		if len(doc.DenseVec) != len(queryVec) {
+			continue
+		}
+		score := denseCosine(queryVec, doc.DenseVec)
+		if score > 0.01 {
+			results = append(results, scored{doc.ID, score})
+		}
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
+	if len(results) > topK {
+		results = results[:topK]
+	}
+	out := make([]ColdHit, len(results))
+	for i, r := range results {
+		out[i] = ColdHit{Doc: s.docs[r.did], Score: r.score}
+	}
+	return out
+}
+
+func denseCosine(a, b []float64) float64 {
+	var dot, na, nb float64
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / math.Sqrt(na*nb)
+}
+
+func (s *Store) Stats() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	idxSize := 0
+	if s.tfidfIdx != nil {
+		idxSize = s.tfidfIdx.Size()
+	}
+	return map[string]interface{}{
+		"doc_count":   len(s.docs),
+		"index_count": idxSize,
+		"dir":         s.dir,
+	}
+}
+
+func (s *Store) FindColdContexts(maxAge time.Duration, minAccess int) []*ColdDoc {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-maxAge)
+	var cold []*ColdDoc
+	for _, d := range s.docs {
+		if d.AccessCount <= minAccess && d.LastAccess.Before(cutoff) {
+			cold = append(cold, d)
+		}
+	}
+	return cold
+}
+
+// Get 返回指定文档（不存在时为 nil）。
+func (s *Store) Get(id string) *ColdDoc {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.docs[id]
+}
+
+// Blocks 返回全部文档持有的一等记忆块（供跨层存活判定）。
+func (s *Store) Blocks() []memory.MemoryBlock {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []memory.MemoryBlock
+	for _, d := range s.docs {
+		out = append(out, d.Blocks...)
+	}
+	return out
+}
+
+func (s *Store) RecentColdContexts(n int) []*ColdDoc {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var list []*ColdDoc
+	for _, d := range s.docs {
+		list = append(list, d)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt.After(list[j].CreatedAt) })
+	if len(list) > n {
+		list = list[:n]
+	}
+	return list
+}
+
+// Dirty 报告自上次重建索引以来是否有文档变化。
+//
+// 用途：归档循环此前**每轮无条件** Reindex（重置 sync.Once、重建全部训练
+// 文本、全量 Train 并持写锁）—— 每小时一次 O(全库) 停顿，与「这轮有没有
+// 新文档」无关。有了这个查询，调用方可以只在真变化时重建。
+func (s *Store) Dirty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dirty
+}
+
+// NoteArchiveFailure 记录一次归档失败，返回累计次数。
+//
+// ★ 为什么计数必须落盘（2026-11-15）：归档失败此前只是「保留待下一轮」，
+// 没有计数、没有退避、没有死信。生产实测 50 个文档每小时重试一次，
+// 连跑 3 天 2950 次 —— 输入完全相同，所以必然失败的无限循环。
+// 内存计数会在重启时归零，于是「永不过期」。
+//
+// 同时把 dirty 置真，让下一次 flush 把新计数写进文档 JSON。
+func (s *Store) NoteArchiveFailure(id, reason string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.docs[id]
+	if !ok {
+		return 0
+	}
+	d.ArchiveAttempts++
+	d.ArchiveLastError = reason
+	d.UpdatedAt = time.Now()
+	s.dirty = true
+	// 立即落盘：计数只在内存里的话，一次崩溃就把「已经试过 N 次」忘了，
+	// 而那正是要防的那件事（无限重试）。
+	data, err := json.MarshalIndent(d, "", "  ")
+	if err == nil {
+		os.WriteFile(filepath.Join(s.dir, d.ID+".json"), data, 0644)
+	}
+	return d.ArchiveAttempts
+}
+
+// ArchiveAttempts 返回某篇文档已失败过几次（不存在则为 0）。
+func (s *Store) ArchiveAttempts(id string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if d, ok := s.docs[id]; ok {
+		return d.ArchiveAttempts
+	}
+	return 0
+}
+
+func (s *Store) Remove(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.docs[id]; ok {
+		s.removeDoc(id)
+		s.dirty = true
+	}
+}
+
+func (s *Store) removeDoc(id string) {
+	delete(s.docs, id)
+	if s.tfidfIdx != nil {
+		s.tfidfIdx.Remove(id)
+	}
+	os.Remove(filepath.Join(s.dir, id+".json"))
+}
+
+func (s *Store) loadAll() error {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		// 只要求 .json：Insert 接受任意 ID 并落盘为 <id>.json，若这里再按
+		// doc_ 前缀过滤，传自定义 ID 的文档重启后会静默消失。
+		// 空 ID 仍会被下面的校验跳过。
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var doc ColdDoc
+		if json.Unmarshal(data, &doc) != nil || doc.ID == "" {
+			continue
+		}
+		s.docs[doc.ID] = &doc
+		// 缓存文本，延迟训练（确保TFIDF在首次需要时才加载）
+		s.trainTexts = append(s.trainTexts, doc.ID, doc.Summary+" "+doc.Content)
+	}
+	return nil
+}
+
+func (s *Store) flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushLocked()
+}
+
+// flushLocked 是 flush 的核心，调用方必须已持有 s.mu。
+func (s *Store) flushLocked() {
+	if !s.dirty {
+		return
+	}
+	for _, doc := range s.docs {
+		data, _ := json.MarshalIndent(doc, "", "  ")
+		os.WriteFile(filepath.Join(s.dir, doc.ID+".json"), data, 0644)
+	}
+	s.dirty = false
+}
+
+// ——— 内部工具函数（从上下文提炼文档所需）———
+
+// ToolResultItem 是一条工具结果。
+//
+// ★ CallID 与 internal/agent/agent 的同名字段必须**逐字一致**（JSON 键名
+// 都是 call_id）：L1↔L2 之间靠它配对，键名不一致会在归档/回填时静默丢失。
+
+// ToolCallItem 是一次工具调用的完整记录（含参数与配对键）。
+//
+// 与 internal/agent/agent.ToolCalls 的字段逐字对应。
+// L2 之所以也要存它：回灌（coldcontext_query）要把事件原样插回 L1，
+// 若 L2 缺参数，回灌后「这一页的 call 侧是空的」，页化与配对校验都失效。
+
+func blocksFromEntries(entries []ContextEntry) []memory.MemoryBlock {
+	seen := make(map[string]bool)
+	var out []memory.MemoryBlock
+	for _, e := range entries {
+		for i := range e.Blocks {
+			b := e.Blocks[i]
+			if b.ID == "" || seen[b.ID] {
+				continue
+			}
+			seen[b.ID] = true
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// summarizeEntries 生成文档摘要 —— **纯展示用**，不参与任何向量计算。
+//
+// ★ 这里曾经调用 memory.ExtractKeywords（jieba Tag 分词 + 停用词），
+//
+//	产出形如「来自 1 个来源的 1 条对话 (agent) 涉及: map, content, 是不是」。
+//	两个后果都是实测的：
+//
+//	1. **不是摘要，是词袋清单**：模型与人都无法从中知道这篇讲什么；
+//	2. **全库同质**：同一来源的摘要逐字相同，一旦被当作向量输入
+//	   （denseFor 曾用 doc.Summary），四篇主题完全不同的文档两两余弦
+//	   达到 0.85~0.95，检索等同失效。
+//
+// 现在改为取**首条事件的正文开头**：那是真实内容，可读、可判断。
+// 仍然只是展示视图 —— 原文在 Events 的文本块里，摘要是它的短引用。
+func summarizeEntries(entries []ContextEntry, cleanText func(string) string, toolCleanFn func(name, output string) string, channelCleaner ChannelCleaner) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	// 优先取用户/agent 的实质正文（而非工具输出），取到即止。
+	for _, e := range entries {
+		content := e.Content
+		if channelCleaner != nil {
+			if c := channelCleaner(e.Source); c != nil {
+				content = c(content)
+			}
+		}
+		if cleanText != nil {
+			content = cleanText(content)
+		}
+		if line := firstMeaningfulLine(content); line != "" {
+			return truncateRunes(line, 80)
+		}
+		if e.Response != "" {
+			if line := firstMeaningfulLine(e.Response); line != "" {
+				return truncateRunes(line, 80)
+			}
+		}
+	}
+	return fmt.Sprintf("%d 条事件", len(entries))
+}
+
+// firstMeaningfulLine 取文本中第一行有实义的内容（跳过空行、纯符号行）。
+func firstMeaningfulLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// 跳过纯符号/空白
+		hasWord := false
+		for _, r := range line {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				hasWord = true
+				break
+			}
+		}
+		if hasWord {
+			return strings.Join(strings.Fields(line), " ")
+		}
+	}
+	return ""
+}
+
+// truncateRunes 按字符（非字节）截断。
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// simpleHash 是用于「内容是否同一份」比对的快速摘要。
+//
+// ★ 旧实现是 O(n²) 且哈希串长度正比于内容长度：
+//
+//	h := fmt.Sprintf("%x", len(s))
+//	for _, c := range s { h += fmt.Sprintf("%x", c) }   // 每 rune 一次 Sprintf + 字符串拼接
+//
+// 两个后果都是实测出来的：
+//
+//  1. **性能**：1.25MB 正文归档耗时 270 秒（压力测试实测）。
+//     字符串 `+=` 每轮重新分配并拷贝整个累积串 ⇒ 总拷贝量 O(n²)。
+//  2. **体积**：哈希串本身是内容的 2.2 倍
+//     （生产实测 content 52072 字符 → content_hash 114491 字符）。
+//     它存在每篇文档的 meta 里，等于把正文又存了一遍还更胖。
+//
+// 换成 sha256 前 16 字节：定长 32 hex、O(n) 一次遍历。
+// 用途不变（仅在同一批归档里去重），不需要密码学强度之外的任何性质。
+func simpleHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:16])
+}
+
+// ──────────────────────────────────────────────
+// L1 ↔ L2 的块级互转
+//
+// 设计前提：正文（含多媒体正文）内联在块里，事件只是块的容器。
+// 因此归档 = 把事件正文落成文本块 + 保留事件原有的媒体块；
+// 召回 = 从块读回正文，按原时间戳插回 L1。
+// ──────────────────────────────────────────────
+
+// entryTextBlockID 由「事件身份 + 正文角色」派生文本块 ID。
+//
+// 为何不能像原句块那样只用内容派生：
+//
+//	SentenceBlockID(sha256(text)) 会让**两句话恰好相同**的正文合并成一个块。
+//	对话里「好的。」「收到」这类短答应大量重复，合并后
+//	「哪一条事件说过这句话」就不可知了 —— 而 L2 必须能按事件逐条回填。
+//
+// 所以 ID 掺入事件身份（时间戳纳秒 + 来源 + 角色），保证一事一块，
+// 同时仍是**内容稳定**的：同一条事件重复归档得到同一个块 ID（幂等）。
+func entryTextBlockID(evtTS time.Time, source, role, text string) string {
+	h := sha256.New()
+	h.Write([]byte(strconv.FormatInt(evtTS.UnixNano(), 10)))
+	h.Write([]byte{0})
+	h.Write([]byte(source))
+	h.Write([]byte{0})
+	h.Write([]byte(role))
+	h.Write([]byte{0})
+	h.Write([]byte(text))
+	return "blk_txt_" + hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// TextBlockRole 标记文本块在一对事件里的角色。
+//
+// 正文各自一块（不是 Input+Response 合成一块），为的是两段内容能
+// **分别按自己的向量被检索**：用户的提问与模型的回答语义常常不同。
+const (
+	// ★ 取值声明点已搬到 internal/colddoc（基座与本包共用）；
+	//   这里是别名转发，既有 `coldcontext.TextBlockRoleInput` 写法不变。
+	TextBlockRoleInput    = colddoc.RoleInput
+	TextBlockRoleResponse = colddoc.RoleResponse
+	// TextBlockRoleReasoning 标记 llm_round 页里的**思考内容**块。
+	//
+	// 单独一类（而不是并进 response）的理由：回灌时要把它们放回不同字段
+	// （ContextEvent.ReasoningContent vs .Response）。合并后回灌会把思维链
+	// 当成正式回复发给模型。
+	TextBlockRoleReasoning = colddoc.RoleReasoning
+)
+
+// docBlocksForEntry 把一条上下文事件落成「文本块 + 媒体块」的块列表。
+//
+// 顺序约定（回填时按此对称解读）：
+//
+//	Input 文本块（若有）→ Response 文本块（若有）→ 媒体块…
+//
+// 媒体块原样保留（迁移语义：同一块 ID、同一向量，只换持有层）。
+func docBlocksForEntry(e ContextEntry) []memory.MemoryBlock {
+	var out []memory.MemoryBlock
+	now := e.Timestamp
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	// 文本块：正文内联在 Text 里，不带向量。
+	//
+	// 为什么不在这里算向量：L2 的检索向量由 ColdDoc.denseFor 用整篇文档文本算一次，
+	// 单条事件的文本块不参与 L2 召回（它是回填用的载体）。
+	// 这与「向量只算一次」一致 —— 不在迁移路径上重算。
+	// ★★ 段页式身份（P2，2026-10-29）
+	//
+	// 段 Frame = 一条事件（一次完整任务），用事件时间戳作帧号（不另造自增 id）。
+	// 页 Page  = 一次完整往返：
+	//            · llm_round  —— 用户输入 → 模型输出
+	//            · tool_round —— 工具调用 → 工具结果（靠 CallID 配对）
+	//
+	// 为什么必须带上这些字段（否则 L2 里全是"无页"块）：
+	// 回灌时要把块还原成配对正确的事件；没有页身份就只能靠位置猜，
+	// 而「assistant(tool_calls) 后面必须紧跟配对齐全的 tool 消息」
+	// 是上游硬要求 —— 猜错就是 HTTP 400。
+	//
+	// 帧内页序约定：llm_round 恒为第 1 页，工具轮按 ToolCalls 顺序 2..n+1。
+	// 同一帧的所有页共享同一个 FrameTS（铁律：块不跨帧）。
+	frameTS := now
+
+	if t := strings.TrimSpace(e.Content); t != "" {
+		out = append(out, memory.MemoryBlock{
+			ID:        entryTextBlockID(now, e.Source, TextBlockRoleInput, t),
+			Modality:  memory.BlockText,
+			Text:      t,
+			Source:    e.Source,
+			FrameTS:   frameTS,
+			PageSeq:   1,
+			PageKind:  memory.PageLLMRound,
+			BlockRole: memory.RoleRequest,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	if t := strings.TrimSpace(e.Response); t != "" {
+		out = append(out, memory.MemoryBlock{
+			ID:        entryTextBlockID(now, e.Source, TextBlockRoleResponse, t),
+			Modality:  memory.BlockText,
+			Text:      t,
+			Source:    e.Source,
+			FrameTS:   frameTS,
+			PageSeq:   1,
+			PageKind:  memory.PageLLMRound,
+			BlockRole: memory.RoleResponse,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	// 思考块：与 Response 同属 llm_round 第 1 页，但**单独一块、独立向量**。
+	//
+	// 为何必须落进 coldcontext（2026-11-11 用户裁定）：
+	// 决策依据、排除掉的选项、"先查 A 再查 B"的因果链常常只在思考里。
+	// 只存 Response ⇒ 召回后只能答出"做了什么"，答不出"为何这么做"。
+	//
+	// 为何不并进上面的 Response 块：回灌时两者要放回**不同字段**
+	// （ContextEvent.ReasoningContent vs .Response）；合并后回灌会把
+	// 思维链当成正式回复发给模型。
+	if t := strings.TrimSpace(e.ReasoningContent); t != "" {
+		out = append(out, memory.MemoryBlock{
+			ID:        entryTextBlockID(now, e.Source, TextBlockRoleReasoning, t),
+			Modality:  memory.BlockText,
+			Text:      t,
+			Source:    e.Source,
+			FrameTS:   frameTS,
+			PageSeq:   1,
+			PageKind:  memory.PageLLMRound,
+			BlockRole: memory.RoleReasoning,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+
+	// 工具轮：每个 toolcall 与它的 result 构成一页。
+	//
+	// call 侧正文 = 参数（JSON 形式）；response 侧正文 = 工具输出。
+	// 参数此前根本没被记录（见 core.ToolCallItem 的注释），
+	// 所以这里必须容忍「只有 result 没有 call」的存量情形：
+	// 那种情况仍按 result 建页，只是 call 侧缺失（渲染时按位置配对）。
+	for i := range e.ToolCalls {
+		tc := &e.ToolCalls[i]
+		page := i + 2 // 第 1 页是 llm_round
+		callText := toolCallPageText(tc)
+		if callText != "" {
+			out = append(out, memory.MemoryBlock{
+				ID:        entryToolBlockID(now, e.Source, page, memory.RoleRequest, tc.CallID, callText),
+				Modality:  memory.BlockText,
+				Text:      callText,
+				Source:    e.Source,
+				FrameTS:   frameTS,
+				PageSeq:   page,
+				PageKind:  memory.PageToolRound,
+				BlockRole: memory.RoleRequest,
+				CallID:    tc.CallID,
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+		}
+		// 配对的结果（CallID 相同；存量数据无 CallID 时按名字取第一个未用的）
+		if resText, ok := matchToolResult(e.ToolResults, tc); ok {
+			out = append(out, memory.MemoryBlock{
+				ID:        entryToolBlockID(now, e.Source, page, memory.RoleResponse, tc.CallID, resText),
+				Modality:  memory.BlockText,
+				Text:      resText,
+				Source:    e.Source,
+				FrameTS:   frameTS,
+				PageSeq:   page,
+				PageKind:  memory.PageToolRound,
+				BlockRole: memory.RoleResponse,
+				CallID:    tc.CallID,
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+		}
+	}
+
+	out = append(out, e.Blocks...)
+	return out
+}
+
+// toolCallPageText 把一次工具调用渲染成页的 call 侧正文。
+//
+// 优先用解析后的参数（结构清晰）；没有则退回原始 JSON。
+// 两者都没有时返回空 —— 调用方据此决定不建 call 块
+// （而不是造一个只有工具名的空块，那会让「页是完整的」变成谎话）。
+func toolCallPageText(tc *ToolCallItem) string {
+	if tc == nil {
+		return ""
+	}
+	if len(tc.Arguments) > 0 {
+		if b, err := json.Marshal(tc.Arguments); err == nil {
+			return tc.Name + " " + string(b)
+		}
+	}
+	if strings.TrimSpace(tc.RawArguments) != "" {
+		return tc.Name + " " + tc.RawArguments
+	}
+	return ""
+}
+
+// matchToolResult 按配对键找出这次调用的结果。
+//
+// 配对顺序（从强到弱）：
+//  1. CallID 相同 —— 唯一可靠的配对（并行调用必须靠它）
+//  2. 名字相同 —— 存量数据没有 CallID 时的降级
+//
+// 空 Name 对空 Name 也算匹配：早期数据里 name 可能缺失，
+// 那时仍应把输出展示出来，而不是整段丢掉。
+func matchToolResult(results []ToolResultItem, tc *ToolCallItem) (string, bool) {
+	if tc == nil {
+		return "", false
+	}
+	if tc.CallID != "" {
+		for i := range results {
+			if results[i].CallID == tc.CallID {
+				return results[i].Output, true
+			}
+		}
+	}
+	for i := range results {
+		if results[i].Name == tc.Name {
+			return results[i].Output, true
+		}
+	}
+	return "", false
+}
+
+// entryToolBlockID 派生工具页的块 ID。
+//
+// 与 entryTextBlockID 同构（事件身份 + 页 + 角色 + 正文），
+// 额外掺入页序与 CallID：同一事件里两次并行调用可能正文相同，
+// 若只按正文派生就会**合成一块**，页就少了一半。
+func entryToolBlockID(evtTS time.Time, source string, page int, role memory.BlockRole, callID, text string) string {
+	h := sha256.New()
+	h.Write([]byte(strconv.FormatInt(evtTS.UnixNano(), 10)))
+	h.Write([]byte{0})
+	h.Write([]byte(source))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.Itoa(page)))
+	h.Write([]byte{0})
+	h.Write([]byte(string(role)))
+	h.Write([]byte{0})
+	h.Write([]byte(callID))
+	h.Write([]byte{0})
+	h.Write([]byte(text))
+	return "blk_tool_" + hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// blocksToEntry 是 docBlocksForEntry 的逆操作：从块列表读回事件的
+// Input / Response 正文与它持有的块。
+//
+// 识别规则：文本块按 ID 前缀里的角色区分（Input 在前、Response 在后），
+// 其余块（媒体/未知来源的文本块）原样作为「事件持有的块」返回。
+func blocksToEntry(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
+	in, resp, _, h := blocksToEntryWithReasoning(ev)
+	return in, resp, h
+}
+
+// blocksToEntryWithReasoning 是 blocksToEntry 的完整形态，额外还原思考内容。
+//
+// 为何不直接改 blocksToEntry 的签名：它被 8 个调用点使用，其中只有
+// 回灌（restoreDocEvents）与 L3 蒸馏需要 reasoning。改签名会让 6 个
+// 不需要它的调用点跟着改——那种改动会淹没真正的语义变化。
+func blocksToEntryWithReasoning(ev *ColdEvent) (input, response, reasoning string, held []memory.MemoryBlock) {
+	if ev == nil {
+		return "", "", "", nil
+	}
+	for i := range ev.Blocks {
+		b := ev.Blocks[i]
+		if b.Modality != memory.BlockText {
+			held = append(held, b)
+			continue
+		}
+		switch {
+		case input == "" && isEntryTextBlock(b, ev, TextBlockRoleInput):
+			input = b.Text
+		case response == "" && isEntryTextBlock(b, ev, TextBlockRoleResponse):
+			response = b.Text
+		case reasoning == "" && isEntryTextBlock(b, ev, TextBlockRoleReasoning):
+			reasoning = b.Text
+		case b.PageKind == memory.PageToolRound:
+			// ★ 工具页的块**不是**事件的"持有块"，而是 ToolCalls/ToolResults
+			//   的页级表示（P2 派生出来的）。若把它当持有块塞回去，
+			//   回灌后事件会多出一堆无关块，且下次归档再派生一遍 ⇒ 越滚越多。
+			//
+			//   权威数据仍是 ev.ToolCalls / ev.ToolResults，
+			//   这里只是跳过（不重建），避免双份事实源。
+			continue
+		default:
+			// 不是本事件派生出的文本块（例如蒸馏来的原句块）：当作持有块。
+			held = append(held, b)
+		}
+	}
+	return input, response, reasoning, held
+}
+
+// isEntryTextBlock 判断文本块是否为本事件按该角色派生出来的那一块。
+func isEntryTextBlock(b memory.MemoryBlock, ev *ColdEvent, role string) bool {
+	return b.ID == entryTextBlockID(ev.Timestamp, ev.Source, role, b.Text)
+}
+
+// docEventsFromEntries 把 L1 交来的一批事件转成 L2 的事件列表。
+func docEventsFromEntries(entries []ContextEntry) []ColdEvent {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]ColdEvent, 0, len(entries))
+	for _, e := range entries {
+		// ★ 时间戳先归一化，否则块 ID 与事件时间会失配（既有缺陷，2026-11-11 修）。
+		//
+		// 成因：docBlocksForEntry 内部的 now 在 e.Timestamp 为零时退化成 time.Now()，
+		// 而 ColdEvent.Timestamp 保持零值 ⇒ 块 ID 是基于“现在”算的，
+		// 回读却拿零值时间重算 ⇒ 哈希不等 ⇒ isEntryTextBlock 永远不认，
+		// 表现为“块就在那里但一个字段也读不回来”。
+		//
+		// 线上因为 L1 事件总是带 Timestamp 而没暴露，但它是真缺陷：
+		// 任何入口漏填时间戳，事件内容就静默丢失（不报错、不掍日志）。
+		if e.Timestamp.IsZero() {
+			e.Timestamp = time.Now()
+		}
+		ev := ColdEvent{
+			Timestamp: e.Timestamp,
+			Source:    e.Source,
+			NoMemory:  e.NoMemory,
+			ToolsUsed: append([]string(nil), e.ToolsUsed...),
+			ToolCalls: append([]ToolCallItem(nil), e.ToolCalls...),
+			Blocks:    docBlocksForEntry(e),
+		}
+		for _, tr := range e.ToolResults {
+			ev.ToolResults = append(ev.ToolResults, ToolResultItem{
+				CallID: tr.CallID, Name: tr.Name, Output: tr.Output,
+			})
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// flattenEventBlocks 取事件列表里全部块（去重后的并集），供 ColdDoc.Blocks 使用。
+//
+// 它是视图：真实归属在 Events[i].Blocks 里。之所以仍要扁平化，
+// 是因为向量融合、L3 蒸馏、存量兼容三条路都按「文档持有哪些块」工作。
+func flattenEventBlocks(events []ColdEvent) []memory.MemoryBlock {
+	seen := make(map[string]bool)
+	var out []memory.MemoryBlock
+	for _, ev := range events {
+		for i := range ev.Blocks {
+			b := ev.Blocks[i]
+			if b.ID == "" || seen[b.ID] {
+				continue
+			}
+			seen[b.ID] = true
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// contentFromEvents 用事件正文渲染出 ColdDoc.Content。
+//
+// ★ 这是**视图**，不是原文：它为了让摘要/人工阅读/SDK 的 ColdDoc.Content 有东西可看，
+// 也为了让存量逻辑（依赖 Content 做摘要与 TF-IDF）继续工作。
+// 原文永远以 Events[i].Blocks 里文本块的 Text 为准。
+//
+// 为什么视图里也**不截断**：视图可以比原文简洁，但不该主动丢掉信息——
+// 真正决定给模型看多少的是渲染层（按 token 预算），不是存储层。
+func contentFromEvents(events []ColdEvent) string {
+	var parts []string
+	for _, ev := range events {
+		input, response, _ := blocksToEntry(&ev)
+		line := fmt.Sprintf("[%s] %s: %s", ev.Timestamp.Format("15:04"), ev.Source, input)
+		if response != "" {
+			line += " → " + response
+		}
+		for _, tr := range ev.ToolResults {
+			line += fmt.Sprintf("\n  [工具] %s: %s", tr.Name, tr.Output)
+		}
+		parts = append(parts, line)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// InOut 从一条 L2 事件读回它的 Input 正文、Response 正文与持有的块。
+//
+// 这是 blocksToEntry 的导出形态：L1（agent/core）需要它来回填 ContextEvent，
+// 而正文住在块里，所以必须由本包解读块的角色与归属。
+func InOut(ev *ColdEvent) (input, response string, held []memory.MemoryBlock) {
+	return colddoc.InOut(ev)
+}
+
+// InOutWithReasoning 与 InOut 相同，但额外读回思考内容。
+//
+// 用在哪里：需要把事件**完整还原**成 ContextEvent 的地方（L2 回灌、L3 蒸馏）。
+// 这些地方如果只拿 InOut，回填出的事件就没有 ReasoningContent，
+// 于是再次裁下时思维链就永久丢了。
+//
+// 为何不把 InOut 直接改成多返回值：它被 8 个调用点用，而其中只有 2 处
+// 需要思考内容。让另外 6 处跟着改，只会把"哪些地方真的关心思考"
+// 这个信号淹没在一堆样板修改里。
+func InOutWithReasoning(ev *ColdEvent) (input, response, reasoning string, held []memory.MemoryBlock) {
+	return colddoc.InOutWithReasoning(ev)
+}
+
+// SetSecretStore 注入变量库（落盘前脱敏用；装配期由 agent 调用）。
+func (s *Store) SetSecretStore(st kernelapi.SecretStore) {
+	if s == nil {
+		return
+	}
+	s.secretStore = st
+}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/semantic"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
@@ -118,7 +119,7 @@ type RelevanceContext struct {
 // 页的相似度取**页内各侧的最大值**：call 侧里往往带着关键实体
 // （文件路径、命令、代码），而 result 侧是回显 —— 只看一侧会漏。
 func (c *RelevanceContext) PageSimilarity(e *ContextEvent, page int,
-	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
+	queryDense []float64, queryFP string, queryVec map[string]float64) float64 {
 
 	callText, resText := c.PageTexts(e, page)
 	best := math.Inf(-1)
@@ -130,13 +131,13 @@ func (c *RelevanceContext) PageSimilarity(e *ContextEvent, page int,
 		// 与事件评分同构：同一统一空间内才比稠密余弦。
 		if len(queryDense) > 0 && queryFP != "" && e.DenseFP == queryFP {
 			if v, ok := c.VectorForText(text); ok && len(v) == len(queryDense) {
-				if s := vector.DenseCosine(queryDense, v); s > best {
+				if s := c.DenseSimilarity(queryDense, v); s > best {
 					best = s
 				}
 				return
 			}
 		}
-		if s := vector.CosineSimilarity(queryVec, c.VectorizeClean(text)); s > best {
+		if s := semantic.Cosine(queryVec, c.VectorizeClean(text)); s > best {
 			best = s
 		}
 	}
@@ -480,7 +481,7 @@ func ColdToolResult(ev *model.ColdEvent, tc *model.ToolCallItem) (string, bool) 
 //	6 个工具页拿到完全相同的 0.5774 —— 那是第 1 页 llm_round 的分数
 //	反复覆盖的结果，页与页之间完全没有区分度，剔除变成随机。
 func ColdPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page int,
-	queryDense []float64, queryFP string, queryVec vector.Vector) float64 {
+	queryDense []float64, queryFP string, queryVec map[string]float64) float64 {
 
 	if d == nil || eventIdx < 0 || eventIdx >= len(d.Events) {
 		return 0
@@ -493,13 +494,13 @@ func ColdPageSimilarity(c *RelevanceContext, d *model.ColdDoc, eventIdx, page in
 		}
 		if len(queryDense) > 0 && queryFP != "" {
 			if v, ok := c.VectorForText(text); ok && len(v) == len(queryDense) {
-				if s := vector.DenseCosine(queryDense, v); s > best {
+				if s := c.DenseSimilarity(queryDense, v); s > best {
 					best = s
 				}
 				return
 			}
 		}
-		if s := vector.CosineSimilarity(queryVec, c.VectorizeClean(text)); s > best {
+		if s := semantic.Cosine(queryVec, c.VectorizeClean(text)); s > best {
 			best = s
 		}
 	}
@@ -1008,9 +1009,9 @@ func (c *RelevanceContext) PruneWithProtected(currentInput string, topK int, col
 		// 只在同一统一空间内比稠密余弦：换了模型/维度后旧事件的向量
 		// 属于另一个坐标系，拿来比会得到无意义的分数。
 		if useDense && evt.DenseFP == queryFP && len(evt.DenseVec) == len(queryDense) {
-			score = vector.DenseCosine(queryDense, evt.DenseVec)
+			score = c.DenseSimilarity(queryDense, evt.DenseVec)
 		} else {
-			score = vector.CosineSimilarity(queryVec, evt.Vector)
+			score = semantic.Cosine(queryVec, evt.Vector)
 		}
 		scoredEvents[i] = scoredEvent{event: evt, score: score, idx: i}
 	}
@@ -1501,17 +1502,24 @@ const compactionToolResultMaxRunes = 400
 // 直接 `c.embedder.Vectorize(...)` 会 panic（实测：判据构造点不注入 embedder
 // 就撞 nil pointer）。空安全在这里收一处，而不是让 6 个调用点各判一次。
 func (c *RelevanceContext) Vectorize(text string) map[string]float64 {
-	if c == nil || c.embedder == nil {
-		return nil
-	}
-	return c.embedder.VectorizeMap(text)
+	return c.VectorizeBatch([]string{text})[0]
 }
 
+// VectorizeClean 是"先清洗再向量化"（向量化前的清洗规则与基座逐字一致）。
 func (c *RelevanceContext) VectorizeClean(text string) map[string]float64 {
-	if c == nil || c.embedder == nil {
-		return nil
+	return c.VectorizeBatch([]string{cleanVectorText(text)})[0]
+}
+
+// VectorizeBatch 一次算多句的稀疏向量（docs §3.4：批量是形状不是优化）。
+//
+// ★ 这是本包**唯一**与语义计算打交道的入口（用户裁定 2026-11-20）：
+// 上层把候选文本收集起来、一次 call 拿到全部向量，再在自己这边做打分与
+// 排序。逐条 in-loop 调用会把"计算"混进"业务循环"里，批量接口就被浪费了。
+func (c *RelevanceContext) VectorizeBatch(texts []string) []map[string]float64 {
+	if c == nil || c.embedder == nil || len(texts) == 0 {
+		return make([]map[string]float64, len(texts))
 	}
-	return c.embedder.VectorizeCleanMap(text)
+	return c.embedder.EmbedTexts(texts)
 }
 
 // EvictOversizedPages 是**页级剔除原语**：把「单条事件自己就超预算」的那些帧
@@ -1569,4 +1577,18 @@ func (c *RelevanceContext) SavePath() string {
 		return ""
 	}
 	return c.savePath
+}
+
+// DenseSimilarity 计算两个稠密向量的余弦相似度。
+//
+// ★ 这个判据必须走**注入的适配器**，而不是包级函数：
+// 度量口径属于"字在算"，而算的人是基座（`semantic.DenseCosine` 是它的
+// 实现细节）。将来换度量（去中心化 / 归一化方式变化）时，类型不该跟着改。
+func (c *RelevanceContext) DenseSimilarity(a, b []float64) float64 {
+	if c == nil || c.embedder == nil {
+		// 未装配 ⇒ 0（"算不出相似度"）。**不**退回包级函数：那会让
+		// 类型重新认识度量的实现细节，而度量口径归基座。
+		return 0
+	}
+	return c.embedder.DenseSimilarity(a, b)
 }

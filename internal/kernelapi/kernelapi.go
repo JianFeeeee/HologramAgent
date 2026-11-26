@@ -49,8 +49,6 @@ const (
 	FacIO = "kernel-io"
 	// FacEventBus 是事件总线的**代理面**（安全模块注册；消费方唯一的取用入口）。
 	FacEventBus = "eventbus"
-	// FacGraphOpener 是图记忆的**装配面**（memory 模块提供，类型模块用它开子视图）。
-	FacGraphOpener = "memory.opener"
 	// FacEventDispatch 是**投递驱动者的注入点**（安全模块提供，
 	// 供运行期事件循环把 Dispatcher 挂上裸总线）。
 	FacEventDispatch = "eventbus.dispatch"
@@ -59,24 +57,12 @@ const (
 	//
 	// ★ 名字本身就是一条纪律：能取到 Raw 的只有装配侧的 security。
 	FacEventBusRaw = "eventbus.raw"
-	// FacMemory 是图记忆（memory 模块提供，类型 GraphMemory）。
-	FacMemory = "memory"
-	// FacMemoryIndexer 是记忆索引器（memory 模块提供）。
-	FacMemoryIndexer = "memory.indexer"
-	// FacMemorySocial 是人物关系网（memory 模块提供）。
-	FacMemorySocial = "memory.social"
-	// FacMemoryDistiller 是蒸馏器（memory 模块提供，可暂停/恢复）。
-	FacMemoryDistiller = "memory.distiller"
-	// FacEmbedder 是共享词嵌入（memory 模块提供）。
-	FacEmbedder = "memory.embedder"
 	// FacLua 是 Lua 协议适配 VM（lua 模块提供）。
 	FacLua = "lua"
 	// FacSupervisor 是代理生命周期守护（supervisor 模块提供）。
 	FacSupervisor = "supervisor"
 	// FacTracker 是变更追踪（tracker 模块提供）。
 	FacTracker = "tracker"
-	// FacTextMem 是文本记忆（textmem 模块提供）。
-	FacTextMem = "textmem"
 	// FacLLM 是多源 provider 管理（llm 模块提供）。
 	FacLLM = "llm"
 	// FacLLMDefault 是默认 provider（llm 模块提供）。
@@ -86,16 +72,32 @@ const (
 	// ★ 与 FacLLM（多源管理器）不同：管理器是"有哪些源"的**事实**，
 	//   本设施是"怎么用它们"的**策略**。基座只持本设施的句柄。
 	FacLLMClient = "llm.client"
-	// FacDocStore 是文档记忆（docmem 模块提供）。
-	FacDocStore = "docmem"
 	// FacMultimodal 是多模态向量空间（multimodal 模块提供）。
 	FacMultimodal = "multimodal"
 	// FacMultimodalStatus 是多模态空间的启用状态（provider 名 / 失败原因）。
 	FacMultimodalStatus = "multimodal.status"
+	// FacEmbedder 是**稀疏词嵌入**（fastText 词向量 + jieba 分词）。
+	//
+	// ★ 它是**语义计算能力**，不是记忆（docs §3.4）。
+	//   记忆（图库/文档/文本日志）归主 agent；而"句 → 向量"
+	//   这个纯计算归内核设施 —— 否则每个类型各建一个 fastText 模型
+	//   （生产实测 50k 词 × 300 维，数百 MB）。
+	//
+	// ★ 与 FacMultimodal 同住 multimodal 模块：稠密空间（provider 为空时禁用）
+	//   与稀疏词嵌入（永远可用）是同一件事的两个档位。
+	FacEmbedder = "memory.embedder"
 	// FacONNX 是内嵌 ONNX 运行时（onnx 模块提供）。
 	FacONNX = "onnx"
-	// FacStageHost 是阶段管道 + 工具注册表（stage-host 模块提供）。
+	// FacStageHost 是**阶段管道**（stage-host 模块提供）。
+	//
+	// ★ 它**不含工具注册表**（2026-11-25 拆分）：工具登记归 FacToolReg。
+	//   原先两者住同一个类型，于是"工具表由谁产"永远讲不清。
 	FacStageHost = "stagehost"
+	// FacToolReg 是**插件工具登记簿**（tool-reg 模块提供）。
+	//
+	// ★ 与 FacToolExec 的分工：本设施持有"名字 + schema + handler"，
+	//   执行设施（FacToolExec）按名字取它来跑。两者都属内核，谁也不持有谁。
+	FacToolReg = "tool.reg"
 	// FacPromptSections 是插件声明的系统提示词段（stage-host 模块提供）。
 	FacPromptSections = "promptsec"
 	// FacPluginRegistry 是插件注册表（stage-host 模块提供）。
@@ -110,6 +112,12 @@ const (
 	FacSecurity = "security"
 	// FacDevice 是设备/工具数据面（device 模块提供）。
 	FacDevice = "device"
+	// FacToolExec 是**工具执行设施**（tool-exec 模块提供）。
+	//
+	// ★ 它执行的是"不属于任何类型私有"的工具（内核侧登记的 / 插件 / io 设备）。
+	//   类型私有的工具（读图记忆/冷文档/人格）由类型的 agentloop 自己执行，
+	//   不进这里 —— 否则内核就要认识那些类型的私有状态。
+	FacToolExec = "tool-exec"
 	// FacUpdate 是更新子系统的状态面（update 模块提供）。
 	FacUpdate = "update"
 	// FacUpdateCapabilities 是本机升级能力快照（update 模块提供）。
@@ -131,6 +139,14 @@ const (
 	FacBaseAPIKey = "llm.base-api-key"
 	// FacDataDir 是数据目录（Group 0 提供，与 ks.DataDir 同值；给只读接口用）。
 	FacDataDir = "kernel.datadir"
+	// FacAgentTypeHost 是**插件类型组装器**（agent-type 模块提供）。
+	//
+	// 它把插件声明的中立类型（`sdk.AgentTypeDef`）组装成内核注册项
+	// （`registry.Descriptor`），并挂上插件提供的回调。
+	//
+	// ★ 为什么是内核设施而不是插件自己注册：造实例要碰 IO / GraphOpener /
+	//   Security / child.Registry —— 那些是内核实现，插件不认识。
+	FacAgentTypeHost = "agent.type-host"
 )
 
 // ───────────────────────── 图记忆 ─────────────────────────
@@ -371,50 +387,14 @@ type EventDispatchSink interface {
 	SetDispatcher(d EventDispatcher)
 }
 
-// GraphMemoryOpener 是**图记忆的装配面**：打开只读视图与轻量实例。
+// ★ 已删 `GraphMemoryOpener`（2026-11-20 用户裁定）。
 //
-// ★ 为什么需要它（2026-11-17 拆包）：驻留子与 rtchild 要 `OpenGraphDBReadOnly`
-//   - `NewLightMemory` 来装配自己的记忆面。那两个是**实现构造**，agent 不该
-//     直接调 —— 但也不能没有。于是由 memory 模块把这两个构造挂到设施表，
-//     类型模块经 `Require` 取（这样"谁来构造"是装配的事，不是基座的事）。
+// 它曾是"子 agent 自己开图库视图"的装配面（OpenReadOnly / OpenLight /
+// Close / ExportTriples / LightCommon / LightTemp）。按 docs §6.4，子 agent
+// 的图记忆能力**只能**经主 agent 注册的 `graph_*` 槽内工具获得 ——
+// 它们不认识 GraphDB / LightMemory / 任何开库方法。
 //
-// ★ 返回的是 `GraphMemory`/`any` 而不是具体类型：消费方只需要"能 Recall/Commit
-//
-//	的图记忆面"与"可关闭句柄"，不需要知道它是 LightMemory 还是 GraphDB。
-type GraphMemoryOpener interface {
-	// OpenReadOnly 按已存在的主库路径开一个**结构上写不进**的只读视图。
-	OpenReadOnly(mainPath string) (GraphMemory, error)
-	// OpenLight 用只读主库 + temp 路径构造轻量实例（读 temp∪main、只写 temp）。
-	//
-	// 返回值是 `any` 而不是 GraphMemory：LightMemory 的方法集与全量 GraphDB
-	// 不同（它只实现 Recall/Commit 那一面），强行统一成同一接口就得给
-	// GraphMemory 加它没有的方法 —— 那是把实现的形状泄漏成契约。
-	// 消费方（驻留子/rt 的装配点）自己断言成它需要的窄面。
-	OpenLight(mainRO GraphMemory, tempPath string, allowWrite bool) (any, error)
-	// Close 关闭一个由本接口打开的句柄（幂等）。
-	//
-	// 入参用 `any`：`OpenLight` 返回的是**轻量实例**（方法集与全量 GraphDB
-	// 不同，见 OpenLight 的注释），所以关闭也必须由装配面按自己的类型处理。
-	Close(m any) error
-	// ExportTriples 导出某库里的全部活跃三元组（回收驻留子时父要读子的 temp）。
-	//
-	// ★ 入参 `any`：temp 是 `OpenLight` 的内部结构，契约层不认识它。
-	ExportTriples(db any, since int) ([]model.Triple, error)
-	// LightCommon 取轻量实例的**共同面**（Recall/Commit 那一面，实现 GraphMemory）。
-	//
-	// ★ 为什么需要它：基座的 `LightMemory` 字段要一个 `GraphMemory`，
-	//   而轻量实例的方法集与全量 GraphDB 不同（见上面的注释）。
-	//   "它到底满足哪个接口"只有实现侧知道 —— 所以由装配面回答。
-	LightCommon(light any) GraphMemory
-	// LightTemp 取轻量实例的 **temp 库句柄**（`OpenLight` 返回值的内部结构）。
-	//
-	// ★ 为什么需要它：回收驻留子时父要读子的 temp 三元组（`ExportTriples`），
-	//   而那是 `*LightMemory` 的具体字段 —— 基座不该知道那个类型
-	//   （判据 §8 第 3 条）。所以"取 temp"这件事也归装配面。
-	//
-	// 入参是 `OpenLight` 的返回值（`any`）；不是轻量实例时返回 nil。
-	LightTemp(light any) GraphMemory
-}
+// 因此这个接口与它的 6 个方法一并删除：留着它等于给"自己开库"留后门。
 
 // ───────────────────────── 安全闸门 ─────────────────────────
 

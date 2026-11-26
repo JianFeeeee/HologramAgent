@@ -193,7 +193,7 @@ func marshalToJSONString(v interface{}) (string, bool) {
 	return string(b), true
 }
 
-func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteOutputSendTool(tc agentAPI.ToolCall) string {
 	channel := strings.TrimPrefix(tc.Name, "output_send__")
 	if channel == "" {
 		return "工具名称格式: output_send__{channel}"
@@ -202,7 +202,7 @@ func (a *Agent) executeOutputSendTool(tc agentAPI.ToolCall) string {
 	//
 	// 这里走安全模块的闸门，而不是渲染用的 `IsOutputAllowed`：
 	// 未装配安全模块 ⇒ 恒放行（那是"没有闸门"的运行态，不是"授权通过"）。
-	if d := a.checkOutputGate(channel); !d {
+	if d := a.CheckOutputGate(channel); !d {
 		return fmt.Sprintf("通道 [%s] 未授权给本 agent。可用通道见 output_list_channels", channel)
 	}
 	// 通道存在性是**内核唯一该管的校验**。type 与能力的匹配下放给插件：
@@ -347,7 +347,7 @@ func (a *Agent) sendOneOutput(channel string, item outputItem) (string, bool) {
 	return fmt.Sprintf("已通过 [%s] 通道发送", channel), true
 }
 
-func (a *Agent) executeOutputSendHelp(tc agentAPI.ToolCall) string {
+func (a *Agent) ExecuteOutputSendHelp(tc agentAPI.ToolCall) string {
 	suffix := strings.TrimPrefix(tc.Name, "output_send__")
 	channel := strings.TrimSuffix(suffix, "_help")
 	if channel == "" {
@@ -394,7 +394,7 @@ type    — 载荷类型（必填），枚举值见下方
 示例: output_send__%s(payload="你好", meta="{\"group_id\": 123456789}", type="text")`, channel, desc, capStr, channel)
 }
 
-func (a *Agent) executeOutputListChannels() string {
+func (a *Agent) ExecuteOutputListChannels() string {
 	channels := a.io.ListChannels()
 	if len(channels) == 0 {
 		return "没有可用通道"

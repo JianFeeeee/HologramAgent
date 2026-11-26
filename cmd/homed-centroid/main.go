@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 )
 
 func main() {

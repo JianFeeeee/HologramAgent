@@ -18,12 +18,14 @@ package resident
 // 与这里**同一张表**。
 
 import (
+	"os"
+
 	"fmt"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"path/filepath"
 	"strings"
 
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 )
@@ -43,6 +45,7 @@ func residentDescriptor() registry.Descriptor {
 			Type:         string(kindResident),
 			Description:  "长期派驻的子 agent：有自己的输入队列与记忆，可承接持续任务；上下文整窗不裁，撞窗口时向父上报",
 			NeedsInputCh: true,
+			AgentCap:     agentIO.CapText,
 		},
 		Actions: []registry.Action{
 			{
@@ -86,6 +89,16 @@ func residentDescriptor() registry.Descriptor {
 				return fmt.Errorf("resident: 实例不是 *agent.Agent（装配错误）")
 			}
 			installResidentHooks(a)
+			// ★ 上下文实现在这里装配（**与主 agent 同一路口**）。
+			//
+			// 此前它只在 `RestoreContext` 里有条件地建：`context.json` **已存在**
+			// 才 `OpenContext()`，否则不建。于是**新建**的驻留子 `m.ctx` 恒为 nil，
+			// 第一轮处理输入就撞 `prepareInputTask` 的空指针（实测：创建成功、
+			// state=running、rounds 永远是 0、panic 被 recover 吞掉）。
+			//
+			// 上下文是"跑起来就需要的东西"，不是"恢复时才需要的东西"：
+			// 归属 Initialize（装配期），恢复只负责往里灌历史。
+			Wrap(a).OpenContext()
 			return nil
 		},
 		Construct: func(host registry.Host, arg map[string]interface{}) (string, error) {
@@ -156,19 +169,20 @@ func (m *M) spawnResidentForAdmin(arg map[string]interface{}) (string, error) {
 	if len(inputChs) == 0 {
 		return "", fmt.Errorf("resident: create 需要至少一个 input_chs（不划通道它收不到任何输入）")
 	}
-	tempPath := strings.TrimSpace(strOf(arg, "temp_path"))
-	if tempPath == "" {
-		anchor := m.A.DataDir()
-		if anchor == "" && m.A.GraphDB() != nil && m.A.GraphDB().Path() != "" {
-			anchor = filepath.Dir(filepath.Dir(m.A.GraphDB().Path()))
-		}
-		if anchor == "" {
-			return "", fmt.Errorf("resident: create 需要 data_dir 或显式 temp_path")
-		}
-		tempPath = filepath.Join(anchor, "residents", id, "graph.db")
+	// ★ 工作目录由**内核**分配并传入（用户裁定 2026-11-19）。
+	//   类型只决定"我的图库文件在目录里叫什么"，不决定目录在哪。
+	//   调用方给的 temp_path 只作兼容参数：它若与内核目录不一致，以内核为准。
+	workDir := strings.TrimSpace(strOf(arg, registry.ArgWorkDir))
+	if workDir == "" {
+		return "", fmt.Errorf("resident: 内核未分配工作目录（装配错误）")
 	}
-	info, err := m.SpawnResident(agenttypes.ResidentOptions{
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		return "", fmt.Errorf("resident: 创建工作目录 %s 失败: %w", workDir, err)
+	}
+	tempPath := filepath.Join(workDir, "graph.db")
+	info, err := m.SpawnResident(ResidentOptions{
 		ID:                id,
+		WorkDir:           workDir,
 		TaskPrompt:        strOf(arg, "task_prompt"),
 		InputChs:          inputChs,
 		AllowedOutputs:    splitComma(strOf(arg, "allowed_outputs")),
@@ -182,7 +196,17 @@ func (m *M) spawnResidentForAdmin(arg map[string]interface{}) (string, error) {
 		return "", err
 	}
 	// 记录创建参数（软重启与持久化共用）。
-	if im := m.A.Instances(); im != nil {
+	//
+	// ★ 用 EnsureInstanceManager（懒初始化）而不是 Instances（只读裸取）。
+	//
+	// 两者差一个 nil：`Instances()` 只返回"已装配的"那份。裸取 + nil 判断
+	// 让"没记住"与"不需要记"长得一样 —— 实测症状是
+	// `admin_child(type=resident, action=create)` 成功、子也能干活，
+	// 但随后 `action=restart` 报「没有创建参数快照（无法重建）」。
+	//
+	// 记录创建参数是**创建动作的一部分**（软重启与持久化都靠它），
+	// 不能因为管理器此刻还没被挂上就静默丢掉。
+	if im := m.A.EnsureInstanceManager(); im != nil {
 		im.Remember(string(kindResident), id, arg)
 	}
 	return "已创建驻留子: " + MarshalResidentInfo(info), nil
@@ -200,14 +224,14 @@ func (m *M) residentAdmin(action string, arg map[string]interface{}) (string, er
 	}
 	switch action {
 	case "destroy":
-		policy := agenttypes.ResidualKeep
+		policy := ResidualKeep
 		switch strings.ToLower(strOf(arg, "residual")) {
 		case "drop":
-			policy = agenttypes.ResidualDrop
+			policy = ResidualDrop
 		case "stash":
-			policy = agenttypes.ResidualStash
+			policy = ResidualStash
 		}
-		n, msg, err := m.FinishResidentWithTarget(id, policy, agenttypes.ChannelOrphan, "", nil)
+		n, msg, err := m.FinishResidentWithTarget(id, policy, ChannelOrphan, "", nil)
 		if err != nil {
 			return "", err
 		}
@@ -219,14 +243,14 @@ func (m *M) residentAdmin(action string, arg map[string]interface{}) (string, er
 		}
 		return fmt.Sprintf("已压缩 %s 的上下文（丢弃 %d 条旧事件，并清理其 inputch 处理表）；子继续存在", id, n), nil
 	case "reclaim":
-		policy := agenttypes.ResidualKeep
+		policy := ResidualKeep
 		switch strings.ToLower(strOf(arg, "residual")) {
 		case "drop":
-			policy = agenttypes.ResidualDrop
+			policy = ResidualDrop
 		case "stash":
-			policy = agenttypes.ResidualStash
+			policy = ResidualStash
 		}
-		n, msg, err := m.FinishResidentWithTarget(id, policy, agenttypes.ChannelOrphan, "", nil)
+		n, msg, err := m.FinishResidentWithTarget(id, policy, ChannelOrphan, "", nil)
 		if err != nil {
 			return "", err
 		}
@@ -323,12 +347,12 @@ func installResidentHooks(a *agent.Agent) {
 	//   改造前这些在基座的 `CheckContextFull` 里（`m.st.onContextFull`
 	//   闭包 + `ctxFullSignaled` 标记），那是基座替类型做策略。
 	if h.OverflowHandler == nil {
-		h.OverflowHandler = func(x *agent.Agent, _ *agent.TaskFrame, req agenttypes.OverflowRequest) (bool, int) {
+		h.OverflowHandler = func(x *agent.Agent, _ any, req agent.OverflowRequest) (bool, int) {
 			// 内核上报的 contextfull（Force）与本地水位两种来源都收。
-			if req.Kind != agenttypes.OverflowLocal {
+			if req.Kind != agent.OverflowLocal {
 				return false, 0
 			}
-			if x.ContextLen() == 0 || x.ContextManager() == nil {
+			if x.ContextLen() == 0 {
 				return false, 0
 			}
 			res := mm.st
@@ -345,7 +369,7 @@ func installResidentHooks(a *agent.Agent) {
 			// 本地水位：拿**未裁剪**的积累上下文估算（拼好的 f.Msgs 已被
 			// 预算裁过，对 90% 阈值永远不成立 —— 那是「要被裁了」而不是
 			// 「已经裁过」的判据）。
-			if !req.Force && x.OverflowRatioNow() < contextFullRatio {
+			if !req.Force && ratioOf(x) < contextFullRatio {
 				return false, 0
 			}
 			res.ctxFullMu.Lock()
@@ -358,11 +382,9 @@ func installResidentHooks(a *agent.Agent) {
 		}
 	}
 
-	// 槽位 6：agent loop —— 与主 agent 同一套标准同步实现，
-	// 但**轮次结束后自己写 inputch 处理表**（那张表是驻留子的语义）。
-	if h.Loop == nil {
-		h.Loop = residentLoop
-	}
+	// ★ 没有 Loop 槽位（docs §0.3）：帧推进是**本类型自己的实现**，
+	//   由本包的循环（`driver.go` 的 SchedulerLoop → runInputTask）驱动。
+	//   基座不认识帧，也就不可能有"驱动一帧"的槽。
 
 	a.SetHooks(h)
 }
@@ -377,15 +399,12 @@ func residentContextFullText(id string) string {
 		"（admin_child action=compress）、回收它（action=reclaim），或销毁（action=destroy）。"
 }
 
-// residentLoop 是驻留子的 agentloop：标准同步状态机 + 本轮 inputch 记账。
+// ★ `residentLoop` 已删除（2026-11-26）。
 //
-// ★ 记账必须在这里而不是基座：处理表与"本轮处理了什么"是**驻留子**的
+// 它曾是"帧推进 + inputch 记账"的统一入口，但**没有任何调用方**——
+// 驱动是 `SchedulerLoop` → `executeNewTask` → `RunInputTask`。
+// 留着它的后果是记账静默消失：处理表恒 0 条，父永远读到「（尚无记录）」，
+// 而子其实处理完了（context.json 的 resp 有值）。
 //
-//	语义（父会来 pull 这张表判断进度）。基座不认识有谁拥有这样一张表。
-func residentLoop(a *agent.Agent, f *agent.TaskFrame) agenttypes.Outcome {
-	out := agent.RunTaskSteps(a, f)
-	if m := Wrap(a); m != nil {
-		m.AutoRecordInputch(f)
-	}
-	return out
-}
+// 现在记账落在**真正被调用的那条路径**上（`driver.go` 的 `executeNewTask`）。
+// 判据因此不需要：没有第二个入口可以漏。

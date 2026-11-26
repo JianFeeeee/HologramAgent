@@ -57,22 +57,27 @@ type RegisterRequest struct {
 
 // HandleRegisterEvent 处理一条 `agent.type.register` 事件。
 //
-// 返回错误 = 拒绝（调用方据它报给插件，**不静默丢弃**）。
-func HandleRegisterEvent(eventType string, payload map[string]interface{}, isBuiltin func(string) bool) error {
+// 返回 (声明者, 中立类型声明, 错误)。声明与错误分两路：调用方要先验
+// 声明者再交给组装器（两件事的责任不同）。
+//
+// ★ 本函数**不组装**：它只做"能不能收"的判定（内置插件 + 载荷形状）。
+//
+//	组装（造实例 / 挂回调）在内核模块 `kernelmod/agenttype` —— registry
+//	是纯注册表，不能 import agent 实现（那会让注册表变成基座的一部分）。
+func HandleRegisterEvent(eventType string, payload map[string]interface{}, isBuiltin func(string) bool) (string, any, error) {
 	plugin := str(payload, "plugin")
 	if plugin == "" {
-		return fmt.Errorf("registry: 注册事件缺少 plugin 字段（无法判定声明者）")
+		return "", nil, fmt.Errorf("registry: 注册事件缺少 plugin 字段（无法判定声明者）")
 	}
 	if isBuiltin != nil && !isBuiltin(plugin) {
 		// ★ 这一道是**运行期事实**：跨进程插件送不进函数值，但可能发同名事件。
-		return fmt.Errorf("registry: 插件 %q 不是内置插件（线程化），无权注册子 agent 类型", plugin)
+		return "", nil, fmt.Errorf("registry: 插件 %q 不是内置插件（线程化），无权注册子 agent 类型", plugin)
 	}
-	req, err := decodeRegisterPayload(payload)
+	def, err := decodeRegisterPayload(payload)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
-	req.Plugin = plugin
-	return Register(req.Descriptor)
+	return plugin, def, nil
 }
 
 // HandleUnregisterEvent 处理一条 `agent.type.unregister` 事件。
@@ -87,30 +92,27 @@ func HandleUnregisterEvent(payload map[string]interface{}, alive []string) error
 	return Unregister(typeName, alive)
 }
 
-// decodeRegisterPayload 从事件载荷里取出 Descriptor。
+// decodeRegisterPayload 从事件载荷里取出**类型声明**。
 //
-// ★ 载荷里的 Descriptor 必须是**真正的结构体**（不是 map 反序列化来的）：
+// ★ 载荷里必须是**真正的 Go 值**（不是 map 反序列化来的）：函数值无法从
+// JSON 还原。拿到的若是 map，说明发布方是跨进程插件 —— 明确拒绝并说明原因，
+// 而不是静默当空注册。
 //
-//	函数值无法从 JSON 还原。拿到的若是 map，说明发布方是跨进程插件 ——
-//	明确拒绝并说明原因，而不是静默当空注册。
-func decodeRegisterPayload(payload map[string]interface{}) (RegisterRequest, error) {
+// ★ 这里收的是**中立声明**（`pubsdk.AgentTypeDef`），不是内核的 Descriptor：
+//
+//	插件不认识内核类型，组装（含造实例）由 `kernelmod/agenttype` 做。
+//	（判据 `TestPayloadIsNotDeserialized` 钉住"拒绝 map 载荷"。）
+func decodeRegisterPayload(payload map[string]interface{}) (any, error) {
 	raw, ok := payload[EventPayloadKey]
 	if !ok {
-		return RegisterRequest{}, fmt.Errorf("registry: 注册事件缺少 %q 载荷", EventPayloadKey)
+		return nil, fmt.Errorf("registry: 注册事件缺少 %q 载荷", EventPayloadKey)
 	}
-	d, ok := raw.(Descriptor)
-	if !ok {
-		if dp, isPtr := raw.(*Descriptor); isPtr && dp != nil {
-			d = *dp
-			ok = true
-		}
+	if _, isMap := raw.(map[string]interface{}); isMap {
+		return nil, fmt.Errorf(
+			"registry: %q 载荷是 map（反序列化产物）—— 跨进程插件无法携带 Go 函数值，"+
+				"只有内置插件（线程化）能注册子 agent 类型", EventPayloadKey)
 	}
-	if !ok {
-		return RegisterRequest{}, fmt.Errorf(
-			"registry: %q 载荷不是 Descriptor（拿到 %T）—— 跨进程插件无法携带 Go 函数值，"+
-				"只有内置插件（线程化）能注册子 agent 类型", EventPayloadKey, raw)
-	}
-	return RegisterRequest{Descriptor: d}, nil
+	return raw, nil
 }
 
 // NewRegisterPayload 构造一条注册事件的载荷（内置插件用）。

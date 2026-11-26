@@ -34,7 +34,7 @@ package resident
 // 而 `RestoreResidents` **零调用方** —— 重启后驻留子全丢。
 //
 // 现在创建参数落在 `registry` 的实例表（`<data>/agents/instances.json`），
-// 由 InstanceManager 统一负责（软重启与进程重启共用同一份快照）。
+// 由 agent.InstanceManager 统一负责（软重启与进程重启共用同一份快照）。
 // 本文件退化为**桥接**：把驻留子的创建参数转成实例表的 arg 形态，
 // 并保留它独有的两项磁盘治理（孤儿目录归档 + 旧登记表迁移）。
 //

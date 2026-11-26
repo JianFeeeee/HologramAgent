@@ -6,7 +6,7 @@ package mainagent
 //
 // 基座曾经有一个 20 字段的 `KernelStatus`，其中 9 个在生产装配下恒为零值
 // （句柄为 nil）、3 个装的是**类型专属结构**（scheduler / residents / onnx）。
-// 那等于"基座假设所有 agent 都有这些面"，与 `Hooks.GraphMemory` 同一个病。
+// 那等于"基座假设所有 agent 都有这些面"，与 `agent.Hooks.GraphMemory` 同一个病。
 //
 // 现在：主 agent 在自己 `Initialize` 里注册它持有的那些段；
 // 驻留子注册 `"resident"`；rt 注册 `"rt"`；knowledge 插件注册 `"knowledge"`。
@@ -48,17 +48,42 @@ func registerStatusSections(a *agent.Agent) {
 	}
 	a.RegisterStatusSection(agent.StatusSection{Key: "context", Payload: func() any {
 		return ContextSection{
-			Events:       a.ContextLen(),
-			Accumulated:  a.AccumulatedTokens(),
-			WindowTokens: a.ContextWindowTokens(),
-			Ratio:        a.OverflowRatioNow(),
+			Events:       Wrap(a).ContextLen(),
+			Accumulated:  Wrap(a).AccumulatedTokens(),
+			WindowTokens: Wrap(a).ContextWindowTokens(),
+			Ratio:        Wrap(a).OverflowRatioNow(),
 			Overflow:     ledgerFor(a).Snapshot(),
 		}
 	}})
 
+	// ★ 记忆 / 文档 / 文本记忆三段：**数据在主 agent 手里**（2026-11-20）。
+	//   基座不注册它们 —— 它没有那些句柄（`GraphDB()` 是基座的通用读接口，
+	//   不同类型可以有也可以没有；"有就拿去算段"属于持有者的决定）。
+	if m := Wrap(a).st; m != nil {
+		if m.indexer != nil {
+			a.RegisterStatusSection(agent.StatusSection{Key: "memory", Payload: func() any {
+				return memoryStatusOf(m.indexer)
+			}})
+		}
+		if m.coldcontextStore != nil {
+			a.RegisterStatusSection(agent.StatusSection{Key: "documents", Payload: func() any {
+				return documentsStatusOf(m.coldcontextStore)
+			}})
+		}
+		if m.textMem != nil {
+			a.RegisterStatusSection(agent.StatusSection{Key: "text_memory", Payload: func() any {
+				tm := m.textMem
+				return struct {
+					Available bool `json:"available"`
+					FileCount int  `json:"file_count"`
+				}{true, tm.FileCount()}
+			}})
+		}
+	}
+
 	// "scheduler"：**主 agent 与驻留子各自注册自己那份**（各自持有实例）。
 	// rt 没有 scheduler（rtSlot 单槽覆盖）⇒ 不注册。
 	a.RegisterStatusSection(agent.StatusSection{Key: "scheduler", Payload: func() any {
-		return a.SchedulerStatus()
+		return Wrap(a).SchedulerStatus()
 	}})
 }

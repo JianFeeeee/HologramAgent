@@ -98,6 +98,44 @@ type Tool struct {
 	Timeout string
 	// Handle 是执行体。
 	Handle ToolHandler
+	// Slot 声明这是**通用扩展槽**交出的工具（docs §6）。
+	//
+	// ★ 它决定「谁执行」：槽工具的钩子在注册时已交出（`Handle`），
+	//   执行一律走**内核执行设施** —— 与插件工具完全同一条链。
+	//   归属（`Owner`）只用于溯源与"创建参数划定暴露范围"，**不**表示
+	//   "由主 agent 的 agentloop 执行"。
+	//
+	//   缺这个标记的后果（实测）：主 agent 的 `ownsTool` 按 Owner 命中
+	//   自己 ⇒ 判成"类型私有" ⇒ 落进私有族分岔 ⇒ 那里没有槽工具的分支
+	//   ⇒ 报「归属声明缺失（DeclareOwnership 未登记）」，槽工具永远执行不了。
+	Slot bool
+	// OwnershipOnly 声明"**只登记归属，声明不在本表里**"。
+	//
+	// 与 DeclaredOnly 是两件事，别混：
+	//
+	//	DeclaredOnly   声明**在**表里（Description/Properties 有值），执行体在别处
+	//	OwnershipOnly  声明**不在**表里（由拥有者自己的渲染面产出），
+	//	               本项只让 `OwnerOf(name)` 查得到归属
+	//
+	// 用途：`llm_*` / `secret_*` / `plgreload` / `get_plugin_tools` 的 schema
+	// 由**类型**渲染（它知道 `core.llm.*` 的配置与门控），而执行体在基座。
+	// 把它们的 schema 也搬进表里 ⇒ 两个渲染源 ⇒ 同一工具名出现两次 ⇒
+	// 上游硬拒绝（`Tool names must be unique`）。实测发生过。
+	OwnershipOnly bool
+	// DeclaredOnly 声明"只登记声明，执行体在基座的设施里"。
+	//
+	// 用于通道类工具（output_list_channels / input_channels）：它们的执行在
+	// output.go / inputch.go，属内核设施。登记它们只为**归属与标记可见**，
+	// 不为执行 —— 强制要求 Handle 会逼出一个假的执行体。
+	DeclaredOnly bool
+	// OutputGate 声明本工具属于**主动输出门**（output_send__* / output_list_channels 这类
+	// 会让模型显式点名通道的工具）。
+	//
+	// ★ 为什么是一个显式标记而不是"看名字前缀"：rtchild 的输出走 outputch 的流式管线，
+	//   与"模型显式点名通道"是两套语义，两套同时存在会分叉。原先靠
+	//   `strings.HasPrefix(name, "output_send__")` 判 —— 改名字就静默失效。
+	//   标记由拥有者在自己登记时声明，判据读标记，不读名字。
+	OutputGate bool
 }
 
 var (
@@ -113,7 +151,10 @@ func RegisterTool(t Tool) error {
 	if strings.TrimSpace(t.Name) == "" {
 		return errf("registry: 工具名不能为空")
 	}
-	if t.Handle == nil {
+	// Handle 可为 nil 仅当登记的是**纯声明**工具（执行体在基座，
+	// 如 output_list_channels / input_channels —— 它们的执行在 output.go /
+	// inputch.go，属内核设施，不该为一个名字再造一份执行体）。
+	if t.Handle == nil && !t.OutputGate && !t.DeclaredOnly && !t.OwnershipOnly {
 		return errf("registry: 工具 %q 缺少 Handle", t.Name)
 	}
 	if t.Owner == "" {
@@ -124,6 +165,28 @@ func RegisterTool(t Tool) error {
 	if _, dup := toolTable[t.Name]; dup {
 		return errf("registry: 工具 %q 已注册", t.Name)
 	}
+	toolTable[t.Name] = t
+	return nil
+}
+
+// RegisterToolReplace 与 RegisterTool 相同，但**同名覆盖**。
+//
+// ★ 只给"槽内工具"用：多个主 agent 实例交的是同一能力（`graph_recall`
+//
+//	就���主 agent 的图记忆召回），后注册者赢是唯一合理语义。
+//	普通工具（插件 / 内核族）仍走 RegisterTool：同名重复是计划错误。
+func RegisterToolReplace(t Tool) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return errf("registry: 工具名不能为空")
+	}
+	if t.Handle == nil && !t.OutputGate && !t.DeclaredOnly && !t.OwnershipOnly {
+		return errf("registry: 工具 %q 缺少 Handle", t.Name)
+	}
+	if t.Owner == "" {
+		t.Owner = "core"
+	}
+	toolMu.Lock()
+	defer toolMu.Unlock()
 	toolTable[t.Name] = t
 	return nil
 }
@@ -177,6 +240,13 @@ func DispatchTool(c ToolCtx, tc api.ToolCall) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	// ★ `DeclaredOnly` 的工具**只登记声明**（执行体在别处，如基座的
+	//   output.go / inputch.go）。这里必须返回 `handled=false` 让调用方
+	//   继续往下路由 —— 直接调 nil Handle 会 panic，而"panic 在被 recover
+	//   之后变成一条莫名的工具失败"是最难查的形态。
+	if t.Handle == nil {
+		return "", false
+	}
 	return t.Handle(c, tc), true
 }
 
@@ -210,3 +280,66 @@ type ToolDef struct {
 	NoMemory    bool
 	Timeout     string
 }
+
+// ───────────────────────── 归属声明 ─────────────────────────
+//
+// 私有工具的 **schema 由类型渲染、执行体在类型里**，但它们仍然是"谁拥有的"
+// 这条事实的一部分 —— 而分岔判据（`ownsTool`）只能靠这条事实。
+//
+// ★ 为什么不进 toolTable：`Tool` 要求 `Handle`，而私有工具的执行体签名是
+//   `(*类型, ToolCall) string`（它读类型的私有状态），注册表的 `ToolCtx.Host`
+//   拿不到那个形状。把 Handle 造出来只会得到一层假适配。
+//
+// 所以分成两张表：
+//
+//	toolTable     名字 → Tool（含执行体）      内核可执行的工具
+//	ownerTable    名字/前缀 → Owner            谁拥有它（含不可由内核执行的）
+
+// 归属声明表：精确名 → Owner。
+var (
+	ownMu    sync.RWMutex
+	ownerTab = map[string]string{}
+)
+
+// DeclareOwnership 声明一个**精确工具名**的归属（不含执行体）。
+//
+// 用于"schema 与执行体都在类型里、但基座需要知道它归谁"的工具。
+// 与 RegisterTool 的 `Owner` 字段是两个入口、同一张事实：
+// 内核可执行的工具走 RegisterTool，类型私有的走这里。
+func DeclareOwnership(name, owner string) error {
+	if strings.TrimSpace(name) == "" {
+		return errf("registry: 归属声明的工具名不能为空")
+	}
+	if strings.TrimSpace(owner) == "" {
+		return errf("registry: 归属声明的 owner 不能为空")
+	}
+	ownMu.Lock()
+	defer ownMu.Unlock()
+	if prev, dup := ownerTab[name]; dup && prev != owner {
+		// 两个类型声称同一个工具名：与类型注册表同一纪律，响亮失败。
+		return errf("registry: 工具 %q 的归属已被 %q 声明", name, prev)
+	}
+	ownerTab[name] = owner
+	return nil
+}
+
+// OwnerOf 返回某工具的归属（先查归属声明表，再查工具表）。
+//
+// 空表示"没有归属声明" ⇒ 调用方按"不是我该执行的"处理（交给内核）。
+func OwnerOf(name string) string {
+	ownMu.RLock()
+	if o := ownerTab[name]; o != "" {
+		ownMu.RUnlock()
+		return o
+	}
+	ownMu.RUnlock()
+	toolMu.RLock()
+	defer toolMu.RUnlock()
+	if tool, ok := toolTable[name]; ok {
+		return tool.Owner
+	}
+	return ""
+}
+
+// HasOwnership 报告某工具是否已声明归属（诊断用）。
+func HasOwnership(name string) bool { return OwnerOf(name) != "" }

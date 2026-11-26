@@ -6,9 +6,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	coldcontext "github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	knowledge "github.com/JianFeeeee/HologramAgent/internal/plugins/knowledge"
 )
 
@@ -16,10 +13,9 @@ import (
 // 做不污染生产存储的"写→查→删"往返自检。所有写入发生在独立临时目录，
 // 由 Cleanup 统一销毁。
 type VirtualInstance struct {
-	Memory     MemoryAPI
-	Knowledge  KnowledgeAPI
-	DocMemory  DocMemoryAPI
-	TextMemory TextMemoryAPI
+	// ★ 只保留 Knowledge（它本身就是内部插件、自己管存储）。
+	//   记忆三面已删（docs §12.1）：插件的记忆检查改为"按公开路径规则看库在不在"。
+	Knowledge KnowledgeAPI
 
 	dir     string
 	mu      sync.Mutex
@@ -51,29 +47,13 @@ func NewVirtualInstance(scope string) (*VirtualInstance, error) {
 
 // initLocked 初始化各隔离存储。调用方须持 v.mu。
 func (v *VirtualInstance) initLocked() error {
-	memDB, err := memory.NewGraphDB(filepath.Join(v.dir, "graph.db"))
-	if err != nil {
-		return fmt.Errorf("virtual graph db: %w", err)
-	}
-	v.Memory = NewGraphMemory(memDB)
-
+	// ★ 记忆三面（图/文本/冷文档）不再由 SDK 提供（docs §12.1）——
+	//   虚拟实例只剩知识库（它本身就是内部插件、自己管存储）。
 	ks := knowledge.NewStore(filepath.Join(v.dir, "knowledge"))
 	if err := ks.Start(); err != nil {
 		return fmt.Errorf("virtual knowledge store: %w", err)
 	}
 	v.Knowledge = NewKnowledge(ks)
-
-	ds := coldcontext.NewStore(filepath.Join(v.dir, "documents"), memory.TokenizeWords)
-	if err := ds.Start(); err != nil {
-		return fmt.Errorf("virtual doc store: %w", err)
-	}
-	v.DocMemory = NewDocMemory(ds)
-
-	tm := text.New(filepath.Join(v.dir, "text"))
-	if err := tm.Start(); err != nil {
-		return fmt.Errorf("virtual text memory: %w", err)
-	}
-	v.TextMemory = NewTextMemory(tm)
 	return nil
 }
 
@@ -84,17 +64,8 @@ func (v *VirtualInstance) Cleanup() {
 	if !v.created {
 		return
 	}
-	if tm, ok := v.TextMemory.(*textMemoryImpl); ok && tm.tm != nil {
-		tm.tm.Stop()
-	}
-	if ds, ok := v.DocMemory.(*docMemoryImpl); ok && ds.ds != nil {
-		ds.ds.Stop()
-	}
 	if ks, ok := v.Knowledge.(*knowledgeImpl); ok && ks.ks != nil {
 		ks.ks.Stop()
-	}
-	if gm, ok := v.Memory.(*graphMemory); ok && gm.db != nil {
-		gm.db.Close()
 	}
 	os.RemoveAll(v.dir)
 	v.created = false

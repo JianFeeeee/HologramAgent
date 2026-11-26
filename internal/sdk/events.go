@@ -16,20 +16,21 @@ type EventType = events.EventType
 type Event = events.Event
 
 const (
-	EventRawInput       = events.EventRawInput
-	EventAgentOutput    = events.EventAgentOutput
 	EventAgentLLMChain  = events.EventAgentLLMChain
-	EventToolCall       = events.EventToolCall
 	EventReasoning      = events.EventReasoning
-	EventStage          = events.EventStage
 	EventSystem         = events.EventSystem
 	EventTerminalOutput = events.EventTerminalOutput
 	EventAll            = events.EventAll
 
-	// 流式增量事件（token 级）：核心 process() 流式化后每收到一个增量块发布。
-	// 客户端可选订做真逐 token 渲染；聚合事件仍照常发布，旧订阅者不受影响。
-	EventReasoningDelta = events.EventReasoningDelta
-	EventContentDelta   = events.EventContentDelta
+	// ★ 已删（2026-11-25，docs §9.5）：
+	//
+	//	EventRawInput        → on_input 阶段钩子
+	//	EventAgentOutput     → before_output 阶段 + EmitOutputTo 本身
+	//	EventStage           → 插件自己的 stage handler 通知自己的客户端
+	//	EventContentDelta    → 输出通道逐 chunk 调用
+	//	EventReasoningDelta  → 同上（kind=reasoning）
+	//
+	// 判据是归属：这些是 **agent 的状态**，总线只服务内核模块之间。
 
 	// EventMemoryAccess 是图记忆的真实读写事件（哪个块被读/写/删/合）。
 	//

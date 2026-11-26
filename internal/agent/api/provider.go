@@ -132,7 +132,14 @@ func (m Message) MarshalJSON() ([]byte, error) {
 }
 
 type CompletionRequest struct {
-	Model           string                 `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Source 指定**这次请求要走哪个源**（空 = 设施的默认候选链）。
+	//
+	// ★ 用途是「按能力选源」：主模型不支持 vision/audio 时，模态回退要换到
+	//   一个声明了该能力的源上。设施的候选链排序不知道"这次请求带图"，
+	//   所以调用方在这里点名，设施照办（这点名不是绕过回退，它只是候选链的
+	//   第一个元素；源不可用时设施照样往下走）。
+	Source          string                 `json:"-"`
 	Messages        []Message              `json:"messages"`
 	Temperature     float64                `json:"temperature,omitempty"`
 	MaxTokens       int                    `json:"max_tokens,omitempty"`

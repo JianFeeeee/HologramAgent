@@ -192,6 +192,22 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	_ = s.RegisterInputChannel("webui", sdk.ChannelDef{})
 	_ = s.RegisterInputChannel("http", sdk.ChannelDef{NoMemory: true})
 	s.RegisterOutputChannel("webui", 7, "Web 控制台（支持文字/图片/文件，图片内联展示、文件可下载）", sdk.ChannelDef{}, func(args map[string]interface{}) (interface{}, error) {
+		// ★ 流式增量：**通道调用本身就是载体**（docs §9.2 第 5 行）。
+		//
+		// agent 逐 chunk 调 `EmitOutputTo("webui", ch, "text", {"delta": true, ...})`，
+		// 这里把它转成 SSE 推给浏览器 —— 不发任何事件、不经总线。
+		//
+		// 此前是"通道 handler 自己 Publish(EventAgentOutput)，webui 再订阅"：
+		// 同一件事走两圈，还必须过安全模块的总线代理。
+		if d, _ := args["delta"].(bool); d {
+			p.pushDelta(args)
+			return map[string]interface{}{"status": "ok"}, nil
+		}
+		if r, _ := args["reset"].(bool); r {
+			p.pushDelta(args)
+			return map[string]interface{}{"status": "ok"}, nil
+		}
+
 		payload, _ := args["payload"].(string)
 		rawType, _ := args["type"].(string)
 		if payload == "" {
@@ -205,27 +221,29 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 			if err != nil {
 				return nil, err
 			}
-			s.Publish(&sdk.Event{
-				Type: sdk.EventAgentOutput,
-				Payload: map[string]interface{}{
-					"content":     payload,
-					"channel":     "webui",
-					"kind":        "channel_output",
-					"output_type": rawType,
-					"url":         url,
-					"size":        size,
-				},
-			})
+			// ★ 完整输出（图片/文件卡片）直接推给浏览器，**不发事件**。
+			out := map[string]interface{}{
+				"type":        "agent_output",
+				"channel":     "webui",
+				"kind":        "channel_output",
+				"content":     payload,
+				"output_type": rawType,
+				"url":         url,
+				"size":        size,
+			}
+			p.handler.RecordChannelOutput(out)
+			p.pushOutput(out)
 			return map[string]interface{}{"status": "ok", "url": url, "size": size}, nil
 		}
-		s.Publish(&sdk.Event{
-			Type: sdk.EventAgentOutput,
-			Payload: map[string]interface{}{
-				"content": payload,
-				"channel": "webui",
-				"kind":    "channel_output",
-			},
-		})
+		// ★ 完整文本输出：同样直接推，不经事件总线。
+		out := map[string]interface{}{
+			"type":    "agent_output",
+			"channel": "webui",
+			"kind":    "channel_output",
+			"content": payload,
+		}
+		p.handler.RecordChannelOutput(out)
+		p.pushOutput(out)
 		return map[string]interface{}{"status": "ok"}, nil
 	})
 
@@ -268,8 +286,14 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		}
 	}
 
+	// ★ 阶段进度**由 stage 处理器自己推**（docs §9.1：类型 → StageHost → 插件
+	//   stage handler；插件拿到 ctx 之后怎么办是插件自己的事）。
+	//
+	//   此前是 `s.Publish(EventStage)` 发到内核总线、webui 再订阅回来 ——
+	//   同一件事走两圈，而且"当前有哪些浏览器连着"是插件自己的状态，
+	//   不该借内核总线表达（用户裁定 2026-11-25）。
 	s.RegisterStage(sdk.StagePreAction, func(ctx *sdk.StageContext) error {
-		s.Publish(&sdk.Event{Type: sdk.EventStage, Payload: map[string]interface{}{"phase": "pre_action", "message": "thinking"}})
+		p.pushStage(map[string]interface{}{"phase": "pre_action", "message": "thinking"})
 		return nil
 	})
 	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error {
@@ -277,11 +301,11 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		if len(ctx.ToolCalls) > 0 {
 			tool = ctx.ToolCalls[0].Name
 		}
-		s.Publish(&sdk.Event{Type: sdk.EventStage, Payload: map[string]interface{}{"phase": "before_toolcall", "tool": tool, "message": "tool:" + tool}})
+		p.pushStage(map[string]interface{}{"phase": "before_toolcall", "tool": tool, "message": "tool:" + tool})
 		return nil
 	})
 	s.RegisterStage(sdk.StageBeforeOutput, func(ctx *sdk.StageContext) error {
-		s.Publish(&sdk.Event{Type: sdk.EventStage, Payload: map[string]interface{}{"phase": "before_output", "message": "output"}})
+		p.pushStage(map[string]interface{}{"phase": "before_output", "message": "output"})
 		return nil
 	})
 

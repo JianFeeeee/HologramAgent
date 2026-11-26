@@ -27,6 +27,7 @@ import (
 //	"基座写死一批"的形态本身。逐个注册让"这个类型声明了哪些任务"
 //	在代码里可数、可 grep、可逐条删。
 func registerMaintenance(a *agent.Agent) {
+	mm := Wrap(a)
 	var names []string
 	reg := func(t agent.PeriodicTask) {
 		if t.Name != "" && a.RegisterPeriodic(t) {
@@ -34,13 +35,13 @@ func registerMaintenance(a *agent.Agent) {
 		}
 	}
 	// ① 上下文裁剪（L1→L2）+ 插件自动重载
-	reg(a.DistillTask())
+	reg(mm.DistillTask())
 	// ② 冷文档归档（L2→L3）
-	reg(a.ArchiveTask())
+	reg(mm.ArchiveTask())
 	// ③ 实体合并检测 + 场景去重
-	reg(a.MergeTask())
+	reg(mm.MergeTask())
 	// ④ 关系复审
-	reg(a.ReviewTask())
+	reg(mm.ReviewTask())
 	// ⑤ 积压任务转投（未启用时返回零值，注册被拒）
 	reg(offloadTask(a))
 	a.Logf("registered %d periodic task(s): %v", len(names), names)

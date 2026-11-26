@@ -22,6 +22,7 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
@@ -29,7 +30,8 @@ import (
 )
 
 // executeAdminChild 执行一次 admin_child 调用。
-func (a *Agent) executeAdminChild(tc agentAPI.ToolCall) string {
+// ExecuteAdminChild 执行一次 admin_child 调用（类型内的工具也能用）。
+func (a *Agent) ExecuteAdminChild(tc agentAPI.ToolCall) string {
 	m := a.EnsureInstanceManager()
 	if m == nil {
 		return "实例管理器未就绪（内核装配错误）"
@@ -37,9 +39,14 @@ func (a *Agent) executeAdminChild(tc agentAPI.ToolCall) string {
 	typeName := strArg(tc, "type")
 	action := strArg(tc, "action")
 
-	// arg 是一个对象：它的键与 type/meta 合并后交给 Dispatch。
-	// 这样"create 的参数"与"通用动作的 id/text"共用一个入口，
-	// 与 output_send__ 的 payload/type/meta 三参形态对齐。
+	// ★ 顶层**只有四个参数**：type / action / meta / arg（文档 §7.1）。
+	//
+	// 曾经为了"模型常常直接写 id"而把顶层 id / text / residual 也收进来 ——
+	// 那是把契约按模型的习惯改。后果是同一个动作有两种写法，而两种写法的
+	// 参数合并顺序成了隐性约定（顶层覆盖 arg 还是反之？没人说得清）。
+	//
+	// 现在：arg 是**唯一**的动作参数载体。顶层多写的键**不生效**（不静默兼容）——
+	// 那份执念交给 `admin_child_help` 去教模型。
 	arg := map[string]interface{}{}
 	if raw, ok := tc.Arguments["arg"].(map[string]interface{}); ok {
 		for k, v := range raw {
@@ -49,13 +56,13 @@ func (a *Agent) executeAdminChild(tc agentAPI.ToolCall) string {
 	if raw, ok := tc.Arguments["meta"].(map[string]interface{}); ok {
 		arg["meta"] = raw
 	}
-	// 直接给在顶层的那几个通用参数也一并收进来（模型常常直接写 id/text）。
-	for _, k := range []string{"id", "text", "residual"} {
-		if v, ok := tc.Arguments[k]; ok {
-			if s, isStr := v.(string); !isStr || strings.TrimSpace(s) != "" {
-				arg[k] = v
-			}
-		}
+	// 顶层多写的键：明确告知"不生效"，而不是静默忽略（静默忽略会让模型
+	// 以为自己写对了，然后反复试同一个错）。
+	if extra := topLevelExtraArgs(tc); len(extra) > 0 {
+		return fmt.Sprintf("admin_child 参数错误：顶层只接受 type / action / meta / arg，"+
+			"其余参数必须放进 arg 里。你多写了 %v。例如：\n"+
+			`  admin_child(type="resident", action="create", arg={"id":"r1","input_chs":"qq"})`,
+			extra)
 	}
 
 	out, err := registry.Dispatch(m, typeName, action, arg)
@@ -66,7 +73,8 @@ func (a *Agent) executeAdminChild(tc agentAPI.ToolCall) string {
 }
 
 // executeAdminChildHelp 渲染 admin_child_help 的正文。
-func (a *Agent) executeAdminChildHelp(tc agentAPI.ToolCall) string {
+// ExecuteAdminChildHelp 渲染 admin_child_help 正文。
+func (a *Agent) ExecuteAdminChildHelp(tc agentAPI.ToolCall) string {
 	m := a.EnsureInstanceManager()
 	return registry.Help(m, strArg(tc, "type"))
 }
@@ -92,4 +100,21 @@ func strArg(tc agentAPI.ToolCall, key string) string {
 	}
 	s, _ := tc.Arguments[key].(string)
 	return strings.TrimSpace(s)
+}
+
+// topLevelExtraArgs 返回调用方写在顶层、但协议不接受的参数名。
+//
+// ★ 只报"明确不该在顶层"的键：模型偶尔会多写 description 之类的元信息，
+//
+//	那些也算违约（契约只有四个参数）。
+func topLevelExtraArgs(tc agentAPI.ToolCall) []string {
+	allowed := map[string]bool{"type": true, "action": true, "meta": true, "arg": true}
+	var extra []string
+	for k := range tc.Arguments {
+		if !allowed[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra) // 稳定输出：判据与日志可比对
+	return extra
 }

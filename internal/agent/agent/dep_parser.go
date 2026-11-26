@@ -21,11 +21,12 @@ type DepParserInfo struct {
 }
 
 // depParser 返回分析器的事实（未注入 ⇒ nil = 未启用）。
-func (a *Agent) depParser() *DepParserInfo {
-	if a == nil || a.cfg.DepParser == nil {
+// DepParser 返回注入的依存句法分析器信息（类型状态面用）。
+func (a *Agent) DepParser() *DepParserInfo {
+	if a == nil || a.depParserFace() == nil {
 		return nil
 	}
-	enabled, modelPath := a.cfg.DepParser()
+	enabled, modelPath := a.depParserFace()()
 	if !enabled {
 		return nil
 	}

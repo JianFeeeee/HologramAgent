@@ -152,7 +152,7 @@ func Preflight(dataDir, target string) (*MigrateReport, error) {
 	rep.DBPathKeys = []string{
 		"core.daemon.data_dir", "core.plugin.dir", "core.memory.graph",
 		"core.memory.text", "core.memory.documents", "core.knowledge.path",
-		"core.log.path", "core.memory.multimodal_space.options.model_dir",
+		"core.log.path", "core.multimodal.options.model_dir",
 	}
 	rep.Risks = append(rep.Risks,
 		fmt.Sprintf("数据库有 %d 个键存绝对路径；不改写会导致重启后按旧路径找数据，"+

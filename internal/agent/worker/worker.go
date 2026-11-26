@@ -1,13 +1,13 @@
 package worker
 
 import (
-	"encoding/json"
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"log"
 	"strings"
 
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 )
 
 // ── 工作式子的工具禁令（**单一事实来源**） ──
@@ -45,16 +45,13 @@ type workerDenyRule struct {
 //	plgreload   插件重载是内核级动作，子无权触发
 var workerForbidden = []workerDenyRule{
 	{
-		class: "输出工具", prefix: "output_send__", isPref: true,
-		hint: "结果请直接作为最终答复返回，父会转达用户",
-	},
-	{
-		class: "输出工具", tool: "output_list_channels",
-		hint: "结果请直接作为最终答复返回，父会转达用户",
-	},
-	{
-		class: "系统工具", tool: "spawn_child",
-		hint: "子不能再 spawn 子（会无限递归）；需要多步请在本次任务内完成",
+		// ★ 旧 `spawn_child` 已删（P-4 批：父子只剩 admin_child 族 +
+		//   CallParent 两条协议）。那条禁令原先指向一个**不存在的工具**
+		//   —— 永远不命中，等于这条防线是空的。子确实不能再起子：
+		//   现在它想超轮回，只能走 admin_child，而 admin_child 归
+		//   SideParent（子侧取不到这张表），结构上就做不到。
+		class: "系统工具", tool: "admin_child",
+		hint: "子不能再起子（会无限递归）；需要多步请在本次任务内完成",
 	},
 	{
 		class: "系统工具", tool: "plgreload",
@@ -62,8 +59,18 @@ var workerForbidden = []workerDenyRule{
 	},
 }
 
+// workerOutputDenyHint 是"输出门工具不给工作式子"的理由。
+const workerOutputDenyHint = "结果请直接作为最终答复返回，父会转达用户"
+
 // workerDenyRuleFor 返回命中的禁令（nil = 允许）。
+//
+// ★ 输出门的判定走 `agent.IsOutputGateTool`（**唯一判据**，读注册表标记
+//   - 动态生成族），不在本表里写第二份前缀规则 —— 两个类型两份前缀判定
+//     是本仓反复踩的形态。
 func workerDenyRuleFor(name string) *workerDenyRule {
+	if agent.IsOutputGateTool(name) {
+		return &workerDenyRule{class: "输出工具", tool: name, hint: workerOutputDenyHint}
+	}
 	for i := range workerForbidden {
 		r := &workerForbidden[i]
 		if r.isPref {
@@ -94,36 +101,71 @@ func workerToolReject(ct agentAPI.ToolCall) string {
 	return fmt.Sprintf("子 Agent 不允许调用 %s: %s（%s）", r.class, ct.Name, r.hint)
 }
 
-func (m *M) SpawnChild(tc agentAPI.ToolCall, parentChannel string) string {
-	task, _ := tc.Arguments["task"].(string)
-	if task == "" {
-		if b, _ := json.Marshal(tc.Arguments); len(b) > 2 {
-			log.Printf("[spawn] task empty but arguments present: %s", truncateStr(string(b), 300))
-		}
-		return "请提供 task 参数"
+// spawnFromAdmin 落地 `admin_child(type="worker", action="create")`。
+//
+// ★ 旧 `spawn_child` 的替代品。差别不是改名：旧的那条**绕开内核骨架**
+//
+//	（自己起 goroutine、不进实例表），这条走 `Descriptor.Construct`
+//	⇒ 实例进 `child.Registry` + `InstanceManager`（可持久化 / 可 StopAll / 可列）。
+func (m *M) spawnFromAdmin(arg map[string]interface{}) (string, error) {
+	task := strOf(arg, "task")
+	if strings.TrimSpace(task) == "" {
+		return "", fmt.Errorf("worker: create 需要 task（要它完成什么）")
 	}
-	maxTurns := 0
-	if v, ok := tc.Arguments["max_turns"].(float64); ok {
-		maxTurns = int(v)
-	}
+	maxTurns := intOf(arg, "max_turns")
 	if maxTurns < 1 {
 		maxTurns = defaultChildMaxTurns
 	}
 	if maxTurns > 30 {
 		maxTurns = 30
 	}
-
-	taskID := m.state().NextID()
-
-	// parentChannel 由调用方（任务帧）传入：子任务完成通知要回到**发起这次
-	// spawn 的那个任务**的通道，而不是"内核当前通道"（那个概念已删除）。
-	if parentChannel == "" || parentChannel == agenttypes.ChannelConsolidation {
+	parentChannel := strOf(arg, "channel")
+	if parentChannel == "" || parentChannel == agentIO.ChannelConsolidation {
 		parentChannel = "cli"
 	}
 
-	go m.runChildTask(taskID, task, parentChannel, maxTurns)
+	taskID := m.state().NextID()
+	if err := m.state().Bind(taskID, string(m.A.ID())); err != nil {
+		return "", err
+	}
 
-	return fmt.Sprintf("子任务已启动（ID: %s，最多 %d 轮）。完成后会自动通知你，届时用 child_result 查看输出即可（**只需查询一次**）", taskID, maxTurns)
+	// ★★ 造**自己的**实例并登记进骨架（2026-11-20 修）。
+	//
+	// 此前这里只有 `go m.runChildTask(...)` —— 一个裸 goroutine，借用父的
+	// provider / 工具表 / RunToolBatch。后果：`RegistryToolDefs()` 按父的
+	// 侧别取表、`RunToolBatch` 用父的 Host 判安全闸、`admin_child_list`
+	// 看不到它、`StopAll` 收不掉它。
+	//
+	// 现在与 resident 同构：`agent.New` 造实例 + `Children().Add` 登记。
+	ent, err := m.newInstance(taskID, task, parentChannel, maxTurns)
+	if err != nil {
+		m.state().Finish(taskID, "创建失败: "+err.Error())
+		return "", err
+	}
+	if err := m.A.Children().Add(ent); err != nil {
+		ent.Dispose()
+		m.state().Finish(taskID, "登记失败: "+err.Error())
+		return "", fmt.Errorf("worker: 登记子实例 %s 失败: %w", taskID, err)
+	}
+
+	go m.runChildTask(ent, task, parentChannel, maxTurns)
+
+	return fmt.Sprintf("子任务已启动（ID: %s，最多 %d 轮）。完成后它会自己上报；"+
+		"用 admin_child(type=\"worker\", action=\"inspect\", arg={id:\"%s\"}) 查看产出（结果幂等，查一次即可）",
+		taskID, maxTurns, taskID), nil
+}
+
+// adminWorker 处理工作式子的类型独有动作。
+func (m *M) adminWorker(action string, arg map[string]interface{}) (string, error) {
+	switch action {
+	case "inspect":
+		id := strOf(arg, "id")
+		if id == "" {
+			return "", fmt.Errorf("worker: inspect 需要 id")
+		}
+		return m.childResultOf(id), nil
+	}
+	return "", fmt.Errorf("worker: 未知动作 %q", action)
 }
 
 // defaultChildMaxTurns 子 Agent 默认工具轮数（可被 spawn_child 的 max_turns 参数覆盖）。
@@ -172,21 +214,29 @@ const childSystemPromptTemplate = `你是 HologramAgent 的子任务助手。
 
 任务: %s`
 
-func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int) {
-	if m.A.Config().Provider == nil {
+// runChildTask 跑一个工作式子实例（**用它自己的** agent，不是父的）。
+func (m *M) runChildTask(ent *workerEntry, task string, parentChannel string, maxTurns int) {
+	taskID := ent.taskID
+	// ★ 本实例的载体：`RegistryToolDefs()` / `RunToolBatch` / `Config()`
+	//   全部走它 —— 侧别是 SideChild、安全闸按它自己的身份判。
+	ca := ent.Agent().(*agent.Agent)
+	if ca == nil || (ca.LLM() == nil && ca.LLMSources() == nil) {
 		log.Printf("[child] %s failed: no LLM provider configured", taskID)
+		m.state().Finish(taskID, "子 Agent 执行失败: 没有可用的 LLM 提供者")
 		return
 	}
 	log.Printf("[child] %s started: %s", taskID, truncateStr(task, 80))
 
-	sysPrompt := fmt.Sprintf(childSystemPromptTemplate, task)
-
 	msgs := []agentAPI.Message{
-		{Role: "system", Content: sysPrompt},
+		{Role: "system", Content: ca.SystemPrompt()},
 		{Role: "user", Content: task},
 	}
 
-	allTools := m.A.BuildToolDefs()
+	ca.Start()
+
+	// ★ 公有面由基座给（与其他类型同一个函数）。工作式子再用自己的
+	//   允许表筛一遍 —— 那是本类型的策略，不是公有面的差异。
+	allTools := ca.PublicToolDefs()
 	childTools := make([]interface{}, 0, len(allTools))
 	for _, t := range allTools {
 		toolMap, ok := t.(map[string]interface{})
@@ -221,7 +271,7 @@ func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int
 			MaxTokens:       4096,
 			Tools:           childTools,
 			ToolChoice:      "auto",
-			DisableThinking: !m.A.Config().ThinkingEnabled,
+			DisableThinking: !m.A.ThinkingEnabled(),
 		}
 
 		// ★ 走与主 agent 同一套 provider 选择（而不是直接 m.A.Config().Provider.Chat）。
@@ -230,7 +280,7 @@ func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int
 		//  ① `core.agent.llm.child_provider` 对它生效（四类 agent 各自可配源）
 		//  ② 多源回退对它生效 —— 此前它是唯一绕过回退链的地方：
 		//     默认源抖动一次，整条子任务就"执行失败"，而主 agent 同刻能自动换源
-		resp, err := m.chatWithProviderChain(req)
+		resp, err := m.chatWithInstance(ca, req)
 		if err != nil {
 			finalResult = fmt.Sprintf("子 Agent 执行失败: %v", err)
 			break
@@ -249,8 +299,8 @@ func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int
 
 		// Tool execution remains kernel-owned. The worker loop only provides
 		// worker-specific request constraints; it does not implement a runner.
-		results := m.A.RunToolBatch(resp.ToolCalls, agenttypes.BatchOpts{
-			Ctx:        m.A.Ctx(),
+		results := ca.RunToolBatch(resp.ToolCalls, agent.BatchOpts{
+			Ctx:        ca.Ctx(),
 			Channel:    parentChannel,
 			NoBatch:    true,
 			ToolFilter: workerToolReject,
@@ -279,7 +329,7 @@ func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int
 			// 重烧一整个上下文）。所以先做一次「不带工具的收尾调用」，把已有
 			// 成果落成文本。仅在失败路径上多花一次 LLM 调用。
 			log.Printf("[child] %s exhausted budget maxTurns=%d, attempting wrap-up distillation of results so far", taskID, maxTurns)
-			if summary := m.salvageSummary(msgs, maxTurns); summary != "" {
+			if summary := m.salvageSummary(ca, msgs, maxTurns); summary != "" {
 				finalResult = summary
 			} else {
 				finalResult = fmt.Sprintf("子 Agent 已达工具轮上限（%d 轮）仍未产出最终答复，任务未完成", maxTurns)
@@ -295,7 +345,7 @@ func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int
 	log.Printf("[child] %s done: %s", taskID, truncateStr(finalResult, 100))
 
 	notification := fmt.Sprintf("子任务 %s 已完成。请用 child_result 工具查看输出（只需查询一次；重复查询不会返回失败）。", taskID)
-	m.A.InjectSelfChannel(agenttypes.SelfInputMsg{Text: notification, Channel: parentChannel})
+	m.A.InjectSelfChannel(agent.SelfInputMsg{Text: notification, Channel: parentChannel})
 }
 
 // executeChildResultTool 取回子任务结果。
@@ -304,25 +354,20 @@ func (m *M) runChildTask(taskID, task string, parentChannel string, maxTurns int
 // 这一点至关重要——完成通知会长期留在持久上下文里（formatMergedTimeline
 // 每轮重新注入），如果重复查询返回“不存在”这种失败信号，模型会认定任务
 // 未完成而无限重试（实测单轮 35 次工具调用、持续 514 秒）。
-func (m *M) ChildResult(tc agentAPI.ToolCall) string {
-	taskID, _ := tc.Arguments["task_id"].(string)
-	if taskID == "" {
-		return "请提供 task_id 参数"
-	}
-
+func (m *M) childResultOf(taskID string) string {
 	if snap, ok := m.state().Snapshot(taskID); ok && snap.Running {
 		return fmt.Sprintf("子任务 %s 仍在运行中，尚未完成。请等待完成通知后再查询。", taskID)
 	}
 	first, result, ok := m.state().MarkDelivered(taskID)
 	if !ok {
-		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 spawn_child 返回的 ID 拼写）", taskID)
+		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 create 返回的 ID 拼写）", taskID)
 	}
 
 	if first {
 		return fmt.Sprintf("【子任务 %s 结果】\n%s", taskID, result)
 	}
 	// 重复查询不是失败：明确告诉模型“任务已完成、结果已给过”，让它停止重试。
-	return fmt.Sprintf("【子任务 %s 已完成】结果已在上文提供（见先前的 child_result 工具结果），无需重复查询；请直接基于上文结果继续。", taskID)
+	return fmt.Sprintf("【子任务 %s 已完成】结果已在上文提供，无需重复查询；请直接基于上文结果继续。", taskID)
 }
 
 // childSalvagePrompt 是跑满预算后的收尾指令。
@@ -342,19 +387,19 @@ const childSalvagePrompt = `你已用完工具调用轮次预算，不能再调�
 // 比这多出来的**一次**调用贵得多。
 //
 // 失败不抛错（外层只在失败路径上调用它）：返回空串即回退到诚实的事实陈述。
-func (m *M) salvageSummary(msgs []agentAPI.Message, maxTurns int) string {
-	if m.A.Config().Provider == nil {
+func (m *M) salvageSummary(ca *agent.Agent, msgs []agentAPI.Message, maxTurns int) string {
+	if ca == nil || (ca.LLM() == nil && ca.LLMSources() == nil) {
 		return ""
 	}
 	salvageMsgs := make([]agentAPI.Message, 0, len(msgs)+1)
 	salvageMsgs = append(salvageMsgs, msgs...)
 	salvageMsgs = append(salvageMsgs, agentAPI.Message{Role: "user", Content: childSalvagePrompt})
 
-	resp, err := m.A.CompleteLLMNoRetry(m.A.Ctx(), &agentAPI.CompletionRequest{
+	resp, err := ca.CompleteLLMNoRetry(ca.Ctx(), &agentAPI.CompletionRequest{
 		Messages:        salvageMsgs,
 		MaxTokens:       4096,
 		ToolChoice:      "none", // 不给工具，强制走文本产出
-		DisableThinking: !m.A.Config().ThinkingEnabled,
+		DisableThinking: !ca.ThinkingEnabled(),
 	})
 	if err != nil {
 		log.Printf("[child] wrap-up distillation failed (falling back to factual summary): %v", err)
@@ -367,50 +412,26 @@ func (m *M) salvageSummary(msgs []agentAPI.Message, maxTurns int) string {
 	return fmt.Sprintf("（注：已达 %d 轮工具上限，以下为已取得成果的收尾提炼，可能不完整）\n%s", maxTurns, content)
 }
 
+// ExecuteLLMTool 是 `llm_*` 族在**工作式子**里的执行体。
+//
+// ★ 整段委托给基座：源表、活动源、切源都是内核的事实，工作式子只是
+// 另一个调用者。类型自己那份实现（读 Config().ProviderManager）已删除 ——
+// 那是跨层取内核句柄。
 func (m *M) ExecuteLLMTool(tc agentAPI.ToolCall) string {
-	if m.A.Config().ProviderManager == nil {
-		return "LLM 源管理器不可用"
-	}
-	switch tc.Name {
-	case "llm_list_sources":
-		sources := m.A.Config().ProviderManager.List()
-		if len(sources) == 0 {
-			return "没有可用的 LLM 源"
-		}
-		parts := []string{"可用 LLM 源:"}
-		for _, name := range sources {
-			mark := " "
-			if p := m.A.Config().ProviderManager.Get(""); p != nil && p.Name() == name {
-				mark = "→"
-			}
-			parts = append(parts, fmt.Sprintf("  %s %s", mark, name))
-		}
-		return strings.Join(parts, "\n")
-
-	case "llm_set_source":
-		name, _ := tc.Arguments["name"].(string)
-		if name == "" {
-			return "请提供源名称"
-		}
-		if err := m.A.Config().ProviderManager.SetDefault(name); err != nil {
-			return fmt.Sprintf("切换失败: %v", err)
-		}
-		// ★ 活动源由内核设施持有（§3.2.1）：这里只切默认源。
-		return fmt.Sprintf("已切换到 LLM 源: %s", name)
-
-	default:
-		return fmt.Sprintf("未知的 LLM 工具: %s", tc.Name)
-	}
+	return m.A.ExecuteLLMTool(tc)
 }
 
-// chatWithProviderChain 用本 agent 的 provider 链跑一次**非流式**请求。
+// chatWithInstance 用**实例自己的** provider 链跑一次**非流式**请求。
 //
-// 优先级：自身 preferredProvider 提前 → 其余源按原顺序回退。
 // 与主 agent 的 `callLLMWithFallback` 的区别是这里不重试、不切 active provider：
 // 子任务是短生命周期，重试只会把一个已经抖动的时间窗拉长。
-func (m *M) chatWithProviderChain(req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
-	// ★ 走内核设施（NoRetry：子任务短生命周期，重试只会把抖动的窗口拉长）。
-	return m.A.CompleteLLMNoRetry(m.A.Ctx(), req)
+//
+// ★ 用 `ca.CompleteLLMNoRetry`（实例自己的），不是父的 —— 这是"每个 agent
+//
+//	持有自己的全部内容"的落点：`core.agent.llm.child_provider` 对它生效、
+//	多源回退对它生效。
+func (m *M) chatWithInstance(ca *agent.Agent, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+	return ca.CompleteLLMNoRetry(ca.Ctx(), req)
 }
 
 // truncateStr 按字符截断（保留前 n 个 rune + "..."）。

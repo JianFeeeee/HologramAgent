@@ -30,7 +30,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/vector"
 	"github.com/JianFeeeee/HologramAgent/pkg/embedding"
 	_ "github.com/JianFeeeee/HologramAgent/providers/chineseclip"

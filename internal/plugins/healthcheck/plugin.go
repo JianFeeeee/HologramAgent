@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -301,9 +303,9 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		p.startAutoCheck(s, p.autoInterval)
 	}
 
-	log.Printf("[healthcheck] ready (tool=%v mem=%v ks=%v ds=%v llm=%v plugins=%v status=%v)",
-		s.Tool() != nil, s.Memory() != nil, s.Knowledge() != nil,
-		s.DocMemory() != nil, s.LLM() != nil, s.PluginMgr() != nil, s.Status() != nil)
+	log.Printf("[healthcheck] ready (tool=%v ks=%v llm=%v plugins=%v status=%v)",
+		s.Tool() != nil, s.Knowledge() != nil,
+		s.LLM() != nil, s.PluginMgr() != nil, s.Status() != nil)
 	return nil
 }
 
@@ -390,11 +392,7 @@ func (p *Plugin) runFullCheck(s *sdk.PluginSDK, pluginFilter string) (interface{
 	toolResult := p.checkToolsRaw(s, pluginFilter)
 	results = append(results, toolResult...)
 
-	if s.Memory() != nil {
-		results = append(results, p.testMemoryRaw(s))
-	} else {
-		results = append(results, checkResult{Name: "memory", Status: "skip", Detail: "图记忆未初始化", Pass: true})
-	}
+	results = append(results, p.checkGraphDB(s))
 
 	if s.Knowledge() != nil {
 		results = append(results, p.testKnowledgeRaw(s))
@@ -402,11 +400,7 @@ func (p *Plugin) runFullCheck(s *sdk.PluginSDK, pluginFilter string) (interface{
 		results = append(results, checkResult{Name: "knowledge", Status: "skip", Detail: "知识库未初始化", Pass: true})
 	}
 
-	if s.DocMemory() != nil {
-		results = append(results, p.testDocStoreRaw(s))
-	} else {
-		results = append(results, checkResult{Name: "documents", Status: "skip", Detail: "文档记忆未初始化", Pass: true})
-	}
+	results = append(results, p.checkDocStore(s))
 
 	if s.LLM() != nil {
 		results = append(results, p.testLLMDriven(s, pluginFilter))
@@ -597,43 +591,26 @@ func (p *Plugin) selftestInst(s *sdk.PluginSDK) (*sdk.VirtualInstance, error) {
 	return vi, nil
 }
 
-func (p *Plugin) testMemoryRaw(s *sdk.PluginSDK) checkResult {
-	// 在隔离虚拟图记忆上验证写→查→删，绝不动生产 GraphDB。
-	vi, err := p.selftestInst(s)
+// checkGraphDB 按**公开路径规则**检查主图库（只读，不写生产库）。
+//
+// ★ 原实现走 sdk.Memory 的虚拟实例做「写→查→删」。按 docs §12 插件已无
+//
+//	记忆面，健康检查只回答"库在不在、有多大" —— 那才是它要的事实。
+func (p *Plugin) checkGraphDB(s *sdk.PluginSDK) checkResult {
+	dir := ""
+	if s != nil && s.Settings() != nil {
+		dir = s.Settings().DataDir()
+	}
+	if dir == "" {
+		return checkResult{Name: "memory", Status: "skip", Detail: "数据目录未配置", Pass: true}
+	}
+	path := filepath.Join(dir, "memory", "graph.db")
+	info, err := os.Stat(path)
 	if err != nil {
-		return checkResult{Name: "memory", Status: "skip", Detail: fmt.Sprintf("虚拟实例不可用: %v", err), Pass: true}
+		return checkResult{Name: "memory", Status: "warn", Detail: fmt.Sprintf("图库不存在（%s）", path), Pass: true}
 	}
-
-	marker := fmt.Sprintf("_hc_%d", time.Now().UnixNano())
-	triples := []sdk.Triple{
-		{Subject: marker, Relation: "is", Object: "healthcheck_test", SubjectType: "System", ObjectType: "Flag"},
-	}
-
-	start := time.Now()
-	if err := vi.Memory.Commit(triples); err != nil {
-		return checkResult{Name: "memory", Status: "fail", Detail: fmt.Sprintf("写入失败: %v", err), Pass: false}
-	}
-
-	ents, rels, err := vi.Memory.Recall([]string{marker}, 1)
-	if err != nil {
-		return checkResult{Name: "memory", Status: "fail", Detail: fmt.Sprintf("查询失败: %v", err), Pass: false}
-	}
-	if len(ents) == 0 && len(rels) == 0 {
-		return checkResult{Name: "memory", Status: "warn", Detail: "写入成功但查询未命中", Pass: true}
-	}
-
-	_, err = vi.Memory.Purge(map[string]string{"subject_contains": marker}, "hard")
-	if err != nil {
-		return checkResult{Name: "memory", Status: "fail", Detail: fmt.Sprintf("清理失败: %v", err), Pass: false}
-	}
-
-	elapsed := time.Since(start)
-	return checkResult{
-		Name:   "memory",
-		Status: "ok",
-		Detail: fmt.Sprintf("隔离虚拟记忆写入+查询+清理正常, 耗时 %v", elapsed.Round(time.Millisecond)),
-		Pass:   true,
-	}
+	return checkResult{Name: "memory", Status: "pass", Pass: true,
+		Detail: fmt.Sprintf("图库 %.1f MB（%s）", float64(info.Size())/1024/1024, path)}
 }
 
 func (p *Plugin) testKnowledgeRaw(s *sdk.PluginSDK) checkResult {
@@ -678,36 +655,21 @@ func (p *Plugin) testKnowledgeRaw(s *sdk.PluginSDK) checkResult {
 	}
 }
 
-func (p *Plugin) testDocStoreRaw(s *sdk.PluginSDK) checkResult {
-	// 在隔离虚拟文档记忆上验证写→查→删，绝不动生产 Document。
-	vi, err := p.selftestInst(s)
-	if err != nil {
-		return checkResult{Name: "documents", Status: "skip", Detail: fmt.Sprintf("虚拟实例不可用: %v", err), Pass: true}
+// checkDocStore 按公开路径规则检查冷文档目录。
+func (p *Plugin) checkDocStore(s *sdk.PluginSDK) checkResult {
+	dir := ""
+	if s != nil && s.Settings() != nil {
+		dir = s.Settings().DataDir()
 	}
-
-	start := time.Now()
-	doc := &sdk.Doc{
-		Title:   fmt.Sprintf("健康检查测试文档 %d", time.Now().UnixNano()),
-		Content: "这是一条由 healthcheck 插件创建的测试文档，用于验证文档记忆系统是否正常工作。",
+	if dir == "" {
+		return checkResult{Name: "documents", Status: "skip", Detail: "数据目录未配置", Pass: true}
 	}
-	if err := vi.DocMemory.Insert(doc); err != nil {
-		return checkResult{Name: "documents", Status: "fail", Detail: fmt.Sprintf("写入失败: %v", err), Pass: false}
+	d := filepath.Join(dir, "memory", "documents")
+	st, err := os.Stat(d)
+	if err != nil || !st.IsDir() {
+		return checkResult{Name: "documents", Status: "warn", Detail: fmt.Sprintf("冷文档目录不存在（%s）", d), Pass: true}
 	}
-
-	// 清理测试文档，避免积累（SDK Insert 不回填 ID，经 Query 按标题定位）
-	for _, d := range vi.DocMemory.Query("健康检查测试文档", 10) {
-		if d.ID != "" && strings.HasPrefix(d.Title, "健康检查测试文档") {
-			vi.DocMemory.Remove(d.ID)
-		}
-	}
-
-	elapsed := time.Since(start)
-	return checkResult{
-		Name:   "documents",
-		Status: "ok",
-		Detail: fmt.Sprintf("隔离虚拟文档记忆写入+查询+清理正常, 耗时 %v", elapsed.Round(time.Millisecond)),
-		Pass:   true,
-	}
+	return checkResult{Name: "documents", Status: "pass", Pass: true, Detail: "目录就绪: " + d}
 }
 
 func (p *Plugin) testLLMDriven(s *sdk.PluginSDK, pluginFilter string) checkResult {
@@ -931,10 +893,7 @@ func convertToolDefs(defs []sdk.ToolDef) []interface{} {
 }
 
 func (p *Plugin) checkMemory(s *sdk.PluginSDK) (interface{}, error) {
-	if s.Memory() == nil {
-		return map[string]interface{}{"status": "skip", "pass": true, "detail": "图记忆未初始化"}, nil
-	}
-	r := p.testMemoryRaw(s)
+	r := p.checkGraphDB(s)
 	c := map[string]interface{}{
 		"status": r.Status,
 		"pass":   r.Pass,
