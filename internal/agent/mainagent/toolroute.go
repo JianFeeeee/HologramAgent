@@ -26,7 +26,6 @@ package mainagent
 // 额外带回**工具声明**（`Tool` 字段），供标记消费。
 
 import (
-	agentPkg "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 )
@@ -44,14 +43,15 @@ func (m *Module) executeOrDelegateTool(tc agentAPI.ToolCall, channel string, tur
 // 单条提交（不是批）：本函数是 agentloop 状态机里的**一个工具一步**，
 // 批语义在 `runToolBatch` 那一层（并发判据看的是整批）。
 func (m *Module) delegateToKernel(tc agentAPI.ToolCall, channel string, turnScenes []string) toolOutcome {
-	sceneCopy := append([]string(nil), turnScenes...)
-	results := m.a.RunToolBatch([]agentAPI.ToolCall{{
+	// ★ 通道与场景不再随执行传递（2026-11-27）：
+	//   通道在工具阶段曾是"该不该发到我这"的依据，而它需要调用方代传 ——
+	//   与之相反的是核心原则「内核不自动转发回复到输出通道」。
+	//   场景是主 agent 私有的数据结构，内核执行链不该知道。
+	_ = channel
+	_ = turnScenes
+	results := m.a.RunToolBatch(m.a.Ctx(), []agentAPI.ToolCall{{
 		ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
-	}}, agentPkg.BatchOpts{
-		Ctx:     m.a.Ctx(),
-		Channel: channel,
-		Scenes:  sceneCopy,
-	})
+	}})
 	if len(results) == 0 {
 		return toolOutcome{
 			Text: "内核工具执行设施未就绪（装配错误）：本次工具调用没有被执行",

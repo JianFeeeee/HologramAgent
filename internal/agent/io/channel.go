@@ -314,9 +314,21 @@ func (m *IOManager) lookupDevice(name string) Device {
 
 func (m *IOManager) UnregisterDevice(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.devices, name)
+	m.mu.Unlock()
 }
+
+// ★ 设备/通道变更**不发事件**（用户裁定 2026-11-27）。
+//
+// 三个理由：
+//
+//	① io 是**叶子包**：让它持总线或"发布面"，等于把事件机制拉进依赖闭包
+//	② "登记表变了要通知谁"是**装配层**的知识，不是登记表的
+//	③ **不需要**：`IOView()` 每次查询现算（只持 real 指针，无快照），
+//	   所以设备/通道的增删**立刻**反映 —— 没有"视图过期"这件事需要通知
+//
+// 与 plghost 的 `EventPluginsChanged` 的根本区别：插件视图有集合运算要重算，
+// IO 视图没有。照抄那边的通知机制是错的。
 
 func (m *IOManager) nextRequestID() string {
 	m.mu.Lock()
@@ -335,17 +347,19 @@ func (m *IOManager) AtomicSwapDevices(newDevices map[string]Device) map[string]D
 
 	oldDevices := m.devices
 	m.devices = newDevices
-
+	m.mu.Unlock()
+	m.mu.Lock()
 	return oldDevices
 }
 
 func (m *IOManager) RegisterDevice(dev Device) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, ok := m.devices[dev.Name()]; ok {
+		m.mu.Unlock()
 		return fmt.Errorf("device %s already registered", dev.Name())
 	}
 	m.devices[dev.Name()] = dev
+	m.mu.Unlock()
 	return nil
 }
 
@@ -759,7 +773,10 @@ func (m *IOManager) RegisterInputChannel(name string, def ChannelDef) {
 
 // RegisterInputChannelFrom 注册一个 inputch 并登记归属插件。
 func (m *IOManager) RegisterInputChannelFrom(plugin, name string, def ChannelDef) error {
-	return m.channelReg.Register(InputChannel{Name: name, Plugin: plugin, Def: def})
+	if err := m.channelReg.Register(InputChannel{Name: name, Plugin: plugin, Def: def}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UnregisterInputChannel 注销一个 inputch。
@@ -767,9 +784,31 @@ func (m *IOManager) UnregisterInputChannel(name string) {
 	m.channelReg.Unregister(name)
 }
 
+// OrphanInputChannel 让一个 inputch 悬空（见 ChannelRegistry.Orphan）。
+//
+// ★ 发布通知：悬空改变了"谁能看见它"，受影响的是**原来持有它的那个实例**。
+func (m *IOManager) OrphanInputChannel(name string) error {
+	if err := m.channelReg.Orphan(name); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AssignInputChannelDraining 接回一个 inputch 并交出它的暂存任务。
+func (m *IOManager) AssignInputChannelDraining(name, agentID string, capacity int) ([]*InputEvent, error) {
+	evs, err := m.channelReg.AssignAndDrainStash(name, agentID, capacity)
+	if err != nil {
+		return nil, err
+	}
+	return evs, nil
+}
+
 // AssignInputChannel 把一个 inputch 划给某个 agent（见 ChannelRegistry.Assign）。
 func (m *IOManager) AssignInputChannel(name, agentID string, capacity int) error {
-	return m.channelReg.Assign(name, agentID, capacity)
+	if err := m.channelReg.Assign(name, agentID, capacity); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SetChannelRegistry 注入一份**共享的**登记表（根 agent 与驻留子共用同一份）。

@@ -178,7 +178,7 @@ func (m *M) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	//    数据全在主 agent 那边，权限与只读隔离在工具的闭包里实现。
 	//    ⇒ 这里没有 OpenReadOnly / OpenLight / temp 库 / handle。
 
-	// ② 划入 inputch（登记表里记归属；一个插件的多个 inputch 可分别划给不同子）。
+	// ② 划入 inputch（登记表里记归属）。
 	if reg := m.A.IO().ChannelRegistry(); reg != nil {
 		for _, ch := range opts.InputChs {
 			if err := reg.Assign(ch, opts.ID, opts.Capacity); err != nil {
@@ -278,7 +278,7 @@ func (m *M) SpawnResident(opts ResidentOptions) (ResidentInfo, error) {
 	}
 	// ★ 面：子实例继承父的 IO 面（共享通道登记表 + 父视图回退）、阶段管道、
 	//   安全闸、记录表。**不继承** Provider/ProviderManager（docs §9.6 硬边界 2）。
-	child.MountSurface(childIO, m.A.StageHost(), m.A.Gate(), m.A.AgentsRegistry(), nil, "", m.A.LLM())
+	child.MountSurface(childIO, m.A.StageHost(), m.A.Gate(), m.A.AgentsRegistry(), "", m.A.LLM())
 	// ★ 插件工具登记簿**继承父的**：工具是同一个内核的（归属不变），
 	//   子只在自己的 io 上看到自己那条通道的工具。
 	child.MountToolRegistry(m.A.ToolRegistry())
@@ -415,28 +415,12 @@ func (m *M) residentInboundChannel(childID string) string {
 //
 // 销毁是父**随时**可做的；父退出时由 StopResidents 对全部子执行。
 func (m *M) DestroyResident(id string) error {
-	return m.DestroyResidentWith(id, ChannelOrphan)
-}
-
-// DestroyResidentWith 按父的决定处置通道后销毁驻留子。
-func (m *M) DestroyResidentWith(id string, disp ChannelDisposition) error {
-	return m.DestroyResidentWithTarget(id, disp, "")
-}
-
-// DestroyResidentWithTarget 是 DestroyResidentWith 的完整版：额外给出
-// **交接目标**（disp=ChannelHandover 时生效；空 = 父自己）。
-//
-// ★ 为什么需要单独一个入口：`DestroyResidentWith` 已有多个调用方（工具面、
-// 回收、判据），给它们全加一个参数是纯噪声。而"划拨给别的子"是新能力，
-// 只有显式要交接的调用点才需要它。
-func (m *M) DestroyResidentWithTarget(id string, disp ChannelDisposition, handoverTarget string) error {
 	e := m.A.Children().Remove(id)
 	if e == nil {
 		return fmt.Errorf("驻留子 %s 不存在", id)
 	}
-	rc, _ := e.(*residentChild)
-	if rc != nil {
-		m.teardownResidentWith(rc, disp, handoverTarget, false, nil)
+	if rc, _ := e.(*residentChild); rc != nil {
+		m.teardownResidentWith(rc, false)
 		// 显式销毁 ⇒ 从登记表里去掉（否则重启会把它又建回来）。
 		m.PersistResidents()
 	}
@@ -485,23 +469,17 @@ func (m *M) TakeResidual(id string) ([]*agentIO.InputEvent, error) {
 // （不再取新任务），已在执行的那一条跑完后循环自然结束。
 // 等它真正停下，再回收队列 —— 此刻队列是静止的，回收没有歧义。
 func (m *M) FinishResident(id string, policy ResidualPolicy, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
-	return m.FinishResidentWith(id, policy, ChannelOrphan, onDestroy)
+	return m.FinishResidentWithTarget(id, policy, onDestroy)
 }
 
-// FinishResidentWith 是 FinishResident 的完整版：残余任务策略 + **通道处置**一次定。
+// FinishResidentWithTarget 是驻留子终结的完整入口：停调度 → 取残余 → 收割
+// 记忆 → 销毁。
 //
-// 为什么合成一个入口：两者有依赖关系 ——
-//   - residual=stash 要求通道**继续存在**（暂存挂在通道上）；
-//   - channel=release 会把通道还给池子（可能被别的 agent 接走）。
+// ★ 通道处置**不在这里**（用户裁定 2026-11-27）：通道登记表是内核 IO 设施，
 //
-// 若拆成两次调用，中间窗口里通道可能已被别人接管，暂存任务就跑到了
-// 一个跟它无关的 agent 手里。**一次定完，没有窗口。**
-func (m *M) FinishResidentWith(id string, policy ResidualPolicy, disp ChannelDisposition, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
-	return m.FinishResidentWithTarget(id, policy, disp, "", onDestroy)
-}
-
-// FinishResidentWithTarget 是 FinishResidentWith 的完整版：额外给出交接目标。
-func (m *M) FinishResidentWithTarget(id string, policy ResidualPolicy, disp ChannelDisposition, handoverTarget string, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
+//	归属与处置归基座（`InstanceManager.DestroyChild` 按 `arg.channels` 声明
+//	统一执行）。类型只声明策略，不碰登记表。
+func (m *M) FinishResidentWithTarget(id string, policy ResidualPolicy, onDestroy func(rc *residentChild) error) (n int, msg string, err error) {
 	rc := residentOf(m, id)
 	if rc == nil || rc.agent == nil {
 		return 0, "", fmt.Errorf("驻留子 %s 不存在", id)
@@ -513,7 +491,7 @@ func (m *M) FinishResidentWithTarget(id string, policy ResidualPolicy, disp Chan
 	// ② 等它真的停下（已在执行的那条会跑完，不再取新的）。
 	m.sched.WaitSchedulerStopped(sched.StopTimeout, id)
 
-	// ③ 此刻队列静止，回收残余任务没有歧义。
+	// ③ 此刻队列静止，回收残余任务没有歧义（对子而言都是退回通道）。
 	events := m.sched.TakeAllPendingEvents()
 	n, msg, err = m.applyResidualEvents(id, events, policy)
 	if err != nil {
@@ -526,11 +504,8 @@ func (m *M) FinishResidentWithTarget(id string, policy ResidualPolicy, disp Chan
 			return n, msg, herr
 		}
 	}
-	// ⑤ 销毁（内部会 Stop 子、关 temp、按 disp 处置通道）。
-	//
-	// ⚠️ 必须用 DestroyResidentWith：走 DestroyResident 会丢掉 disp，
-	// 通道被无条件释放 —— 而 stash 的暂存任务正挂在那条通道上。
-	return n, msg, m.DestroyResidentWithTarget(id, disp, handoverTarget)
+	// ⑤ 销毁。
+	return n, msg, m.DestroyResident(id)
 }
 
 // ApplyResidual 按父给出的策略处置一个驻留子的残余任务。
@@ -569,54 +544,30 @@ func (m *M) applyResidualEvents(id string, events []*agentIO.InputEvent, policy 
 		}
 		return len(events), fmt.Sprintf("已按父的决定丢弃 %d 条残余任务（逐条已记日志）", len(events)), nil
 	}
-	// stash：暂存回**每条任务来的那条通道**。
+	// stash：退回**每条任务进来的那条通道**。
 	//
-	// ★ 必须逐条按其自身 OutputChannel 归位，不能整批塞进一个通道 ——
-	// 一个驻留子可能同时收 qq 和 webui 的消息，混存会导致接回 qq 的人
-	// 拿到本该给 webui 的活。
-	if policy == ResidualStash {
-		reg := m.A.IO().ChannelRegistry()
-		if reg == nil {
-			return 0, "", fmt.Errorf("无通道登记表，无法暂存残余任务")
-		}
-		stashed, failed := 0, 0
-		for _, evt := range events {
-			if evt == nil {
-				continue
-			}
-			ch := evt.OutputChannel
-			if ch == "" {
-				ch = evt.Source // 无回程通道时用来源通道兜底
-			}
-			if err := reg.Stash(ch, []*agentIO.InputEvent{evt}); err != nil {
-				// 通道已不存在（插件卸载等）：这条只能丢，但必须留痕，
-				// 并给同步调用方终态 —— 否则 cli/a2a 会永久挂起。
-				failed++
-				log.Printf("[resident] %s residual task could NOT be stashed (channel %q gone): source=%s request=%s content=%s",
-					id, ch, evt.Source, evt.RequestID, agent.TruncateStr(inputTextOf(evt), 80))
-				m.A.EmitSkippedReply(evt, "residual_stash_channel_gone")
-				continue
-			}
-			stashed++
-			// 暂存也要留痕：不可追溯的"暂存"和丢弃没区别。
-			log.Printf("[resident] %s residual task stashed to channel %q: source=%s request=%s content=%s",
-				id, ch, evt.Source, evt.RequestID, agent.TruncateStr(inputTextOf(evt), 80))
-		}
-		msg := fmt.Sprintf("已把 %d 条残余任务暂存到各自通道（接回通道即释放）", stashed)
-		if failed > 0 {
-			msg += fmt.Sprintf("；%d 条因通道已不存在而丢弃（已记日志并给调用方终态）", failed)
-		}
-		return stashed + failed, msg, nil
-	}
-	// keep / takeover：转回父自己
-	for _, evt := range events {
-		if evt == nil {
-			continue
-		}
-		m.sched.Enqueue(sched.NewInputTask(evt))
-	}
-	m.sched.SignalWake()
-	return len(events), fmt.Sprintf("已把 %d 条残余任务转回主 agent 队列", len(events)), nil
+	// ★ 路由收在基座原语（`ReturnPending` + `ReturnTarget{}`）：逐条按
+	//   `evt.Source` 归位，通道不存在时自动给调用方终态。此前这段逻辑
+	//   在本包内自己写（逐条查通道 + 自己 Stash + 自己 EmitSkippedReply），
+	//   与 rtchild / offload 各有一份 —— 三份必然漂移。
+	// keep / stash / takeover：**对子而言都是把任务退回通道**（用户裁定 2026-11-27）。
+	//
+	// 两者的差别不在任务去向，而在**通道去向**（由 disp 决定，见
+	// `destroyWithPlan`）：
+	//
+	//	keep  通道接回主 agent ⇒ 暂存的任务随接回一起交给父
+	//	stash 通道悬空         ⇒ 任务留在通道缓冲，谁接回谁拿到
+	//
+	// ★ 这里曾经是 `m.sched.Enqueue(sched.NewInputTask(evt))` —— 而
+	//   `m.sched` 是**驻留子载体自己的**调度器（manager.go:75 `sched.New(0)`），
+	//   不是父的。于是"转回队列"实际把任务塞回了**正要被销毁的那个子**的
+	//   队列，随第 ⑤ 步销毁一起消失；返回值却写着"已转回主 agent 队列"。
+	//
+	// 现在走基座原语：逐条按 `evt.Source` 归位到原通道的暂存区，
+	// 通道不存在时自动给调用方终态（不让 cli/a2a 永久挂起）。
+	_ = id
+	moved, msg, err := m.A.ReturnPending(events, agent.ReturnTarget{})
+	return moved, msg, err
 }
 
 // inputTextOf 取一条输入事件的正文（供日志描述残余任务用）。
@@ -629,12 +580,14 @@ func inputTextOf(evt *agentIO.InputEvent) string {
 }
 
 func (m *M) teardownResident(rc *residentChild) {
-	m.teardownResidentWith(rc, ChannelOrphan, "", false, nil)
+	m.teardownResidentWith(rc, false)
 }
 
-// teardownResidentWith 是 teardownResident 的完整版：额外决定**通道去向**，
-// 并在 takeover 时把释放出来的暂存任务转进父队列。
-func (m *M) teardownResidentWith(rc *residentChild, disp ChannelDisposition, handoverTarget string, persistTemp bool, onDrained func([]*agentIO.InputEvent)) {
+// teardownResidentWith 是 teardownResident 的完整版：额外决定 **temp 是否保留**
+// （进程停机要保留供重建复用；显式销毁要删）。
+//
+// ★ 通道处置不在这里：通道登记表归基座（见 applyChannelPolicy）。
+func (m *M) teardownResidentWith(rc *residentChild, persistTemp bool) {
 	rc.mu.Lock()
 	rc.state = "stopped"
 	rc.mu.Unlock()
@@ -662,77 +615,13 @@ func (m *M) teardownResidentWith(rc *residentChild, disp ChannelDisposition, han
 	if !persistTemp && rc.dir != "" && strings.Contains(rc.tempPath, rc.ID) {
 		_ = os.RemoveAll(rc.dir)
 	}
-	// 处置划入的 inputch（按父的决定：悬空 / 显式交接）。
-	if reg := m.A.IO().ChannelRegistry(); reg != nil {
-		for _, ch := range rc.inputChs {
-			switch disp {
-			case ChannelHandover:
-				// 显式交接：通道归属改为**目标 agent**，并交出暂存任务。
-				//
-				// 目标缺省是父（原 ChannelTakeover 的语义）；handoverTarget 非空时
-				// 交给那个子 —— "划拨给其他子 agent" 就是这么表达的。
-				target := handoverTarget
-				if target == "" {
-					target = string(m.A.ID())
-				}
-				drained, err := reg.AssignAndDrainStash(ch, target, 0)
-				if err != nil {
-					log.Printf("[resident] %s 交接通道 %s 给 %s 失败: %v", rc.ID, ch, target, err)
-					continue
-				}
-				if len(drained) > 0 {
-					log.Printf("[resident] %s 交接通道 %s 给 %s，释放暂存任务 %d 条",
-						rc.ID, ch, target, len(drained))
-					if target == string(m.A.ID()) {
-						// 交给父 ⇒ 直接进父的调度队列（原 takeover 行为）。
-						if onDrained != nil {
-							onDrained(drained)
-						} else {
-							for _, evt := range drained {
-								if evt != nil {
-									m.sched.Enqueue(sched.NewInputTask(evt))
-								}
-							}
-							m.sched.SignalWake()
-						}
-					} else {
-						// 交给另一个子 ⇒ 交出来的任务必须投给那个子，
-						// 否则它们会落在父队列里而父已经不持有这条通道了
-						// （"接回了但活没人做"的同型静默缺陷）。
-						if rcTarget, ok := m.residentEntryOf(target); ok && rcTarget.agent != nil {
-							for _, evt := range drained {
-								if evt != nil {
-									rcTarget.agent.IO().DeliverRouted(evt)
-								}
-							}
-							log.Printf("[resident] %s 交接的 %d 条任务已投给 %s", rc.ID, len(drained), target)
-						} else {
-							log.Printf("[resident] %s 交接目标 %s 不存在，%d 条暂存任务留在通道上",
-								rc.ID, target, len(drained))
-							_ = reg.Stash(ch, drained)
-						}
-					}
-				}
-			default: // ChannelOrphan（默认，悬空）
-				// 悬空：Owner 清空 + Orphaned 标记 ⇒ 期间输入写进 stash，
-				// 等父显式接回/划拨。**不**留给根 agent 兜底。
-				if err := reg.Orphan(ch); err != nil {
-					log.Printf("[resident] %s 悬空通道 %s 失败: %v", rc.ID, ch, err)
-					continue
-				}
-				log.Printf("[resident] %s 通道 %s 已悬空（暂存 %d 条，等显式接回或划拨）",
-					rc.ID, ch, reg.StashLen(ch))
-			}
-		}
-		// 注销"父接收该子消息"的入站 inputch（child/<id>）。
-		//
-		// 它由 residentInboundChannel 在 create 时登记（Owner=父），销毁时必须
-		// 一并摘掉：登记表是共享的、按 name 全局唯一，残留会随 create/destroy
-		// 次数单调累积脏数据。实测：destroy 后 child/<id> 仍挂在根 agent 名下，
-		// 而外部没有任何工具能单独注销 inputch，只能重启 homed 清。
-		// 注意用纯函数算名字，不要再走 residentInboundChannel（会重新登记）。
-		reg.Unregister(inboundChannelName(rc.ID))
-	}
+	// ★ 通道处置**不在这里**（用户裁定 2026-11-27）：通道登记表是内核 IO
+	//   设施，归属与处置归基座 —— `InstanceManager.DestroyChild` 按
+	//   `admin_child` 的 `arg.channels` 声明统一执行（策略见 `applyChannelPolicy`）。
+	//   类型只声明"用哪套策略"，不拿 io 管理器、不碰登记表。
+	//
+	//   改造前这里有 45 行 AssignAndDrainStash / Orphan / Stash —— 与基座
+	//   的处置重复，暂存任务被交出两次；且每加一种持有通道的类型就要再写一遍。
 }
 
 // StopResidents 销毁全部驻留子（父退出时必须；不留孤儿）。
@@ -745,7 +634,7 @@ func (m *M) StopResidents() int {
 		if rc, ok := e.(*residentChild); ok {
 			// ★ 进程停机 ⇒ 保留 temp（供重启后重建复用）。
 			// 显式 Destroy/Reclaim 走另一条路径，那里才删。
-			m.teardownResidentWith(rc, ChannelOrphan, "", true, nil)
+			m.teardownResidentWith(rc, true)
 		}
 	}
 	return len(all)

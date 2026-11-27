@@ -17,7 +17,7 @@ package agent
 // rt / worker 拿不到（它们没有那些私有状态），于是只能各写一份重复实现
 // （`worker/worker.go` 里就有一份 `ExecuteLLMTool`）。
 //
-// ★ 这里只放**执行体**，登记与路由在内核执行设施（`kernelmod/toolexec`）。
+// ★ 这里只放**执行体**，登记与路由在内核执行设施（`kernelmod/device`）。
 
 import (
 	"fmt"

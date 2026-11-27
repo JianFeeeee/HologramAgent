@@ -1,4 +1,4 @@
-package toolexec
+package device
 
 // guard.go —— **声明式边界判定**（路径 / 网络）。
 //
@@ -27,18 +27,19 @@ import (
 	"time"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 )
 
 // guardDeclaredArgs 按工具声明判路径与网络。
-func guardDeclaredArgs(host hostFace, tc agentPkg.ToolCall) (toolOutcome, bool) {
-	def := toolDefOf(host, tc.Name)
+func guardDeclaredArgs(deps *ExecDeps, h AgentHandle, tc agentPkg.ToolCall) (toolOutcome, bool) {
+	def := toolDefOf(deps, tc.Name)
 
 	// 网络闸：**先判**（它是更粗的判定，不依赖具体地址，理由更直接）。
 	if len(def.NetworkArgs) > 0 {
 		for _, argName := range def.NetworkArgs {
 			if v, ok := tc.Arguments[argName]; ok {
 				if s, _ := v.(string); s != "" {
-					if d := host.CheckNetwork(); !d.Allowed {
+					if d := securityCheckNetwork(deps); !d.Allowed {
 						te := kit.NewToolError(kit.ErrReasonDenied, "",
 							fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
 							"Network access is disabled by policy on this machine. Do not retry; report back to the user.")
@@ -64,7 +65,7 @@ func guardDeclaredArgs(host hostFace, tc agentPkg.ToolCall) (toolOutcome, bool) 
 		if !ok || path == "" {
 			continue
 		}
-		if d := host.CheckPath(direction, path); !d.Allowed {
+		if d := securityCheckPath(deps, direction, path); !d.Allowed {
 			te := kit.NewToolError(kit.ErrReasonDenied, "",
 				fmt.Sprintf("Tool %s is not permitted: %s", tc.Name, d.Reason),
 				"The path is outside the sandbox. Use a path inside the allowed roots, or report back to the user.")
@@ -76,8 +77,8 @@ func guardDeclaredArgs(host hostFace, tc agentPkg.ToolCall) (toolOutcome, bool) 
 		// 暴露成 `ToolHost.ArchiveBeforeWrite`。漏掉它的后果实测过：受保护路径
 		// 被写掉之后 guard 没有基线可还原。
 		if direction == "write" {
-			if _, err := host.ArchiveBeforeWrite(path); err != nil {
-				host.Logf("[security] 写前留档失败 %s: %v（继续执行）", path, err)
+			if _, err := h.ArchiveBeforeWrite(path); err != nil {
+				logTool(h.AgentID(), "[security] 写前留档失败 %s: %v（继续执行）", path, err)
 			}
 		}
 	}
@@ -107,18 +108,18 @@ func pathDirection(toolName string) string {
 // 顺序：ToolDef.Timeout（声明）→ defaultToolTimeout，且夹到 maxToolTimeout。
 // 声明值非法（解析失败 / ≤0）时**回退默认并记日志**：写错单位（"130" 少了 s）
 // 是最容易犯的错，默默变成 60s 会让人以为"声明没生效"却查不出原因。
-func resolveToolTimeout(host hostFace, toolName string) time.Duration {
-	def := toolDefOf(host, toolName)
+func resolveToolTimeout(deps *ExecDeps, toolName string) time.Duration {
+	def := toolDefOf(deps, toolName)
 	if def.Timeout == "" {
 		return defaultToolTimeout
 	}
 	d, err := time.ParseDuration(def.Timeout)
 	if err != nil || d <= 0 {
-		host.Logf("tool %s 的 Timeout 声明 %q 非法，回退默认 %v", toolName, def.Timeout, defaultToolTimeout)
+		logTool("", "tool %s 的 Timeout 声明 %q 非法，回退默认 %v", toolName, def.Timeout, defaultToolTimeout)
 		return defaultToolTimeout
 	}
 	if d > maxToolTimeout {
-		host.Logf("tool %s 的 Timeout 声明 %q 超过硬上限，夹到 %v", toolName, def.Timeout, maxToolTimeout)
+		logTool("", "tool %s 的 Timeout 声明 %q 超过硬上限，夹到 %v", toolName, def.Timeout, maxToolTimeout)
 		return maxToolTimeout
 	}
 	return d
@@ -133,4 +134,28 @@ func fmtDuration(d time.Duration) string {
 		return fmt.Sprintf("%.1f分钟", float64(d)/float64(time.Minute))
 	}
 	return fmt.Sprintf("%d秒", int(d/time.Second))
+}
+
+// securityCheckNetwork 判网络访问（未装配 ⇒ 放行）。
+func securityCheckNetwork(deps *ExecDeps) model.Decision {
+	if deps == nil || deps.Security == nil {
+		return model.Decision{Allowed: true}
+	}
+	g := deps.Security.SecurityGate()
+	if g == nil {
+		return model.Decision{Allowed: true}
+	}
+	return g.CheckNetwork()
+}
+
+// securityCheckPath 判路径（未装配 ⇒ 放行）。
+func securityCheckPath(deps *ExecDeps, direction, path string) model.Decision {
+	if deps == nil || deps.Security == nil {
+		return model.Decision{Allowed: true}
+	}
+	g := deps.Security.SecurityGate()
+	if g == nil {
+		return model.Decision{Allowed: true}
+	}
+	return g.CheckPath(direction, path)
 }

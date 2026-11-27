@@ -58,7 +58,7 @@ func (m *M) newInstance(id, task, parentChannel string, maxTurns int) (*workerEn
 		DenyTools:    nil,
 	})
 
-	a.MountSurface(childIO, parent.StageHost(), parent.Gate(), parent.AgentsRegistry(), nil, "", parent.LLM())
+	a.MountSurface(childIO, parent.StageHost(), parent.Gate(), parent.AgentsRegistry(), "", parent.LLM())
 	a.MountToolRegistry(parent.ToolRegistry())
 	// ★ 父声明类（系统提示词素材 / 优先模型源）：装配期写入，运行期只读。
 	//   worker 的提示词**由本类型渲染**（不继承父的人格与通道规则），

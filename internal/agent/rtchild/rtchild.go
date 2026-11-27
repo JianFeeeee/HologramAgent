@@ -649,7 +649,7 @@ func (m *M) SpawnRTChild(opts RTChildOptions) (string, error) {
 		// ★ 能力面（docs §8.1.1）：rt 能承接文本与实时流。
 		AgentCap: agentIO.CapText | agentIO.CapRT,
 	})
-	carrier.MountSurface(childIO, m.A.StageHost(), m.A.Gate(), m.A.AgentsRegistry(), nil, "", m.A.LLM())
+	carrier.MountSurface(childIO, m.A.StageHost(), m.A.Gate(), m.A.AgentsRegistry(), "", m.A.LLM())
 	carrier.MountToolRegistry(m.A.ToolRegistry())
 	// ★ 父声明类（系统提示词素材 / 优先模型源）：装配期写入，运行期只读。
 	carrier.SetSystemPrompt(sysPrompt)
@@ -1183,12 +1183,8 @@ func (m *M) rtRunOnce(rc *rtChild, evt *agentIO.InputEvent, seq uint64) {
 		// request this batch; RunToolBatch routes it through the kernel-owned
 		// security/device/eventloop path. Rt's async semantics are input/output
 		// injection and consumption, not a second tool executor.
-		results := m.A.RunToolBatch(resp.ToolCalls, agent.BatchOpts{
-			Ctx:     roundCtx,
-			Channel: rc.output,
-			// rt 无场景（它不吃 RelevanceContext）。
-			Scenes: nil,
-		})
+		// ★ 取消域用 roundCtx（rt 的取消域是整轮，不是自身 ctx）。
+		results := m.A.RunToolBatch(roundCtx, resp.ToolCalls)
 		m.rtExitCritical(rc)
 
 		// 按**索引顺序**落消息：并发只作用于执行，落消息必须保序，

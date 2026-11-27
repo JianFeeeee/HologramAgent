@@ -23,7 +23,7 @@ package test
 // 等于判据侵入被测代码；而"拒绝理由出现在结果里"正是模型与用户看到的那个面。
 
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/toolexec"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/device"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +60,7 @@ func pathGuardHarnessDef(t *testing.T, dataDir string, sandbox security.SandboxP
 		t.Fatalf("RegisterTool: %v", err)
 	}
 	// ★ 执行链是内核设施（装配侧注入）；判据自己当装配侧。
-	a := faces{ToolReg: tr, Security: rt.AsGate(), ToolExec: toolexec.New()}.
+	a := faces{ToolReg: tr, Security: rt.AsGate(), ToolExec: device.NewExecutor(nil, rt.AsGate(), tr)}.
 		mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "pathguard", DataDir: dataDir}))
 	t.Cleanup(a.Stop)
 	return a

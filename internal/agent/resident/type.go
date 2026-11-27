@@ -143,9 +143,10 @@ func residentHelpText() string {
   · 它有自己的输入队列与调度器，跑自己的 loop —— 与你的执行是并行的
   · 它的上下文**整窗不裁**：撞窗口时会 CallParent 上报 contextfull 给你，
     由你决定 compress（保语义）还是 reclaim/destroy
-  · 销毁时它手头未处理的消息（残余任务）由 residual 决定：keep 转回你的队列 /
-    drop 明确丢弃。两者都会逐条记日志；异步通道（如 qq）被 drop 时用户收不到
-    任何回复，请慎重
+  · 销毁时它手头未处理的消息（残余任务）由 residual 决定：
+    keep（默认）= 投回你的队列，你接着干 / stash = 退回任务原本进来的那条通道
+    暂存（谁接回该通道谁拿到这批活）/ drop = 明确丢弃。
+    三者都会逐条记日志；异步通道（如 qq）被 drop 时用户收不到任何回复，请慎重
   · 通道处置 channels：orphan（默认，悬空、输入暂存等接回）/ handover（显式交接
     给 channel_target，缺省你自己）
 `)
@@ -231,7 +232,7 @@ func (m *M) residentAdmin(action string, arg map[string]interface{}) (string, er
 		case "stash":
 			policy = ResidualStash
 		}
-		n, msg, err := m.FinishResidentWithTarget(id, policy, ChannelOrphan, "", nil)
+		n, msg, err := m.FinishResidentWithTarget(id, policy, nil)
 		if err != nil {
 			return "", err
 		}
@@ -250,7 +251,7 @@ func (m *M) residentAdmin(action string, arg map[string]interface{}) (string, er
 		case "stash":
 			policy = ResidualStash
 		}
-		n, msg, err := m.FinishResidentWithTarget(id, policy, ChannelOrphan, "", nil)
+		n, msg, err := m.FinishResidentWithTarget(id, policy, nil)
 		if err != nil {
 			return "", err
 		}

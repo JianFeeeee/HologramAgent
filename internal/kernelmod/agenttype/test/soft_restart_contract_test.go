@@ -56,7 +56,7 @@ func TestSoftRestartPreservesInstance(t *testing.T) {
 	root := agent.New(agent.AgentConfig{
 		ID: types.AgentID("sr-root"), TypeName: agent.TypeNameMain, DataDir: dir,
 	})
-	root.MountSurface(iom, nil, security.NewDisabledRuntime().AsGate(), nil, nil, "", nil)
+	root.MountSurface(iom, nil, security.NewDisabledRuntime().AsGate(), nil, "", nil)
 	t.Cleanup(root.Stop)
 	im := root.EnsureInstanceManager()
 

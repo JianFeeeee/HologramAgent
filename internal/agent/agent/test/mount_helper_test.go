@@ -50,7 +50,7 @@ func (f faces) mount(a *agent.Agent) *agent.Agent {
 	if a == nil {
 		return nil
 	}
-	a.MountSurface(f.IO, f.StageHost, f.Security, f.Agents, f.PluginReg, f.PluginDir, f.LLM)
+	a.MountSurface(f.IO, f.StageHost, f.Security, f.Agents, f.PluginDir, f.LLM)
 	if f.ToolReg != nil {
 		a.MountToolRegistry(f.ToolReg)
 	}

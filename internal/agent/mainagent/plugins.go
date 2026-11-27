@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// ★ `plgreload` 的执行体已删：它读的是内核插件注册表（`AgentConfig.PluginReg`），
-//   归基座（`Agent.ExecutePluginReload`）。留在这里的后果是 rt/worker 拿不到。
+// ★ `plgreload` 的执行体在基座（`Agent.ExecutePluginReload`），归内核工具族。
+//   留在这里的后果是 rt/worker 拿不到。
 
 func (m *Module) autoReloadPlugins() {
 	if m.pluginRegNow() == nil {

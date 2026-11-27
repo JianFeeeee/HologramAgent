@@ -96,7 +96,7 @@ func (r *pluginRuntime) RunTools(calls []pubsdk.ToolCall) []pubsdk.ToolResult {
 		kc = append(kc, agent.ToolCall{ID: c.ID, Name: c.Name, Arguments: c.Arguments})
 	}
 	// 通道：插件类型不持有默认通道，用内置标记（工具执行本身不产出用户可见输出）。
-	results := r.a.RunToolBatch(kc, agent.BatchOpts{Channel: agent.DefaultChannelForBuiltin()})
+	results := r.a.RunToolBatch(r.a.Ctx(), kc)
 	out := make([]pubsdk.ToolResult, 0, len(results))
 	for _, br := range results {
 		out = append(out, pubsdk.ToolResult{

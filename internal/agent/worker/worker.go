@@ -299,12 +299,10 @@ func (m *M) runChildTask(ent *workerEntry, task string, parentChannel string, ma
 
 		// Tool execution remains kernel-owned. The worker loop only provides
 		// worker-specific request constraints; it does not implement a runner.
-		results := ca.RunToolBatch(resp.ToolCalls, agent.BatchOpts{
-			Ctx:        ca.Ctx(),
-			Channel:    parentChannel,
-			NoBatch:    true,
-			ToolFilter: workerToolReject,
-		})
+		// ★ worker 的禁令与串行不再靠执行参数：
+		//   禁令走工具授权声明（与 render 侧同一份），串行由工具不声明
+		//   ParallelSafe 自然成立（见 kernelmod/device/toolexec_batch.go）。
+		results := ca.RunToolBatch(ca.Ctx(), resp.ToolCalls)
 		// 子 Agent 的工具调用必须自记一行。此前子侧全程静默：父内核日志里
 		// 只有「started / done」两行，子任务失败时无法判断倒在哪一步（是搜不到、
 		// 解析失败，还是被轮上限截断）——只能看到一句「超时」。

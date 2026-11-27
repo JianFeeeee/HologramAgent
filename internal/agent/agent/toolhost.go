@@ -65,12 +65,12 @@ type ToolHost interface {
 	RegisterToolCancel(cancel context.CancelFunc) uint64
 	UnregisterToolCancel(id uint64)
 	// RunToolStage 在内核执行链里跑一个工具阶段（同步），返回处理结果。
-	RunToolStage(stage sdk.Stage, tc agentAPI.ToolCall, result *sdk.ToolResult, channel string) (bool, *sdk.StageContext)
+	RunToolStage(stage sdk.Stage, tc agentAPI.ToolCall, result *sdk.ToolResult) (bool, *sdk.StageContext)
 	// Logf 记日志（设施不持有 logger）。
 	Logf(format string, args ...any)
 }
 
-// ToolHost 返回本 agent 作为**工具执行设施的宿主**（喂给 BatchOpts.Host）。
+// ToolHost 返回本 agent 作为**工具执行宿主**（实现 AgentHandleFace）。
 //
 // 这是设施与基座之间唯一的接线点：设施按 `ToolHost` 的能力集调用，
 // 基座提供自己。任何类型都通过 `Agent.RunToolBatch` 隐式传它。

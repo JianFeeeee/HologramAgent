@@ -14,6 +14,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 	"github.com/JianFeeeee/HologramAgent/internal/artifacts"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -230,8 +231,6 @@ type Agent struct {
 	toolExec ToolExecutor
 	// gate 是安全防火墙的数据面闸门。
 	gate kernelapi.SecurityGate
-	// pluginReg 是插件注册表读面（plgreload / 状态面用）。
-	pluginReg kernelapi.PluginHost
 	// pluginDir 是插件目录（plgreload 用）。
 	pluginDir string
 	// ── 类型交出的面（MountTypeFaces 写，基座只读）──
@@ -941,33 +940,34 @@ func (a *Agent) AgentCapabilities() agentIO.OutputCapability {
 	return a.agentCap
 }
 
-// RunToolBatch 是**基座提供的工具请求边界**：类型只提交批请求，拿回同序结果。
+// ── AgentHandle：执行链需要的**实例句柄**（见 kernelmod/device 的同名接口） ──
 //
-// ★ 执行属于内核设施（toolroute 路由 / security 闸 / device 授权 /
-//
-//	并发判据 / 返回值清洗）。基座只做一次转发 —— 它不认识"哪个工具该调"。
-func (a *Agent) RunToolBatch(calls []ToolCall, opts BatchOpts) []BatchResult {
+// 只有执行链替代不了的三样：身份、取消登记、交回基座工具。
+// 安全闸 / io / 插件工具表 / 工具声明全部由 device 从设施自取。
+
+// AgentID 实现 device.AgentHandle。
+func (a *Agent) AgentID() string {
 	if a == nil {
-		return nil
+		return ""
 	}
-	// 宿主必须是**本 agent**（工具执行设施按它的 io / stageHost / 安全闸执行）。
-	if opts.Host == nil {
-		opts.Host = a.ToolHost()
+	return string(a.id)
+}
+
+// IsChild 实现 device.AgentHandle。
+func (a *Agent) IsChild() bool { return a.IsChildAgent() }
+
+// DialTool 实现 device.AgentHandle：调**基座登记的工具**。
+//
+// 这些工具的执行体就是基座自己的方法（`admin_child` 族 / 内核族
+// `llm_*` / `secret_*` / `output_*` / `plgreload` / `get_plugin_tools` /
+// `input_channels`），要读写本实例字段 —— 设施替代不了。
+func (a *Agent) DialTool(ctx context.Context, call ToolCall) (string, bool) {
+	if a == nil {
+		return "", false
 	}
-	exec := a.toolExecutor()
-	if exec == nil {
-		// 装配缺设施 = 响亮失败。**不静默返回空结果**：那会让调用方以为
-		// 工具跑了但没输出，是"看起来正常工作"的最坏形态。
-		out := make([]BatchResult, len(calls))
-		for i, c := range calls {
-			out[i] = BatchResult{
-				CallID: c.ID, Name: c.Name,
-				Text: "工具执行设施未装配（kernelapi.FacToolExec 缺失）：本次调用未执行",
-			}
-		}
-		return out
-	}
-	return exec.Execute(a.ctx, calls, opts)
+	return registry.DispatchTool(registry.ToolCtx{Host: a}, agentAPI.ToolCall{
+		ID: call.ID, Name: call.Name, Arguments: call.Arguments,
+	})
 }
 
 // toolExecutor 返回工具执行设施。
@@ -975,7 +975,7 @@ func (a *Agent) RunToolBatch(calls []ToolCall, opts BatchOpts) []BatchResult {
 // ## 为什么可以在这里直接构造（不走挂载点）
 //
 // 设施是**无状态纯逻辑**：它不持有任何 agent/内核数据，宿主每次随
-// `BatchOpts.Host` 传入（见 kernelmod/toolexec 的注释）。所以"1 份实例"与
+// 实例句柄传入（见 kernelmod/device 的注释）。所以"1 份实例"与
 // "每次构造"在行为上等价，而后者让基座**不依赖装配顺序**
 // （agent 早于 toolexec 模块构造，运行期取挂载点会有一段 nil 窗口 ——
 // 实测：判据与独立工具全在那个窗口里跑）。
@@ -1010,7 +1010,7 @@ func (a *Agent) toolExecutor() ToolExecutor {
 	// 一切正常 —— 症状是"子 agent 看起来在工作、实际什么工具都调不动"。
 	//
 	// 工具执行设施是**内核组件**（`kernelmod/toolexec` 一份实例，服务全部
-	// agent，宿主随 BatchOpts 传入）。各类型 agent 对内核应一致，所以取用
+	// agent，实例句柄随调用传入）。各类型 agent 对内核应一致，所以取用
 	// 点是"按设施名要"，不是"装配点逐个塞" —— 后者正是漏掉子实例的原因。
 	return ToolExecOf()
 }

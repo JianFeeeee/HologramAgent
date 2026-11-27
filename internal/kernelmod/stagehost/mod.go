@@ -17,10 +17,7 @@
 package stagehost
 
 import (
-	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
-	"log"
 	"strings"
 
 	"github.com/JianFeeeee/HologramAgent/internal/config"
@@ -28,11 +25,9 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
-	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	cli "github.com/JianFeeeee/HologramAgent/internal/plugins/cli"
 	webui "github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
-	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // Module 提供阶段管道与插件注册表。
@@ -47,18 +42,7 @@ func (Module) Provides() []string { return []string{kernelmod.FacStageHost} }
 func (Module) Init(ks *kstate.State) error {
 	// 依赖的产物从挂载点取（编译期只认 kernelapi 的接口/具名设施，不 import 实现）：
 	// 这里的断言是**装配契约**——缺了就响亮失败，不许静默降级。
-	iom := kernelmod.MustValue[*agentIO.IOManager](ks, kernelapi.FacKernelIO)
-	// ★ 取的是**代理面**（FacEventBus），不是裸总线（第⑥次裁定）。
-	evBus, _ := kernelmod.MustValueAny(ks, kernelapi.FacEventBus).(kernelapi.EventBus)
-	providerMgr := kernelmod.MustValue[*agentProvider.ProviderManager](ks, kernelapi.FacLLM)
-
 	stageHost := kit.NewStageHost()
-	// ★ 工具登记簿是**独立模块**产出的设施（`FacToolReg`），本模块只接线。
-	//
-	// 此前它住在这个模块里、和阶段管道是同一个对象 —— 于是"工具表由谁产"
-	// 永远讲不清（用户裁定 2026-11-25）。
-	toolReg := kernelmod.MustValue[*kit.ToolRegistry](ks, kernelapi.FacToolReg)
-
 	// 插件声明式系统提示词段的注册表：本模块产出，挂到内核挂载点。
 	//
 	// ★ 不往下传参：读方（agent 模块、SDK）自己去 ks 取 ——
@@ -67,34 +51,17 @@ func (Module) Init(ks *kstate.State) error {
 	promptSections := promptsec.NewRegistry()
 	ks.Provide(kernelapi.FacPromptSections, promptSections)
 
-	pluginReg := plugin.NewRegistry()
-	pluginReg.SetIOManager(iom)
-	pluginReg.SetEventBus(evBus)
-	// 多模态向量空间：知识库插件要用它建稠密索引（经 s.Multimodal()）。
-	// 未启用时 Require 拿不到 ⇒ 传 nil ⇒ 插件回落到词法路（行为不变）。
-	if impl, ok := ks.Require(kernelapi.FacMultimodal); ok {
-		if mm, _ := impl.(kernelapi.MultimodalSpace); mm != nil {
-			pluginReg.SetMultimodal(mm)
-		}
-	}
-	pluginReg.SetProviderManager(providerMgr)
-	pluginReg.SetConfigRegistry(ks.CfgReg)
-	pluginReg.SetPluginDir(ks.Cfg.Plugin.Dir)
-	pluginReg.SetDataDir(ks.DataDir) // 插件 SettingsAPI.DataDir() 的数据根目录
-
-	// Wire registration callbacks: plugins' RegisterTool/RegisterStage → StageHost
-	pluginReg.SetToolRegistrar(func(name string, def sdk.ToolDef, handler sdk.ToolHandler) error {
-		log.Printf("[homed] SetToolRegistrar registering tool: %s (plugin=%s)", name, def.Plugin)
-		return toolReg.RegisterTool(name, def, handler)
-	})
-	pluginReg.SetStageRegistrar(func(stage sdk.Stage, handler sdk.StageHandler) {
-		stageHost.RegisterStage(stage, handler)
-	})
-	pluginReg.SetAPIRegistrar(func(name string) error { return nil })
-	pluginReg.SetToolCleaner(toolReg)
+	// ★ plghost（`plugin.Registry`）**不在这里创建**（用户裁定 2026-11-27）。
+	//
+	// 它归 `kernelmod/pluginhost` —— 那是**专管插件**的模块，扫目录、排调度、
+	// 拉起插件都在那儿。此前它被本模块顺手创建并注入 11 个依赖，
+	// 于是"谁管插件"的答案有两个，而本模块的 `Requires` 里也多了它用不到的
+	// `FacKernelIO`（只为了 `pluginReg.SetIOManager`）。
+	//
+	// 依赖方向因此变成：pluginhost（创建 plghost）← stagehost（只做阶段管道）。
+	// 若将来 pluginhost 需要 StageHost，它已经声明了 `FacStageHost`。
 
 	ks.Provide(kernelapi.FacStageHost, stageHost)
-	ks.Provide(kernelapi.FacPluginRegistry, pluginReg)
 
 	// ★ 这两行必须在插件 Start（loadPlugins）**之前**设置：
 	// CLI 插件的 unix socket 路径，与 webui 的监听地址覆盖。

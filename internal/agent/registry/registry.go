@@ -153,7 +153,9 @@ type Host interface {
 	// GetChild 取单个实例简报。
 	GetChild(id string) (ChildBrief, bool)
 	// DestroyChild 销毁实例（类型 Dispose 由登记表骨架调用）。
-	DestroyChild(id string, residual string) (string, error)
+	// DestroyChild 销毁实例。residual / channels 是**销毁时的声明**
+	// （残余任务处置 / 通道去向），由基座执行，类型只声明。
+	DestroyChild(id string, residual string, channels string) (string, error)
 	// SendToChild 向实例注入一条输入（走它自己的 inputch，复用现有注入原语）。
 	SendToChild(id, text string) (string, error)
 	// OwnerID 是宿主（调用方）的标识 —— 用于模板化错误文案与审计。
@@ -372,7 +374,7 @@ var genericActions = []Action{
 	{Name: ActionDestroy, Description: "销毁单个实例", Required: []string{"id"},
 		Args: map[string]interface{}{
 			"id":       map[string]interface{}{"type": "string", "description": "实例 id"},
-			"residual": map[string]interface{}{"type": "string", "enum": []string{"keep", "drop"}, "description": "未处理的残余任务处置：keep=转回你自己的队列（默认）/ drop=明确丢弃"},
+			"residual": map[string]interface{}{"type": "string", "enum": []string{"keep", "stash", "drop"}, "description": "未处理的残余任务处置：keep=投回你的队列（默认，父接手）/ stash=退回原通道暂存（接回该通道即释放）/ drop=明确丢弃（逐条留痕，异步通道用户收不到回复）"},
 		}},
 	{Name: ActionDestroyAll, Description: "销毁该类型的全部实例（撤销类型前必须先做）"},
 	{Name: ActionRestart, Description: "重启单个实例（停掉并重建，用于强行停止跑飞的实例）", Required: []string{"id"},
@@ -455,7 +457,7 @@ func Dispatch(host Host, typeName, action string, arg map[string]interface{}) (s
 		if id == "" {
 			return "", fmt.Errorf("registry: destroy 需要 id")
 		}
-		return host.DestroyChild(id, strOf(arg, "residual"))
+		return host.DestroyChild(id, strOf(arg, "residual"), strOf(arg, "channels"))
 	case ActionDestroyAll:
 		return destroyAll(host, typeName), nil
 	case ActionRestart:
@@ -559,7 +561,7 @@ func destroyAll(host Host, typeName string) string {
 	var ok, failed int
 	var errs []string
 	for _, x := range briefs {
-		if _, err := host.DestroyChild(x.ID, "drop"); err != nil {
+		if _, err := host.DestroyChild(x.ID, "drop", "release"); err != nil {
 			failed++
 			errs = append(errs, fmt.Sprintf("%s: %v", x.ID, err))
 			continue

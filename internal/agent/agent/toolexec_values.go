@@ -9,15 +9,13 @@ package agent
 //
 // 所以它们与 `ToolExecutor` 是同一份契约的两面，声明点必须在一起：
 //
-//	类型 ──▶ 基座（ToolExecutor + 这三个值） ◀── kernelmod/toolexec
+//	类型 ──▶ 基座（ToolExecutor + 这三个值） ◀── kernelmod/device
 //
 // ★ 为什么不能放 `kernelapi`：那是叶子层，而本文件经 `sdk` → `agent/provider`
 //   是长链（`sdk` 又 import `kernelapi`）—— 放进去实测直接成环。
 //   基座本来就 import 这两样，放这里零代价。
 
 import (
-	"context"
-
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
@@ -55,35 +53,10 @@ type OverflowRequest struct {
 // ToolCall 是一次工具调用（与 agent/api 的模型同源）。
 type ToolCall = agentAPI.ToolCall
 
-// BatchOpts 是一批工具执行的可变参数。
-type BatchOpts struct {
-	// Host 是**执行宿主**（类型无关的 any：内核设施自己断言它需要的能力）。
-	//
-	// ★ 与 `registry.ToolCtx.Host` 同一形态、同一理由：本包不 import
-	//   任何 agent 实现细节，所以宿主以 any 传递，由**消费方**按自己的
-	//   契约断言。内核工具执行设施断言成它自己声明的最小接口。
-	//
-	// nil = 该调用方没有提供宿主 ⇒ 设施**响亮失败**（不静默放行）。
-	Host any
-	// Ctx 是本次批量的执行作用域（rt 传整轮 roundCtx，其余传自身 ctx）。
-	//
-	// 各类型注册的实现必须能接受"这一批属于哪个作用域"——rt 的取消域是
-	// 整轮，主 agent 是自身 ctx。让 runner 自己猜（读 a.ctx）会让 rt 的
-	// 取消域失效（实测会退化成"打断不了"）。
-	Ctx context.Context
-	// Channel 是本次批量要回的通道（进 StageContext.Extra，插件据此判权限）。
-	Channel string
-	// Scenes 是本轮的场景键（rt / 工作式子传 nil）。
-	Scenes []string
-	// StageCtx 是基底 StageContext；内部按 idx 拆分（Extra 逐份复制）。
-	StageCtx *sdk.StageContext
-	// NoBatch 为 true 时强制串行（工作式子历史上是逐条串行）。
-	NoBatch bool
-	// ToolFilter 可在执行前改写/拒绝单个工具（工作式子用它禁输出工具）。
-	//
-	// 返回非空字符串表示"拒绝并以此作为结果"，不回落到真实执行。
-	ToolFilter func(tc ToolCall) string
-}
+// ★ `BatchOpts` 已删除（2026-11-27）：它携带的 7 个字段里，
+//   `Host`（实例句柄）与 `Ctx` 走了函数参数，其余 5 个是死字段或逃逸 ——
+//   详见 `kernelmod/device/toolexec_batch.go` 的注释。
+//   现在执行链的入参只有 `(ctx, 实例句柄, calls)`。
 
 // BatchResult 是单条工具的执行结果（与入参**同序**返回）。
 type BatchResult struct {

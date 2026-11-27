@@ -841,9 +841,24 @@ type SecretPattern struct {
 type AgentFacts struct {
 	// AllowedOutputs 是输出通道白名单（空 = 完整授权，存量 fail-open 契约）。
 	AllowedOutputs []string
-	// AllowedTools / DenyTools 是父为子声明的工具策略（deny 优先）。
+	// AllowedTools / AddTools / DenyTools 是父为子声明的**工具**授权三档。
+	//
+	// 语义是**表运算**（不是判定链）：
+	//
+	//	表 = (全量 ∩ Allowed) ∪ Add − Deny
+	//
+	// 三档全空 ⇒ 不裁剪（全量）。Deny 作用于当前结果 ⇒ 它既能撤销 Allowed 里的，
+	// 也能撤销 Add 里的，不区分来源。
 	AllowedTools []string
+	AddTools     []string
 	DenyTools    []string
+	// AllowedPlugins / AddPlugins / DenyPlugins 是**插件**授权三档，语义同上。
+	//
+	// ★ 插件维度**优先于**工具维度：插件不被允许时，它注册的一切内容
+	//   （工具 / stage / 通道 / 提示词段 / skill）在该实例都不生效。
+	AllowedPlugins []string
+	AddPlugins     []string
+	DenyPlugins    []string
 	// LongtimeProfile 是本 agent 的跨轮安全档位（空 = 未设置）。
 	LongtimeProfile string
 }

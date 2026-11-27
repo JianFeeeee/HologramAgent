@@ -26,6 +26,7 @@ package test
 // 内部字段（那是白盒，而且 `DeclaredOnly` 本身已被消除）。
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,9 +102,9 @@ func TestKernelFamilyToolsAreExecutableByEveryInstance(t *testing.T) {
 
 	// `input_channels` 是最稳定的内核族工具：不依赖 LLM 源/变量库是否配置。
 	name := "input_channels"
-	results := a.RunToolBatch([]agent.ToolCall{{
+	results := a.RunToolBatch(context.Background(), []agent.ToolCall{{
 		ID: "probe-1", Name: name, Arguments: map[string]interface{}{"view": "all"},
-	}}, agent.BatchOpts{Channel: agent.DefaultChannelForBuiltin()})
+	}})
 	if len(results) == 0 {
 		t.Fatal("工具执行设施未就绪：本次调用未被执行")
 	}

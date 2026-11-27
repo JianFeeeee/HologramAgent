@@ -132,6 +132,15 @@ func NewInstanceManager(host InstanceHost) *InstanceManager {
 				a.io.ChannelRegistry().Unregister(channelName)
 			},
 		}
+		if a.io != nil {
+			m.deps.ChannelRegistry = a.io.ChannelRegistry()
+		}
+		m.deps.RouteTo = func(agentID string, evt *agentIO.InputEvent) bool {
+			return a.RouteInputTo(agentID, evt)
+		}
+		m.deps.SkipReply = func(evt *agentIO.InputEvent, reason string) {
+			a.EmitSkippedReply(evt, reason)
+		}
 	}
 	return m
 }
@@ -267,7 +276,7 @@ func (m *InstanceManager) GetChild(id string) (registry.ChildBrief, bool) {
 }
 
 // DestroyChild 销毁一个实例（骨架清理 + 撤销主体策略 + 注销入站登记）。
-func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
+func (m *InstanceManager) DestroyChild(id, residual, channels string) (string, error) {
 	if m == nil || m.host == nil {
 		return "", fmt.Errorf("instances: 管理器未就绪")
 	}
@@ -282,6 +291,16 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 	//
 	//   原先这里有一个 `switch Kind { case KindResident: ... case KindRT: ... }`
 	//   —— 每加一种类型就要回来加一条 case，且基座被迫 import 两个类型包。
+	// ★ 通道去向：**基座预定义的策略**，类型在销毁时只声明用哪个（不声明 =
+	//   悬空）。类型不碰通道登记表 —— 那是内核 IO 设施，归属与处置归基座。
+	//
+	// ★ 顺序：**先处置通道，再调类型的 Admin**。通道是基座的资源，基座先
+	//   收走自己的部分，类型再收它自己的（残余任务、记忆、temp）。
+	//   反过来做的话，类型看到通道还在就会顺手处置（正是改造前的形态：
+	//   `resident` 里 45 行 AssignAndDrainStash / Orphan / Stash），
+	//   两处都处置 ⇒ 暂存被交出两次。
+	chMsg := m.applyChannelPolicy(id, e.Channels(), channels)
+
 	if d, ok := registry.Lookup(kind); ok && d.Admin != nil {
 		if _, err := d.Admin(m, "destroy", map[string]interface{}{
 			"id":       id,
@@ -290,6 +309,7 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 			return "", err
 		}
 	}
+
 	// 骨架级清理（Entry.Dispose + 策略撤销 + 注销入站登记）只写一遍。
 	//
 	// ★ 类型的 Admin 可能已经把实例**完整拆除**（驻留子的 destroy 要
@@ -301,6 +321,9 @@ func (m *InstanceManager) DestroyChild(id, residual string) (string, error) {
 		}
 	}
 	m.Forget(id)
+	if chMsg != "" {
+		return fmt.Sprintf("已销毁 %s。（%s）", id, chMsg), nil
+	}
 	return fmt.Sprintf("已销毁 %s。", id), nil
 }
 
@@ -323,6 +346,10 @@ type HostDeps struct {
 	OnDispose func(e childpkg.Entry)
 	// ChannelRegistry 是通道登记表（注销入站要用）。
 	ChannelRegistry *agentIO.ChannelRegistry
+	// RouteTo 把一条输入投给指定实例（通道交接时交出暂存任务用）。
+	RouteTo func(agentID string, evt *agentIO.InputEvent) bool
+	// SkipReply 给同步调用方补终态（投递失败时不许让它永久挂起）。
+	SkipReply func(evt *agentIO.InputEvent, reason string)
 }
 
 // childStopDeps 收集"停止一个子还需要什么"（骨架不 import agent 包）。
@@ -410,7 +437,7 @@ func (m *InstanceManager) RecreateChild(typeName, id string) (string, error) {
 	}
 
 	// ② 销毁现有实例（Forget 在这里发生，属预期）。
-	if _, err := m.DestroyChild(id, "drop"); err != nil {
+	if _, err := m.DestroyChild(id, "drop", ChannelPolicyRelease); err != nil {
 		return "", fmt.Errorf("instances: 重启 %q 失败于销毁阶段: %w", id, err)
 	}
 
@@ -685,7 +712,7 @@ func (m *InstanceManager) RestartInstance(id string) (string, error) {
 		return "", fmt.Errorf("instances: 实例 %q 没有创建参数快照（无法软重启）", id)
 	}
 	// ① 停（残余明确丢弃：它可能已经跑飞，转回队列只会把坏任务扩散）。
-	if _, err := m.DestroyChild(id, "drop"); err != nil {
+	if _, err := m.DestroyChild(id, "drop", ChannelPolicyRelease); err != nil {
 		return "", fmt.Errorf("instances: 软重启 %q 失败于停止阶段: %w", id, err)
 	}
 	// ② 用同一份参数重建。
@@ -766,7 +793,89 @@ func (m *InstanceManager) RollbackConstruct(typeName, id string) {
 	if m == nil || id == "" {
 		return
 	}
-	if _, err := m.DestroyChild(id, "drop"); err != nil {
+	if _, err := m.DestroyChild(id, "drop", ChannelPolicyRelease); err != nil {
 		log.Printf("[instances] 回滚 %s(%s) 失败: %v", typeName, id, err)
+	}
+}
+
+// 通道去向往基座预定义的几套策略（用户裁定 2026-11-27）。
+//
+// 类型在销毁时**只声明用哪个**（`admin_child` 的 `arg.channels`），
+// 不声明走悬空。类型不拿 io 管理器、不碰通道登记表 —— 那属于分层逃逸：
+// 通道归属是内核的资源分配，与"这个实例是哪种类型"无关。
+const (
+	// ChannelPolicyOrphan 悬空：归属清空 + Orphaned 标记，期间输入进暂存，
+	// 等显式接回或划拨。（**默认**）
+	ChannelPolicyOrphan = ""
+	// ChannelPolicyHandover 接给宿主（父）并**交出暂存任务**。
+	//
+	// 语义：这个子不干了，它的通道和通道上没处理完的活都回到父手里。
+	ChannelPolicyHandover = "handover"
+	// ChannelPolicyRelease 悬空并清掉暂存（彻底放手）。
+	ChannelPolicyRelease = "release"
+)
+
+// applyChannelPolicy 按声明执行通道去向（基座内部实现，不对外暴露）。
+func (m *InstanceManager) applyChannelPolicy(id string, chans []string, decl string) string {
+	if m == nil || len(chans) == 0 {
+		return ""
+	}
+	reg := m.deps.ChannelRegistry
+	if reg == nil {
+		return "无通道登记表，通道未处置"
+	}
+	target := m.host.OwnerID()
+	done, gone := 0, 0
+	for _, ch := range chans {
+		if ch == "" {
+			continue
+		}
+		switch decl {
+		case ChannelPolicyHandover:
+			// 接回 + 交出暂存：暂存任务由父接手（推原事件保 ResponseCh）。
+			drained, err := reg.AssignAndDrainStash(ch, target, 0)
+			if err != nil {
+				gone++
+				continue
+			}
+			for _, evt := range drained {
+				if evt == nil {
+					continue
+				}
+				if m.deps.RouteTo != nil && !m.deps.RouteTo(target, evt) {
+					if m.deps.SkipReply != nil {
+						m.deps.SkipReply(evt, "channel_handover_unreachable")
+					}
+				}
+			}
+			done++
+		case ChannelPolicyRelease:
+			_ = reg.Orphan(ch)
+			reg.TakeStash(ch) // 取出即清空；"丢弃"的留痕由声明方负责
+			done++
+		default: // ChannelPolicyOrphan
+			if err := reg.Orphan(ch); err != nil {
+				gone++
+				continue
+			}
+			done++
+		}
+	}
+	msg := fmt.Sprintf("通道处置 %d 条（%s）", done, channelPolicyName(decl))
+	if gone > 0 {
+		msg += fmt.Sprintf("；%d 条已不存在", gone)
+	}
+	return msg
+}
+
+// channelPolicyName 给策略一个可读名（摘要与日志用）。
+func channelPolicyName(decl string) string {
+	switch decl {
+	case ChannelPolicyHandover:
+		return "接回宿主并交出暂存"
+	case ChannelPolicyRelease:
+		return "释放并清暂存"
+	default:
+		return "悬空"
 	}
 }

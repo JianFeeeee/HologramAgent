@@ -32,9 +32,12 @@ import (
 	"sort"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
+	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	sec "github.com/JianFeeeee/HologramAgent/internal/security"
 )
 
@@ -43,41 +46,66 @@ type Module struct{}
 
 func (Module) Name() string { return "device" }
 
+// Requires 声明能开工的前置。
+//
+// ★ **不再依赖 `FacAgent`**（用户裁定 2026-11-27）。此前它依赖 agent 只为了
+// `host.MountDevice(rt)` —— 把数据面**推**给 agent。那条路径的消费方为零
+// （`a.Device()` 全仓 0 处调用），却让 device 倒挂到基座之上，而 `FacDevice`
+// 反过来也没人取。
+//
+// 现在方向是**拉**：agent 从 `FacDevice` 取自己的虚拟设备管理器。
 func (Module) Requires() []string {
-	return []string{kernelmod.FacAgent, kernelmod.FacSecurity}
+	return []string{
+		kernelmod.FacKernelIO,       // IOManager（tool 面 + ch 面）
+		kernelmod.FacSecurity,       // 安全闸（工具授权 / 路径 / 网络 / 审查）
+		kernelapi.FacPluginRegistry, // plghost（插件可见性）
+		kernelmod.FacToolReg,        // 插件工具表
+	}
 }
 
-func (Module) Provides() []string { return []string{kernelmod.FacDevice} }
+// Provides 声明本模块产出的设施。
+//
+// ★ `FacToolExec` 也从本模块产出（用户裁定 2026-11-27）：
+//
+//	「device 就应该是那个执行工具的模块」
+//
+// 此前它由一个独立的 `kernelmod/toolexec` 平行提供 —— 那让"工具由谁执行"
+// 有两个答案，而 device 反而退化成一个把数据面推给 agent、却**无人使用**的空壳。
+// 工具执行链（路由三步 / 超时 / 并发 / panic 恢复 / 脱敏 / 安全闸）本来就是
+// device 的职责（它是 tool + ch 的抽象），现在归位。
+func (Module) Provides() []string {
+	return []string{kernelmod.FacDevice, kernelapi.FacToolExec}
+}
 
 func (Module) Init(ks *kstate.State) error {
-	// Agent 在挂载点里存 any（kstate 不能依赖 agent/core，否则成环）。
-	// 这里断言成**最小接口**而不是具体类型：device 只需要"能挂数据面"。
-	agentImpl, ok := ks.Require(kernelapi.FacAgent)
-	if !ok || agentImpl == nil {
-		return fmt.Errorf("device module: facility %q is not provided", kernelmod.FacAgent)
-	}
-	host, ok := agentImpl.(api.DeviceMounter)
-	if !ok || host == nil {
-		return fmt.Errorf("device module: %q is not a DeviceMounter (requires %s)", kernelapi.FacAgent, kernelmod.FacAgent)
+	// 四件设施：缺任何一件都响亮失败（不静默降级 —— 那会变成
+	// "看起来装好了但没有闸门/没有工具表"）。
+	iom, ok := kernelmod.MustValueAny(ks, kernelapi.FacKernelIO).(*agentIO.IOManager)
+	if !ok || iom == nil {
+		return fmt.Errorf("device module: facility %q 未提供（IO 是 device 的资源池）", kernelapi.FacKernelIO)
 	}
 	secImpl, ok := ks.Require(kernelapi.FacSecurity)
 	if !ok || secImpl == nil {
 		// 安全模块必须已装配（配置关闭时是 Disabled Runtime，**不是** nil）。
-		// 缺失表示装配顺序错了 —— 那会让本模块"看起来装好了但没有闸门"。
-		return fmt.Errorf("device module: facility %q is not provided - the security module must be "+
-			"assembled first (when disabled it installs a Disabled Runtime, not nil)", kernelapi.FacSecurity)
+		return fmt.Errorf("device module: facility %q 未提供 —— security 必须先生成"+
+			"（关闭时是 Disabled Runtime，不是 nil）", kernelapi.FacSecurity)
 	}
 	secRT, _ := secImpl.(*security.Runtime)
 
-	// ExecuteTool 面：ToolHost 与 DeviceMounter 是两个不同用途的接口
-	// （执行 vs 装配），此处两个断言都要成功。
-	toolHost, ok := agentImpl.(api.ToolHost)
-	if !ok || toolHost == nil {
-		return fmt.Errorf("device module: %q is not a ToolHost (requires %s)", kernelapi.FacAgent, kernelmod.FacAgent)
+	regImpl, ok := ks.Require(kernelapi.FacPluginRegistry)
+	if !ok || regImpl == nil {
+		return fmt.Errorf("device module: facility %q 未提供 —— plugin-host 必须先生成", kernelapi.FacPluginRegistry)
 	}
-	rt := New(toolHost, secRT)
-	ks.Provide(kernelapi.FacDevice, rt)
-	host.MountDevice(rt)
+	pluginReg, _ := regImpl.(*plugin.Registry)
+
+	tools, ok := kernelmod.MustValueAny(ks, kernelapi.FacToolReg).(*kit.ToolRegistry)
+	if !ok || tools == nil {
+		return fmt.Errorf("device module: facility %q 未提供", kernelapi.FacToolReg)
+	}
+
+	dev := NewDevice(iom, pluginReg, tools, NewExecutor(iom, secRT.AsGate(), tools))
+	ks.Provide(kernelapi.FacDevice, dev)
+	ks.Provide(kernelapi.FacToolExec, dev.Executor())
 
 	if busImpl, ok := ks.Require(kernelapi.FacEventBus); ok {
 		if bus, _ := busImpl.(kernelapi.EventBus); bus != nil {
@@ -85,13 +113,13 @@ func (Module) Init(ks *kstate.State) error {
 				Type:   events.EventDeviceReady,
 				Source: "kernelmod/device",
 				Payload: map[string]interface{}{
-					"tools":   rt.ToolCount(),
-					"secured": rt.Secured(),
+					"tools":   len(dev.Tools()),
+					"secured": secRT != nil && secRT.Enabled(),
 				},
 			})
 		}
 	}
-	log.Printf("[device] ready: %d tools, security=%v", rt.ToolCount(), rt.Secured())
+	log.Printf("[device] ready: tool+ch manager (tools=%d, secured=%v)", len(dev.Tools()), secRT != nil && secRT.Enabled())
 	return nil
 }
 
@@ -161,3 +189,17 @@ func (r *Runtime) Execute(name string, args map[string]interface{}) (string, err
 	}
 	return out, nil
 }
+
+// ── 设施访问的薄适配（把 concrete 类型包成执行链的窄接口） ──
+
+type ioAccess struct{ m *agentIO.IOManager }
+
+func (a ioAccess) IO() *agentIO.IOManager { return a.m }
+
+type securityAccess struct{ g kernelapi.SecurityGate }
+
+func (a securityAccess) SecurityGate() kernelapi.SecurityGate { return a.g }
+
+type toolAccess struct{ r *kit.ToolRegistry }
+
+func (a toolAccess) ToolRegistry() *kit.ToolRegistry { return a.r }

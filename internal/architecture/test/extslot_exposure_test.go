@@ -122,6 +122,6 @@ func newTypedAgent(t *testing.T, cfg agent.AgentConfig, iom *io.IOManager) *agen
 	if a == nil {
 		t.Fatalf("类型 %q 没有交回根实例", cfg.TypeName)
 	}
-	a.MountSurface(iom, nil, nil, nil, nil, "", nil)
+	a.MountSurface(iom, nil, nil, nil, "", nil)
 	return a
 }

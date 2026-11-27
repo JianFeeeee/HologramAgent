@@ -17,7 +17,6 @@ import (
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
-	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/toolexec"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
@@ -61,7 +60,10 @@ type Module struct{}
 
 func (Module) Name() string { return "agent" }
 func (Module) Requires() []string {
-	return []string{kernelmod.FacLLM, kernelmod.FacTracker,
+	// ★ FacDevice（2026-11-27）：工具执行设施与虚拟设备管理器由 device 产出。
+	//   这是**拉**的方向 —— device 不再反过来依赖 agent（见 device/mod.go）。
+	return []string{
+		kernelmod.FacLLM, kernelmod.FacTracker, kernelmod.FacDevice,
 		kernelmod.FacStageHost,
 		// ★ FacSecurity（2026-10-30 补）：这是**真实存在**的依赖，
 		// 之前只是没在图上声明。
@@ -227,7 +229,7 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	//     MountSemantic     句→向量的计算（FacEmbedder / FacMultimodal）
 	//     MountSemanticOps  名字能否落库 / 文本→三元组（artifacts 契约的两个实现）
 	// ★ 面：IO / 阶段管道 / 安全闸 / 记录表 / 插件表 / LLM 设施。
-	agent.MountSurface(iom, stageHost, secRT.AsGate(), agentregOf(k), pluginReg, cfg.Plugin.Dir, llmClientOf(k))
+	agent.MountSurface(iom, stageHost, secRT.AsGate(), agentregOf(k), cfg.Plugin.Dir, llmClientOf(k))
 	// ★ **插件工具登记簿**（独立设施，2026-11-25 拆分）。
 	//
 	// 缺这一句的后果（本轮实测）：登记簿本身是好的（60 个插件工具全都
@@ -243,8 +245,16 @@ func buildAgent(k *kstate.State) (*agentCore.Agent, error) {
 	agent.MountProviders(provider, providerMgr)
 
 	// ★ 主 agent 私有值已在上面随 `arg` 进 Construct（那里挂得比 installState 早）。
-	// ★ 工具执行设施（内核唯一执行链）：基座只转发，宿主每次随 BatchOpts 传入。
-	agent.SetToolExec(toolexec.New())
+	// ★ 工具执行设施（内核唯一执行链，由 device 模块产出 `FacToolExec`）：
+	//   基座只转发，宿主每次随 BatchOpts 传入。
+	//
+	//   此前这里是 `toolexec.New()` —— 那个包是**平行实现**，与 device 的执行
+	//   职责重叠，且让 device 退化成空壳。现在执行链归 device，基座从设施取。
+	if impl, ok := k.Require(kernelapi.FacToolExec); ok {
+		if te, _ := impl.(agentCore.ToolExecutor); te != nil {
+			agent.SetToolExec(te)
+		}
+	}
 
 	mountSemanticFacilities(k, agent)
 	// ★ **装配期只造实例，不启动**（2026-11-26 实测修复）。

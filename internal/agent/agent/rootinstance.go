@@ -72,13 +72,24 @@ func (h *RootHost) GetChild(id string) (registry.ChildBrief, bool) {
 	return registry.ChildBrief{}, false
 }
 
-func (h *RootHost) DestroyChild(id string, residual string) (string, error) {
+func (h *RootHost) DestroyChild(id string, residual string, channels string) (string, error) {
 	return "", h.noChildren()
 }
 
 func (h *RootHost) SendToChild(id, text string) (string, error) {
 	return "", h.noChildren()
 }
+
+// AssignChannels 对根宿主无意义：根实例不归属任何父级通道。
+//
+// ★ 明确报错而不是静默成功：根宿主被调到这里说明调用方以为它有子实例。
+func (h *RootHost) AssignChannels(id string, channels []string, capacity int) error {
+	return h.noChildren()
+}
+
+func (h *RootHost) RegisterInbound(channel string) error { return h.noChildren() }
+
+func (h *RootHost) UnregisterInbound(channel string) {}
 
 // NewlyCreated 实现 registry.NewlyCreatedHost：交回刚造好的根实例。
 //

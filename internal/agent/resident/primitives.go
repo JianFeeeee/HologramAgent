@@ -40,10 +40,10 @@ func (m *M) BuildTaskMemoryContext(f *ResidentFrame, query string, budget int) s
 	if m == nil || f == nil || strings.TrimSpace(query) == "" {
 		return ""
 	}
-	res := m.A.RunToolBatch([]agentPkg.ToolCall{{
+	res := m.A.RunToolBatch(m.A.Ctx(), []agentPkg.ToolCall{{
 		ID: "recall_" + query, Name: "graph_recall",
 		Arguments: map[string]interface{}{"keywords": []interface{}{query}, "depth": float64(1)},
-	}}, agentPkg.BatchOpts{Ctx: m.A.Ctx(), Channel: f.OutputChannel})
+	}})
 	if len(res) == 0 || strings.TrimSpace(res[0].Text) == "" || res[0].Denied {
 		return ""
 	}
@@ -203,9 +203,9 @@ func (m *M) ResolveToolPlugin(name string) string { return registry.ToolOwner(na
 //
 //	交给内核（`RunToolBatch` 的唯一入口）。
 func (m *M) executeOrDelegateTool(tc agentAPI.ToolCall, channel string, scenes []string) toolOutcome {
-	results := m.A.RunToolBatch([]agentPkg.ToolCall{{
+	results := m.A.RunToolBatch(m.A.Ctx(), []agentPkg.ToolCall{{
 		ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments,
-	}}, agentPkg.BatchOpts{Ctx: m.A.Ctx(), Channel: channel, Scenes: scenes})
+	}})
 	if len(results) == 0 {
 		return toolOutcome{Text: "内核工具执行设施未就绪：本次工具调用未被执行"}
 	}

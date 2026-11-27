@@ -55,21 +55,21 @@ func (a *Agent) PublicToolDefs() []interface{} {
 
 	// ② IO 设备工具（通道 / 设备能力）。
 	//
-	// ★ 必须走 `ListChannels()` 而**不是** `GetAllTools()`：
+	// ★ 走 **IO 视图**（`a.IOView()`），不走 `a.IO().ListChannels()` 或
+	//   `GetAllTools()`：
 	//
-	//	GetAllTools  只遍历 **自己的** m.devices，**无父回退**
-	//	ListChannels 先取自己的，再并入 parent.ListChannels()（按通道名去重）
-	//	ExecuteToolCtx 自己有就自己执行，没有则向 parent 回退
+	//	GetAllTools     只遍历**自己的** devices，**无父回退** ⇒ 子恒为空
+	//	ListChannels    先取自己的，再并入 parent 的全部 ⇒ 子看见父的一切
 	//
-	// 而驻留子的 io 是「空 IOManager + 共享 ChannelRegistry + SetParentIO(父)」
-	// —— 设备全在父那边。于是 GetAllTools() 对子恒为空（连它能执行的
-	// 设备工具都列不出来），而 ListChannels() 能列出父的通道与它们的工具。
+	// 两者都不对：一个漏全部，一个多全部。视图按**本实例的输出授权**裁 ——
+	// 设备来自父的真实 io（插件注册在那儿），但只有授权给我的才出现在清单里。
 	//
-	// 子"能执行父的设备工具"与"看得见父的设备工具"必须是同一件事：
-	// 只给执行不给渲染 = 模型永远想不到调。
-	if iom := a.IO(); iom != nil {
+	// 子"能执行"与"看得见"必须是同一件事：只给执行不给渲染 = 模型想不到调；
+	// 只给渲染不给执行 = 调一次拒一次。视图的 `Channels()` 与 `OutputAllowed()`
+	// 是同一个判定的两次使用。
+	if v := a.IOView(); v != nil {
 		seen := map[string]bool{}
-		for _, ch := range iom.ListChannels() {
+		for _, ch := range v.ListChannels() {
 			for _, td := range ch.Tools {
 				if seen[td.Name] {
 					continue // 同一工具可能被多个通道声明（去重按工具名）

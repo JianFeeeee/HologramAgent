@@ -44,42 +44,13 @@ func (a *Agent) ExecuteTool(name string, args map[string]interface{}) (string, e
 	// 曾经这里是 `registry.DispatchTool` 直调：于是经 device/ToolAPI 的调用
 	// **绕过了安全闸**（D4 实测缺口：cli 插件的 /terminal 就直接经它调工具）。
 	// 现在统一入口，判据 TestCanUseAgreesWithInnerPath 钉住两条路一致。
-	results := a.RunToolBatch([]ToolCall{{
+	results := a.RunToolBatch(a.ctx, []ToolCall{{
 		ID: "device_" + name, Name: name, Arguments: args,
-		// 通道用内置标记：工具执行本身不产出"用户可见输出"。
-	}}, BatchOpts{Channel: DefaultChannelForBuiltin()})
+	}})
 	if len(results) == 0 {
 		return "", errNoAgentForDevice
 	}
 	return results[0].Text, nil
-}
-
-// MountDevice 挂载 device 数据面。
-//
-// 单向依赖：core 只认识低层接口（api.DeviceSurface），不认识
-// kernelmod/device 的具体类型 —— 否则 core ↔ kernelboot ↔ device 会成环。
-//
-// 幂等：重复挂载只覆盖（装配期可能因重建 Agent 而重挂）。
-func (a *Agent) MountDevice(d agentAPI.DeviceSurface) {
-	if a == nil {
-		return
-	}
-	// ★ 这里**不构造**族适配器：内置工具族（memory/social/doc/persona/plugin…）
-	//   是**类型自己的能力**，由类型在装配期用 `SetBuiltinTools` 注册。
-	//   没注册 ⇒ 该族在这台内核上不可用（明确的装配事实）。
-	a.deviceMu.Lock()
-	a.device = d
-	a.deviceMu.Unlock()
-}
-
-// Device 返回已挂载的数据面（未挂载时为 nil）。
-func (a *Agent) Device() agentAPI.DeviceSurface {
-	if a == nil {
-		return nil
-	}
-	a.deviceMu.RLock()
-	defer a.deviceMu.RUnlock()
-	return a.device
 }
 
 // errNoAgentForDevice 表示 device 调用时 Agent 未装配（装配顺序错误）。

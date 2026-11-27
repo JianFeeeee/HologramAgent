@@ -22,6 +22,9 @@ const (
 	EventTerminalOutput = events.EventTerminalOutput
 	EventAll            = events.EventAll
 
+	// EventPluginsChanged 是插件可见面变化事件（订阅者重新拉取虚拟插件管理器）。
+	EventPluginsChanged = events.EventPluginsChanged
+
 	// ★ 已删（2026-11-25，docs §9.5）：
 	//
 	//	EventRawInput        → on_input 阶段钩子
@@ -32,11 +35,6 @@ const (
 	//
 	// 判据是归属：这些是 **agent 的状态**，总线只服务内核模块之间。
 
-	// EventMemoryAccess 是图记忆的真实读写事件（哪个块被读/写/删/合）。
-	//
-	// 星图靠它做「反馈」：此前只能拿 tool_call 的工具名猜节点，而工具名是英文、
-	// 实体名是中文概念（实测命中 0），只能退化成点亮一批固定节点。
-	EventMemoryAccess = events.EventMemoryAccess
 )
 
 // ───────────────────── 受限事件总线（插件可见） ─────────────────────

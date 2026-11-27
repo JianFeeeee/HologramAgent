@@ -4,8 +4,10 @@ package mainagent
 //
 // ## 为什么不缓存
 //
-// `IO` / `StageHost` / `PluginReg` / `PluginDir` 都经 `MountSurface` 挂到基座，
-// 而挂载发生在 `Construct` 之后（装配点在 `New` 返回后调 MountSurface，
+// `IO` / `StageHost` / `PluginDir` 都经 `MountSurface` 挂到基座，
+// （`PluginHost` 已改为按 agentID 从 kstate 现取，不再是挂载的字段。）
+//
+// 挂载发生在 `Construct` 之后（装配点在 `New` 返回后调 MountSurface，
 // 类型自己的 `Initialize` 又早于那次挂载 —— 实测顺序）。
 // 缓存它们会在装配期留下 nil 快照，症状是"工具清单为空、插件面全死"，
 // 且只在某些装配顺序下发生。

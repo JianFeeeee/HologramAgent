@@ -41,16 +41,17 @@ import (
 //
 // 返回 (是否被拦下, ctx)。调用方据 ctx 的新值继续：`Response` 非空 ⇒ 不执行；
 // `ToolCalls[0].Arguments` / `ToolResults[0].Result` 可能已被注册方改写。
-func (a *Agent) RunToolStage(stage sdk.Stage, tc agentAPI.ToolCall, result *sdk.ToolResult, channel string) (bool, *sdk.StageContext) {
+func (a *Agent) RunToolStage(stage sdk.Stage, tc agentAPI.ToolCall, result *sdk.ToolResult) (bool, *sdk.StageContext) {
 	if a == nil {
 		return false, nil
 	}
 	ctx := &sdk.StageContext{
 		Phase: stage,
-		Extra: map[string]interface{}{
-			// 通道在工具阶段对插件有意义（它据此判"这条消息该不该发到我这"）。
-			"output_channel": channel,
-		},
+		// ★ 不再带 `output_channel`（2026-11-27）：通道在工具阶段曾被用来判
+		//   "这条消息该不该发到我这"，但那需要调用方传 Channel —— 而内核
+		//   **不自动转发回复到输出通道**（核心原则）。工具阶段要看通道就查
+		//   自己那批工具的参数，不该由执行链代传。
+		Extra: map[string]interface{}{},
 		ToolCalls: []sdk.ToolCall{{
 			ID:        tc.ID,
 			Name:      tc.Name,

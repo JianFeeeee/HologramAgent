@@ -20,6 +20,7 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
+	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	luaVM "github.com/JianFeeeee/HologramAgent/internal/lua"
@@ -134,6 +135,12 @@ type Registry struct {
 
 	knownDisabled map[string]bool
 	allowlist     map[string]bool
+
+	// grants 是 per-agent 授权声明（agentID → 插件/工具三档）。
+	//
+	// 由 SetGrant / ClearGrant 写（**唯一写者 = 主 agent 的 admin_child**），
+	// 由 VirtualPlugins 返回的虚拟管理器读。与插件表共用 r.mu。
+	grants map[string]*Grant
 
 	// runtimeStopped 是**运行态**关闭门（设计 §2.6.7.3）。
 	//
@@ -583,6 +590,109 @@ func (r *Registry) allowlistAllows(name string) bool {
 		return true
 	}
 	return r.allowlist[name]
+}
+
+// ─────────────────── per-agent 授权表（插件级 / 工具级三档） ───────────────────
+//
+// ## 为什么在**真实 plghost** 里
+//
+// 授权是「某个插件对某个实例可不可用」的事实，而"有哪些插件"的事实只在
+// 这里。拆到另一个模块就要维护两份插件清单，两份迟早不一致。
+//
+// ## 为什么一把锁够
+//
+// 只有**被选为主 agent 的实例**会调 admin_child（`registry.Meta.MayOffload`
+// 只给了 mainagent），所以写者唯一；其余全是读者。`r.mu` 已存在，授权表
+// 与插件表共用它即可。
+//
+// ## 与 SetLoadAllowlist 的区别（不要混）
+//
+//	SetLoadAllowlist  = "允许**加载**哪些插件"（failback 受限启动，全局、持久）
+//	SetGrant          = "某个**实例**能用哪些插件/工具"（运行期、per-agent）
+//
+// 两者方向不同：前者决定进程里有没有这个插件，后者决定实例看不看得见它。
+
+// SetGrant 写入（或替换）某实例的授权声明。
+//
+// 空 Grant（三档全空）合法 = 不裁剪。实例销毁时应调 ClearGrant 清掉，
+// 否则表里会积累已消失实例的记录。
+func (r *Registry) SetGrant(agentID string, g Grant) {
+	if r == nil || agentID == "" {
+		return
+	}
+	r.mu.Lock()
+	if r.grants == nil {
+		r.grants = map[string]*Grant{}
+	}
+	gc := g
+	r.grants[agentID] = &gc
+	r.mu.Unlock()
+	r.publishGrantUpdate(agentID)
+}
+
+// ClearGrant 删除某实例的授权（实例销毁时调用）。
+func (r *Registry) ClearGrant(agentID string) {
+	if r == nil || agentID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.grants, agentID)
+	r.mu.Unlock()
+	r.publishGrantUpdate(agentID)
+}
+
+// publishGrantUpdate 发布"某实例的可见面变了"（订阅者据此重拉虚拟管理器）。
+//
+// ★ 为什么走总线而不是直接调各实例：plghost 不认识 agent 类型、也不该认识。
+//
+//	事件是既有职责链（与 skill_detected / tools_ready 同一套），
+//	基座订阅、自己重算 —— 归属清晰，加新类型零接线。
+//
+// agentID 为空表示"全部实例都要重算"（插件加载/卸载这类全局变化）。
+func (r *Registry) publishGrantUpdate(agentID string) {
+	r.publishPluginsChanged(agentID, "grant", "")
+}
+
+// publishPluginsChanged 是插件可见面变化的**唯一发布口**。
+//
+// 插件生命周期（加载/卸载/重载/崩溃/启停）与授权变更都从这里走：
+// 对实例而言后果一致 —— 它看到的表要重算。
+func (r *Registry) publishPluginsChanged(agentID, reason, pluginName string) {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	bus := r.evBus
+	r.mu.RUnlock()
+	if bus == nil {
+		return // 未装配总线（单测/裸装配）：不发布，不是错误
+	}
+	payload := map[string]interface{}{"reason": reason}
+	if agentID != "" {
+		payload["agent_id"] = agentID
+	}
+	if pluginName != "" {
+		payload["plugin"] = pluginName
+	}
+	bus.Publish(&model.Event{
+		Type:      events.EventPluginsChanged,
+		Payload:   payload,
+		Timestamp: time.Now().Unix(),
+	})
+}
+
+// GrantOf 返回某实例的授权声明（不存在 ⇒ 零值 + false）。
+func (r *Registry) GrantOf(agentID string) (Grant, bool) {
+	if r == nil || agentID == "" {
+		return Grant{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	g, ok := r.grants[agentID]
+	if !ok || g == nil {
+		return Grant{}, false
+	}
+	return *g, true
 }
 
 func (r *Registry) RegisterNative(name string, factory NativeFactory) {

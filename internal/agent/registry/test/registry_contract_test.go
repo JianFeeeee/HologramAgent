@@ -134,7 +134,7 @@ func (h *recordingHost) GetChild(id string) (registry.ChildBrief, bool) {
 	return b, ok
 }
 
-func (h *recordingHost) DestroyChild(id, residual string) (string, error) {
+func (h *recordingHost) DestroyChild(id, residual, channels string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.children, id)

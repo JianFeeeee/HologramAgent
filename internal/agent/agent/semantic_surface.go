@@ -244,7 +244,7 @@ func (a *Agent) MultimodalStatus() (ok bool, provider, reason string) {
 // 各 agent 靠自己的 ID 分开记账与选源。
 func (a *Agent) MountSurface(io *agentIO.IOManager, stageHost *kit.StageHostType,
 	gate kernelapi.SecurityGate, agents kernelapi.AgentRegistry,
-	pluginReg kernelapi.PluginHost, pluginDir string, llm kernelapi.LLMClient) {
+	pluginDir string, llm kernelapi.LLMClient) {
 	if a == nil {
 		return
 	}
@@ -261,9 +261,6 @@ func (a *Agent) MountSurface(io *agentIO.IOManager, stageHost *kit.StageHostType
 	}
 	if agents != nil {
 		a.agents = agents
-	}
-	if pluginReg != nil {
-		a.pluginReg = pluginReg
 	}
 	if pluginDir != "" {
 		a.pluginDir = pluginDir
@@ -391,16 +388,6 @@ func (a *Agent) MainValues() MainValuesView {
 		Personality:  a.personality,
 		PersonaStore: a.personaStore,
 	}
-}
-
-// PluginHost 返回插件注册表读面（未挂载 ⇒ nil）。
-func (a *Agent) PluginHost() kernelapi.PluginHost {
-	if a == nil {
-		return nil
-	}
-	a.semanticMu.RLock()
-	defer a.semanticMu.RUnlock()
-	return a.pluginReg
 }
 
 // PluginDirPath 返回插件目录（plgreload 用；未挂载 ⇒ ""）。

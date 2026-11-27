@@ -14,6 +14,8 @@ package agent
 import (
 	"context"
 
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 )
@@ -37,7 +39,29 @@ import (
 // 那是把**类型安全**换成"运行期断言失败"，而调用点只有一处 —— 不值得。
 type ToolExecutor interface {
 	// Execute 执行一批工具调用，返回与入参**同序**的结果。
-	Execute(ctx context.Context, calls []ToolCall, opts BatchOpts) []BatchResult
+	//
+	// ★ 只有三个参数（2026-11-27 收敛）：`ctx` 取消域、`h` 实例句柄、
+	//   `calls` 要执行什么。此前还有 `BatchOpts` 的 7 个字段，其中 4 个是
+	//   死字段或逃逸（见 kernelmod/device/toolexec_batch.go 的注释）。
+	Execute(ctx context.Context, h AgentHandleFace, calls []ToolCall) []BatchResult
+}
+
+// AgentHandleFace 是执行链需要的**实例句柄**（由基座实现）。
+//
+// 只含执行链替代不了的四样：身份、取消登记、交回基座工具、工具阶段。
+// 安全闸 / io / 插件工具表 / 工具声明全部由 device 从设施自取。
+type AgentHandleFace interface {
+	AgentID() string
+	IsChild() bool
+	DialTool(ctx context.Context, call ToolCall) (string, bool)
+	RegisterToolCancel(cancel context.CancelFunc) uint64
+	UnregisterToolCancel(id uint64)
+	RunToolStage(stage sdk.Stage, tc ToolCall, result *sdk.ToolResult) (bool, *sdk.StageContext)
+	// ArchiveBeforeWrite 在写操作前归档文件（受保护路径的可回滚基线）。
+	//
+	// ★ 为什么归实例而不是设施：归档目录是**本实例的 dataDir**
+	//   （`<data>/agents/<type>/<id>/file_baseline/`），设施不知道它是谁。
+	ArchiveBeforeWrite(path string) (bool, error)
 }
 
 // ToolExecOf 向内核取**工具执行设施**（未装配 ⇒ nil）。
@@ -51,7 +75,7 @@ type ToolExecutor interface {
 //	「工具执行设施未装配」。压测现场：三个驻留子被派活后 9 次工具调用
 //	全部未执行，而主 agent 一切正常。
 //
-//	设施在内核里是**一份**（无状态纯逻辑，宿主随 BatchOpts 传入），
+//	设施在内核里是**一份**（无状态纯逻辑，实例句柄随调用传入），
 //	所以"每个实例按名取"与"只有一个实例"不矛盾。
 func ToolExecOf() ToolExecutor {
 	ks := kstate.Get()

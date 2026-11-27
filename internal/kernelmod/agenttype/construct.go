@@ -80,7 +80,7 @@ func constructImpl(def pubsdk.AgentTypeDef, host registry.Host, arg map[string]i
 
 	cfg.TypeName = def.Type
 	a := agent.New(cfg)
-	a.MountSurface(childIOOf(root), root.StageHost(), root.Gate(), root.AgentsRegistry(), nil, "", root.LLM())
+	a.MountSurface(childIOOf(root), root.StageHost(), root.Gate(), root.AgentsRegistry(), "", root.LLM())
 	a.MountToolRegistry(root.ToolRegistry())
 	// ★ 父声明类（系统提示词素材 / 优先模型源）：不是配置项，也不是设施句柄，
 	//   是**父在创建这一刻传给子的**（docs §2 的 12 字段里没有它们）。

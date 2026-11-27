@@ -65,27 +65,16 @@ func (a *Agent) GetKernelStatus() *KernelStatus {
 	return ks
 }
 
-// pluginRegForStatus 取插件注册表（状态面用；未装配 ⇒ nil）。
+// pluginRegForStatus 取插件注册表读面（状态面用；未装配 ⇒ nil）。
 //
-// ★ 读 `AgentConfig.PluginReg`：它是**基座公有字段**（插件宿主在装配期注入），
+// ★ 与 PluginHost 同一来源：状态面也应当只报**本实例可见**的插件。
 //
-//	与"是哪个类型"无关。
-//
-// 这里曾返回**恒 nil** 并附注"stageHost 不暴露 plugin 注册表"—— 那让
-// 状态面的 `plugins` 恒为空数组。1:1 对照旧内核时实测：旧内核 `/status`
-// 报 `插件: 25 loaded`，新内核报 `插件: 0 loaded`，且 `/kernel` 的
-// `plugins` 是 `[]`。是真实回归，不是"设计如此"。
+//	否则"我禁掉的插件还在状态页里"会让操作者以为禁用没生效。
 func (a *Agent) pluginRegForStatus() kernelapi.PluginHost {
 	if a == nil {
 		return nil
 	}
-	a.semanticMu.RLock()
-	if r := a.pluginReg; r != nil {
-		a.semanticMu.RUnlock()
-		return r
-	}
-	a.semanticMu.RUnlock()
-	return nil
+	return a.PluginHost()
 }
 
 // usageStatusSnapshot 返回用量快照。

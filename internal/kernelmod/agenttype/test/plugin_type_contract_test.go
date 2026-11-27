@@ -180,7 +180,7 @@ func newHarness(t *testing.T) *harness {
 	root := agent.New(agent.AgentConfig{
 		ID: types.AgentID("root"), TypeName: agent.TypeNameMain,
 	})
-	root.MountSurface(iom, nil, sec, nil, nil, "", nil)
+	root.MountSurface(iom, nil, sec, nil, "", nil)
 	t.Cleanup(root.Stop)
 	root.InstallInstanceManager(agent.NewInstanceManager(root))
 	return &harness{root: root, assembler: agenttype.New()}
