@@ -29,7 +29,6 @@ type hostFace interface {
 	IsChildAgent() bool
 	IO() *agentIO.IOManager
 	ToolRegistry() *kit.ToolRegistry
-	BuiltinTools() agentAPI.BuiltinToolHandlers
 	SecurityDecisionFor(tool string) model.Decision
 	CheckPath(direction, path string) model.Decision
 	CheckNetwork() model.Decision

@@ -31,18 +31,9 @@ import (
 
 // TestGetKernelStatusDoesNotRegisterSections：读状态**没有注册副作用**。
 //
-// ★ 黑盒（2026-11-25 改写）：反复调 `GetKernelStatus()`，观测 `Sections`
+// 反复调 `GetKernelStatus()`，观测 `Sections` 的 key 集合是否**稳定**。
 //
-//	的 key 集合是否**稳定**。不读 `kernelstatus.go` 的源码文本。
-//
-// ## 原判据为什么不合格
-//
-// 它 `os.ReadFile("../kernelstatus.go")`，正则抓 `GetKernelStatus` 的函数体，
-// 再 `strings.Contains` 找 `RegisterStatusSection`。那是在测
-// **"函数体里有没有这个词"** —— 换个写法（辅助函数、条件分支外提）就绕过，
-// 而真正要防的东西是**可观测的**：读两次，段表会不会变。
-//
-// ## 事故本身
+// ## 要防的事故
 //
 // 此前 `GetKernelStatus` 里有两行 `RegisterStatusSection`：
 //

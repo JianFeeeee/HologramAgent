@@ -15,6 +15,7 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/events"
 	"github.com/JianFeeeee/HologramAgent/internal/plugins/webui"
 	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"sync"
 )
 
 // ===== OpenAI 兼容面：/v1/* =====
@@ -44,15 +45,31 @@ const testAuthAPIKey = "test-api-key"
 
 func newOpenAITestServer(t *testing.T) (*httptest.Server, *agentIO.IOManager, *events.Bus) {
 	t.Helper()
+	srv, iom, bus, _ := newOpenAITestServerWithHandler(t)
+	return srv, iom, bus
+}
+
+// newOpenAITestServerWithHandler 额外交回 Handler，供测试直接触发阶段的处理体。
+//
+// ★ 为什么直接调 Handler：`on_llm_call` 的**协议**是"基座推、插件收"，
+//
+//	而收的那一端就是 `Handler.pushLLMDelta`。测试不装配整个 Host（那需要
+//	真内核），但走的仍是生产同一个处理体。
+func newOpenAITestServerWithHandler(t *testing.T) (*httptest.Server, *agentIO.IOManager, *events.Bus, *webui.Handler) {
+	t.Helper()
 	cfgReg := internalConfig.NewConfigRegistry("")
 	seedWebUIConfig(cfgReg)
 
 	iom := agentIO.NewIOManager()
 	bus := events.NewBus()
+	// ★ 注入 stage 注册面：流式增量现在走 `on_llm_call` 阶段（基座在 LLM 流上
+	//   逐 chunk 推送），不再经输出通道的 `delta:true` —— 那是臆造的载体。
+	stageHub = &testStageHub{handlers: map[string][]sdk.StageHandler{}}
 	cfg := sdk.New("webui", sdk.SDKConfig{
 		Settings:  sdk.NewSettings("webui", cfgReg),
 		IOManager: iom,
 		EventBus:  bus,
+		RegStage:  stageHub.register,
 	})
 	// ★ 输出通道分发器必须起：增量经 `EmitOutputTo` → `outputCh` → device
 	//   handler（docs §9.2）。测试里没有 kernelloop，用独立 stop 通道。
@@ -70,7 +87,7 @@ func newOpenAITestServer(t *testing.T) (*httptest.Server, *agentIO.IOManager, *e
 
 	srv := httptest.NewServer(h.Handler())
 	t.Cleanup(func() { srv.Close() })
-	return srv, iom, bus
+	return srv, iom, bus, h
 }
 
 // /v1/models 必须存在且返回合法结构（客户端启动必探测它）。
@@ -154,7 +171,7 @@ func TestOpenAIModelsRequiresAuth(t *testing.T) {
 //
 // 所以断言「首帧远早于总计 700ms 的生成时间」就是判据的全部。
 func TestOpenAIStreamIsActuallyStreaming(t *testing.T) {
-	srv, iom, _ := newOpenAITestServer(t)
+	srv, iom, _, webh := newOpenAITestServerWithHandler(t)
 
 	// 假内核：发 3 个内容增量（每 100ms 一个），**扣住**最终响应 700ms，
 	// 只有当消费者表现出「已经在读帧」时才放行。
@@ -169,14 +186,15 @@ func TestOpenAIStreamIsActuallyStreaming(t *testing.T) {
 		}
 		// 阶段 1：分片增量
 		//
-		// ★ 现在增量由**输出通道调用**承载（docs §9.2 第 5 行）：
-		// `EmitOutputTo(ch, ch, "text", {"delta": true, "content": ...})`。
-		// 此前是往总线 Publish(EventContentDelta) —— 那是被删的形态。
-		for i := 0; i < 3; i++ {
+		// ★ 增量由**基座的 on_llm_call 阶段**承载（用户裁定 2026-11-27）：
+		//   基座在 LLM 流上逐 chunk 推送 `LLMText`（累计值），插件转给客户端。
+		//   输出通道只是 `output_send__webui` 工具的执行后端，不是流式载体。
+		for i := 1; i <= 3; i++ {
 			time.Sleep(100 * time.Millisecond)
-			iom.EmitOutputTo("webui", "webui", "text", map[string]interface{}{
-				"delta":   true,
-				"content": "片",
+			webh.PushLLMDelta(&sdk.StageContext{
+				AgentID: "probe-agent",
+				LLMText: strings.Repeat("片", i),
+				Extra:   map[string]interface{}{"streaming": true},
 			})
 		}
 		// 阶段 2：扣住最终响应，直到消费者已经在读帧（真流式会读）
@@ -329,3 +347,35 @@ func (d *testOutputDevice) Execute(tool string, args map[string]interface{}) (in
 	d.h.PushChannelOutput(args)
 	return map[string]interface{}{"status": "ok"}, nil
 }
+
+// testStageHub 是测试用的 stage 注册面：把插件注册的 handler 存起来，
+// 由测试**直接触发**（模拟基座在对应时机调 RunStage）。
+//
+// 生产里这一步由 `kit.StageHostType` 完成；测试不装配整个内核，
+// 但也必须走**同一个注册契约**（`RegStage`），否则测的就不是生产路径。
+type testStageHub struct {
+	mu       sync.Mutex
+	handlers map[string][]sdk.StageHandler
+}
+
+func (h *testStageHub) register(stage sdk.Stage, fn sdk.StageHandler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.handlers == nil {
+		h.handlers = map[string][]sdk.StageHandler{}
+	}
+	h.handlers[string(stage)] = append(h.handlers[string(stage)], fn)
+}
+
+// fire 触发某阶段的全部注册方（与基座 RunStage 的语义一致：并发扇出）。
+func (h *testStageHub) fire(stage sdk.Stage, ctx *sdk.StageContext) {
+	h.mu.Lock()
+	fns := append([]sdk.StageHandler(nil), h.handlers[string(stage)]...)
+	h.mu.Unlock()
+	for _, fn := range fns {
+		_ = fn(ctx)
+	}
+}
+
+// stageHub 是本包当前测试会话的阶段注册面（harness 每次重建）。
+var stageHub = &testStageHub{handlers: map[string][]sdk.StageHandler{}}

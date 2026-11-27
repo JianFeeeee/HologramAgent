@@ -49,11 +49,6 @@ type ToolHost interface {
 	IO() *agentIO.IOManager
 	// StageHost 返回插件工具面（nil = 未装配插件宿主）。
 	StageHost() *kit.StageHostType
-	// BuiltinTools 返回**类型注册的内置工具族处理器**（可为 nil）。
-	//
-	// ★ 判"要不要问它"的标准：该工具是否由某类型声明拥有。
-	//   设施本身不认识任何类型；它只在宿主说"这个工具我有处理器"时转发。
-	BuiltinTools() agentAPI.BuiltinToolHandlers
 	// SecurityDecisionFor 判"这个工具准不准用"（安全模块唯一判定点）。
 	SecurityDecisionFor(tool string) model.Decision
 	// CheckPath 判沙箱路径。

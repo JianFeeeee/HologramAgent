@@ -61,17 +61,3 @@ func TestOutputGateIsDeclaredNotGuessed(t *testing.T) {
 		t.Fatal("★ stablemem_recall 被误判为输出门")
 	}
 }
-
-// TestRegistryToolHoldsItsDeclaration：登记项自己带 schema（不是二次渲染）。
-func TestRegistryToolHoldsItsDeclaration(t *testing.T) {
-	tool, ok := registry.LookupTool("input_channels")
-	if !ok {
-		t.Fatal("input_channels 没登记进注册表")
-	}
-	if tool.Description == "" {
-		t.Fatal("★ 登记项没有描述 —— 声明不在登记表里，就还是渲染时手抄")
-	}
-	if !tool.DeclaredOnly {
-		t.Fatal("★ input_channels 应标记为 DeclaredOnly（执行体在基座设施里）")
-	}
-}

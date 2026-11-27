@@ -48,9 +48,10 @@ func (a *Agent) PublicToolDefs() []interface{} {
 	}
 	var tools []interface{}
 
-	// ① 内核设施类声明（llm_* / plgreload / get_plugin_tools / secret_*）：
-	//    它们读的是基座自己的字段，与"是哪个类型"无关。
-	tools = append(tools, KernelToolDefs(a)...)
+	// ★ 内核族工具的声明**不在这里**：它们在 `registry.Tool` 登记项里
+	//   （名字 + 声明 + 归属 + 执行体同一处），由 ④ 的 RegistryToolDefs 渲染。
+	//   此前这里另有一份 `KernelToolDefs(a)` ⇒ 同一工具名出现两次 ⇒
+	//   上游 400（`Tool names must be unique`）。真内核实测 112 条里 7 个重复。
 
 	// ② IO 设备工具（通道 / 设备能力）。
 	//

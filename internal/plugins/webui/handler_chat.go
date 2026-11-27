@@ -37,6 +37,17 @@ type ChatMsg struct {
 	// Attachment 附件输出（output_send__webui type=image/file）：
 	// image 前端内联展示，file 渲染下载卡片。nil 表示纯文本消息。
 	Attachment *Attachment `json:"attachment,omitempty"`
+	// AgentID / AgentType / IsChild 标明**这条消息属于哪个 agent**。
+	//
+	// 同一内核里主 agent 与子 agent 并发跑，各自的文本与 toolcall 是
+	// **不同的现场**。不带这三个字段，历史只能把所有 agent 的输出混成一条流 ——
+	// 看起来像一个 agent 在同时干两件事，且无从知道"这句话是谁说的"。
+	//
+	// 值由基座填（`StageContext.AgentID/AgentType/IsChild`），webui 只转发。
+	// 前端据此支持「统一显示」（默认，带 agent 标注）与「按 agent 视图」。
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+	IsChild   bool   `json:"is_child,omitempty"`
 }
 
 // Attachment 描述一条附件消息（与 SSE agent_output 事件的 output_type/url/size 对应）。

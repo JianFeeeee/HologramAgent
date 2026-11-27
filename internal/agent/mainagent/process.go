@@ -158,7 +158,7 @@ func dropContinuationPlaceholders(msgs []agentAPI.Message) []agentAPI.Message {
 //
 // 超时收益：首包 ~1-3s 到达即建立活性，后续只要 token 在流动就不会触发
 // 空闲超时；总生成时长不再受限於 180s 整体超时。
-func chatStreamWithFallback(ctx context.Context, a *agent.Agent, req *agentAPI.CompletionRequest, channel string) (*agentAPI.CompletionResponse, error) {
+func chatStreamWithFallback(ctx context.Context, a *agent.Agent, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
 	// ★ 走**设施**（`LLMClient.Stream`）：源解析 / 瞬时重试 / 跨源回退 /
 	//   可用性标记 / 错误分类全在它内部。设施自己保证「流建立失败 ⇒ 回落
 	//   非流式逐块合成」，所以这里**不再自己回退**（那曾是第二套回退）。
@@ -184,16 +184,13 @@ func chatStreamWithFallback(ctx context.Context, a *agent.Agent, req *agentAPI.C
 		return nil, kernelapi.ClassifyLLMError(err)
 	}
 
-	resp, accErr := accumulateStream(ctx, ch, a, channel, req.MaxTokens)
+	resp, accErr := accumulateStream(ctx, ch, a, req.MaxTokens)
 
 	// 中断/超时取消必须保持取消语义传给调用方（与原 Chat() 行为一致：
 	// 被 cancel 时丢弃已收内容返回 err），让 process() 的 continue 分支
 	// 重启轮次并以 [中断消息] 注入打断内容。绝不能把部分内容当成功返回，
 	// 否则用户打断会被无视、继续执行工具/输出。
 	if errors.Is(accErr, context.Canceled) || errors.Is(accErr, context.DeadlineExceeded) {
-		// 通知客户端：本轮流式作废，清空 delta 累积并定格已显示内容。
-		// 同样走输出通道（reset 标记），不留事件旁路。
-		emitDelta(a, channel, "content", "")
 		return resp, accErr
 	}
 
@@ -262,7 +259,7 @@ func malformedArgsError(name, raw string) string {
 //
 // maxTokens 是本轮请求发送的输出上限，只参与错误文案（把「参数被截断」说成
 // 模型能执行的话），不参与解析逻辑。
-func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *agent.Agent, channel string, maxTokens int) (*agentAPI.CompletionResponse, error) {
+func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *agent.Agent, maxTokens int) (*agentAPI.CompletionResponse, error) {
 	resp := &agentAPI.CompletionResponse{
 		ToolCalls: make([]agentAPI.ToolCall, 0),
 	}
@@ -344,16 +341,13 @@ func accumulateStream(ctx context.Context, ch <-chan agentAPI.StreamChunk, a *ag
 				return resp, nil
 			}
 
-			// ★ 流式增量**直接调输出通道**（docs §9.2）：不需要事件旁路。
-			//   输出通道本来就是"插件提供的处理闭包 + 每次调用带 payload"，
-			//   逐 chunk 调用它就是流式。
+			// ★ 流式增量由**基座**在 on_llm_call 阶段推送（携带 agent 标识）。
+			//   类型这里只做累加 —— 流式与非流式对类型无差别。
 			if ck.ReasoningContent != "" {
 				resp.ReasoningContent += ck.ReasoningContent
-				emitDelta(a, channel, "reasoning", ck.ReasoningContent)
 			}
 			if ck.Content != "" {
 				resp.Content += ck.Content
-				emitDelta(a, channel, "content", ck.Content)
 			}
 
 			// 增量 tool call 分片：OpenAI 风格按 index 字段拼接 id/name/arguments。
@@ -799,27 +793,4 @@ func headRunes(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n]) + "…"
-}
-
-// emitDelta 把一段流式增量交给输出通道（docs §9.2）。
-//
-// ★ 为什么不是事件：输出通道的 handler 本来就是插件提供的闭包、运行在插件侧，
-// 它拿得到自己的 conn / writeCh，不需要经过总线。
-//
-// text 为空 ⇒ 发一条"清屏"标记（本轮流式作废，前端丢弃已显示的增量）。
-func emitDelta(a *agent.Agent, channel, kind, text string) {
-	if a == nil || a.IO() == nil || channel == "" {
-		return
-	}
-	payload := map[string]interface{}{
-		"delta": true,
-		"kind":  kind,
-	}
-	if text == "" {
-		payload["reset"] = true
-	} else {
-		payload["content"] = text
-	}
-	// target = 通道名（与 EmitOutputTo 的既有约定一致）
-	a.IO().EmitOutputTo(channel, channel, "text", payload)
 }

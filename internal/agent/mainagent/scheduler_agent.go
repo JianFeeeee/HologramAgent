@@ -212,10 +212,6 @@ func (m *Module) reportTaskPanic(t *sched.Task, r interface{}) {
 	m.raiseTaskPanic(t, r)
 }
 
-func (m *Module) executeTask(t *sched.Task) {
-	m.executeNewTask(t)
-}
-
 // executeNewTask 执行一个**新建**任务，并做任务级 panic 隔离（不变量 I6）。
 //
 // 与改造前的差异（有意）：原 eventLoop 在 panic 后重启整个循环，

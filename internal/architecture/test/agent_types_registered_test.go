@@ -65,17 +65,6 @@ func TestTypesComeFromAssemblyNotTests(t *testing.T) {
 // ★ 黑盒（2026-11-25 改写）：直接经 `registry` 造实例，观测"同一个创建入口、
 //
 //	不同 TypeName ⇒ 不同实现"。不读装配点源码。
-//
-// 原判据用 `os.ReadFile("kernelmod/agent/mod.go")` + 正则钉
-// `GetString("core.agent.main_type")` 那一行。它有两个问题：
-//
-//	① 读配置的写法一改（换行/别名/挪进函数）就误红；
-//	② 而"主 agent 类型可配置"的**实质**是：内核不认"哪个类型是主"，
-//	   它只读配置再走类型表 —— 那可以用"换 TypeName 能造出另一个类型"验证。
-//
-// ★ 搭配 `TestBuiltinAgentTypesAreRegistered`：四个内置类型都在表里，
-//
-//	谁被选中当主 agent 只取决于配置值。
 func TestMainAgentTypeIsConfigurable(t *testing.T) {
 	types := []string{agent.TypeNameMain, "resident"}
 	for _, tn := range types {

@@ -16,7 +16,8 @@ package agent
 //
 //	sdk.StageOnInput        → LayerInput   整条输入一次
 //	sdk.StagePreAction      → LayerLLM     一轮一次（LLM 调用前）
-//	sdk.StagePostAction     → LayerLLM     一轮一次（LLM 返回后）
+//	sdk.StagePostAction     → LayerLLM     一轮一次（LLM 返回后，类型发起）
+//	sdk.StageOnLLMCall      → LayerLLM     **每次设施调用**（流式增量 + 最终响应）
 //	sdk.StageOnToolcall     → LayerTool    **每个工具一次**（内核执行链触发）
 //	sdk.StageBeforeToolcall → LayerTool    **每个工具一次**（内核执行链触发）
 //	sdk.StageAfterToolcall  → LayerTool    **每个工具一次**（内核执行链触发）
@@ -88,6 +89,7 @@ var stageLayers = map[sdk.Stage]StageLayer{
 	sdk.StageOnInput:        LayerInput,
 	sdk.StagePreAction:      LayerLLM,
 	sdk.StagePostAction:     LayerLLM,
+	sdk.StageOnLLMCall:      LayerLLM,
 	sdk.StageOnToolcall:     LayerTool,
 	sdk.StageBeforeToolcall: LayerTool,
 	sdk.StageAfterToolcall:  LayerTool,

@@ -108,14 +108,21 @@ func init() {
 
 type Handler struct {
 	chatStopOnce2 sync.Once // close 纪律：chatStop 的幂等守卫
-	sdk           *sdk.PluginSDK
-	supervisor    sdk.SupervisorAPI
-	adapter       sdk.AdapterAPI
-	config        sdk.ConfigAPI
-	startTime     time.Time
-	knowledge     sdk.KnowledgeAPI
-	tracker       sdk.TrackerAPI
-	settings      sdk.SettingsAPI
+
+	// llmShown 记录每个 agent **已推送过**的正文/思维链长度（用于算增量）。
+	//
+	// 按 agentID 分开：主 agent 与子 agent 并发跑时各自有独立的流，
+	// 共用一份计数会把两边的增量算错（串号）。
+	llmShownMu sync.Mutex
+	llmShown   map[string][2]int // agentID → [正文已推送, 思维链已推送]
+	sdk        *sdk.PluginSDK
+	supervisor sdk.SupervisorAPI
+	adapter    sdk.AdapterAPI
+	config     sdk.ConfigAPI
+	startTime  time.Time
+	knowledge  sdk.KnowledgeAPI
+	tracker    sdk.TrackerAPI
+	settings   sdk.SettingsAPI
 	// kernelCtl 是内核重启/关机通道。nil = 该部署没接（端点会明确报不可用）。
 	kernelCtl sdk.KernelControlAPI
 	pluginMgr sdk.PluginManager

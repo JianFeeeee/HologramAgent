@@ -73,6 +73,34 @@ const (
 	// ★ 为什么由内核驱动而不是 agentloop：工具执行链在内核里
 	//   （toolroute → security → device → 清洗）。只有那条链知道自己手里
 	//   正握着哪一个工具，agentloop 只提交批请求、拿回结果。
+	// StageOnLLMCall 是**内核 LLM 设施**驱动的模型调用阶段：
+	// 流式增量与最终响应都推给注册方。
+	//
+	// ★ 为什么由设施驱动而不是 agentloop（用户裁定 2026-11-27）：
+	//
+	//	LLM 调用归基座（`StreamLLM` / `CompleteLLM` 是唯二入口，回退链/
+	//	同源重试/可用性标记/活动源/错误分类都在设施内部）。所以"模型返回了
+	//	什么"这件事，只有那条链在**第一现场**掌握 —— agentloop 拿到的是
+	//	类型处理过的副本（类型会改写 `resp.Content`、把 ToolCalls 转来转去）。
+	//
+	// ★ 为什么必须是**阶段**而不是事件：它要能**拦断**（ctx.Response 非空
+	//	⇒ 不采用这次响应）与**改写**（ctx.LLMText）。push-once 的事件语义
+	//	会把这两件事丢掉。
+	//
+	// ★ 覆盖面：`on_input` / `pre_action` / `before_output` / `after_output`
+	//	都是**类型自己调 `RunStage`** 的 —— rtchild 与 worker 从不调，
+	//	于是它们的阶段事件根本不产生。本阶段挂在设施入口，**所有类型**自动
+	//	覆盖，不需要每个类型记得触发。
+	//
+	// 推送内容（流式时为增量帧，结束时为完整帧）：
+	//
+	//	ctx.LLMText          当前累计正文（流式）或完整正文（结束）
+	//	ctx.ReasoningContent 同理（思维链）
+	//	ctx.ToolCalls        仅结束帧带（本轮解析出的工具调用）
+	//	ctx.TokenUsage       仅结束帧带
+	//	ctx.Extra["streaming"] true=增量帧 / false=结束帧
+	//	ctx.Extra["round"]    本轮序号（同一任务内的第几次 LLM 往返）
+	StageOnLLMCall      Stage = "on_llm_call"
 	StageOnToolcall     Stage = "on_toolcall"
 	StageBeforeToolcall Stage = "before_toolcall"
 	StageAfterToolcall  Stage = "after_toolcall"
@@ -327,7 +355,29 @@ type ChannelDef struct {
 
 // StageContext provides context for stage handlers.
 type StageContext struct {
-	mu               sync.RWMutex
+	mu sync.RWMutex
+	// AgentID / AgentType / IsChild 标明**这次阶段属于哪个 agent**。
+	//
+	// ## 为什么必须在 ctx 里，而不是让插件自己推断
+	//
+	// 同一个内核里**多个 agent 并发跑**（主 agent、驻留子、rt 子）。插件收到
+	// 一次阶段调用时，靠 ctx 里现有的字段（LLMText / ToolCalls / Response）
+	// 分不出“地是哪个 agent 的现场”—— 而那个现场是该 agent 私有的。
+	//
+	// 具体后果：cli 广播 `tool_call` 时只能报工具名，不晓这一步是谁执行的；
+	// 排查时无法回答「这个工具是主 agent 调的还是驻留子调的」。
+	// 这与 `child.LogIdentity` 是同一类问题（包一层身份），但日志落在类型侧，
+	// 而 stage 是所有类型共用的入口 ⇒ 身份必须由**基座**填，不能由类型各自拼。
+	//
+	// ## 谁填
+	//
+	// 基座在创建**任何** StageContext 时填（`RunStage` / `RunKernelDrivenStage`
+	// 是唯一两个入口，它们先填再交给钩子与插件）。即使调用方自己建了 ctx，
+	// 进入入口时也会被覆写为真实值 —— 调用点不需要记得填。
+	AgentID   string
+	AgentType string // 主 agent 的类型名（如 "main" / "resident" / "rt" / "worker"）
+	IsChild   bool   // 是否为子 agent（主 agent 为 false）
+
 	RawMessage       string
 	UserID           string
 	GroupID          string

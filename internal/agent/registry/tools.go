@@ -108,33 +108,7 @@ type Tool struct {
 	//   缺这个标记的后果（实测）：主 agent 的 `ownsTool` 按 Owner 命中
 	//   自己 ⇒ 判成"类型私有" ⇒ 落进私有族分岔 ⇒ 那里没有槽工具的分支
 	//   ⇒ 报「归属声明缺失（DeclareOwnership 未登记）」，槽工具永远执行不了。
-	Slot bool
-	// OwnershipOnly 声明"**只登记归属，声明不在本表里**"。
-	//
-	// 与 DeclaredOnly 是两件事，别混：
-	//
-	//	DeclaredOnly   声明**在**表里（Description/Properties 有值），执行体在别处
-	//	OwnershipOnly  声明**不在**表里（由拥有者自己的渲染面产出），
-	//	               本项只让 `OwnerOf(name)` 查得到归属
-	//
-	// 用途：`llm_*` / `secret_*` / `plgreload` / `get_plugin_tools` 的 schema
-	// 由**类型**渲染（它知道 `core.llm.*` 的配置与门控），而执行体在基座。
-	// 把它们的 schema 也搬进表里 ⇒ 两个渲染源 ⇒ 同一工具名出现两次 ⇒
-	// 上游硬拒绝（`Tool names must be unique`）。实测发生过。
-	OwnershipOnly bool
-	// DeclaredOnly 声明"只登记声明，执行体在基座的设施里"。
-	//
-	// 用于通道类工具（output_list_channels / input_channels）：它们的执行在
-	// output.go / inputch.go，属内核设施。登记它们只为**归属与标记可见**，
-	// 不为执行 —— 强制要求 Handle 会逼出一个假的执行体。
-	DeclaredOnly bool
-	// OutputGate 声明本工具属于**主动输出门**（output_send__* / output_list_channels 这类
-	// 会让模型显式点名通道的工具）。
-	//
-	// ★ 为什么是一个显式标记而不是"看名字前缀"：rtchild 的输出走 outputch 的流式管线，
-	//   与"模型显式点名通道"是两套语义，两套同时存在会分叉。原先靠
-	//   `strings.HasPrefix(name, "output_send__")` 判 —— 改名字就静默失效。
-	//   标记由拥有者在自己登记时声明，判据读标记，不读名字。
+	Slot       bool
 	OutputGate bool
 }
 
@@ -154,7 +128,7 @@ func RegisterTool(t Tool) error {
 	// Handle 可为 nil 仅当登记的是**纯声明**工具（执行体在基座，
 	// 如 output_list_channels / input_channels —— 它们的执行在 output.go /
 	// inputch.go，属内核设施，不该为一个名字再造一份执行体）。
-	if t.Handle == nil && !t.OutputGate && !t.DeclaredOnly && !t.OwnershipOnly {
+	if t.Handle == nil && !t.OutputGate {
 		return errf("registry: 工具 %q 缺少 Handle", t.Name)
 	}
 	if t.Owner == "" {
@@ -179,7 +153,7 @@ func RegisterToolReplace(t Tool) error {
 	if strings.TrimSpace(t.Name) == "" {
 		return errf("registry: 工具名不能为空")
 	}
-	if t.Handle == nil && !t.OutputGate && !t.DeclaredOnly && !t.OwnershipOnly {
+	if t.Handle == nil && !t.OutputGate {
 		return errf("registry: 工具 %q 缺少 Handle", t.Name)
 	}
 	if t.Owner == "" {

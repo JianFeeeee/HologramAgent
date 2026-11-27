@@ -30,12 +30,7 @@ import (
 
 // TestStatusProviderIsInjected：**装配之后**状态面可读（非零值、不 panic）。
 //
-// ★ 黑盒（2026-11-25 改写）：观测装配产物的**公开访问器**，不读装配点源码。
-//
-// 原实现用 `os.ReadFile("kernelmod/agent/mod.go")` + 正则钉
-// `reg.SetStatusProvider(` 这一行。它抓不到真正会死人的形态：
-// 调了、但传进去的东西什么都不返回。而那条正则换个写法（比如拆成两行）
-// 也会误红 —— 判据在测**怎么写代码**，不是**行为对不对**。
+// ★ 黑盒：观测装配产物的**公开访问器**。
 func TestStatusProviderIsInjected(t *testing.T) {
 	a := newTypedAgent(t, agent.AgentConfig{
 		ID: "status-wired", TypeName: agent.TypeNameMain,

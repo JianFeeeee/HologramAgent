@@ -1,5 +1,12 @@
 package cli
 
+import (
+	"fmt"
+	"sync"
+
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+)
+
 // push.go —— 输出通道与 stage 处理器把内容**直接**送到当前客户端连接。
 //
 // ## 为什么没有总线
@@ -9,7 +16,7 @@ package cli
 //
 // 三条推送源全是**本插件自己的闭包**：
 //
-//	输出通道 handler   agent 逐 chunk 调 EmitOutputTo（docs §9.2 第 5 行）
+//	on_llm_call 阶段  基座在 LLM 流上逐 chunk 推送（流式的唯一载体）
 //	stage handler      agent 跑 RunStage → 本插件的回调
 //
 // 它们与"当前有哪些连接在对话"住在同一个 Plugin 实例里。中间加发布/订阅
@@ -17,8 +24,6 @@ package cli
 //
 // ★ 与内核事件总线的界限（docs §9.4）：总线是**内核模块之间**的通道。
 //   终端帧、进度提示都是插件侧状态，不进总线。
-
-import "github.com/JianFeeeee/HologramAgent/internal/sdk"
 
 // trackConn 登记一路正在对话的连接，返回注销函数。
 func (p *Plugin) trackConn(w *connWriter) func() {
@@ -70,24 +75,94 @@ func (p *Plugin) stagePusher(phase, tool string) func(*sdk.StageContext) error {
 	}
 }
 
+// stageOnLLMCall 消费**流式增量**（基座在 on_llm_call 上逐 chunk 推送）。
+//
+// 契约（见 sdk.StageContext 注释）：
+//
+//	Extra["streaming"] = true   增量帧：LLMText 是**当前累计正文**
+//	Extra["streaming"] = false  结束帧：带完整正文 / 思维链 / ToolCalls / usage
+//
+// ★ 为什么用累计值而不是这一片的增量：累计值让消费方不必自己拼接，
+//
+//	也避免丢片后无法恢复（网络抖动时增量帧可能少一个）。
+//	终端只能写"新增的那部分"，所以这里自己 diff —— 那是**显示层的事**，
+//	不是协议的一部分。
+func (p *Plugin) stageOnLLMCall() func(*sdk.StageContext) error {
+	// 每个 agent 各自的已显示长度（并发时不能共用一份，否则串号）。
+	var mu sync.Mutex
+	shown := map[string][2]int{} // agentID → [正文已显示, 思维链已显示]
+
+	return func(ctx *sdk.StageContext) error {
+		if ctx == nil {
+			return nil
+		}
+		streaming, _ := ctx.Extra["streaming"].(bool)
+		key := ctx.AgentID
+		if key == "" {
+			key = "_"
+		}
+
+		mu.Lock()
+		cur := shown[key]
+		var newText, newReasoning string
+		if streaming {
+			// 增量帧：算出比上次多出来的部分。
+			if len(ctx.LLMText) > cur[0] {
+				newText = ctx.LLMText[cur[0]:]
+			}
+			if len(ctx.ReasoningContent) > cur[1] {
+				newReasoning = ctx.ReasoningContent[cur[1]:]
+			}
+			cur[0], cur[1] = len(ctx.LLMText), len(ctx.ReasoningContent)
+			shown[key] = cur
+		} else {
+			// 结束帧：重置计数（下一轮从零开始）。
+			delete(shown, key)
+		}
+		mu.Unlock()
+
+		if newReasoning != "" {
+			fmt.Print(newReasoning) // 终端照写（人类可读）；机器客户端走下面的事件帧
+			p.broadcastDelta("reasoning_delta", newReasoning, ctx)
+		}
+		if newText != "" {
+			fmt.Print(newText)
+			p.broadcastDelta("content_delta", newText, ctx)
+		}
+		return nil
+	}
+}
+
+// broadcastDelta 把一段增量推给机器客户端（socket JSON 行协议）。
+//
+// 带 agent 标识：主 agent 与子 agent 并发跑时，客户端要能分开显示各自的流。
+func (p *Plugin) broadcastDelta(frameType, text string, ctx *sdk.StageContext) {
+	frame := map[string]interface{}{"type": frameType, "content": text}
+	addAgentIdentity(frame, ctx)
+	p.broadcast(frame)
+}
+
 // stageOnToolcall 推"正在执行哪个工具"（内核执行链触发，带工具名与参数）。
 //
 // ★ 与 before_toolcall 的分工：那个是**执行前**的钩子（可拦下）；
 //
 //	on_toolcall 是内核执行链握着工具时的**执行事实**推送 —— 参数已经是
-//	最终参数，工具即将（或正在）执行。cli 用它告诉用户"正在跑什么"。
+//	最终参数，工具**正在执行中**（不是"将要"：那是 before_toolcall）。
+//	cli 用它告诉用户"正在跑什么"。
 func (p *Plugin) stageOnToolcall() func(*sdk.StageContext) error {
 	return func(ctx *sdk.StageContext) error {
 		if ctx == nil || len(ctx.ToolCalls) == 0 {
 			return nil
 		}
 		tc := ctx.ToolCalls[0]
-		p.broadcast(map[string]interface{}{
+		frame := map[string]interface{}{
 			"type":  "tool_call",
 			"phase": "on_toolcall",
 			"tool":  tc.Name,
 			"args":  tc.Arguments,
-		})
+		}
+		addAgentIdentity(frame, ctx)
+		p.broadcast(frame)
 		return nil
 	}
 }
@@ -111,6 +186,7 @@ func (p *Plugin) stageToolAfterPusher() func(*sdk.StageContext) error {
 				frame["result"] = truncateOneLine(s, 160)
 			}
 		}
+		addAgentIdentity(frame, ctx)
 		p.broadcast(frame)
 		return nil
 	}
@@ -126,4 +202,25 @@ func (p *Plugin) stageToolPusher() func(*sdk.StageContext) error {
 		p.broadcast(map[string]interface{}{"type": "stage", "phase": "before_toolcall", "tool": tool})
 		return nil
 	}
+}
+
+// addAgentIdentity 把**这次阶段属于哪个 agent** 附进帧。
+//
+// 同一内核里主 agent 与子 agent 并发跑，二者各自的文本与 toolcall 是
+// **不同的现场**。不带身份，终端只能把它们混成一条流 —— 看起来像是同一个
+// agent 在同时干两件事，排查时也无从知道"这个工具是谁调的"。
+//
+// 字段由基座填（`StageContext.AgentID/AgentType/IsChild`，见
+// `agent.stampStageIdentity`），插件只转发，不自己推断。
+func addAgentIdentity(frame map[string]interface{}, ctx *sdk.StageContext) {
+	if frame == nil || ctx == nil {
+		return
+	}
+	if ctx.AgentID != "" {
+		frame["agent_id"] = ctx.AgentID
+	}
+	if ctx.AgentType != "" {
+		frame["agent_type"] = ctx.AgentType
+	}
+	frame["is_child"] = ctx.IsChild
 }

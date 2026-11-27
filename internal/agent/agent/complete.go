@@ -38,13 +38,22 @@ func (a *Agent) CompleteLLMNoRetry(ctx context.Context, req *agentAPI.Completion
 
 // completeLLM 是两条补全入口的唯一实现。
 func (a *Agent) completeLLM(ctx context.Context, req *agentAPI.CompletionRequest, noRetry bool) (*agentAPI.CompletionResponse, error) {
+	// ★ 所有返回都经 `PushLLMFinal` 出去（用户裁定 2026-11-27）：
+	//   `on_llm_call` 阶段由**基座**在设施入口触发，携带 agent 标识把响应
+	//   推给插件（webui 这类客户端据此流式展示）。类型不需要、也不该
+	//   自己再触发一次 —— 那条路 rtchild/worker 从不走。
 	if a.llm != nil {
-		return a.llm.Complete(ctx, &kernelapi.LLMRequest{
+		resp, err := a.llm.Complete(ctx, &kernelapi.LLMRequest{
 			AgentID:   string(a.id),
 			Preferred: a.PreferredProvider(),
 			Request:   req,
 			NoRetry:   noRetry,
 		})
+		if err != nil {
+			return nil, err
+		}
+		final, _ := a.PushLLMFinal(1, resp)
+		return final, nil
 	}
 	if a.provider == nil {
 		return nil, fmt.Errorf("%w: no provider configured", kernelapi.ErrLLMAllFailed)
@@ -53,7 +62,8 @@ func (a *Agent) completeLLM(ctx context.Context, req *agentAPI.CompletionRequest
 	if err != nil {
 		return nil, kernelapi.ClassifyLLMError(err)
 	}
-	return resp, nil
+	final, _ := a.PushLLMFinal(1, resp)
+	return final, nil
 }
 
 // StreamLLM 建立一条流（类型的唯一流式入口）。
@@ -66,12 +76,18 @@ func (a *Agent) completeLLM(ctx context.Context, req *agentAPI.CompletionRequest
 //	调用方按类别决定"截断还是重跑"。
 func (a *Agent) streamLLM(ctx context.Context, req *agentAPI.CompletionRequest) (<-chan agentAPI.StreamChunk, error) {
 	if a.llm != nil {
-		return a.llm.Stream(ctx, &kernelapi.LLMRequest{
+		ch, err := a.llm.Stream(ctx, &kernelapi.LLMRequest{
 			AgentID:   string(a.id),
 			Preferred: a.PreferredProvider(),
 			Request:   req,
 			NoRetry:   true,
 		})
+		if err != nil {
+			return nil, err
+		}
+		// ★ 流式增量在**基座**这一层推送（见 llmstage.go）：
+		//   只有这里见过每一个 chunk，类型侧的循环各自实现、必然漏类型。
+		return a.wrapStreamWithStage(ctx, ch, 1), nil
 	}
 	if a.provider == nil {
 		return nil, fmt.Errorf("%w: no provider configured", kernelapi.ErrLLMAllFailed)
@@ -80,7 +96,7 @@ func (a *Agent) streamLLM(ctx context.Context, req *agentAPI.CompletionRequest) 
 	if err != nil {
 		return nil, kernelapi.ClassifyLLMError(err)
 	}
-	return ch, nil
+	return a.wrapStreamWithStage(ctx, ch, 1), nil
 }
 
 // LLMMaxContextTokens 返回当前源的上下文窗口（0 = 未知）。

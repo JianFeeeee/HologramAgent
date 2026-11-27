@@ -88,24 +88,3 @@ var errNoAgentForDevice = &deviceHostErr{"device: agent 未装配"}
 type deviceHostErr struct{ msg string }
 
 func (e *deviceHostErr) Error() string { return e.msg }
-
-// SetBuiltinTools 由**类型**注册自己的内部工具族处理器。
-//
-// ★ §8.1「每个 agent 类型可以额外定义自己的内部工具（用于状态/记忆管理）」：
-//
-//	主 agent 注册 memory/persona/social/doc/secret/output/plugin 七族；
-//	驻留子可能只注册其中两三族。基座只按接口调用，不认识谁实现了什么。
-func (a *Agent) SetBuiltinTools(h agentAPI.BuiltinToolHandlers) {
-	if a == nil {
-		return
-	}
-	a.builtinTools = h
-}
-
-// BuiltinTools 返回当前注册的族处理器（未注册 ⇒ 兜底适配器）。
-func (a *Agent) BuiltinTools() agentAPI.BuiltinToolHandlers {
-	if a == nil {
-		return nil
-	}
-	return a.builtinTools
-}

@@ -68,6 +68,7 @@ func (a *Agent) RunStage(stage sdk.Stage, ctx *sdk.StageContext) bool {
 		return false
 	}
 	ctx.Phase = stage
+	a.stampStageIdentity(ctx)
 
 	// ① 类型钩子（快照出锁后依次执行）。
 	runStageHooks(a.stageHooksFor(stage), ctx)
@@ -141,12 +142,38 @@ func (a *Agent) RunKernelDrivenStage(stage sdk.Stage, ctx *sdk.StageContext) boo
 		return false
 	}
 	ctx.Phase = stage
+	a.stampStageIdentity(ctx)
 	runStageHooks(a.stageHooksFor(stage), ctx)
 	if ctx.Response != nil {
 		return true
 	}
 	a.runPluginStages(stage, ctx)
 	return ctx.Response != nil
+}
+
+// stampStageIdentity 把**本次阶段属于哪个 agent**写进 ctx。
+//
+// ★ 为什么由基座填，而不是让调用点/类型各自填（用户裁定 2026-11-27）：
+//
+//	同一个内核里**多个 agent 并发跑**（主 agent、驻留子、rt 子、工作式子）。
+//	插件收到一次阶段调用时，靠 ctx 里现有的字段（LLMText / ToolCalls /
+//	Response）分不出"这是哪个 agent 的现场" —— 而那个现场是该 agent 私有的。
+//
+// 具体后果：cli / webui 只能把**所有 agent 的文本与 toolcall 混成一条流**，
+// 无从分开显示；排查时也无法回答"这个工具是主 agent 调的还是驻留子调的"。
+//
+// 这与 `child.LogIdentity` 是同一类问题（把身份收进基座，别让各处自己拼），
+// 只是日志落在类型侧、而 stage 是所有类型共用的入口。
+//
+// 只在**两个入口**里调（`RunStage` / `RunKernelDrivenStage`）：即使调用方
+// 自己建了 ctx、或类型往 Extra 里塞了同名的键，真实身份都会以这里为准。
+func (a *Agent) stampStageIdentity(ctx *sdk.StageContext) {
+	if a == nil || ctx == nil {
+		return
+	}
+	ctx.AgentID = string(a.id)
+	ctx.AgentType = a.TypeName()
+	ctx.IsChild = a.IsChildAgent()
 }
 
 // ToolRegistryOf 取内核的**插件工具登记簿**（装配期用；未装配 ⇒ nil）。

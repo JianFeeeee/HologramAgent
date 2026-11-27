@@ -229,14 +229,6 @@ func InitRuntime(a *agent.Agent) error {
 	// ★ 内置工具族的执行面由**本类型**注入（基座不认识任何工具族）。
 	//   装配点不再替所有类型装一份（那会让"加一种类型"要回来改装配点）。
 	mm.InstallBuiltinToolProvider()
-	// ★★ 族处理器必须交给基座（2026-11-20 补）。
-	//
-	// 内核执行设施的 ② 那一步问 `host.BuiltinTools()`；不装 ⇒ 恒 nil ⇒
-	// `toolroute.Dispatch` 整条路是死的 ⇒ `output_send__*`（异步通道上
-	// **唯一**能对用户说话的路径）、`output_list_channels`、`llm_*`、
-	// `secret_*`、`get_plugin_tools`、`plgreload` 全部落到兜底
-	// "不存在或未注册"。实测四个工具全废。
-	mm.installBuiltinHandlers()
 	// ★ 通用扩展槽（docs §6）：**只有被选中为主 agent 的类型才注册**。
 	//   这里交出的是图记忆能力（graph_open/recall/commit/close/export）——
 	//   子 agent 从此不需要认识本包的 GraphDB / LightMemory。

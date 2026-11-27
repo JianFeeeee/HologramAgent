@@ -28,11 +28,33 @@ func (a *Agent) RegistryToolDefs() []interface{} {
 			freshAdmin[d.Name] = d
 		}
 	}
+	// ★ 内核族工具的**运行期门控**（原先在 `KernelToolDefs` / `SecretToolDefs`
+	//   两个独立渲染函数里）。现在声明只在登记表这一处，门控也跟着搬来 ——
+	//   否则会出现"两个渲染源都出同一个工具名"⇒ 上游 400
+	//   （`Tool names must be unique`，实测真内核 112 条里 7 个重复）。
+	//
+	// 门控是**能力是否已装配**的事实：
+	//
+	//	llm_*            需要 LLM 句柄（裸实例/未装配 ⇒ 不该出现）
+	//	plgreload/get_*  需要插件登记表
+	//	secret_*         需要变量库
+	debFace := a
+	gate := func(name string) bool {
+		if debFace == nil {
+			return true
+		}
+		switch name {
+		case "llm_list_sources", "llm_set_source":
+			return debFace.llm != nil
+		case "plgreload", "get_plugin_tools":
+			return debFace.pluginRegForStatus() != nil
+		case "secret_submit", "secret_list", "secret_forget":
+			return debFace.SecretStore() != nil
+		}
+		return true
+	}
 	for _, t := range tools {
-		// ★ `OwnershipOnly` 的项只用于查归属，**不参与渲染** ——
-		//   它们的 schema 由类型自己的渲染面产出（那才知道运行期门控）。
-		//   一并渲染会让同一工具名出现两次，上游直接硬拒绝整轮请求。
-		if t.OwnershipOnly {
+		if !gate(t.Name) {
 			continue
 		}
 		if fd, ok := freshAdmin[t.Name]; ok {

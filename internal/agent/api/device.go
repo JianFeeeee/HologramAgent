@@ -42,39 +42,6 @@ type DeviceSurface interface {
 	ToolCount() int
 }
 
-// BuiltinToolHandlers 是**内置工具的族处理器**（每个族一个方法）。
-//
-// ## 为什么用族的粒度而不是逐工具
-//
-// 族内工具共享同一批依赖（memory 族要 graph、knowledge 族要 store、
-// coldcontext 族要 coldcontextStore…）。按族传接口，device 的分发层就能
-// 在不认识 Agent 内部字段的前提下完整接管**路由**：
-//
-//	device.Dispatch(tc) → 选族 → handler.ExecuteMemoryTool(tc)
-//
-// 第二阶段再把族实现搬进 device（那时依赖改为显式 Deps 结构体），
-// 路由这一段不用再改。
-type BuiltinToolHandlers interface {
-	ExecutePersonaTool(tc ToolCall) string
-	// ExecuteLLMTool 是 `llm_*` 族（读 AgentConfig.LLM / ProviderManager）。
-	//
-	// ★ 此前缺这个方法 ⇒ `toolroute` 的路由表里也没有它 ⇒
-	//   `llm_list_sources` / `llm_set_source` 落到兜底"不存在或未注册"
-	//   （2026-11-20 真二进制实测）。基座有 `Agent.ExecuteLLMTool` 实现，
-	//   但没有任何路由指向它。
-	ExecuteLLMTool(tc ToolCall) string
-	ExecuteMemoryTool(tc ToolCall, turnScenes []string) string
-	ExecuteSocialTool(tc ToolCall) string
-	ExecuteColdContextTool(tc ToolCall) string
-	ExecuteSecretTool(tc ToolCall) string
-	ExecuteOutputSendHelp(tc ToolCall) string
-	ExecuteOutputSend(tc ToolCall) string
-	ExecuteOutputListChannels() string
-	ExecuteInputChannels(tc ToolCall) string
-	ExecutePluginReload() string
-	ExecuteGetPluginTools(pluginName string) string
-}
-
 // DeviceMounter 是"能把数据面挂到自己身上"的最小面。
 //
 // ## 为什么需要它（2026-11-04）

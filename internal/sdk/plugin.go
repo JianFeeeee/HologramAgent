@@ -68,6 +68,7 @@ const (
 	StageOnInput        = pubsdk.StageOnInput
 	StagePreAction      = pubsdk.StagePreAction
 	StagePostAction     = pubsdk.StagePostAction
+	StageOnLLMCall      = pubsdk.StageOnLLMCall
 	StageOnToolcall     = pubsdk.StageOnToolcall
 	StageBeforeToolcall = pubsdk.StageBeforeToolcall
 	StageAfterToolcall  = pubsdk.StageAfterToolcall

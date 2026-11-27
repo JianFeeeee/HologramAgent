@@ -86,36 +86,18 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	// inputch 先登记：本插件既用 "cli" 作输出目标，也用它注入输入（终端行）。
 	// 输入侧必须显式登记，否则"把 inputch 划给驻留子"会找不到它。
 	_ = s.RegisterInputChannel("cli", sdk.ChannelDef{})
-	// ★ 输出通道就是**流式载体**（docs §9.2）：`delta:true` 表示增量，
-	//   直接往终端写不换行；否则是一条完整输出，写完换行。
+	// ★ 输出通道只处理**完整输出**（`output_send__cli` 工具发来的 payload）。
 	//
-	//   这里**不发任何事件**：通道 handler 本身就跑在插件侧、持有 stdout，
-	//   再经总线回发一条"我输出了"纯属多余。
+	//   此前这里还接 `delta`/`reset` 两个键 —— 那是**臆造**：输出通道是
+	//   `output_send__<name>` 工具的**执行后端**，SDK 契约只有
+	//   {payload, type, meta}。流式增量走 `on_llm_call` 阶段
+	//   （见下方 `p.stageOnLLMCall()`），那才是基座推送模型增量的位置。
+	//
+	//   这里**不发任何事件**：通道 handler 本身就跑在插件侧、持有 stdout。
 	s.RegisterOutputChannel("cli", 1, "CLI 终端", sdk.ChannelDef{}, func(args map[string]interface{}) (interface{}, error) {
 		text, _ := args["payload"].(string)
-		delta, _ := args["delta"].(bool)
-		reset, _ := args["reset"].(bool)
-		kind, _ := args["kind"].(string)
-
-		// 终端（人类可读）：增量直接写不换行，完成才换行。
-		switch {
-		case reset:
-			fmt.Print("\r\033[K")
-		case delta:
-			fmt.Print(text)
-		case text != "":
+		if text != "" {
 			fmt.Println(text)
-		}
-
-		// 机器客户端（socket JSON 行协议）：逐 token 帧。
-		//
-		// ★ 由**通道调用本身**触发，不订阅任何事件（docs §9.2 第 5 行）。
-		if delta && text != "" {
-			frame := "content_delta"
-			if kind == "reasoning" {
-				frame = "reasoning_delta"
-			}
-			p.broadcast(map[string]interface{}{"type": frame, "content": text})
 		}
 		return map[string]interface{}{"status": "ok"}, nil
 	})
@@ -139,6 +121,16 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	s.RegisterStage(sdk.StageAfterToolcall, p.stageToolAfterPusher())
 	s.RegisterStage(sdk.StageBeforeOutput, p.stagePusher("before_output", ""))
 	s.RegisterStage(sdk.StageAfterOutput, p.stagePusher("after_output", ""))
+	// ★ 流式增量的**唯一载体**（用户裁定 2026-11-27）。
+	//
+	// 此前 cli 靠输出通道的 `payload{"delta":true}` 拿逐 token 文本 —— 那是
+	// 臆造：输出通道是 `output_send__<name>` 工具的**执行后端**，它的契约
+	// 只有 {payload, type, meta}，不是流式载体。
+	//
+	// 而 LLM 调用归基座（StreamLLM/CompleteLLM 是唯二入口），所以"模型逐
+	// token 产出了什么"只有那条链在第一现场掌握；基座在 on_llm_call 上逐
+	// chunk 推送，携带 agent 标识。
+	s.RegisterStage(sdk.StageOnLLMCall, p.stageOnLLMCall())
 
 	s.Settings().RegisterDef(sdk.ConfigDef{
 		Key: "api_key", Type: "password", DisplayName: "CLI API 密钥",

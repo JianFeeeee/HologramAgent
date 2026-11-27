@@ -2,7 +2,6 @@ package mainagent
 
 import (
 	"fmt"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
 	"log"
@@ -552,13 +551,9 @@ func (m *Module) buildToolDefs() []interface{} {
 		}, "mode"))
 	}
 
-	// 安全模块的变量库工具（文档 C8）。
-	//
-	// 仅当安全模块真的启用时才暴露：未启用时变量库不可用，
-	// 把工具给模型只会让它反复撞到"安全模块未启用"（无谓往返）。
-	if m.a.SecretStore() != nil {
-		tools = append(tools, agent.SecretToolDefs()...)
-	}
+	// ★ 变量库工具（secret_*）不在这里：它们是**内核族**，声明与执行体都在
+	//   登记表里（），由 RegistryToolDefs 渲染。
+	//   运行期门控（安全模块未启用时不该出现）也在那条渲染路径上做。
 
 	if m.graphDB() != nil {
 		tools = append(tools, toolDef("stablemem_merge", "【记忆清理】合并两个同义实体。将所有关系从 source 重定向到 target，然后彻底删除 source。注意：实体删除后不可恢复，合并前请确认语义一致。", map[string]interface{}{

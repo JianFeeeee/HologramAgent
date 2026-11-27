@@ -32,7 +32,6 @@ import (
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
-	"github.com/JianFeeeee/HologramAgent/internal/toolroute"
 )
 
 // 工具执行的两个硬边界。
@@ -130,12 +129,20 @@ func executeWithBounds(ctx context.Context, host hostFace, tc agentPkg.ToolCall,
 	}
 }
 
-// dispatch 是**路由**：一张表，按序问三处。
+// dispatch 是**路由**：按序问三处。
 //
-//	① registry.DispatchTool   内核侧登记的工具（名字 + 执行体都在表里）
-//	② toolroute.Dispatch      类型注册的内置族处理器（BuiltinTools）
-//	③ stageHost.ExecuteToolCtx 插件工具
-//	④ io.ExecuteToolCtx        通道/设备工具
+//	① registry.DispatchTool   内核侧登记的工具（名字 + 声明 + 归属 + 执行体）
+//	② ToolRegistry            插件注册的工具
+//	③ io.ExecuteToolCtx        通道/设备工具
+//
+// ★ 此前有第 ② 步"类型注册的内置族处理器"（`toolroute.Dispatch` +
+//
+//	`BuiltinToolHandlers`）。它是个**平行前缀路由**：内核族本该在 ① 的
+//	表里就带着执行体，却被人拆成"只有归属"的登记项，再靠一条前缀表
+//	转发回基座的方法。后果是那条路由只有一个类型注册过（SetBuiltinTools
+//	全仓 1 个调用者）⇒ 子 agent 的内核族工具全部"不存在或未注册"。
+//	现在内核族在基座登记成**完整工具**（见 agent/kernel_family_register.go），
+//	本函数只剩三处，没有平行路由。
 //
 // ★ 未命中任何一处 ⇒ 响亮报错并给出可执行指引（不静默成功）。
 func dispatch(ctx context.Context, host hostFace, tc agentPkg.ToolCall, channel string, scenes []string) toolOutcome {
@@ -146,13 +153,6 @@ func dispatch(ctx context.Context, host hostFace, tc agentPkg.ToolCall, channel 
 		Host: host, Channel: channel, TurnScenes: scenes,
 	}, apiCall); handled {
 		return toolOutcome{Text: text}
-	}
-
-	// ② 类型注册的内置族处理器（主 agent 的私有族有处理器；其余类型 nil）。
-	if bt := host.BuiltinTools(); bt != nil {
-		if text, handled := toolroute.Dispatch(bt, apiCall, scenes); handled {
-			return toolOutcome{Text: text}
-		}
 	}
 
 	// ③ 插件工具。

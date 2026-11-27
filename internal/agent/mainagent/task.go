@@ -42,7 +42,7 @@ import (
 type taskTerminal = Terminal
 
 const (
-	// 终态的声明点在 agenttypes（拆包后各类型模块要用）。
+	// 终态种类是本类型自己的（声明点在同包 frame.go），不跨类型共用。
 	terminalNone              = TerminalNone
 	terminalOK                = TerminalOK
 	terminalError             = TerminalError
@@ -216,15 +216,6 @@ func (m *Module) RunInputTask(evt *agentIO.InputEvent) (*TaskFrame, Outcome) {
 	}
 	m.FinishInputTask(f, out)
 	return f, out
-}
-
-// RunSelfInputTask 跑一条**内核自循环**输入（记忆整理等）。
-//
-// ★ 它只是把归一化 + RunInputTask 扣在一起；resident 的循环也需要这条
-//
-//	（它的整理路径与主 agent 相同），所以导出而不是让每个类型各写一份归一化。
-func (m *Module) RunSelfInputTask(msg agent.SelfInputMsg) {
-	m.RunInputTask(selfEvent(msg))
 }
 
 // rebaseFramePrefix 把被挂起任务的上下文现场「加载回中断任务之上」。
@@ -683,7 +674,7 @@ func (m *Module) stepLLM(f *TaskFrame) Outcome {
 	// 流式是必须的，不是优化：整段生成不再受整体超时限制，只要 token 在流动
 	// 就不会判定空闲超时。累积出的 CompletionResponse 与一次补全等价，
 	// 后面的阶段/工具循环逻辑完全不变。
-	resp, llmErr := chatStreamWithFallback(m.a.Ctx(), m.a, req, f.OutputChannel)
+	resp, llmErr := chatStreamWithFallback(m.a.Ctx(), m.a, req)
 
 	if llmErr != nil {
 		// ★ 上下文超页（上游 ErrContextFull）必须在 provider fallback **之前**处理：

@@ -304,11 +304,6 @@ type Agent struct {
 	// 基座接受请求、内核统一调用、经防火墙）。它**不是**任何类型的私有状态。
 	device   agentAPI.DeviceSurface
 	deviceMu sync.RWMutex
-	// builtinTools 是交给 device 路由层的族处理器适配器（装配期构造一次）。
-	//
-	// ★ 它指向的是**类型自己的内部工具**（persona/memory/social/doc/secret/
-	//   output/plugin），所以由类型注册（`SetBuiltinTools`），基座只按接口持用。
-	builtinTools agentAPI.BuiltinToolHandlers
 
 	// securityScopeView / securityScopeOnce 是本 agent 的**策略执行视图**
 	// （由 gate 按 agentID 持有，见 security_profile.go 的 securityScope）。

@@ -788,10 +788,24 @@ agent 类型  ──EmitOutputTo(ch, type, args)──▶ 输出通道 device �
 | LLM 轮末聚合（`agent_llm_chain` / `reasoning`） | `post_action` 阶段钩子（`LLMText` / `ReasoningContent` / `TokenUsage` / `ToolCalls`） |
 | 工具调用（`tool_call`） | `before_toolcall` / `after_toolcall` 阶段钩子（`ToolCalls` / `ToolResults`） |
 | 最终输出（`agent_output`） | `before_output` / `after_output` 阶段钩子（`FinalText`）+ `EmitOutputTo` 本身 |
-| **流式增量**（`content_delta` / `reasoning_delta`） | **输出通道调用本身**（`EmitOutputTo` 逐 chunk 调用，`payload{"delta": true}`） |
+| **流式增量**（`content_delta` / `reasoning_delta`） | `on_llm_call` 阶段钩子（基座在 LLM 流上逐 chunk 推送，带 agent 标识） |
 
-**第 5 行是关键**：输出通道一直是「插件提供的处理闭包 + 每次调用带 payload」。
-逐 chunk 调用它就是流式，不需要一条事件旁路。
+**第 5 行原先写错了**（2026-11-27 更正）：曾写成「输出通道调用本身」
+（`EmitOutputTo` 逐 chunk + `payload{"delta": true}`）。那是**臆造**——输出通道的
+SDK 契约只有三个参数键：
+
+	handler(args)  args = {payload, type, meta}     ← 无 delta / 无 reset / 无 kind
+
+`RegisterOutputChannel` 的原话是「registers an output channel that the
+**`output_send` tool** can route to」——它是**工具的执行后端**（内核侧就是一个
+`channelDevice`），不是流式载体。把增量塞进它的 payload 会同时坏两件事：
+
+	① 输出通道的语义被污染（工具后端要理解"增量/清屏"）
+	② 流式依赖一个"恰好逐条调工具后端"的实现细节
+
+**正确的载体是 `on_llm_call`**：LLM 调用归基座（`StreamLLM` / `CompleteLLM`
+是唯二入口），所以"模型逐 token 产出了什么"只有那条链在第一现场掌握。
+基座在该阶段上逐 chunk 推送，携带 agent 标识，由插件做流式消费。
 
 ```go
 // 主 agent 流式循环

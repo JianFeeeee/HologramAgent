@@ -37,46 +37,6 @@ func init() {
 	//   类型（rtchild / worker）只能靠名字前缀猜。
 	//   登记进来的收益：`registry.Tool.OutputGate` 成为判据，
 	//   `agent.IsOutputGateTool` 一处生效，改名不再静默失效。
-	for _, td := range []struct {
-		name   string
-		desc   string
-		props  map[string]interface{}
-		reqs   []string
-		output bool
-	}{
-		{name: "output_list_channels",
-			desc:   "列出所有可用输出通道及其能力（如 text/file/image/audio）和对应的输出门工具名称。",
-			output: true},
-		{name: "input_channels",
-			desc: "查看 inputch（最基本的输入路由单位）：哪些已注册、谁注册的、各自划给了哪个 agent、容量与记忆策略。单工具多视图。",
-			props: map[string]interface{}{
-				"view": map[string]interface{}{
-					"type": "string",
-					"description": "all=全部已注册（默认）| mine=划给本 agent 的 | " +
-						"unassigned=尚未划出的 | by_agent=按归属分组的划分总览 | detail=单个详情",
-					"enum": []string{"all", "mine", "unassigned", "by_agent", "detail"},
-				},
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "view=detail 时必填：inputch 名",
-				},
-			}},
-	} {
-		def := td
-		if err := registry.RegisterTool(registry.Tool{
-			Name:        def.name,
-			Description: def.desc,
-			Side:        registry.SideAny,
-			Owner:       "", // 空 = 内核（执行体在基座 output.go / inputch.go）
-			Properties:  def.props,
-			Required:    def.reqs,
-			OutputGate:  def.output,
-			// 执行体在基座（output.go / inputch.go）—— 这里只登记声明与标记。
-			DeclaredOnly: true,
-		}); err != nil {
-			panic("agent/tools: " + err.Error())
-		}
-	}
 
 	// ★ 各类型**没有**父侧工具了：
 	//   工作式子走 admin_child(type="worker", action="create")，
@@ -113,16 +73,4 @@ func hostAgent(c registry.ToolCtx) *agent.Agent {
 // 空归属 ⇒ 调用方继续走自己的前缀规则。
 func toolPluginOf(name string) string {
 	return registry.ToolOwner(name)
-}
-
-// sideOf 返回本 agent 的工具侧别（注册表按它取表）。
-//
-// ★ 这是唯一一处"基座把层级事实翻译成侧别"的地方，而且它读的是
-//
-//	`isChildAgent()`（层级数据事实），不是类型名。类型模块自己不再参与。
-func (m *Module) sideOf() registry.Side {
-	if m.a.IsChildAgent() {
-		return registry.SideChild
-	}
-	return registry.SideParent
 }
