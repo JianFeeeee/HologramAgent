@@ -24,7 +24,7 @@ package test
 // 骨架判据（①）已存在；②与"装配失败不留半残"此前无人守。
 
 import (
-	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/rtchild"
 	"testing"
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
@@ -42,10 +42,7 @@ type rtHarness struct {
 func newRTHarness(t *testing.T) *rtHarness {
 	t.Helper()
 	iom := io.NewIOManager()
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "parent", IO: iom})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	a := faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom}.mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "parent"}))
 
 	iom.RegisterInputChannel("rt-in", io.ChannelDef{Realtime: true})
 	iom.RegisterInputChannel("rt-out", io.ChannelDef{Realtime: true})
@@ -82,7 +79,7 @@ func (h *rtHarness) channelNames() []string {
 func TestSpawnRTChildClaimsBothChannels(t *testing.T) {
 	h := newRTHarness(t)
 
-	if _, err := h.agent.SpawnRTChild(agent.RTChildOptions{
+	if _, err := rtchild.Wrap(h.agent).SpawnRTChild(rtchild.RTChildOptions{
 		ID: "kid", Input: "rt-in", Output: "rt-out",
 	}); err != nil {
 		t.Fatalf("SpawnRTChild: %v", err)
@@ -97,7 +94,7 @@ func TestSpawnRTChildClaimsBothChannels(t *testing.T) {
 			t.Fatalf("★ 通道 %q 归属 %q，期望 kid —— rt 通道没划给子", name, owner)
 		}
 	}
-	if ids := h.agent.RTChildren(); len(ids) != 1 || ids[0] != "kid" {
+	if ids := rtchild.Wrap(h.agent).RTChildren(); len(ids) != 1 || ids[0] != "kid" {
 		t.Fatalf("★ RTChildren()=%v，期望 [kid]", ids)
 	}
 }
@@ -115,10 +112,7 @@ func TestSpawnRTChildClaimsBothChannels(t *testing.T) {
 // 走到回滚路径（input 已经划上了）。
 func TestSpawnFailureLeavesNoHalfClaim(t *testing.T) {
 	iom := io.NewIOManager()
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{Security: security.NewDisabledRuntime().AsGate(), ID: "parent", IO: iom})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	a := faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom}.mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "parent"}))
 	defer a.Stop()
 
 	iom.RegisterInputChannel("rt-in", io.ChannelDef{Realtime: true})
@@ -131,12 +125,9 @@ func TestSpawnFailureLeavesNoHalfClaim(t *testing.T) {
 		t.Fatalf("前置 Assign: %v", err)
 	}
 
-	if _, err := a.SpawnRTChild(agent.RTChildOptions{
+	if _, err := rtchild.Wrap(a).SpawnRTChild(rtchild.RTChildOptions{
 		ID: "kid", Input: "rt-in", Output: "rt-out",
 	}); err == nil {
-		if instErr != nil {
-			t.Fatalf("Instantiate(main): %v", instErr)
-		}
 		t.Fatal("★ output 通道未声明 CapRT，SpawnRTChild 却成功了")
 	}
 
@@ -145,7 +136,7 @@ func TestSpawnFailureLeavesNoHalfClaim(t *testing.T) {
 		t.Fatalf("★ 划拨失败后 input 归属变成 %q —— 应恢复为 somebody（原状），"+
 			"归还为未分配会让它被兜底给主 agent", owner.Owner)
 	}
-	if ids := a.RTChildren(); len(ids) != 0 {
+	if ids := rtchild.Wrap(a).RTChildren(); len(ids) != 0 {
 		t.Fatalf("★ 创建失败却留下了子登记 %v", ids)
 	}
 }
@@ -164,7 +155,7 @@ func TestBothStopPathsUnregisterInbound(t *testing.T) {
 	for _, path := range []string{"single", "plural"} {
 		t.Run(path, func(t *testing.T) {
 			h := newRTHarness(t)
-			if _, err := h.agent.SpawnRTChild(agent.RTChildOptions{
+			if _, err := rtchild.Wrap(h.agent).SpawnRTChild(rtchild.RTChildOptions{
 				ID: "kid", Input: "rt-in", Output: "rt-out",
 			}); err != nil {
 				t.Fatalf("SpawnRTChild: %v", err)
@@ -182,9 +173,9 @@ func TestBothStopPathsUnregisterInbound(t *testing.T) {
 
 			var err error
 			if path == "single" {
-				err = h.agent.StopRTChild("kid")
+				err = rtchild.Wrap(h.agent).StopRTChild("kid")
 			} else {
-				if n := h.agent.StopRTChildren(); n != 1 {
+				if n := rtchild.Wrap(h.agent).StopRTChildren(); n != 1 {
 					t.Fatalf("StopRTChildren 停了 %d 个，期望 1", n)
 				}
 			}
@@ -198,7 +189,7 @@ func TestBothStopPathsUnregisterInbound(t *testing.T) {
 						"正是「复数漏注销」的缺陷形态", path)
 				}
 			}
-			if ids := h.agent.RTChildren(); len(ids) != 0 {
+			if ids := rtchild.Wrap(h.agent).RTChildren(); len(ids) != 0 {
 				t.Fatalf("★ [%s] 停止后仍有子登记 %v", path, ids)
 			}
 		})
@@ -215,12 +206,12 @@ func TestBothStopPathsUnregisterInbound(t *testing.T) {
 // 悬空是**显式**状态，可日志诊断。
 func TestChannelsHangAfterStop(t *testing.T) {
 	h := newRTHarness(t)
-	if _, err := h.agent.SpawnRTChild(agent.RTChildOptions{
+	if _, err := rtchild.Wrap(h.agent).SpawnRTChild(rtchild.RTChildOptions{
 		ID: "kid", Input: "rt-in", Output: "rt-out",
 	}); err != nil {
 		t.Fatalf("SpawnRTChild: %v", err)
 	}
-	if err := h.agent.StopRTChild("kid"); err != nil {
+	if err := rtchild.Wrap(h.agent).StopRTChild("kid"); err != nil {
 		t.Fatalf("StopRTChild: %v", err)
 	}
 
@@ -261,20 +252,20 @@ func TestChannelsHangAfterStop(t *testing.T) {
 func TestSpawnFailureLeavesNoResidue(t *testing.T) {
 	cases := []struct {
 		name string
-		opts agent.RTChildOptions
+		opts rtchild.RTChildOptions
 	}{
-		{"缺 id", agent.RTChildOptions{Input: "rt-in", Output: "rt-out"}},
-		{"缺 input", agent.RTChildOptions{ID: "kid", Output: "rt-out"}},
-		{"缺 output", agent.RTChildOptions{ID: "kid", Input: "rt-in"}},
-		{"通道不存在", agent.RTChildOptions{ID: "kid", Input: "no-such-in", Output: "no-such-out"}},
+		{"缺 id", rtchild.RTChildOptions{Input: "rt-in", Output: "rt-out"}},
+		{"缺 input", rtchild.RTChildOptions{ID: "kid", Output: "rt-out"}},
+		{"缺 output", rtchild.RTChildOptions{ID: "kid", Input: "rt-in"}},
+		{"通道不存在", rtchild.RTChildOptions{ID: "kid", Input: "no-such-in", Output: "no-such-out"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			h := newRTHarness(t)
-			if _, err := h.agent.SpawnRTChild(c.opts); err == nil {
+			if _, err := rtchild.Wrap(h.agent).SpawnRTChild(c.opts); err == nil {
 				t.Fatalf("★ %s 时 SpawnRTChild 返回成功", c.name)
 			}
-			if ids := h.agent.RTChildren(); len(ids) != 0 {
+			if ids := rtchild.Wrap(h.agent).RTChildren(); len(ids) != 0 {
 				t.Fatalf("★ %s 被拒却留下了子登记 %v", c.name, ids)
 			}
 			for _, name := range []string{"rt-in", "rt-out"} {
@@ -300,19 +291,19 @@ func TestSpawnFailureLeavesNoResidue(t *testing.T) {
 // 也就是说它钉的是「先来者不被后来者毁掉」这条不变量。
 func TestSpawnDuplicateIDLeavesExistingIntact(t *testing.T) {
 	h := newRTHarness(t)
-	if _, err := h.agent.SpawnRTChild(agent.RTChildOptions{
+	if _, err := rtchild.Wrap(h.agent).SpawnRTChild(rtchild.RTChildOptions{
 		ID: "kid", Input: "rt-in", Output: "rt-out",
 	}); err != nil {
 		t.Fatalf("首次 Spawn: %v", err)
 	}
 
-	if _, err := h.agent.SpawnRTChild(agent.RTChildOptions{
+	if _, err := rtchild.Wrap(h.agent).SpawnRTChild(rtchild.RTChildOptions{
 		ID: "kid", Input: "rt-in", Output: "rt-out",
 	}); err == nil {
 		t.Fatal("★ 同名 rtchild 重复创建成功了 —— 上一代残留会被当成这一代")
 	}
 
-	if ids := h.agent.RTChildren(); len(ids) != 1 || ids[0] != "kid" {
+	if ids := rtchild.Wrap(h.agent).RTChildren(); len(ids) != 1 || ids[0] != "kid" {
 		t.Fatalf("★ 重复创建失败后 RTChildren()=%v，期望仍是 [kid]", ids)
 	}
 	for _, name := range []string{"rt-in", "rt-out"} {

@@ -1,0 +1,159 @@
+package mainagent
+
+// overflow.go —— **基座只给数字与原语**（策略全部在类型侧）。
+//
+// ## 这个文件里有什么
+//
+//	ContextLen                条数
+//	TokenOf(i)                第 i 条的 token 成本
+//	AccumulatedTokens         积累量（未裁剪）
+//	ContextWindowTokens       窗口上限
+//	OverflowRatioNow          积累量 / 窗口
+//	EvictOversizedPages       页级剔除原语
+//	PruneForQuery             裁剪原语（按 query 走注册的 Prune）
+//
+// ## 这里**没有**什么（全部搬走了，别再搬回来）
+//
+//	阈值 1.25 / 恢复预算 2         → mainagent（主 agent 的上下文哲学）
+//	HasOversizedFrame             → mainagent（"frame/水页"是 TaskFrame 的抽象）
+//	SingleEventFitsBudget         → mainagent
+//	OverflowStat / NoteOverflow*  → mainagent.OverflowLedger（记的是"我的策略做了什么"）
+//	RaiseContextOverflow / 空中断 → mainagent（类型自己投 self input，基座只透传标签）
+//	"超页入口的薄封装"那一族      → 已删（task.go 三处调用点直调 OverflowHandler）
+//	"上游错误是不是超页"的判定    → api.IsContextFull（识别归上游调用的发出者）
+//
+import (
+	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
+)
+
+// defaultMaxContextTokens 是内核的**模型窗口默认值**（不是类型策略）。
+// 类型算水位时用它作分母，数据来自内核配置。
+const defaultMaxContextTokens = 32768
+
+// accumulatedTokens 估算**未裁剪**的积累上下文 token 数。
+//
+// ⚠️ 判据必须用积累量，不能用 f.Msgs：后者已被 buildMessages 按
+// targetUsage = 0.8×窗口 裁过，结构上封顶 80%，对任何 >0.8 的阈值都**永远
+// 不成立**（这个坑已由 resident.go:checkContextFull 的注释记录过一次，
+// 这里抽成函数是为了让两处共用同一口径，避免再次漂移）。
+func (m *Module) AccumulatedTokens() int {
+	if m == nil || m.a == nil || m.ctx == nil {
+		return 0
+	}
+	acc := 0
+	for _, e := range m.ctx.Recent(0) {
+		acc += mainctx.EventTokens(e)
+	}
+	return acc
+}
+
+// eventTokens 估算单条上下文事件的 token 占用。
+//
+// ★ ToolResults 必须计入 —— 这是实测踩过的坑：v4 与 T10 的 prompt 峰值
+// （17 万~40 万 token）几乎全部来自工具回灌，而 agenttypes.ContextEvent 里工具输出是
+// **独立字段**（ToolResults []ToolResultItem），不算它的话 accumulatedTokens
+// 会返回 0，超页判据永远不触发（诊断日志 ratio=0.00/ events=1 就是这么来的）。
+//
+// resident.go 的 checkContextFull 有同样缺陷，但它只对驻留子生效、一直没暴露；
+// 现在两处共用本函数，口径不会再漂移。
+//
+// ## 必须排除 InactivePages（2026-11-02 实测修复）
+//
+// 段页式淘汰（P5）把某些**工具页**标成 InactivePages，渲染时整页不出现
+// （process.go:597 的 buildTimeline）。但本函数此前仍按全量 ToolResults 统计 ——
+// 于是「渲染的少了、统计的没少」：页剔了，水位却不动，L4 空中断反复触发，
+// 最终把 overflowRecoverBudget 耗尽并报「上下文超限」。
+//
+// 生产实例实证（2026-11-02 19:10:45 / 20:58:24）：
+//
+//	air-interrupt prune: 12→5 events (44185→39714 tokens), ratio=1.21
+//
+// 事件少了 7 条、页也剔了，token 只降 10% —— 因为被剔页的工具结果仍在算。
+// 随后下一轮 ratio 又回到 1.33，预算 2/2 用尽。
+//
+// ★ 判据口径：**统计视图必须等于渲染视图**。渲染不出的内容不该占预算，
+// 否则裁剪永远「裁不动」，这不是保守，是自相矛盾。
+
+// contextWindowTokens 取本 agent 的窗口上限（token）。
+func (m *Module) ContextWindowTokens() int {
+	if m != nil && m.a != nil {
+		if max := m.a.LLMMaxContextTokens(); max > 0 {
+			return max
+		}
+	}
+	return defaultMaxContextTokens
+}
+
+// overflowRatioNow 返回「积累量 / 窗口」。窗口拿不到时返回 0（表示不判定）。
+func (m *Module) OverflowRatioNow() float64 {
+	max := m.ContextWindowTokens()
+	if max <= 0 {
+		return 0
+	}
+	return float64(m.AccumulatedTokens()) / float64(max)
+}
+
+// ContextLen 是 nil 安全的上下文条数（基座的**纯读数字**之一）。
+//
+// ★ 它只报事实，不判超没超 —— 阈值与处置在类型侧。
+func (m *Module) ContextLen() int {
+	if m == nil || m.a == nil || m.ctx == nil {
+		return 0
+	}
+	return m.ctx.Len()
+}
+
+// TokenOf 返回第 i 条 L1 事件的 token 成本（基座的**纯读数字**之一）。
+//
+// ★ 为什么需要它：类型侧的策略（"有没有单帧自撑爆"）要用逐条成本，
+// 而它不该为此拿到整个上下文实现的句柄。O(1) 只取那一条，不复制整窗。
+//
+// 越界 / 无上下文 ⇒ 0（调用方按"这条不存在"处理，不是错误）。
+func (m *Module) TokenOf(i int) int {
+	if m == nil || m.a == nil || m.ctx == nil {
+		return 0
+	}
+	n, ok := m.ctx.TokenAt(i)
+	if !ok {
+		return 0
+	}
+	return n
+}
+
+// lastUserQueryForPrune 取最后一条非中断用户输入作为裁剪的相关性基准。
+//
+// 空中断自己没有正文，但它被触发时"刚才在做什么"是有答案的：
+// 上下文里最后一条真实用户输入。取不到返回空串（pruneByQuery 按时间保留）。
+func (m *Module) LastUserQueryForPrune() string {
+	if m == nil || m.a == nil || m.ctx == nil {
+		return ""
+	}
+	evts := m.ctx.Recent(0) // 值为 agenttypes.ContextEvent（非指针），Recent 已做深拷贝
+	for i := len(evts) - 1; i >= 0; i-- {
+		if evts[i].Input != "" {
+			return evts[i].Input
+		}
+	}
+	return ""
+}
+
+// EvictOversizedPages 是**页级剔除原语**：把「单条事件自己就超预算」的那些帧
+// 按页标注剔除，返回剔除的页数与是否有缩减。
+//
+// ★ 归属：这是**上下文原语**（动的是 agenttypes.ContextManager 的 InactivePages），
+//
+//	不是超页策略。整窗型也可能想用它（它的病同样是"单帧撑爆"），
+//	而策略裁剪型会在此基础上再叠加"整帧归档"。所以它留在基座，
+//	策略（何时调、调完还超怎么办）由类型注册的 EnforceOverflow 决定。
+func (m *Module) EvictOversizedPages(query string) (evicted int, reduced bool) {
+	if m == nil || m.a == nil || m.ctx == nil {
+		return 0, false
+	}
+	// query 为空时自己推导（剔除靠相关性打分，拿不到 query 只能按顺序处理，
+	// 而按顺序乱剔比如不剔更糟）。
+	if query == "" {
+		query = m.LastUserQueryForPrune()
+	}
+	budget := m.ComputeTokenBudget().ContextTokens
+	return m.ctx.EvictOversizedPages(budget, query)
+}

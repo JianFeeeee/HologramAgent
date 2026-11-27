@@ -846,7 +846,7 @@ func (r *ConfigRegistry) seedDBValues(dataDir string) bool {
 	// 多数机器装不下后者。
 	// 产物不在仓库里，用 scripts/export_chineseclip_onnx.py 生成到这个路径；
 	// 产物缺失时 homed 会打印明确错误并退回 fastText 文本路径（不静默假装启用）。
-	set("core.memory.multimodal_space.options.model_dir",
+	set("core.multimodal.options.model_dir",
 		filepath.Join(dataDir, "models", "chinese-clip-vit-b16-onnx"))
 	set("core.knowledge.path", filepath.Join(dataDir, "knowledge"))
 	set("core.log.path", filepath.Join(dataDir, "log"))
@@ -890,7 +890,7 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	//
 	//	core.agent.system_prompt            —— 播种会把版本号冻死在 DB 里
 	//	core.defaults.llm_endpoints         —— 空默认值，播种无意义
-	//	core.memory.multimodal_space.options.*（6 个）—— provider 私有选项
+	//	core.multimodal.options.*（6 个）—— provider 私有选项
 	//
 	// 这些键必须用 regMeta()（只登记），否则就是把「配置项可见」误当成
 	// 「该有初始行」。实测代价：TestSeedDefaultsDoesNotSeedSystemPrompt
@@ -994,14 +994,14 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	reg(ConfigDef{Key: "core.memory.documents", Default: filepath.Join(dataDir, "memory", "documents"), Type: "string", DisplayName: "文档记忆路径", Description: "文档记忆存储目录", Category: "paths"})
 	// ★ core.memory.media.* 已随 CAS 淘汰删除（2026-10-11）：媒体字节现在是
 	//   块自带负载（MemoryBlock.Data），媒体记忆不再有独立的存储开关/路径。
-	reg(ConfigDef{Key: "core.memory.multimodal_space.provider", Default: "chineseclip", Type: "string", DisplayName: "多模态向量 provider", Description: "从公共 provider 注册表（pkg/embedding）按名字打开的多模态向量空间。内置：chineseclip（默认，text+image，512 维，实测稳态约 0.89GB（加载峰值 1.59GB），Apache-2.0）、qwen3vl（text+image，2048 维，峰值约 9.4GB，视觉塔按需加载；视频已实现但未纳入契约）、http（外部向量 API）。也可是第三方注册的名字。两者均需 onnxruntime 构建标签。留空禁用多模态向量检索，只保留 fastText 文本路径。provider 的模型文件、预处理与运行时全在 provider 内部，核心不做任何模型假设。修改后需重启生效。", Category: "memory"})
-	reg(ConfigDef{Key: "core.memory.multimodal_space.options.model_dir", Default: filepath.Join(dataDir, "models", "chinese-clip-vit-b16-onnx"), Type: "string", DisplayName: "provider 模型目录", Description: "provider 自定义选项（以 options. 开头的键会去掉前缀后原样传给 provider，核心不解释其含义）。对内置 chineseclip：Chinese-CLIP 产物目录（用 scripts/export_chineseclip_onnx.py 生成）。对内置 qwen3vl：Qwen3-VL ONNX 产物目录（用 scripts/export_qwen3vl_embedding_onnx.py 生成）。", Category: "memory"})
-	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.endpoint", Default: "", Type: "string", DisplayName: "provider 服务端点", Description: "provider 自定义选项。对内置 http：外部多模态向量服务的端点 URL（POST，接受 modality/side/text/data/mime，返回 embedding）。", Category: "memory"})
-	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.api_key", Default: "", Type: "password", DisplayName: "provider 服务密钥", Description: "provider 自定义选项。对内置 http：作为 Bearer token 发送。可选。", Category: "memory"})
-	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.model", Default: "", Type: "string", DisplayName: "provider 模型标识", Description: "provider 自定义选项。对内置 http：外部服务使用的模型名，作为 vec_model 持久化。", Category: "memory"})
-	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.dimension", Default: "0", Type: "int", DisplayName: "provider 向量维度", Description: "provider 自定义选项。对内置 http：服务返回的特征向量维度，必须与实际返回值一致。", Category: "memory"})
-	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.timeout", Default: "30s", Type: "duration", DisplayName: "provider 请求超时", Description: "provider 自定义选项。对内置 http：单次向量请求的超时时间。", Category: "memory"})
-	regMeta(ConfigDef{Key: "core.memory.multimodal_space.options.fingerprint", Default: "", Type: "string", DisplayName: "provider 空间指纹", Description: "provider 自定义选项。对内置 http：向量空间版本标识（留空时根据 model+dim 自动生成）。指纹变化会触发历史向量重算。", Category: "memory"})
+	reg(ConfigDef{Key: "core.multimodal.provider", Default: "chineseclip", Type: "string", DisplayName: "多模态向量 provider", Description: "从公共 provider 注册表（pkg/embedding）按名字打开的多模态向量空间。内置：chineseclip（默认，text+image，512 维，实测稳态约 0.89GB（加载峰值 1.59GB），Apache-2.0）、qwen3vl（text+image，2048 维，峰值约 9.4GB，视觉塔按需加载；视频已实现但未纳入契约）、http（外部向量 API）。也可是第三方注册的名字。两者均需 onnxruntime 构建标签。留空禁用多模态向量检索，只保留 fastText 文本路径。provider 的模型文件、预处理与运行时全在 provider 内部，核心不做任何模型假设。修改后需重启生效。", Category: "memory"})
+	reg(ConfigDef{Key: "core.multimodal.options.model_dir", Default: filepath.Join(dataDir, "models", "chinese-clip-vit-b16-onnx"), Type: "string", DisplayName: "provider 模型目录", Description: "provider 自定义选项（以 options. 开头的键会去掉前缀后原样传给 provider，核心不解释其含义）。对内置 chineseclip：Chinese-CLIP 产物目录（用 scripts/export_chineseclip_onnx.py 生成）。对内置 qwen3vl：Qwen3-VL ONNX 产物目录（用 scripts/export_qwen3vl_embedding_onnx.py 生成）。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.multimodal.options.endpoint", Default: "", Type: "string", DisplayName: "provider 服务端点", Description: "provider 自定义选项。对内置 http：外部多模态向量服务的端点 URL（POST，接受 modality/side/text/data/mime，返回 embedding）。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.multimodal.options.api_key", Default: "", Type: "password", DisplayName: "provider 服务密钥", Description: "provider 自定义选项。对内置 http：作为 Bearer token 发送。可选。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.multimodal.options.model", Default: "", Type: "string", DisplayName: "provider 模型标识", Description: "provider 自定义选项。对内置 http：外部服务使用的模型名，作为 vec_model 持久化。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.multimodal.options.dimension", Default: "0", Type: "int", DisplayName: "provider 向量维度", Description: "provider 自定义选项。对内置 http：服务返回的特征向量维度，必须与实际返回值一致。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.multimodal.options.timeout", Default: "30s", Type: "duration", DisplayName: "provider 请求超时", Description: "provider 自定义选项。对内置 http：单次向量请求的超时时间。", Category: "memory"})
+	regMeta(ConfigDef{Key: "core.multimodal.options.fingerprint", Default: "", Type: "string", DisplayName: "provider 空间指纹", Description: "provider 自定义选项。对内置 http：向量空间版本标识（留空时根据 model+dim 自动生成）。指纹变化会触发历史向量重算。", Category: "memory"})
 	reg(ConfigDef{Key: "core.knowledge.path", Default: filepath.Join(dataDir, "knowledge"), Type: "string", DisplayName: "知识库路径", Description: "知识库存储目录", Category: "paths"})
 	reg(ConfigDef{Key: "core.log.path", Default: filepath.Join(dataDir, "log"), Type: "string", DisplayName: "日志目录", Description: "日志文件输出目录", Category: "paths"})
 
@@ -1089,7 +1089,7 @@ func (r *ConfigRegistry) seedCoreDefs(dataDir string, fresh bool) {
 	reg(ConfigDef{Key: "core.agent.llm.rt_provider", Default: "", Type: "string",
 		DisplayName: "实时子 agent 模型源", Description: "rtchild 优先使用的模型源；留空继承总默认源。通话场景应选首字延迟最低的源。", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.llm.child_provider", Default: "", Type: "string",
-		DisplayName: "子 agent 模型源", Description: "工作式轻量子 agent（spawn_child）优先使用的模型源；留空继承总默认源。", Category: "agent"})
+		DisplayName: "子 agent 模型源", Description: "工作式轻量子 agent（admin_child type=worker）优先使用的模型源；留空继承总默认源。", Category: "agent"})
 
 	reg(ConfigDef{Key: "core.agent.max_tool_turns", Default: "10", Type: "int", DisplayName: "最大工具轮次", Description: "单次请求允许的最大工具调用轮数", Category: "agent"})
 	reg(ConfigDef{Key: "core.agent.offload_enabled", Default: "false", Type: "bool", DisplayName: "积压任务自动转投", Description: "主 agent 长时间忙时，把积压任务自动转投给内核拉起的驻留子（需重启生效）", Category: "agent"})

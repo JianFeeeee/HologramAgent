@@ -1,0 +1,446 @@
+package worker
+
+import (
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+)
+
+// ── 工作式子的工具禁令（**单一事实来源**） ──
+//
+// 此前这条禁令写了两遍：一遍在定义侧（把工具从表里滤掉），
+// 一遍在执行侧（模型硬调时拒绝）。两处的工具名单必须逐字一致 ——
+// 任何一边落后就是一个真实缺口：
+//
+//	定义侧漏滤 ⇒ 模型看得见但不该能用（白耗 token，还会反复试）
+//	执行侧漏拒 ⇒ 模型绕过定义直接调用**就能生效**（模型确实会这么干）
+//
+// 现在只有下面这张表。定义侧走 workerToolAllowed，
+// 执行侧走 workerToolReject，两者都从同一份 runnerForbidden 派生。
+// 判据 TestWorkerToolDenyListIsSingleSource 钉住"不许再长出第二份"。
+
+// workerDenyRule 是一条工具禁令：匹配方式 + 给模型看的解释。
+//
+// ★ 用结构体把"匹配"和"解释"绑在一起，避免上一版那种三处间接
+// （先查 reason 字符串、再按下标猜分类、再查 hint）。读代码时
+// 一条禁令的全部信息在一行里可见。
+type workerDenyRule struct {
+	class  string // 给模型看的类别（"输出工具" / "系统工具"）
+	tool   string // 精确匹配（prefix=false 时）
+	prefix string // 前缀匹配（prefix=true 时）
+	isPref bool
+	hint   string // 为什么不行、该怎么做
+}
+
+// workerForbidden 是工作式子**唯一**的工具禁令表。
+//
+// 为什么禁这些：
+//
+//	输出工具    结果回父（child_result），子直接对用户说话会与父的回复串台
+//	spawn_child 子不能再 spawn 子（无限递归）
+//	plgreload   插件重载是内核级动作，子无权触发
+var workerForbidden = []workerDenyRule{
+	{
+		// ★ 旧 `spawn_child` 已删（P-4 批：父子只剩 admin_child 族 +
+		//   CallParent 两条协议）。那条禁令原先指向一个**不存在的工具**
+		//   —— 永远不命中，等于这条防线是空的。子确实不能再起子：
+		//   现在它想超轮回，只能走 admin_child，而 admin_child 归
+		//   SideParent（子侧取不到这张表），结构上就做不到。
+		class: "系统工具", tool: "admin_child",
+		hint: "子不能再起子（会无限递归）；需要多步请在本次任务内完成",
+	},
+	{
+		class: "系统工具", tool: "plgreload",
+		hint: "插件重载是内核级动作，只有父能触发",
+	},
+}
+
+// workerOutputDenyHint 是"输出门工具不给工作式子"的理由。
+const workerOutputDenyHint = "结果请直接作为最终答复返回，父会转达用户"
+
+// workerDenyRuleFor 返回命中的禁令（nil = 允许）。
+//
+// ★ 输出门的判定走 `agent.IsOutputGateTool`（**唯一判据**，读注册表标记
+//   - 动态生成族），不在本表里写第二份前缀规则 —— 两个类型两份前缀判定
+//     是本仓反复踩的形态。
+func workerDenyRuleFor(name string) *workerDenyRule {
+	if agent.IsOutputGateTool(name) {
+		return &workerDenyRule{class: "输出工具", tool: name, hint: workerOutputDenyHint}
+	}
+	for i := range workerForbidden {
+		r := &workerForbidden[i]
+		if r.isPref {
+			if strings.HasPrefix(name, r.prefix) {
+				return r
+			}
+			continue
+		}
+		if name == r.tool {
+			return r
+		}
+	}
+	return nil
+}
+
+// workerToolAllowed 报告某个工具是否**允许**给工作式子用（定义侧过滤）。
+func workerToolAllowed(name string) bool { return workerDenyRuleFor(name) == nil }
+
+// workerToolReject 在执行侧拒绝被禁工具，返回给模型的**可执行**说明。
+//
+// 返回空串表示放行。文案必须说明"为什么不行、该怎么做"，否则模型会原样
+// 重试同一条被拒的调用（本仓有过"4 次 files_write 失败"的先例）。
+func workerToolReject(ct agentAPI.ToolCall) string {
+	r := workerDenyRuleFor(ct.Name)
+	if r == nil {
+		return ""
+	}
+	return fmt.Sprintf("子 Agent 不允许调用 %s: %s（%s）", r.class, ct.Name, r.hint)
+}
+
+// spawnFromAdmin 落地 `admin_child(type="worker", action="create")`。
+//
+// ★ 旧 `spawn_child` 的替代品。差别不是改名：旧的那条**绕开内核骨架**
+//
+//	（自己起 goroutine、不进实例表），这条走 `Descriptor.Construct`
+//	⇒ 实例进 `child.Registry` + `InstanceManager`（可持久化 / 可 StopAll / 可列）。
+func (m *M) spawnFromAdmin(arg map[string]interface{}) (string, error) {
+	task := strOf(arg, "task")
+	if strings.TrimSpace(task) == "" {
+		return "", fmt.Errorf("worker: create 需要 task（要它完成什么）")
+	}
+	maxTurns := intOf(arg, "max_turns")
+	if maxTurns < 1 {
+		maxTurns = defaultChildMaxTurns
+	}
+	if maxTurns > 30 {
+		maxTurns = 30
+	}
+	parentChannel := strOf(arg, "channel")
+	if parentChannel == "" || parentChannel == agentIO.ChannelConsolidation {
+		parentChannel = "cli"
+	}
+
+	taskID := m.state().NextID()
+	if err := m.state().Bind(taskID, string(m.A.ID())); err != nil {
+		return "", err
+	}
+
+	// ★★ 造**自己的**实例并登记进骨架（2026-11-20 修）。
+	//
+	// 此前这里只有 `go m.runChildTask(...)` —— 一个裸 goroutine，借用父的
+	// provider / 工具表 / RunToolBatch。后果：`RegistryToolDefs()` 按父的
+	// 侧别取表、`RunToolBatch` 用父的 Host 判安全闸、`admin_child_list`
+	// 看不到它、`StopAll` 收不掉它。
+	//
+	// 现在与 resident 同构：`agent.New` 造实例 + `Children().Add` 登记。
+	ent, err := m.newInstance(taskID, task, parentChannel, maxTurns)
+	if err != nil {
+		m.state().Finish(taskID, "创建失败: "+err.Error())
+		return "", err
+	}
+	if err := m.A.Children().Add(ent); err != nil {
+		ent.Dispose()
+		m.state().Finish(taskID, "登记失败: "+err.Error())
+		return "", fmt.Errorf("worker: 登记子实例 %s 失败: %w", taskID, err)
+	}
+
+	go m.runChildTask(ent, task, parentChannel, maxTurns)
+
+	return fmt.Sprintf("子任务已启动（ID: %s，最多 %d 轮）。完成后它会自己上报；"+
+		"用 admin_child(type=\"worker\", action=\"inspect\", arg={id:\"%s\"}) 查看产出（结果幂等，查一次即可）",
+		taskID, maxTurns, taskID), nil
+}
+
+// adminWorker 处理工作式子的类型独有动作。
+func (m *M) adminWorker(action string, arg map[string]interface{}) (string, error) {
+	switch action {
+	case "inspect":
+		id := strOf(arg, "id")
+		if id == "" {
+			return "", fmt.Errorf("worker: inspect 需要 id")
+		}
+		return m.childResultOf(id), nil
+	}
+	return "", fmt.Errorf("worker: 未知动作 %q", action)
+}
+
+// defaultChildMaxTurns 子 Agent 默认工具轮数（可被 spawn_child 的 max_turns 参数覆盖）。
+const defaultChildMaxTurns = 5
+
+// childSystemPromptTemplate 是非驻留子 Agent 的系统提示词（%s = 任务描述）。
+//
+// ★ 为什么必须显式写「执行纪律」与「工具执行顺序」两节：
+//
+// 此前这两节缺失，子只能拿到「你是子任务助手，请完成任务」这一句。实测（2026-10-08
+// 生产日志）子把「宣告计划」当成了任务完成 —— 交回父的结果大量是将来时：
+//
+//	child_1 done: I'll start by searching for each school's admissions catalog information.
+//	child_3 done: 我将逐校用官方渠道核实。先并行检索四校的招生专业目录信息。
+//	child_5 done: I'll start by reading the existing artifacts.
+//
+// 根因是退出判据只看「模型有没有返回 tool_calls」（spawn.go 的 `len(resp.ToolCalls) == 0`）：
+// 模型一输出「I'll start by...」就再无 tool_calls，循环立即判定完成。**该判据未改动**
+// （它是对的：模型确实不再要求工具了），所以要靠提示词让模型**不要**在拿到结果前
+// 停止调用工具。
+//
+// 父的提示词里早有同类先例（buildSystemPrompt 的【记忆清理指令】：「必须实际调用
+// memory_ 工具执行操作，不能只回复文本」「不要只描述计划而不执行」），子这里缺的正是它。
+//
+// 第二缺失是【工具执行顺序】：同轮多个 tool_call **默认并行**，而子不知道
+// 「依赖前一步结果的调用必须分轮」。多步复杂任务（搜索 → 按结果抓页 → 解析）
+// 因此被塞进同一轮，并行跑出无意义的组合。
+//
+// 不把父的【输出规则】/【中断消息】/【记忆清理】/【可用技能】/人格那几节一并搬过来：
+// 子被显式禁用了 output_send__*（结果回父而非直接回用户），也无需保留记忆或响应中断；
+// 搬来只会白占提示词预算。
+const childSystemPromptTemplate = `你是 HologramAgent 的子任务助手。
+请完成以下任务。完成即可，无需保留记忆或查询历史。
+
+【执行纪律】这是硬性要求，不是建议：
+- **必须实际调用工具去执行**，不要只回复「我将要做什么」。宣告计划不等于完成任务；
+  只要你还没把结果拿到手，就必须继续调用工具。
+- 只有当你**已经取得实际结果**（或确认无法取得）时，才用纯文本汇报结论；
+  汇报内容必须是**已发生的事实**，而不是打算做的事。
+- 任务确实无法完成时，如实说明卡在哪一步、已取得了什么，不要谎报完成。
+
+【工具执行顺序】同一条回复里的多个工具调用**默认并行执行**，不是依次执行：
+- 若某个调用的参数**需要另一个调用的结果**，必须**分两轮** —— 先发前一个，
+  看到结果后再发下一个。写在同一轮就等于假设了不存在的先后。
+- 互相独立的调用可以放在同一轮并行发出（这是被鼓励的，更快）。
+
+任务: %s`
+
+// runChildTask 跑一个工作式子实例（**用它自己的** agent，不是父的）。
+func (m *M) runChildTask(ent *workerEntry, task string, parentChannel string, maxTurns int) {
+	taskID := ent.taskID
+	// ★ 本实例的载体：`RegistryToolDefs()` / `RunToolBatch` / `Config()`
+	//   全部走它 —— 侧别是 SideChild、安全闸按它自己的身份判。
+	ca := ent.Agent().(*agent.Agent)
+	if ca == nil || (ca.LLM() == nil && ca.LLMSources() == nil) {
+		log.Printf("[child] %s failed: no LLM provider configured", taskID)
+		m.state().Finish(taskID, "子 Agent 执行失败: 没有可用的 LLM 提供者")
+		return
+	}
+	log.Printf("[child] %s started: %s", taskID, truncateStr(task, 80))
+
+	msgs := []agentAPI.Message{
+		{Role: "system", Content: ca.SystemPrompt()},
+		{Role: "user", Content: task},
+	}
+
+	ca.Start()
+
+	// ★ 公有面由基座给（与其他类型同一个函数）。工作式子再用自己的
+	//   允许表筛一遍 —— 那是本类型的策略，不是公有面的差异。
+	allTools := ca.PublicToolDefs()
+	childTools := make([]interface{}, 0, len(allTools))
+	for _, t := range allTools {
+		toolMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		fn, ok := toolMap["function"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		if !workerToolAllowed(name) {
+			continue
+		}
+		childTools = append(childTools, t)
+	}
+
+	// 循环因何结束，供收尾文案如实描述（不要把「跑满预算」说成别的数字）。
+	//
+	// 为什么需要它：此前收尾文案硬编码「超过 5 轮」，而 max_turns 是**模型可传**
+	// 的参数（1-30），于是 max_turns=10 的子 Agent 明明跑满 10 轮，报告却说
+	// 「超过 5 轮」——日志在说谎，排查时会被这个假数字带偏。
+	//
+	// completed 与会空内容分开记：模型返回了空文本也是一次「回答过了」，
+	// 不能与「循环中途 break」归为同一类（那会把可解释的空回答报成故障）。
+	var finalResult string
+	completed := false
+	reachedLimit := false
+	for turn := 0; turn < maxTurns; turn++ {
+		req := &agentAPI.CompletionRequest{
+			Messages:        msgs,
+			MaxTokens:       4096,
+			Tools:           childTools,
+			ToolChoice:      "auto",
+			DisableThinking: !m.A.ThinkingEnabled(),
+		}
+
+		// ★ 走与主 agent 同一套 provider 选择（而不是直接 m.A.Config().Provider.Chat）。
+		//
+		// 两件事因此成立：
+		//  ① `core.agent.llm.child_provider` 对它生效（四类 agent 各自可配源）
+		//  ② 多源回退对它生效 —— 此前它是唯一绕过回退链的地方：
+		//     默认源抖动一次，整条子任务就"执行失败"，而主 agent 同刻能自动换源
+		resp, err := m.chatWithInstance(ca, req)
+		if err != nil {
+			finalResult = fmt.Sprintf("子 Agent 执行失败: %v", err)
+			break
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			finalResult = resp.Content
+			completed = true
+			break
+		}
+
+		if turn == maxTurns-1 {
+			// 本轮是最后一轮：它仍返回了工具调用，说明预算在此耗尽。
+			reachedLimit = true
+		}
+
+		// Tool execution remains kernel-owned. The worker loop only provides
+		// worker-specific request constraints; it does not implement a runner.
+		// ★ worker 的禁令与串行不再靠执行参数：
+		//   禁令走工具授权声明（与 render 侧同一份），串行由工具不声明
+		//   ParallelSafe 自然成立（见 kernelmod/device/toolexec_batch.go）。
+		results := ca.RunToolBatch(ca.Ctx(), resp.ToolCalls)
+		// 子 Agent 的工具调用必须自记一行。此前子侧全程静默：父内核日志里
+		// 只有「started / done」两行，子任务失败时无法判断倒在哪一步（是搜不到、
+		// 解析失败，还是被轮上限截断）——只能看到一句「超时」。
+		for _, r := range results {
+			log.Printf("[child] %s turn %d/%d: %s -> %d bytes",
+				taskID, turn+1, maxTurns, r.Name, len(r.Text))
+			msgs = append(msgs, agentAPI.Message{Role: "assistant", Content: resp.Content,
+				ToolCalls: []agentAPI.ToolCall{{ID: r.CallID, Name: r.Name}}})
+			msgs = append(msgs, agentAPI.Message{Role: "tool", ToolCallID: r.CallID, Content: r.Text})
+		}
+	}
+
+	if finalResult == "" {
+		switch {
+		case completed:
+			// 模型确实回答完了，但内容是空的。如实说，不当作故障。
+			finalResult = "子 Agent 已结束（模型未给出文本内容）"
+		case reachedLimit:
+			// 跑满预算 ≠ 白干。子 Agent 在前几轮已经拿到了一批工具结果
+			// （实测 child_5 已跑完一串页面解析），直接丢弃它们会让父 Agent
+			// 只能重 spawn（日志里 child_5→6→7 就是同一任务连试三次，每次都
+			// 重烧一整个上下文）。所以先做一次「不带工具的收尾调用」，把已有
+			// 成果落成文本。仅在失败路径上多花一次 LLM 调用。
+			log.Printf("[child] %s exhausted budget maxTurns=%d, attempting wrap-up distillation of results so far", taskID, maxTurns)
+			if summary := m.salvageSummary(ca, msgs, maxTurns); summary != "" {
+				finalResult = summary
+			} else {
+				finalResult = fmt.Sprintf("子 Agent 已达工具轮上限（%d 轮）仍未产出最终答复，任务未完成", maxTurns)
+			}
+		default:
+			// 既没拿到答复、也不是跑满预算：只可能是 Chat 出错后 break。
+			finalResult = "子 Agent 未产出结果（执行中断）"
+		}
+	}
+
+	m.state().Finish(taskID, finalResult)
+
+	log.Printf("[child] %s done: %s", taskID, truncateStr(finalResult, 100))
+
+	notification := fmt.Sprintf("子任务 %s 已完成。请用 child_result 工具查看输出（只需查询一次；重复查询不会返回失败）。", taskID)
+	m.A.InjectSelfChannel(agent.SelfInputMsg{Text: notification, Channel: parentChannel})
+}
+
+// executeChildResultTool 取回子任务结果。
+//
+// **幂等**：结果不会被“读到即删”，重复查询返回同一结果或一条明确提示。
+// 这一点至关重要——完成通知会长期留在持久上下文里（formatMergedTimeline
+// 每轮重新注入），如果重复查询返回“不存在”这种失败信号，模型会认定任务
+// 未完成而无限重试（实测单轮 35 次工具调用、持续 514 秒）。
+func (m *M) childResultOf(taskID string) string {
+	if snap, ok := m.state().Snapshot(taskID); ok && snap.Running {
+		return fmt.Sprintf("子任务 %s 仍在运行中，尚未完成。请等待完成通知后再查询。", taskID)
+	}
+	first, result, ok := m.state().MarkDelivered(taskID)
+	if !ok {
+		return fmt.Sprintf("子任务 %s 不存在：从未创建该 ID（请核对 create 返回的 ID 拼写）", taskID)
+	}
+
+	if first {
+		return fmt.Sprintf("【子任务 %s 结果】\n%s", taskID, result)
+	}
+	// 重复查询不是失败：明确告诉模型“任务已完成、结果已给过”，让它停止重试。
+	return fmt.Sprintf("【子任务 %s 已完成】结果已在上文提供，无需重复查询；请直接基于上文结果继续。", taskID)
+}
+
+// childSalvagePrompt 是跑满预算后的收尾指令。
+//
+// 强调「不得再请求调用工具」而不是仅靠不带 Tools 参数：provider 形态各异，
+// 有的对“无工具但正文写了工具调用”仍会编造出 tool_calls，而此处已经不再执行
+// 任何工具，会直接落成空结果。
+const childSalvagePrompt = `你已用完工具调用轮次预算，不能再调用任何工具。
+请只根据上面已经取得的工具结果，直接给出**目前已知的结论与已收集到的数据**；
+如有未完成的部分，明确列出“未查到/未完成”的项。不要请求调用工具，不要说“我将要去查”。`
+
+// salvageChildSummary 在子 Agent 跑满轮预算后，用一次**不带工具**的调用把
+// 已取得的中间成果落成文本。
+//
+// 为什么值得多花一次调用：此前的行为是直接丢弃全部中间结果、只回一句“超时”，
+// 父 Agent 拿到的是一个不可操作的信号，只能重 spawn——那会重烧一整个上下文，
+// 比这多出来的**一次**调用贵得多。
+//
+// 失败不抛错（外层只在失败路径上调用它）：返回空串即回退到诚实的事实陈述。
+func (m *M) salvageSummary(ca *agent.Agent, msgs []agentAPI.Message, maxTurns int) string {
+	if ca == nil || (ca.LLM() == nil && ca.LLMSources() == nil) {
+		return ""
+	}
+	salvageMsgs := make([]agentAPI.Message, 0, len(msgs)+1)
+	salvageMsgs = append(salvageMsgs, msgs...)
+	salvageMsgs = append(salvageMsgs, agentAPI.Message{Role: "user", Content: childSalvagePrompt})
+
+	resp, err := ca.CompleteLLMNoRetry(ca.Ctx(), &agentAPI.CompletionRequest{
+		Messages:        salvageMsgs,
+		MaxTokens:       4096,
+		ToolChoice:      "none", // 不给工具，强制走文本产出
+		DisableThinking: !ca.ThinkingEnabled(),
+	})
+	if err != nil {
+		log.Printf("[child] wrap-up distillation failed (falling back to factual summary): %v", err)
+		return ""
+	}
+	content := strings.TrimSpace(resp.Content)
+	if content == "" {
+		return ""
+	}
+	return fmt.Sprintf("（注：已达 %d 轮工具上限，以下为已取得成果的收尾提炼，可能不完整）\n%s", maxTurns, content)
+}
+
+// ExecuteLLMTool 是 `llm_*` 族在**工作式子**里的执行体。
+//
+// ★ 整段委托给基座：源表、活动源、切源都是内核的事实，工作式子只是
+// 另一个调用者。类型自己那份实现（读 Config().ProviderManager）已删除 ——
+// 那是跨层取内核句柄。
+func (m *M) ExecuteLLMTool(tc agentAPI.ToolCall) string {
+	return m.A.ExecuteLLMTool(tc)
+}
+
+// chatWithInstance 用**实例自己的** provider 链跑一次**非流式**请求。
+//
+// 与主 agent 的 `callLLMWithFallback` 的区别是这里不重试、不切 active provider：
+// 子任务是短生命周期，重试只会把一个已经抖动的时间窗拉长。
+//
+// ★ 用 `ca.CompleteLLMNoRetry`（实例自己的），不是父的 —— 这是"每个 agent
+//
+//	持有自己的全部内容"的落点：`core.agent.llm.child_provider` 对它生效、
+//	多源回退对它生效。
+func (m *M) chatWithInstance(ca *agent.Agent, req *agentAPI.CompletionRequest) (*agentAPI.CompletionResponse, error) {
+	return ca.CompleteLLMNoRetry(ca.Ctx(), req)
+}
+
+// truncateStr 按字符截断（保留前 n 个 rune + "..."）。
+//
+// ★ 内联而不用基座的导出版：本包 import 基座，但那是"类型依赖基座"的
+//
+//	合法方向；这个三行纯函数没必要为它加一个导出面。
+func truncateStr(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
+}

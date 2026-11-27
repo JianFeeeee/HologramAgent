@@ -27,7 +27,13 @@ func (a *Agent) ExecuteInputChannels(tc agentAPI.ToolCall) string {
 	}
 	name, _ := tc.Arguments["name"].(string)
 
-	all := a.io.InputChannels()
+	// ★ 用**视图**而不是裸取全局表：子实例该只看自己持有的那些
+	//   （`IOView` 按 Owner 过滤，根实例看全部）。裸取 `a.io.InputChannels()`
+	//   会让子看见全部通道 —— 而它调不进去，白烧一轮往返。
+	var all []agentIO.InputChannel
+	if v := a.IOView(); v != nil {
+		all = v.InputChannels()
+	}
 	if len(all) == 0 {
 		return "没有任何已注册的 inputch。"
 	}

@@ -21,7 +21,7 @@ import (
 // 已知边界：路由只在本 agent 的**直接**驻留子里找。若孙辈的 inputch 由子划拨，
 // 而插件注入打在根 io 上，根解析不到那个 owner ⇒ 兜底给根处理（有日志）。
 // 这一层要等"孙辈 + 根可见的 agent 表"再收口，此处不静默丢输入。
-func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) bool {
+func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent) bool {
 	if evt == nil || evt.OutputChannel == "" || a.io == nil {
 		return false
 	}
@@ -62,80 +62,50 @@ func (a *Agent) RouteInputByOwner(evt *agentIO.InputEvent, isInterrupt bool) boo
 		return false // 未分配 / 归自己 ⇒ 本内核处理
 	}
 
-	// 驻留子从**统一登记表**取（不再是专用表 + 专用锁）。
-	rc := a.ResidentOf(entry.Owner)
-
-	// ★ rtchild 分支：rt 通道的输入必须进 **rtSlot**（单槽覆盖），
-	// 而不是走 rc.agent.io.DeliverRouted（那会进四级中断阶梯）。
+	// ★ 纯**查表转发**：本函数只判定归属，然后交给 owner 自己登记的投递口。
 	//
-	// 这是插件→rtchild 的**唯一通路**：插件只能用 Inject* 系列，那些方法
-	// 最终都汇到 deliverInput → 本函数。若不在这里识别 rt 通道，插件的
-	// 语音/画面输入会永远打在父身上（rtchild 的轮次永远是 0）。
+	// 这里**不认识任何类型** —— rt 的"单槽覆盖 + 取消当前轮"是 rtchild 在
+	// `Start` 里注册的 InputSink 自己的行为；驻留子用基座的默认 sink
+	// （`DeliverRouted`）。加一种新类型时它会注册自己的 sink，本函数零改动。
 	//
-	// 判据 TestRTChannel_PluginInputReachesRTSlot 钉它。
-	// rt 实例从**统一登记表**取（不再是专用表 + 专用锁）。
-	if rt := a.RTChildOf(entry.Owner); rt != nil {
-		// 不区分 isInterrupt：rt 没有中断阶梯，所有输入都是"覆盖式最新值"。
-		// 这正是"rt 输入不进四级中断阶梯"的落点（rt 单槽 vs 四级阶梯是两套目标
-		// 函数相反的设计，见 rtchild.go 开头的取舍说明）。
-		rt.slot.Push(evt)
-		if rt.agent != nil && rt.agent.ctx != nil {
-			// 已存在且活着的轮次：取消它，让 rtLoop 立刻用新输入重开（契约 1）。
-			rt.mu.Lock()
-			cancel, critical := rt.curCancel, rt.critical
-			if cancel != nil && critical > 0 {
-				rt.suppressedCancels++
-			}
-			rt.mu.Unlock()
-			if cancel != nil && critical == 0 {
-				cancel()
-			}
-		}
+	// 归属到一个不存在（或已销毁、登记表尚未归还）的 agent 时**不吞输入**：
+	// 返回 false 让本内核兜底并留痕（吞掉一条输入比多处理一条更糟）。
+	if delivered(entry.Owner, evt) {
 		return true
 	}
-
-	if rc == nil || rc.agent == nil || rc.agent.io == nil {
-		// 归属到一个不存在（或已销毁、登记表尚未归还）的 agent：
-		// **不吞输入** —— 由本内核兜底处理并留痕。吞掉一条输入比多处理一条更糟：
-		// 用户会看到"消息发出去了却没人理"，而日志里什么都没有。
-		log.Printf("[route] inputch %s owner %s has no matching agent, input handled by fallback %s", evt.OutputChannel, entry.Owner, a.id)
-		return false
-	}
-	// ★ 投递的**推动者**是内核循环：按 agentID 查它登记的投递口。
-	//   本函数只做归属判定（读通道登记表），不做"谁该收到"的裁定。
-	//   循环没装（单测/独立工具）时退回直投，与改造前行为一致。
-	if delivered(entry.Owner, evt, isInterrupt) {
-		return true
-	}
-	rc.agent.io.DeliverRouted(evt, isInterrupt)
-	return true
+	return false
 }
 
 // delivered 经内核循环把事件交给 owner 登记的投递口。
 //
 // 返回 false 表示循环未装配（单测/独立工具），调用方退回直投。
-func delivered(owner string, evt *agentIO.InputEvent, isInterrupt bool) bool {
+func delivered(owner string, evt *agentIO.InputEvent) bool {
 	l := kernelloop.Current()
 	if l == nil {
 		return false
 	}
-	return l.RouteInput(owner, evt, isInterrupt)
+	return l.RouteInput(owner, evt)
 }
 
-// inputSink 是本 agent 在内核循环里登记的投递口。
+// inputSink 是**路由的目标端**：内核按 inputch 归属把输入交给它，
+// 它把输入放进本 agent 的 io（单通道 + priority 标签随事件走）。
 //
-// ★ 它是 agent 侧**唯一**暴露给循环的东西：一个"把输入交给我"的动作。
-// 循环不认识 *Agent，也不知道 rt 的单槽覆盖、驻留子的四级队列 ——
-// 那些是各类型 agentloop 自己的语义。
+// ★ 它与 `RouteInputByOwner` 是一对：一个是"这条输入归谁"，一个是
+//
+//	"归我之后放哪"。扣在同一个文件里，因为删掉任何一半另一半都没有意义。
+//
+// ★ 它不做分拣：`io.pushLocal` 只有一条通道，`priority` 标签由**接收方**
+//
+//	的 agentloop 自己解释（rt 单槽覆盖 / 主·驻留四级阶梯）。
 type inputSink struct{ a *Agent }
 
-func (s inputSink) Deliver(evt any, isInterrupt bool) {
-	if s.a == nil || s.a.io == nil {
+func (s *inputSink) Deliver(evt any) {
+	if s == nil || s.a == nil || s.a.io == nil {
 		return
 	}
 	e, ok := evt.(*agentIO.InputEvent)
 	if !ok || e == nil {
 		return
 	}
-	s.a.io.DeliverRouted(e, isInterrupt)
+	s.a.io.DeliverRouted(e)
 }

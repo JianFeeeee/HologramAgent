@@ -60,9 +60,48 @@ type StageHandler func(ctx *StageContext) error
 type Stage string
 
 const (
-	StageOnInput        Stage = "on_input"
-	StagePreAction      Stage = "pre_action"
-	StagePostAction     Stage = "post_action"
+	StageOnInput    Stage = "on_input"
+	StagePreAction  Stage = "pre_action"
+	StagePostAction Stage = "post_action"
+	// StageOnToolcall 是**内核执行链**驱动的工具阶段：内核在真正执行每个
+	// 工具**之前**触发，把「正在执行的工具调用 + 它的参数」推给注册方。
+	//
+	// ★ 与 before/after_toolcall 的区别：那两个是**围绕执行**的前后钩子
+	//   （可以改写、可以拦下）；本阶段推的是**执行事实**——它已经进了内核
+	//   执行链（路由/授权/超时/清洗都在跑），注册方看到的是正在发生的事。
+	//
+	// ★ 为什么由内核驱动而不是 agentloop：工具执行链在内核里
+	//   （toolroute → security → device → 清洗）。只有那条链知道自己手里
+	//   正握着哪一个工具，agentloop 只提交批请求、拿回结果。
+	// StageOnLLMCall 是**内核 LLM 设施**驱动的模型调用阶段：
+	// 流式增量与最终响应都推给注册方。
+	//
+	// ★ 为什么由设施驱动而不是 agentloop（用户裁定 2026-11-27）：
+	//
+	//	LLM 调用归基座（`StreamLLM` / `CompleteLLM` 是唯二入口，回退链/
+	//	同源重试/可用性标记/活动源/错误分类都在设施内部）。所以"模型返回了
+	//	什么"这件事，只有那条链在**第一现场**掌握 —— agentloop 拿到的是
+	//	类型处理过的副本（类型会改写 `resp.Content`、把 ToolCalls 转来转去）。
+	//
+	// ★ 为什么必须是**阶段**而不是事件：它要能**拦断**（ctx.Response 非空
+	//	⇒ 不采用这次响应）与**改写**（ctx.LLMText）。push-once 的事件语义
+	//	会把这两件事丢掉。
+	//
+	// ★ 覆盖面：`on_input` / `pre_action` / `before_output` / `after_output`
+	//	都是**类型自己调 `RunStage`** 的 —— rtchild 与 worker 从不调，
+	//	于是它们的阶段事件根本不产生。本阶段挂在设施入口，**所有类型**自动
+	//	覆盖，不需要每个类型记得触发。
+	//
+	// 推送内容（流式时为增量帧，结束时为完整帧）：
+	//
+	//	ctx.LLMText          当前累计正文（流式）或完整正文（结束）
+	//	ctx.ReasoningContent 同理（思维链）
+	//	ctx.ToolCalls        仅结束帧带（本轮解析出的工具调用）
+	//	ctx.TokenUsage       仅结束帧带
+	//	ctx.Extra["streaming"] true=增量帧 / false=结束帧
+	//	ctx.Extra["round"]    本轮序号（同一任务内的第几次 LLM 往返）
+	StageOnLLMCall      Stage = "on_llm_call"
+	StageOnToolcall     Stage = "on_toolcall"
 	StageBeforeToolcall Stage = "before_toolcall"
 	StageAfterToolcall  Stage = "after_toolcall"
 	StageBeforeOutput   Stage = "before_output"
@@ -316,7 +355,29 @@ type ChannelDef struct {
 
 // StageContext provides context for stage handlers.
 type StageContext struct {
-	mu               sync.RWMutex
+	mu sync.RWMutex
+	// AgentID / AgentType / IsChild 标明**这次阶段属于哪个 agent**。
+	//
+	// ## 为什么必须在 ctx 里，而不是让插件自己推断
+	//
+	// 同一个内核里**多个 agent 并发跑**（主 agent、驻留子、rt 子）。插件收到
+	// 一次阶段调用时，靠 ctx 里现有的字段（LLMText / ToolCalls / Response）
+	// 分不出“地是哪个 agent 的现场”—— 而那个现场是该 agent 私有的。
+	//
+	// 具体后果：cli 广播 `tool_call` 时只能报工具名，不晓这一步是谁执行的；
+	// 排查时无法回答「这个工具是主 agent 调的还是驻留子调的」。
+	// 这与 `child.LogIdentity` 是同一类问题（包一层身份），但日志落在类型侧，
+	// 而 stage 是所有类型共用的入口 ⇒ 身份必须由**基座**填，不能由类型各自拼。
+	//
+	// ## 谁填
+	//
+	// 基座在创建**任何** StageContext 时填（`RunStage` / `RunKernelDrivenStage`
+	// 是唯一两个入口，它们先填再交给钩子与插件）。即使调用方自己建了 ctx，
+	// 进入入口时也会被覆写为真实值 —— 调用点不需要记得填。
+	AgentID   string
+	AgentType string // 主 agent 的类型名（如 "main" / "resident" / "rt" / "worker"）
+	IsChild   bool   // 是否为子 agent（主 agent 为 false）
+
 	RawMessage       string
 	UserID           string
 	GroupID          string
@@ -664,6 +725,8 @@ type PluginSDK struct {
 	sysPrompt      SystemPromptAPI
 	rawFiles       RawFilesAPI
 	events         EventSubscriber
+	regAgentType   AgentTypeRegistrar
+	unregAgentType AgentTypeUnregistrar
 	plgMgr         PluginMgrAPI
 	kernelCtl      KernelControlAPI
 
@@ -805,6 +868,65 @@ func (s *PluginSDK) Social() SocialAPI {
 }
 
 // Events returns the event subscriber for listening to kernel events (may be nil if not available).
+// AgentTypes 返回**子 agent 类型注册面**（内置插件专用）。
+//
+// ★ 只有内置插件（线程化、同地址空间）能真正注册成功：
+//
+//	载荷要携带真正的 Go 函数值，跨进程插件结构上送不进。
+//	内核侧还会再查一次 IsBuiltinPlugin（运行期事实，静态策略表表达不了）。
+func (s *PluginSDK) AgentTypes() AgentTypeAPI {
+	return agentTypeAPI{s: s}
+}
+
+// SetAgentTypeRegistrar 由**运行时**注入注册口（插件业务代码不用调它）。
+func (s *PluginSDK) SetAgentTypeRegistrar(r AgentTypeRegistrar, u AgentTypeUnregistrar) {
+	s.apiMu.Lock()
+	s.regAgentType = r
+	s.unregAgentType = u
+	s.apiMu.Unlock()
+}
+
+// AgentTypeAPI 是 s.AgentTypes() 返回的注册面。
+type AgentTypeAPI interface {
+	// Register 登记一个子 agent 类型（含特化的 agentloop）。
+	Register(def AgentTypeDef) error
+	// Unregister 撤销（仍有存活实例 ⇒ 拒绝并列出 id）。
+	Unregister(typeName string) error
+}
+
+// agentTypeAPI 是 AgentTypeAPI 的实现（转发到注入的 registrar）。
+type agentTypeAPI struct{ s *PluginSDK }
+
+func (a agentTypeAPI) Register(def AgentTypeDef) error {
+	a.s.apiMu.RLock()
+	reg := a.s.regAgentType
+	a.s.apiMu.RUnlock()
+	if reg == nil {
+		// 未注入 = 宿主不支持（外部插件 / 裁剪版内核）。响亮失败，不静默。
+		return errAgentTypeUnavailable
+	}
+	// 声明者身份由**运行时**补（插件不该能冒充别的插件）。
+	return reg(def)
+}
+
+func (a agentTypeAPI) Unregister(typeName string) error {
+	a.s.apiMu.RLock()
+	unreg := a.s.unregAgentType
+	a.s.apiMu.RUnlock()
+	if unreg == nil {
+		return errAgentTypeUnavailable
+	}
+	return unreg(typeName)
+}
+
+// errAgentTypeUnavailable 表示宿主不提供类型注册面。
+var errAgentTypeUnavailable = errTypeUnavailable("子 agent 类型注册不可用：宿主未注入注册面" +
+	"（外部插件结构上无法注册类型 —— 载荷需要携带 Go 函数值）")
+
+type errTypeUnavailable string
+
+func (e errTypeUnavailable) Error() string { return string(e) }
+
 func (s *PluginSDK) Events() EventSubscriber {
 	s.apiMu.RLock()
 	defer s.apiMu.RUnlock()

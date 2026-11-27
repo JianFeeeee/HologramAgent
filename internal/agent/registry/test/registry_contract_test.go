@@ -134,7 +134,7 @@ func (h *recordingHost) GetChild(id string) (registry.ChildBrief, bool) {
 	return b, ok
 }
 
-func (h *recordingHost) DestroyChild(id, residual string) (string, error) {
+func (h *recordingHost) DestroyChild(id, residual, channels string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.children, id)
@@ -335,9 +335,15 @@ func containsStr(list []string, s string) bool {
 // ★ 这一道是**运行期事实**（谁能承载 Go 函数值），静态策略表表达不了。
 func TestRegisterEventRejectsNonBuiltinPublisher(t *testing.T) {
 	var mark []string
-	payload := registry.NewRegisterPayload("some-lua-plugin", regTestType("evt-type", &mark))
+	// ★ 载荷按**真实发布路径**的形态构造（internal/plugin/registry.go 的
+	//   `PublishAs` 就是这么发的）：`plugin` + `descriptor` 两个键。
+	//   用构造器的话，测试测的是构造器而不是发布链路的实际载荷。
+	payload := map[string]interface{}{
+		"plugin":                 "some-lua-plugin",
+		registry.EventPayloadKey: regTestType("evt-type", &mark),
+	}
 
-	err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(name string) bool {
+	_, _, err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(name string) bool {
 		return name == "webui" // 只把 webui 当内置
 	})
 	if err == nil {
@@ -352,15 +358,33 @@ func TestRegisterEventRejectsNonBuiltinPublisher(t *testing.T) {
 // TestRegisterEventAcceptsRealDescriptorFromBuiltin：内置插件携带真结构体可注册。
 func TestRegisterEventAcceptsRealDescriptorFromBuiltin(t *testing.T) {
 	var mark []string
-	payload := registry.NewRegisterPayload("webui", regTestType("evt-builtin", &mark))
+	payload := map[string]interface{}{
+		"plugin":                 "webui",
+		registry.EventPayloadKey: regTestType("evt-builtin", &mark),
+	}
 
-	if err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(string) bool { return true }); err != nil {
+	_, def, err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(string) bool { return true })
+	if err != nil {
 		t.Fatalf("★ 内置插件注册被误拒：%v", err)
 	}
-	t.Cleanup(func() { _ = registry.Unregister("evt-builtin", nil) })
-
-	if _, ok := registry.Lookup("evt-builtin"); !ok {
-		t.Fatal("★ 注册成功后类型查不到")
+	// ★ 本函数**不组装**（registry 是纯注册表，不 import agent 实现）：
+	//   组装交给 kernelmod/agenttype。所以这里判"声明被原样交出来了"。
+	if def == nil {
+		t.Fatal("★ 注册事件没有交出类型声明")
+	}
+	// ★ 本函数把注册**交给了组装器**：这里模拟组装器（真实现是
+	//   `kernelmod/agenttype`，那里才 import agent 实现）。
+	//
+	// 判据要钉的语义是"事件层收下了真结构体并交出去"，而不是"registry
+	// 自己能把中立声明变成类型"—— 后者会把 agent 实现塞进纯注册表。
+	if d, ok := def.(registry.Descriptor); ok {
+		if err := registry.Register(d); err != nil {
+			t.Fatalf("注册失败: %v", err)
+		}
+		t.Cleanup(func() { _ = registry.Unregister("evt-builtin", nil) })
+		if _, ok := registry.Lookup("evt-builtin"); !ok {
+			t.Fatal("★ 注册成功后类型查不到")
+		}
 	}
 }
 
@@ -395,7 +419,7 @@ func TestRegisterEventRejectsSerializedPayload(t *testing.T) {
 		"plugin":                 "webui",
 		registry.EventPayloadKey: asMap,
 	}
-	if err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(string) bool { return true }); err == nil {
+	if _, _, err := registry.HandleRegisterEvent(registry.EventTypeRegister, payload, func(string) bool { return true }); err == nil {
 		t.Fatal("★ JSON 形态的载荷（无真 Go 函数值）被接受了 —— 方案 B 的结构性保证失效")
 	}
 	if _, ok := registry.Lookup("serialized"); ok {
@@ -453,7 +477,7 @@ func TestLoadCorruptedFileIsLoud(t *testing.T) {
 	if err := os.MkdirAll(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(p, registry.FileName()), []byte("{坏掉的 json"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(p, "instances.json"), []byte("{坏掉的 json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := registry.Load(dir); err == nil {
@@ -525,4 +549,12 @@ func TestRestoreDoesNotDuplicateExistingInstance(t *testing.T) {
 	if len(mark) != 0 {
 		t.Fatalf("★ Construct 被重复调用：%v", mark)
 	}
+}
+
+// WorkDirOf 返回内核派生的实例工作目录（判据用固定前缀即可）。
+func (h *recordingHost) WorkDirOf(typeName, id string) string {
+	if typeName == "" || id == "" {
+		return ""
+	}
+	return "/tmp/test-agents/" + typeName + "/" + id
 }

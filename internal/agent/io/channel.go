@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,36 @@ const (
 
 func (c OutputCapability) Supports(cap OutputCapability) bool {
 	return c&cap != 0
+}
+
+// capabilityByName 是**能力名 ↔ 位**的唯一映射表。
+//
+// ★ 名字是插件侧的中立词（sdk 声明的 `Capabilities`），位是内核侧类型；
+//
+//	这张表是两者之间唯一的一次转换。加第三种能力只加一行常量 + 一行表项。
+var capabilityByName = map[string]OutputCapability{
+	"text":       CapText,
+	"file":       CapFile,
+	"image":      CapImage,
+	"audio":      CapAudio,
+	"structured": CapStructured,
+	"rt":         CapRT,
+}
+
+// CapabilityByName 把中立能力名解析成能力位。
+func CapabilityByName(name string) (OutputCapability, bool) {
+	c, ok := capabilityByName[strings.ToLower(strings.TrimSpace(name))]
+	return c, ok
+}
+
+// CapabilityNames 返回全部已知能力名（错误文案用，顺序稳定）。
+func CapabilityNames() string {
+	names := make([]string, 0, len(capabilityByName))
+	for n := range capabilityByName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func (c OutputCapability) String() string {
@@ -142,13 +173,13 @@ type OutputEvent struct {
 }
 
 type IOManager struct {
-	mu          sync.RWMutex
-	devices     map[string]Device
-	inputCh     chan *InputEvent
-	interruptCh chan *InputEvent
-	outputCh    chan *OutputEvent
-	nextReqID   int64
-	channelReg  *ChannelRegistry
+	mu         sync.RWMutex
+	devices    map[string]Device
+	inputCh    chan *InputEvent
+	outputCh   chan *OutputEvent
+	outputOnce sync.Once
+	nextReqID  int64
+	channelReg *ChannelRegistry
 
 	// parent 是"上级 IOManager"（驻留子的轻量内核指向父的内核）。
 	//
@@ -163,6 +194,15 @@ type IOManager struct {
 	// 以分钟计），复制出来的表转瞬就过期。授权由各自的 AllowedOutputs 白名单把关，
 	// 回退只解决"看得见"，不解决"能不能用"。
 	parent *IOManager
+
+	// priorityClamp 是**注入侧的授权夹取**（由装配点注入安全闸门）。
+	//
+	// ★ 为什么在 io 而不是 agent 的投递路径：夹取是"外部来源有没有 L4 这个
+	//   能力"的**授权**判定。放在投递路径上会变成"每个类型各夹一次"，
+	//   漏一处就是提权面；而所有注入都必经这里。
+	//
+	// nil ⇒ 不夹取（单测/独立工具；生产装配期由 kernelmod/agent 注入）。
+	priorityClamp func(declared, source string) string
 
 	// inputRouter 决定一条输入是否被"别的 agent"接管（返回 true = 已接管）。
 	//
@@ -189,7 +229,6 @@ func NewIOManager() *IOManager {
 	return &IOManager{
 		devices:           make(map[string]Device),
 		inputCh:           make(chan *InputEvent, 256),
-		interruptCh:       make(chan *InputEvent, 64),
 		outputCh:          make(chan *OutputEvent, 256),
 		channelReg:        NewChannelRegistry(),
 		toolPendingBlocks: make(map[string][]interface{}),
@@ -199,9 +238,18 @@ func NewIOManager() *IOManager {
 // InputRouter 是输入路由器的签名。
 //
 //	evt        待投递的输入事件（OutputChannel 即它的 inputch）
-//	isInterrupt 该输入是中断还是排队（两者都要按归属路由）
 //	返回 true  = 已被别的 agent 接管，本内核不再处理
-type InputRouter func(evt *InputEvent, isInterrupt bool) bool
+//
+// ★ 没有"这是中断还是排队"这个参数：那是**接收方的排队语义**
+// （见 kernelapi.InputEvent 的 priority 标签），路由只按归属搬运。
+type InputRouter func(evt *InputEvent) bool
+
+// SetPriorityClamp 注入优先级夹取（装配期一次；nil = 不夹取）。
+func (m *IOManager) SetPriorityClamp(fn func(declared, source string) string) {
+	m.mu.Lock()
+	m.priorityClamp = fn
+	m.mu.Unlock()
+}
 
 // SetInputRouter 注入输入路由器（nil = 不路由，行为与以前完全一致）。
 func (m *IOManager) SetInputRouter(r InputRouter) {
@@ -213,27 +261,29 @@ func (m *IOManager) SetInputRouter(r InputRouter) {
 // deliverInput 是**本内核**接收一条外部输入的收口：先按 inputch 归属路由，
 // 被别的 agent 接管就不进本内核队列（划给子的 inputch，父不再收到 —— 这是「划拨」
 // 的语义，不是"父也顺便看一眼"）。
-func (m *IOManager) deliverInput(evt *InputEvent, isInterrupt bool) {
+func (m *IOManager) deliverInput(evt *InputEvent) {
 	m.mu.RLock()
 	router := m.inputRouter
 	m.mu.RUnlock()
-	if router != nil && router(evt, isInterrupt) {
+	if router != nil && router(evt) {
 		return
 	}
-	m.pushLocal(evt, isInterrupt)
+	m.pushLocal(evt)
 }
 
 // DeliverRouted 把**已被路由**的事件放进本内核队列（不再二次路由）。
 // 由路由器实现调用：父把输入交给持有该 inputch 的子。
-func (m *IOManager) DeliverRouted(evt *InputEvent, isInterrupt bool) {
-	m.pushLocal(evt, isInterrupt)
+func (m *IOManager) DeliverRouted(evt *InputEvent) {
+	m.pushLocal(evt)
 }
 
-func (m *IOManager) pushLocal(evt *InputEvent, isInterrupt bool) {
-	if isInterrupt {
-		m.interruptCh <- evt
-		return
-	}
+// pushLocal 把所有输入放进**同一个通道**。
+//
+// ★ 这里曾经分 `interruptCh` / `inputCh` 两条：那是**主 agent 的排队语义**
+// （中断要抢占、普通输入要排队），不是基座概念 —— rt 连队列都没有、
+// worker 什么都没有。现在只有一条入口，`priority` 标签随事件走，
+// 由**接收方**的投递口自己分拣（用户裁定：内核只带标签，不分拣）。
+func (m *IOManager) pushLocal(evt *InputEvent) {
 	m.inputCh <- evt
 }
 
@@ -264,9 +314,21 @@ func (m *IOManager) lookupDevice(name string) Device {
 
 func (m *IOManager) UnregisterDevice(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.devices, name)
+	m.mu.Unlock()
 }
+
+// ★ 设备/通道变更**不发事件**（用户裁定 2026-11-27）。
+//
+// 三个理由：
+//
+//	① io 是**叶子包**：让它持总线或"发布面"，等于把事件机制拉进依赖闭包
+//	② "登记表变了要通知谁"是**装配层**的知识，不是登记表的
+//	③ **不需要**：`IOView()` 每次查询现算（只持 real 指针，无快照），
+//	   所以设备/通道的增删**立刻**反映 —— 没有"视图过期"这件事需要通知
+//
+// 与 plghost 的 `EventPluginsChanged` 的根本区别：插件视图有集合运算要重算，
+// IO 视图没有。照抄那边的通知机制是错的。
 
 func (m *IOManager) nextRequestID() string {
 	m.mu.Lock()
@@ -285,17 +347,19 @@ func (m *IOManager) AtomicSwapDevices(newDevices map[string]Device) map[string]D
 
 	oldDevices := m.devices
 	m.devices = newDevices
-
+	m.mu.Unlock()
+	m.mu.Lock()
 	return oldDevices
 }
 
 func (m *IOManager) RegisterDevice(dev Device) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, ok := m.devices[dev.Name()]; ok {
+		m.mu.Unlock()
 		return fmt.Errorf("device %s already registered", dev.Name())
 	}
 	m.devices[dev.Name()] = dev
+	m.mu.Unlock()
 	return nil
 }
 
@@ -341,7 +405,7 @@ func (m *IOManager) InjectInput(source string, eventType string, payload map[str
 		Type:          eventType,
 		Payload:       payload,
 		OutputChannel: source,
-	}, false)
+	})
 }
 
 func (m *IOManager) InjectInputSync(source string, eventType string, payload map[string]interface{}) *OutputEvent {
@@ -353,7 +417,7 @@ func (m *IOManager) InjectInputSync(source string, eventType string, payload map
 		Payload:       payload,
 		ResponseCh:    ch,
 		OutputChannel: source,
-	}, false)
+	})
 	// 被路由走时，回答由持有该 inputch 的 agent 写进同一个 ResponseCh
 	//（§4.3：同步输入的回程是事前定好的）——所以这里照常等待。
 	return <-ch
@@ -367,7 +431,7 @@ func (m *IOManager) InjectInputTo(source, outputChannel, eventType string, paylo
 		Type:          eventType,
 		Payload:       payload,
 		OutputChannel: outputChannel,
-	}, false)
+	})
 }
 
 // InjectInputSyncTo 注入输入事件（同步等待）并指定输出通道
@@ -380,7 +444,7 @@ func (m *IOManager) InjectInputSyncTo(source, outputChannel, eventType string, p
 		Payload:       payload,
 		ResponseCh:    ch,
 		OutputChannel: outputChannel,
-	}, false)
+	})
 	return <-ch
 }
 
@@ -507,7 +571,33 @@ func (m *IOManager) InjectInputSyncToOpts(source, outputChannel, eventType strin
 
 func (m *IOManager) InjectInterruptOpts(source, channel string, payload map[string]interface{}, opts InjectOptions) {
 	applyInjectOpts(payload, opts)
+	m.clampInterruptPriority(source, payload)
 	m.InjectInterrupt(source, channel, payload)
+}
+
+// clampInterruptPriority 在**注入时刻**把声明的级别夹到允许范围。
+//
+// 特权来源（编译期内置插件 / 父 agent）由装配点给的判据决定；
+// 判据本身在安全模块（ClampPriority），io 只把"谁在注入"这一事实递过去。
+//
+// ★ 失败方向是收紧：夹取函数缺失时**不夹**（单测/独立工具无闸门），
+//
+//	但生产装配必然注入它 —— 与"安全模块未加载 ⇒ 恒放行"同一口径。
+func (m *IOManager) clampInterruptPriority(source string, payload map[string]interface{}) {
+	if m == nil || payload == nil {
+		return
+	}
+	raw, ok := payload["priority"].(string)
+	if !ok || raw == "" {
+		return
+	}
+	m.mu.RLock()
+	clamp := m.priorityClamp
+	m.mu.RUnlock()
+	if clamp == nil {
+		return
+	}
+	payload["priority"] = clamp(raw, source)
 }
 
 func (m *IOManager) InjectText(source string, text string) {
@@ -557,7 +647,7 @@ func (m *IOManager) InjectInterrupt(source, channel string, payload map[string]i
 		Type:          evtType,
 		Payload:       payload,
 		OutputChannel: channel,
-	}, true)
+	})
 }
 
 func (m *IOManager) InjectInterruptText(source, channel, text string) {
@@ -587,8 +677,6 @@ func (m *IOManager) InjectTextSyncOpts(source, outputChannel, text string, opts 
 		"content": text,
 	}, opts)
 }
-
-func (m *IOManager) InputInterruptChan() <-chan *InputEvent { return m.interruptCh }
 
 // InjectTextSyncTo 注入文本输入（同步等待）并指定输出通道
 func (m *IOManager) InjectTextSyncTo(source, outputChannel, text string) *OutputEvent {
@@ -685,7 +773,10 @@ func (m *IOManager) RegisterInputChannel(name string, def ChannelDef) {
 
 // RegisterInputChannelFrom 注册一个 inputch 并登记归属插件。
 func (m *IOManager) RegisterInputChannelFrom(plugin, name string, def ChannelDef) error {
-	return m.channelReg.Register(InputChannel{Name: name, Plugin: plugin, Def: def})
+	if err := m.channelReg.Register(InputChannel{Name: name, Plugin: plugin, Def: def}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UnregisterInputChannel 注销一个 inputch。
@@ -693,9 +784,31 @@ func (m *IOManager) UnregisterInputChannel(name string) {
 	m.channelReg.Unregister(name)
 }
 
+// OrphanInputChannel 让一个 inputch 悬空（见 ChannelRegistry.Orphan）。
+//
+// ★ 发布通知：悬空改变了"谁能看见它"，受影响的是**原来持有它的那个实例**。
+func (m *IOManager) OrphanInputChannel(name string) error {
+	if err := m.channelReg.Orphan(name); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AssignInputChannelDraining 接回一个 inputch 并交出它的暂存任务。
+func (m *IOManager) AssignInputChannelDraining(name, agentID string, capacity int) ([]*InputEvent, error) {
+	evs, err := m.channelReg.AssignAndDrainStash(name, agentID, capacity)
+	if err != nil {
+		return nil, err
+	}
+	return evs, nil
+}
+
 // AssignInputChannel 把一个 inputch 划给某个 agent（见 ChannelRegistry.Assign）。
 func (m *IOManager) AssignInputChannel(name, agentID string, capacity int) error {
-	return m.channelReg.Assign(name, agentID, capacity)
+	if err := m.channelReg.Assign(name, agentID, capacity); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SetChannelRegistry 注入一份**共享的**登记表（根 agent 与驻留子共用同一份）。
@@ -970,4 +1083,155 @@ func bindExecCtx(ctx context.Context, args map[string]interface{}) map[string]in
 	}
 	out[execCtxArgKey] = ctx
 	return out
+}
+
+// ChannelConsolidation 是「记忆整理」这类**自输入**的通道名。
+//
+// ★ 为什么归 io：它是**通道名**（IO 契约的一部分），不是某个类型的私有值。
+//
+//	状态机、子 agent 实现、事件循环三条线都要判它。
+const ChannelConsolidation = "_consolidation_"
+
+// PayloadKeyPriority 是优先级标记的键（"L1".."L4"）。
+const PayloadKeyPriority = "priority"
+
+// ───────────────────────── 标记（payload 键）契约 ─────────────────────────
+//
+// ★ 这些是**内核与注入方之间的契约**：键叫什么、取什么值由内核定义，
+//   **怎么解释归类型**（docs §7）。同一个 priority="L4"：
+//
+//	主 agent  抢占：取消当前 LLM + 现场入栈
+//	驻留子    高优先级入队（不挂起）
+//	rt        任何输入都覆盖当前轮（它没有"级别"概念）
+//	插件类型  插件自己的 Loop 定义
+//
+// 所以本文件只提供**取值原语**，不提供任何级别映射或中断判定。
+
+// Marks 是输入事件 payload 的标记视图（本类型只读）。
+type Marks map[string]interface{}
+
+// MarksOf 取一条 payload 的标记（nil 安全）。
+func MarksOf(payload map[string]interface{}) Marks {
+	if payload == nil {
+		return nil
+	}
+	return Marks(payload)
+}
+
+// Flag 读一个布尔标记（如 `stop` / `interrupt` / `kernel`）。
+func (m Marks) Flag(key string) bool {
+	if m == nil {
+		return false
+	}
+	v, _ := m[key].(bool)
+	return v
+}
+
+// Priority 返回**已授权**的优先级原始字符串（"L1".."L4"，空 = 非中断）。
+//
+// ★ 只有取值，没有映射：把 "L4" 翻成"第几级中断"是类型自己的策略。
+//
+//	L4→L3 的夹取发生在注入时刻（安全闸门），到这里字符串已经可信。
+func (m Marks) Priority() string {
+	if m == nil {
+		return ""
+	}
+	s, _ := m[PayloadKeyPriority].(string)
+	return s
+}
+
+// IsInterrupt 报告这条输入是否**声明了自己是中断**。
+//
+// ★ 这是"是否为中断"这个**事实**（注入方声明的），不是"该怎么处理"。
+func (m Marks) IsInterrupt() bool {
+	if m == nil {
+		return false
+	}
+	if v, ok := m["interrupt"].(bool); ok && v {
+		return true
+	}
+	return m.Priority() != ""
+}
+
+// StartOutputDispatch 启动**输出通道分发器**：把 `outputCh` 上的每条事件
+// 送到 `OutputChannel` 指向的 device handler。
+//
+// ## 为什么它必须存在（2026-11-25 实测缺口）
+//
+// `EmitOutputTo` 只是把事件塞进 `outputCh`。这条链路上**没有人消费** ——
+// 于是 docs §9.2「输出通道调用本身就是流式载体」这句话在实践中不成立：
+// 事件进队列后原地蒸发，插件的通道 handler 一次都不被调。
+//
+// ## 为什么在 io 层而不是 kernelloop
+//
+// 分发是"IO 面的实现"，不是"推动机制"：它读的是本 IOManager 自己的
+// device 表与自己的队列。`kernelloop.StartOutputConsumer` 只是**载体**
+// （随循环生命周期、可秀回收），语义仍在这里。
+//
+// idempotent：重复启动只起一个 goroutine。
+func (m *IOManager) StartOutputDispatch(stop <-chan struct{}) {
+	if m == nil {
+		return
+	}
+	m.outputOnce.Do(func() {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				case evt, ok := <-m.outputCh:
+					if !ok {
+						return
+					}
+					m.dispatchOutput(evt)
+				}
+			}
+		}()
+	})
+}
+
+// dispatchOutput 把一条输出事件交给对应通道的 handler。
+//
+// ★ 找不到通道 ⇒ 响亮记日志，**不静默丢**：那通常意味着插件没注册
+// (RegisterOutputChannel 失败) 或通道名拼错，静默丢弃会让"agent 说了话
+// 但用户看不到"变成一个无从排查的现象。
+func (m *IOManager) dispatchOutput(evt *OutputEvent) {
+	if evt == nil {
+		return
+	}
+	name := evt.OutputChannel
+	if name == "" {
+		name = evt.Target
+	}
+	if name == "" {
+		log.Printf("[io] output event without channel (target=%q type=%q) — dropped", evt.Target, evt.Type)
+		return
+	}
+	dev := m.lookupDevice(name)
+	if dev == nil && evt.Target != "" && evt.Target != name {
+		dev = m.lookupDevice(evt.Target)
+	}
+	if dev == nil {
+		log.Printf("[io] no output device %q for output event (type=%q) — dropped "+
+			"(plugin failed to RegisterOutputChannel?)", name, evt.Type)
+		return
+	}
+	// ★ handler 的入参形状沿用既有约定：payload 字段**展平**到顶层
+	//   （cli/webui 的 handler 都按 `args["payload"]` / `args["delta"]` /
+	//   `args["type"]` 读）。这是插件侧的既有契约，不能改。
+	args := make(map[string]interface{}, len(evt.Payload)+2)
+	for k, v := range evt.Payload {
+		args[k] = v
+	}
+	args["type"] = evt.Type
+	if evt.Payload != nil {
+		if p, ok := evt.Payload["payload"]; ok {
+			args["payload"] = p
+		} else if p, ok := evt.Payload["content"]; ok {
+			args["payload"] = p
+		}
+	}
+	if _, err := dev.Execute("output", args); err != nil {
+		log.Printf("[io] output device %q handler failed: %v", name, err)
+	}
 }

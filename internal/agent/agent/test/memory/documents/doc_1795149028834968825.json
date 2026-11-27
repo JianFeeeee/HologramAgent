@@ -1,0 +1,558 @@
+{
+  "id": "doc_1795149028834968825",
+  "summary": "第A轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy…",
+  "content": "[12:30] agent: 第A轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy → ok\n[12:30] webui: 第B轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n[12:30] agent: 第B轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy → ok\n[12:30] webui: 第C轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n[12:30] agent: 第C轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy → ok\n[12:30] webui: 第D轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n[12:30] agent: 第D轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy → ok\n[12:30] webui: 第E轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n[12:30] agent: 第E轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy → ok\n[12:30] webui: 第F轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n[12:30] agent: 第F轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy → ok\n[12:30] webui: 第G轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+  "events": [
+    {
+      "ts": "2026-11-20T12:30:28.83125306+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_196650648908eb2459e8ac55",
+          "modality": "text",
+          "text": "第A轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.83125306+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.83125306+08:00",
+          "updated_at": "2026-11-20T12:30:28.83125306+08:00"
+        },
+        {
+          "id": "blk_txt_8114cc1383e11d6e59222782",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.83125306+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.83125306+08:00",
+          "updated_at": "2026-11-20T12:30:28.83125306+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.831277416+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_e8cec490b498ebaf2dbf0e02",
+          "modality": "text",
+          "text": "第B轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "webui",
+          "frame_ts": "2026-11-20T12:30:28.831277416+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.831277416+08:00",
+          "updated_at": "2026-11-20T12:30:28.831277416+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.831434568+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_73433cc86d6ec56af4b66ad6",
+          "modality": "text",
+          "text": "第B轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.831434568+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.831434568+08:00",
+          "updated_at": "2026-11-20T12:30:28.831434568+08:00"
+        },
+        {
+          "id": "blk_txt_42aee0f369541c5b1c5e0e56",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.831434568+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.831434568+08:00",
+          "updated_at": "2026-11-20T12:30:28.831434568+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.83147903+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_4ae2241d1298f96d33cffa34",
+          "modality": "text",
+          "text": "第C轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "webui",
+          "frame_ts": "2026-11-20T12:30:28.83147903+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.83147903+08:00",
+          "updated_at": "2026-11-20T12:30:28.83147903+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.831658063+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_0a96b8ae225c8829a38224ce",
+          "modality": "text",
+          "text": "第C轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.831658063+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.831658063+08:00",
+          "updated_at": "2026-11-20T12:30:28.831658063+08:00"
+        },
+        {
+          "id": "blk_txt_70c0412cd333ec4e6776b2e6",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.831658063+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.831658063+08:00",
+          "updated_at": "2026-11-20T12:30:28.831658063+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.831681787+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_52446be2aefb6521957868db",
+          "modality": "text",
+          "text": "第D轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "webui",
+          "frame_ts": "2026-11-20T12:30:28.831681787+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.831681787+08:00",
+          "updated_at": "2026-11-20T12:30:28.831681787+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.832322528+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_0f5bc62e8f8275cf52153cfa",
+          "modality": "text",
+          "text": "第D轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.832322528+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832322528+08:00",
+          "updated_at": "2026-11-20T12:30:28.832322528+08:00"
+        },
+        {
+          "id": "blk_txt_af5d5cc1146a41bae30e4f98",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.832322528+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832322528+08:00",
+          "updated_at": "2026-11-20T12:30:28.832322528+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.832387999+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_3b5815f185c98d24f42aa189",
+          "modality": "text",
+          "text": "第E轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "webui",
+          "frame_ts": "2026-11-20T12:30:28.832387999+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832387999+08:00",
+          "updated_at": "2026-11-20T12:30:28.832387999+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.832528671+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_b60ae9ce8c7a9415e1cc12a0",
+          "modality": "text",
+          "text": "第E轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.832528671+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832528671+08:00",
+          "updated_at": "2026-11-20T12:30:28.832528671+08:00"
+        },
+        {
+          "id": "blk_txt_97f3a341b0232fa44a68a682",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.832528671+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832528671+08:00",
+          "updated_at": "2026-11-20T12:30:28.832528671+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.832552695+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_180c9db6eeb107674190d24e",
+          "modality": "text",
+          "text": "第F轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "webui",
+          "frame_ts": "2026-11-20T12:30:28.832552695+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832552695+08:00",
+          "updated_at": "2026-11-20T12:30:28.832552695+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.832694038+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_2705f292a791b7f503b48947",
+          "modality": "text",
+          "text": "第F轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.832694038+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832694038+08:00",
+          "updated_at": "2026-11-20T12:30:28.832694038+08:00"
+        },
+        {
+          "id": "blk_txt_014677327d626f105c229f02",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T12:30:28.832694038+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832694038+08:00",
+          "updated_at": "2026-11-20T12:30:28.832694038+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T12:30:28.832716861+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_cf0901ef00b336d9ee53da76",
+          "modality": "text",
+          "text": "第G轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+          "source": "webui",
+          "frame_ts": "2026-11-20T12:30:28.832716861+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T12:30:28.832716861+08:00",
+          "updated_at": "2026-11-20T12:30:28.832716861+08:00"
+        }
+      ]
+    }
+  ],
+  "created_at": "2026-11-20T12:30:28.834970228+08:00",
+  "updated_at": "2026-11-20T12:30:28.834970278+08:00",
+  "source": "context_archived",
+  "meta": {
+    "content_hash": "d6878284c31b0065086ba152cda68aa7",
+    "is_archived_context": "true"
+  },
+  "access_count": 1,
+  "last_access": "2026-11-20T12:30:28.834970318+08:00",
+  "blocks": [
+    {
+      "id": "blk_txt_196650648908eb2459e8ac55",
+      "modality": "text",
+      "text": "第A轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.83125306+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.83125306+08:00",
+      "updated_at": "2026-11-20T12:30:28.83125306+08:00"
+    },
+    {
+      "id": "blk_txt_8114cc1383e11d6e59222782",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.83125306+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.83125306+08:00",
+      "updated_at": "2026-11-20T12:30:28.83125306+08:00"
+    },
+    {
+      "id": "blk_txt_e8cec490b498ebaf2dbf0e02",
+      "modality": "text",
+      "text": "第B轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "webui",
+      "frame_ts": "2026-11-20T12:30:28.831277416+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.831277416+08:00",
+      "updated_at": "2026-11-20T12:30:28.831277416+08:00"
+    },
+    {
+      "id": "blk_txt_73433cc86d6ec56af4b66ad6",
+      "modality": "text",
+      "text": "第B轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.831434568+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.831434568+08:00",
+      "updated_at": "2026-11-20T12:30:28.831434568+08:00"
+    },
+    {
+      "id": "blk_txt_42aee0f369541c5b1c5e0e56",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.831434568+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.831434568+08:00",
+      "updated_at": "2026-11-20T12:30:28.831434568+08:00"
+    },
+    {
+      "id": "blk_txt_4ae2241d1298f96d33cffa34",
+      "modality": "text",
+      "text": "第C轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "webui",
+      "frame_ts": "2026-11-20T12:30:28.83147903+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.83147903+08:00",
+      "updated_at": "2026-11-20T12:30:28.83147903+08:00"
+    },
+    {
+      "id": "blk_txt_0a96b8ae225c8829a38224ce",
+      "modality": "text",
+      "text": "第C轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.831658063+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.831658063+08:00",
+      "updated_at": "2026-11-20T12:30:28.831658063+08:00"
+    },
+    {
+      "id": "blk_txt_70c0412cd333ec4e6776b2e6",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.831658063+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.831658063+08:00",
+      "updated_at": "2026-11-20T12:30:28.831658063+08:00"
+    },
+    {
+      "id": "blk_txt_52446be2aefb6521957868db",
+      "modality": "text",
+      "text": "第D轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "webui",
+      "frame_ts": "2026-11-20T12:30:28.831681787+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.831681787+08:00",
+      "updated_at": "2026-11-20T12:30:28.831681787+08:00"
+    },
+    {
+      "id": "blk_txt_0f5bc62e8f8275cf52153cfa",
+      "modality": "text",
+      "text": "第D轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.832322528+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832322528+08:00",
+      "updated_at": "2026-11-20T12:30:28.832322528+08:00"
+    },
+    {
+      "id": "blk_txt_af5d5cc1146a41bae30e4f98",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.832322528+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832322528+08:00",
+      "updated_at": "2026-11-20T12:30:28.832322528+08:00"
+    },
+    {
+      "id": "blk_txt_3b5815f185c98d24f42aa189",
+      "modality": "text",
+      "text": "第E轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "webui",
+      "frame_ts": "2026-11-20T12:30:28.832387999+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832387999+08:00",
+      "updated_at": "2026-11-20T12:30:28.832387999+08:00"
+    },
+    {
+      "id": "blk_txt_b60ae9ce8c7a9415e1cc12a0",
+      "modality": "text",
+      "text": "第E轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.832528671+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832528671+08:00",
+      "updated_at": "2026-11-20T12:30:28.832528671+08:00"
+    },
+    {
+      "id": "blk_txt_97f3a341b0232fa44a68a682",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.832528671+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832528671+08:00",
+      "updated_at": "2026-11-20T12:30:28.832528671+08:00"
+    },
+    {
+      "id": "blk_txt_180c9db6eeb107674190d24e",
+      "modality": "text",
+      "text": "第F轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "webui",
+      "frame_ts": "2026-11-20T12:30:28.832552695+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832552695+08:00",
+      "updated_at": "2026-11-20T12:30:28.832552695+08:00"
+    },
+    {
+      "id": "blk_txt_2705f292a791b7f503b48947",
+      "modality": "text",
+      "text": "第F轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.832694038+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832694038+08:00",
+      "updated_at": "2026-11-20T12:30:28.832694038+08:00"
+    },
+    {
+      "id": "blk_txt_014677327d626f105c229f02",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T12:30:28.832694038+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832694038+08:00",
+      "updated_at": "2026-11-20T12:30:28.832694038+08:00"
+    },
+    {
+      "id": "blk_txt_cf0901ef00b336d9ee53da76",
+      "modality": "text",
+      "text": "第G轮：yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "source": "webui",
+      "frame_ts": "2026-11-20T12:30:28.832716861+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T12:30:28.832716861+08:00",
+      "updated_at": "2026-11-20T12:30:28.832716861+08:00"
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -15,16 +16,17 @@ import (
 
 	agentCore "github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory/pipeline"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory/social"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/ipc"
 	logpkg "github.com/JianFeeeee/HologramAgent/internal/log"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/social"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/recovery"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
@@ -117,7 +119,7 @@ type memoryStack struct {
 // 本函数体是 main() 里对应启动阶段的整块平移：语句、日志文本、错误语义不变，
 // 只把「*dataDir」变成参数、把 defer 变成由调用点注册的 cleanup。
 func loadPlugins(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, pluginReg *plugin.Registry,
-	stageHost *kit.StageHostType, bootMode, dataDir string) {
+	toolReg *kit.ToolRegistry, bootMode, dataDir string) {
 	// Auto-create plugins directory (without hardcoding plugin names)
 	os.MkdirAll(cfg.Plugin.Dir, 0755)
 
@@ -143,7 +145,7 @@ func loadPlugins(cfg *types.Config, cfgReg *internalConfig.ConfigRegistry, plugi
 	if err := pluginReg.Load(cfg.Plugin.Dir); err != nil {
 		log.Printf("[homed] warning: load plugins: %v", err)
 	}
-	log.Printf("[homed] stage host ready with %d registered tools", stageHost.ToolCount())
+	log.Printf("[homed] tool registry ready with %d registered tools", toolReg.ToolCount())
 }
 
 // startAgentRuntime 起日志管理、启动 agent，返回逆序关停的 cleanup。
@@ -190,7 +192,7 @@ func startIPCServer(dataDir, bootMode string, agent *agentCore.Agent) (*ipc.Serv
 	started := false
 	ipcServer := ipc.NewServer(dataDir, func() *ipc.Status {
 		st := agent.GetKernelStatus()
-		llmOK := st != nil && st.LLM.Available
+		llmOK := st != nil && sectionLLMAvailable(st)
 		tools := 0
 		if st != nil {
 			tools = len(st.Tools)
@@ -238,7 +240,7 @@ func startSupervisorRuntime(sup *supervisor.Daemon, trk *tracker.Tracker, agent 
 			return time.Time{}, types.HealthDown, fmt.Errorf("no kernel status")
 		}
 		h := types.HealthHealthy
-		if !st.LLM.Available {
+		if !sectionLLMAvailable(st) {
 			h = types.HealthDegraded
 		}
 		return time.Now(), h, nil
@@ -477,4 +479,22 @@ func compactConfigDB(cfgReg *internalConfig.ConfigRegistry) {
 		after = st.Size()
 	}
 	log.Printf("[homed] config DB compacted: %d -> %d bytes", before, after)
+}
+
+// sectionLLMAvailable 从状态面已注册的 "llm" 段读"模型源可用"。
+//
+// ★ 消费方按 key 取、自己解码：KernelStatus 不再有 LLM 字段（那是类型专属面的残留）。
+func sectionLLMAvailable(ks *agentCore.KernelStatus) bool {
+	if ks == nil || ks.Sections == nil {
+		return false
+	}
+	raw, ok := ks.Sections["llm"]
+	if !ok || raw == nil {
+		return false
+	}
+	var sec sdk.LLMStatus
+	if err := json.Unmarshal(raw, &sec); err != nil {
+		return false
+	}
+	return sec.Available
 }

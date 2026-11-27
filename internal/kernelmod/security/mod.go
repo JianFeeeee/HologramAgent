@@ -95,6 +95,14 @@ func (Module) Init(ks *kstate.State) error {
 	if err != nil {
 		return err
 	}
+	// ★ 记录表是**可选读面**：没有它时判定退化为 fail-open（存量契约）。
+	//   装它不需要改 Requires —— 缺了不致命，而多声明一条会让"裸 security
+	//   单测"被迫构造整张表。
+	if impl, ok := ks.Require(kernelapi.FacAgentRegistry); ok {
+		if reg, _ := impl.(kernelapi.AgentRegistry); reg != nil {
+			rt.SetAgentRegistry(reg)
+		}
+	}
 	ks.Provide(kernelapi.FacSecurity, rt)
 
 	// ★ 把安全策略注入**总线本体**（用户 2026-10-28 指正：「eventbus 上所有

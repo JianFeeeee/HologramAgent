@@ -24,6 +24,8 @@ package test
 // 与图库，不需要 provider 回包。
 
 import (
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,8 +33,8 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/coldcontext"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/coldcontext"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -62,20 +64,10 @@ func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) (*agent.Ag
 
 	iom := io.NewIOManager()
 
-	a, instErr := factory(agent.AgentConfig{
-		Security: security.NewDisabledRuntime().AsGate(),
-		ID:       types.AgentID("archive-contract"),
-		Memory:   g,
-		DocStore: store,
-		IO:       iom,
-		DataDir:  dir,
-		// 归档间隔给得足够短，让判据在秒级观察到一轮；
-		// DistillInterval 同理（ArchiveInterval<=0 时它会继承 DistillInterval）。
-		DistillInterval: 50 * time.Millisecond,
-	})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	// ★ 间隔现读（docs §2）：注入配置管理器而不是写字段。
+	a := newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: types.AgentID("archive-contract"), DataDir: dir, Cfg: &testCfg{distill: 50 * time.Millisecond}})
+	faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom}.mount(a)
+	mainagent.Wrap(a).InjectServices(g, nil, nil, store, nil, nil)
 	return a, store, g
 }
 
@@ -88,12 +80,15 @@ func archiveHarness(t *testing.T, factory func(cfg agent.AgentConfig) (*agent.Ag
 // ⇒ 本判据红（这正是在生产里发生了三天的形态）。
 func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 	a, store, g := archiveHarness(t, func(cfg agent.AgentConfig) (*agent.Agent, error) {
-		return agent.Instantiate(agent.TypeNameMain, cfg)
+		if cfg.TypeName == "" {
+			cfg.TypeName = agent.TypeNameMain
+		}
+		return agent.New(cfg), nil
 	})
 
 	// 一段「终端日志 / 工具回执」类正文：NLP 抽不出合法三元组。
 	// 用它构造文档，正是生产里那 702 篇的形态。
-	doc, err := store.ContextToColdContext("context_archived", []coldcontext.ContextEntry{{
+	doc, err := store.ContextToColdContext("context_archived", []model.ContextEntry{{
 		Source:  "agent",
 		Content: "adb devices\n2XT0219315005305 device\n" + strings.Repeat("screenshot {scale:60}\n", 20),
 	}}, nil, nil, nil, nil)
@@ -112,7 +107,9 @@ func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 	// ★ 归档是**类型声明的定时任务**，由**内核事件循环**刻度
 	// （2026-11-17 裁定：agentloop 归 agent，定时器归 eventloop）。
 	// ⇒ 判据必须显式推动那个任务体：它不再由 Start 隐含启动。
-	a.RegisterMaintenanceTasks()
+	// ★ 归档任务的**注册权属于主 agent 类型**（I 批：基座不再有
+	//   `RegisterMaintenanceTasks` 这个批量入口 —— 那是"基座写死一批"的形态）。
+	a.RegisterPeriodic(mainagent.Wrap(a).ArchiveTask())
 	a.Start()
 	defer a.Stop()
 
@@ -149,10 +146,13 @@ func TestArchiveMovesBlocksWhenNoTriplesProduced(t *testing.T) {
 // 但它必须走**空文档**路径而不是被当成失败重试。
 func TestArchiveKeepsDocumentWhenItHoldsNothing(t *testing.T) {
 	a, store, _ := archiveHarness(t, func(cfg agent.AgentConfig) (*agent.Agent, error) {
-		return agent.Instantiate(agent.TypeNameMain, cfg)
+		if cfg.TypeName == "" {
+			cfg.TypeName = agent.TypeNameMain
+		}
+		return agent.New(cfg), nil
 	})
 
-	doc, err := store.ContextToColdContext("context_archived", []coldcontext.ContextEntry{{
+	doc, err := store.ContextToColdContext("context_archived", []model.ContextEntry{{
 		Source: "agent",
 		// 空正文 ⇒ 不产生任何文本块。
 	}}, nil, nil, nil, nil)
@@ -167,7 +167,9 @@ func TestArchiveKeepsDocumentWhenItHoldsNothing(t *testing.T) {
 	// 回调接口，而不是在 Start 里硬编码五个循环）。
 	// ⇒ 判据必须显式注册主 agent 的维护任务全集；Start 只拉起已注册的。
 	//   （旧判据依赖"Start 隐含起归档循环"，那是被本次改造移除的内部结构。）
-	a.RegisterMaintenanceTasks()
+	// ★ 归档任务的**注册权属于主 agent 类型**（I 批：基座不再有
+	//   `RegisterMaintenanceTasks` 这个批量入口 —— 那是"基座写死一批"的形态）。
+	a.RegisterPeriodic(mainagent.Wrap(a).ArchiveTask())
 	a.Start()
 	defer a.Stop()
 

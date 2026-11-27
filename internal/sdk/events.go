@@ -16,26 +16,25 @@ type EventType = events.EventType
 type Event = events.Event
 
 const (
-	EventRawInput       = events.EventRawInput
-	EventAgentOutput    = events.EventAgentOutput
 	EventAgentLLMChain  = events.EventAgentLLMChain
-	EventToolCall       = events.EventToolCall
 	EventReasoning      = events.EventReasoning
-	EventStage          = events.EventStage
 	EventSystem         = events.EventSystem
 	EventTerminalOutput = events.EventTerminalOutput
 	EventAll            = events.EventAll
 
-	// 流式增量事件（token 级）：核心 process() 流式化后每收到一个增量块发布。
-	// 客户端可选订做真逐 token 渲染；聚合事件仍照常发布，旧订阅者不受影响。
-	EventReasoningDelta = events.EventReasoningDelta
-	EventContentDelta   = events.EventContentDelta
+	// EventPluginsChanged 是插件可见面变化事件（订阅者重新拉取虚拟插件管理器）。
+	EventPluginsChanged = events.EventPluginsChanged
 
-	// EventMemoryAccess 是图记忆的真实读写事件（哪个块被读/写/删/合）。
+	// ★ 已删（2026-11-25，docs §9.5）：
 	//
-	// 星图靠它做「反馈」：此前只能拿 tool_call 的工具名猜节点，而工具名是英文、
-	// 实体名是中文概念（实测命中 0），只能退化成点亮一批固定节点。
-	EventMemoryAccess = events.EventMemoryAccess
+	//	EventRawInput        → on_input 阶段钩子
+	//	EventAgentOutput     → before_output 阶段 + EmitOutputTo 本身
+	//	EventStage           → 插件自己的 stage handler 通知自己的客户端
+	//	EventContentDelta    → 输出通道逐 chunk 调用
+	//	EventReasoningDelta  → 同上（kind=reasoning）
+	//
+	// 判据是归属：这些是 **agent 的状态**，总线只服务内核模块之间。
+
 )
 
 // ───────────────────── 受限事件总线（插件可见） ─────────────────────

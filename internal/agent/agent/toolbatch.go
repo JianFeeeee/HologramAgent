@@ -1,242 +1,188 @@
 package agent
 
-// toolbatch.go 是**唯一**的工具批执行实现（骨架级基础设施）。
+// toolbatch.go —— 工具调用的**分层路由**（用户裁定 2026-11-27）。
 //
-// # 它解决什么（实测缺陷，2026-11-04）
+// # 三层，逐层过滤
 //
-// 全仓有**三**条工具执行路径，其中两条绕过了插件的 before/after_toolcall：
+//	① 类型私有   类型自己的 agentloop 执行（`stablemem_*` / `social_*` /
+//	             `coldcontext_*` / `persona_set` …）。它们读类型私有状态，
+//	             永远不进这里。
+//	② 基座       本文件：`registry` 里 Handle 指向**基座方法**的那批
+//	             （`admin_child` 族 / 内核族 `llm_*` / `secret_*` / `output_*` /
+//	             `plgreload` / `get_plugin_tools` / `input_channels`）。
+//	             它们要读写**本实例**字段 ⇒ 只有基座自己能执行。
+//	③ device     剩下的全归 device：插件工具 + io/设备工具。
+//	             device 是 tool + ch 的抽象，执行链也在它那儿。
 //
-//	路径             before_toolcall  after_toolcall  并发
-//	主 agent          ✅               ✅               ✅  stepToolBatch
-//	驻留子            ✅               ✅               ✅  同主 agent（走 runInputTask）
-//	rtchild           ❌               ❌               ❌  直调 executeToolCallOutcome
-//	工作式子          ❌               ❌               ❌  直调 executeToolCall
+// # 为什么是"逐层过滤"而不是"一路下派"
 //
-// 实测依据：`StageBeforeToolcall` / `StageAfterToolcall` 全仓只出现在
-// task.go:1022 / 1079 / 1194，三处都在 runOneTool / stepToolAfter 里；
-// 而 `executeToolCallOutcome` 内部**没有任何 runStage 调用**。
+// 改造前 device 的执行链里做了 `registry.DispatchTool` —— 那是**基座层**的
+// 职责，于是 device 必须回调基座的实例方法（`DialTool`）。回调一出现，
+// device 就反向依赖 agent，而"谁执行了什么"又变成一处说不清的地方。
 //
-// 后果：rt 与普通子的工具调用对插件**完全不可见** —— 不能审计、不能拒绝、
-// 不能改参、不能脱敏。README 承诺的 before_toolcall「审计、拒绝、改参」
-// 在这两条路径上不成立。
-//
-// # 为什么不做成"让它们复用 TaskFrame"
-//
-// TaskFrame 承载 7 个 Step + 挂起/恢复/中断栈 + 场景解析 + 上下文预算，
-// 那是为「可抢占、现场可恢复」设计的。rt 明确不要这些（见 rtchild.go 的
-// 743 行注释），工作式子也不要（它是一次性局部循环）。
-// 复用 TaskFrame 会让两边都被拖进对方的复杂度里。
-//
-// ⇒ 抽出**最小公共核**：批并发 + 两个钩子 + 顺序落结果。
-// 三种类型都用它，差异通过参数传入。
+// 现在每层只碰自己的：基座把能执行的挑走，**剩下的**才交给 device。
+// device 不需要认识基座工具，也就不需要回调。
 
 import (
 	"context"
-	"fmt"
-	"sort"
-	"sync"
 
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
-	"github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-// BatchOpts 是工具批执行的参数。
+// RunToolBatch 执行一批**非类型私有**的工具调用，返回与入参同序的结果。
 //
-// agentloop 通过基座 RunToolBatch 发起工具请求；工具执行器、授权、防火墙、
-// 超时、取消、结果清洗和 output 路由都属于 kernel。
-type BatchOpts = agenttypes.BatchOpts
-
-// batchResult 是单条工具的结果。
-// BatchResult 是单条工具的结果（导出：同上）。
-type BatchResult = agenttypes.BatchResult
-
-// runToolBatch 执行一批工具，返回与 calls **同序**的结果。
+// # 分层与合并
 //
-// ## 为什么必须同序
+// 两层各自只碰自己负责的工具，然后**一起合并**回原位：
 //
-// assistant(tool_calls) 与其后的 tool 结果消息必须相邻且一一对应。
-// 按完成顺序落消息会被上游以 400 拒绝（insufficient tool messages）。
-// 所以并发只作用于"执行"，落结果一律按索引顺序。
+//	基座层挑走的  → 就地执行，结果放进 out[i]
+//	其余的整批    → 交给 device 执行链，结果按 ID 回填 out[i]
 //
-// ## 并发条件
+// ★ 为什么按 ID 回填而不是按下标：device 的并发执行会打乱时间顺序，
 //
-// 走与主 agent 相同的判据（batchRunnable）：批内 >1、全部声明 ParallelSafe、
-// 不含同通道多次输出。这里额外允许 opts.NoBatch 强制串行 ——
-// 工作式子历史上是串行的，改成并发会改变它已上线行为的时序假设，
-// 不在本次重构范围内（判据 TestWorkerToolsStaySerial 钉住）。
-func (a *Agent) runToolBatch(ctx context.Context, calls []agentAPI.ToolCall, opts BatchOpts) []BatchResult {
-	if len(calls) == 0 {
+//	而"同序返回"是调用方的契约（类型的 agentloop 按 idx 对结果）。
+func (a *Agent) RunToolBatch(ctx context.Context, calls []ToolCall) []BatchResult {
+	if a == nil || len(calls) == 0 {
 		return nil
 	}
-	// 预建每份 StageContext：Extra 必须逐份复制（插件会写它，共享即竞争）。
-	ctxs := make([]sdk.StageContext, len(calls))
-	for i := range calls {
-		// ★ 不复制 StageContext 整体：它内含 mutex（go vet 会报
-		// "assignment copies lock value"）。只逐字段取真正需要的那两项，
-		// 与 task.go 的 buildToolContexts 同一写法。
-		var extra map[string]interface{}
-		var noMemory bool
-		if opts.StageCtx != nil {
-			extra = opts.StageCtx.Extra
-			noMemory = opts.StageCtx.NoMemory
-		}
-		ctxs[i] = sdk.StageContext{
-			Extra:    copyExtraMap(extra),
-			NoMemory: noMemory,
-		}
-		if ctxs[i].Extra == nil {
-			ctxs[i].Extra = map[string]interface{}{}
-		}
-		if opts.Channel != "" {
-			ctxs[i].Extra["output_channel"] = opts.Channel
-		}
-		// ★ 工具调用帧必须带来源标识（comefrom）：通道插件的权限门靠它区分
-		// "用户请求" 与 "agent 内部委派"。缺了它，子 agent 的工具调用会被按
-		// **用户**权限模型判定 ⇒ 合法工作全被拦（comefrom.go 有 2026-10-16 实证）。
-		//
-		// 子 agent 是内部委派 ⇒ comeFromInternal。主 agent 传 comeFromUser
-		// 由调用方在 StageCtx 里已标好（这里只在缺失时补保守值）。
-		if _, ok := ctxs[i].Extra["comefrom"]; !ok {
-			stampComeFrom(ctxs[i].Extra, comeFromInternal)
-		}
+	if ctx == nil {
+		ctx = a.ctx
 	}
 
-	results := make([]BatchResult, len(calls))
+	out := make([]BatchResult, len(calls))
 
-	runOne := func(i int) {
-		tc := calls[i]
-		res := BatchResult{CallID: tc.ID, Name: tc.Name}
+	// ── 分层：基座层负责哪些、device 负责哪些 ──
+	restToOut := make([]int, 0, len(calls)) // rest 的下标 → out 的下标
+	rest := make([]ToolCall, 0, len(calls))
+	for i, c := range calls {
+		if a.ownsTool(c.Name) {
+			out[i] = a.runOwnTool(ctx, c)
+			continue
+		}
+		restToOut = append(restToOut, i)
+		rest = append(rest, c)
+	}
+	if len(rest) == 0 {
+		return out
+	}
 
-		// ① 类型级过滤（工作式子禁 output_send__* / spawn_child 等）。
-		if opts.ToolFilter != nil {
-			if deny := opts.ToolFilter(tc); deny != "" {
-				res.Text = deny
-				res.Denied = true
-				results[i] = res
-				return
+	// ── device 层：剩下的整批交给执行链 ──
+	exec := a.toolExecutor()
+	if exec == nil {
+		// 装配缺设施 = 响亮失败。**不静默返回空结果**：那会让调用方以为
+		// 工具跑了但没输出，是"看起来正常工作"的最坏形态。
+		for _, i := range restToOut {
+			out[i] = BatchResult{
+				CallID: calls[i].ID, Name: calls[i].Name, Denied: true,
+				Text: "工具执行设施未装配（kernelapi.FacToolExec 缺失）：本次调用未执行",
 			}
 		}
-
-		tctx := &ctxs[i]
-		tctx.ToolCalls = []sdk.ToolCall{{
-			ID: tc.ID, Name: tc.Name,
-			Plugin: a.ResolveToolPlugin(tc.Name), Arguments: tc.Arguments,
-		}}
-		tctx.ToolResults = nil
-
-		// ② before_toolcall —— **这一步就是本文件存在的理由**。
-		if a.RunStage(sdk.StageBeforeToolcall, tctx) {
-			res.Text = denialResultText(tctx, tc.Name)
-			res.Denied = true
-			results[i] = res
-			return
-		}
-		// 插件可以改参（before_toolcall 的契约之一）。
-		tc.Arguments = tctx.ToolCalls[0].Arguments
-
-		// ③ 插件崩溃态：不执行（与主 agent 一致）。
-		if pluginName := a.ResolveToolPlugin(tc.Name); pluginName != "" {
-			if !a.MainState().pluginHealth.IsHealthy(pluginName) {
-				res.Text = pluginNameCrashedText(pluginName)
-				res.Denied = true
-				results[i] = res
-				return
-			}
-		}
-
-		// ④ 真实执行。
-		out := a.ExecuteToolCallOutcome(tc, opts.Channel, opts.Scenes...)
-		res.Text = out.Text
-		res.Raw = out.Raw
-		tctx.ToolResults = []sdk.ToolResult{{
-			CallID: tc.ID, Name: tc.Name,
-			Success: !kit.IsToolError(out.Raw), Result: out.Raw,
-		}}
-
-		// ⑤ after_toolcall —— 插件可脱敏/改写结果。
-		a.RunStage(sdk.StageAfterToolcall, tctx)
-		if len(tctx.ToolResults) > 0 {
-			switch r := tctx.ToolResults[0].Result.(type) {
-			case string:
-				res.Text = r
-			case nil:
-				// 插件清空：保持原样，不覆盖。
-			default:
-				res.Raw = r
-				res.Text = kit.ToolErrorText(tc.Name, r)
-				if !kit.IsToolError(r) {
-					res.Text = fmt.Sprintf("%v", r)
-				}
-			}
-		}
-		results[i] = res
+		return out
 	}
 
-	// 串行 or 并发。
-	if opts.NoBatch || !a.batchParallelSafe(calls) {
-		for i := range calls {
-			runOne(i)
-		}
-		return results
-	}
-	var wg sync.WaitGroup
-	for i := range calls {
-		wg.Add(1)
-		go func(idx int) { defer wg.Done(); runOne(idx) }(i)
-	}
-	wg.Wait()
-	return results
-}
-
-// batchParallelSafe 判断这批工具能否并发（与主 agent 的 batchRunnable 同判据）。
-func (a *Agent) batchParallelSafe(calls []agentAPI.ToolCall) bool {
-	if len(calls) <= 1 {
-		return false
-	}
-	chans := map[string]bool{}
-	for _, tc := range calls {
-		if !a.ToolParallelSafe(tc.Name) {
-			return false
-		}
-		if isOutputDeliveryTool(tc.Name) {
-			ch := trimOutputPrefix(tc.Name)
-			if chans[ch] {
-				return false // 同通道多次输出必须保序
-			}
-			chans[ch] = true
+	res := exec.Execute(ctx, a, rest)
+	for k, idx := range restToOut {
+		if k < len(res) {
+			out[idx] = res[k]
 		}
 	}
-	return true
-}
-
-// sortBatchByIndex 是给调用方落消息用的辅助：按原始索引排（防御性）。
-//
-// 现有实现本来就按索引写 results，这里提供它是因为"按完成顺序落消息"
-// 是本仓踩过的坑，留一个显式函数让纪律可见。
-func sortBatchByIndex(rs []BatchResult, order []string) []BatchResult {
-	if len(order) == 0 {
-		return rs
-	}
-	idx := map[string]int{}
-	for i, id := range order {
-		idx[id] = i
-	}
-	out := append([]BatchResult(nil), rs...)
-	sort.SliceStable(out, func(i, j int) bool { return idx[out[i].CallID] < idx[out[j].CallID] })
 	return out
 }
 
-// 以下两个小工具避免在热路径里引 fmt 的多次分配。
-func pluginNameCrashedText(p string) string {
-	return "插件 " + p + " 处于崩溃状态，已跳过执行，等待自动恢复重载"
+// ownsTool 报告某工具是否由**基座层**执行。
+//
+// 判据是 `registry` 里这条工具有没有 Handle —— 有就是有人登记了执行体。
+// 类型私有工具不在这张表里（它们由类型自己执行，不进 RunToolBatch）。
+func (a *Agent) ownsTool(name string) bool {
+	t, ok := registry.LookupTool(name)
+	return ok && t.Handle != nil
 }
 
-func trimOutputPrefix(name string) string {
-	const p = "output_send__"
-	if len(name) > len(p) {
-		return name[len(p):]
+// runOwnTool 执行一条基座登记的工具（含工具阶段的完整链路）。
+//
+// 与 device 执行链的阶段顺序一致（on_toolcall → before → 执行 → after），
+// 这样插件在不同层看到的工具调用行为是同一个语义。
+func (a *Agent) runOwnTool(ctx context.Context, c ToolCall) BatchResult {
+	res := BatchResult{CallID: c.ID, Name: c.Name, Tool: a.toolDefOf(c.Name)}
+
+	denied, sctx := a.RunToolStage(sdk.StageOnToolcall, c, nil)
+	if denied {
+		res.Text = stageDeniedText(sctx, c.Name)
+		res.Denied = true
+		return res
 	}
-	return name
+	if sctx != nil && len(sctx.ToolCalls) > 0 {
+		c.Arguments = sctx.ToolCalls[0].Arguments
+	}
+
+	denied, bctx := a.RunToolStage(sdk.StageBeforeToolcall, c, nil)
+	if denied {
+		res.Text = stageDeniedText(bctx, c.Name)
+		res.Denied = true
+		return res
+	}
+	if bctx != nil && len(bctx.ToolCalls) > 0 {
+		c.Arguments = bctx.ToolCalls[0].Arguments
+	}
+
+	text, handled := registry.DispatchTool(registry.ToolCtx{Host: a}, agentAPI.ToolCall{
+		ID: c.ID, Name: c.Name, Arguments: c.Arguments,
+	})
+	if !handled {
+		// ownsTool 说归本层、DispatchTool 却说不认识：登记表在两处之间变过
+		// （插件热卸载）。响亮报错，不静默当成"工具不存在"。
+		res.Text = "工具 " + c.Name + " 的登记项在本次调用中被撤销（插件已卸载？）：本次调用未执行"
+		res.Denied = true
+		return res
+	}
+	res.Text = text
+	res.Raw = text
+
+	pres := sdk.ToolResult{CallID: c.ID, Name: c.Name, Success: true, Result: text}
+	if denied, actx := a.RunToolStage(sdk.StageAfterToolcall, c, &pres); denied {
+		res.Text = stageDeniedText(actx, c.Name)
+		return res
+	} else if actx != nil && len(actx.ToolResults) > 0 {
+		if s, ok := actx.ToolResults[0].Result.(string); ok && s != "" {
+			res.Text = s
+			res.Raw = s
+		}
+	}
+	return res
+}
+
+// toolDefOf 取工具声明的完整副本（标记随结果返回给类型的 agentloop）。
+func (a *Agent) toolDefOf(name string) sdk.ToolDef {
+	if a == nil {
+		return sdk.ToolDef{}
+	}
+	if tr := a.ToolRegistry(); tr != nil {
+		if d := tr.ToolDef(name); d != nil {
+			return *d
+		}
+	}
+	if t, ok := registry.LookupTool(name); ok {
+		return sdk.ToolDef{
+			Name: t.Name, Description: t.Description, Plugin: t.Owner,
+		}
+	}
+	return sdk.ToolDef{}
+}
+
+// stageDeniedText 取阶段拦断时的正文。
+func stageDeniedText(ctx *sdk.StageContext, tool string) string {
+	if ctx == nil {
+		return "工具 " + tool + " 被阶段钩子拦下"
+	}
+	ctx.RLock()
+	defer ctx.RUnlock()
+	if ctx.Response != nil && *ctx.Response != "" {
+		return *ctx.Response
+	}
+	if len(ctx.Errors) > 0 {
+		return "工具 " + tool + " 被阶段钩子拦下：" + ctx.Errors[0]
+	}
+	return "工具 " + tool + " 被阶段钩子拦下"
 }

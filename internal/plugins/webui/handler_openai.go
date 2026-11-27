@@ -11,7 +11,6 @@ import (
 
 	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	safeclose "github.com/JianFeeeee/HologramAgent/internal/safeclose"
-	"github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
 // OpenAI 兼容面：/v1/chat/completions（含流式）。
@@ -248,25 +247,20 @@ func (h *Handler) streamOpenAI(ctx context.Context, w http.ResponseWriter, model
 		}
 	}
 
-	// 订阅增量事件。必须在启动注入**之前**订阅，否则会漏掉开头几个分片。
+	// ★ 增量**不再订阅事件**（docs §9.2 第 5 行，用户裁定 2026-11-25）：
+	// 它们由输出通道 handler 经 `h.addDeltaSink` 直接投递到这里。
+	//
+	// 必须在启动注入**之前**登记，否则会漏掉开头几个分片。
 	var unsubs []func()
-	deltaSub := func(typ sdk.EventType, pick func(payload map[string]interface{}) (string, bool)) {
-		unsub := h.sdk.Subscribe(typ, func(evt *sdk.Event) {
-			text, ok := pick(evt.Payload)
-			if !ok {
-				return
-			}
-			send(deltaItem{content: text, reset: isResetMarked(evt.Payload)})
-		})
-		unsubs = append(unsubs, unsub)
-	}
-	deltaSub(sdk.EventContentDelta, func(p map[string]interface{}) (string, bool) {
-		v, _ := p["content"].(string)
-		return v, v != ""
-	})
-	deltaSub(sdk.EventReasoningDelta, func(p map[string]interface{}) (string, bool) {
-		v, _ := p["reasoning_content"].(string)
-		return v, v != ""
+	h.addDeltaSink(func(payload map[string]interface{}) {
+		if v, _ := payload["content"].(string); v != "" {
+			send(deltaItem{content: v, reset: isResetMarked(payload)})
+			return
+		}
+		// reasoning 增量挂在 reasoning_content 上（与 aggregate 帧的字段名一致）。
+		if v, _ := payload["reasoning_content"].(string); v != "" {
+			send(deltaItem{reasoning: v})
+		}
 	})
 	var doneOnce sync.Once
 	defer func() {

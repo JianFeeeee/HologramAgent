@@ -92,11 +92,15 @@ package plugins
 // 归位后 main.go 不再单独导入它。
 
 import (
+	// ★ 知识库的注册点在**装配侧的另一包**（internal/plugin/builtin/knowledgereg）：
+	//   `internal/plugins/knowledge` 不能 import `internal/plugin`（plugin → sdk →
+	//   plugins/knowledge 会成环），所以"注册进工厂表"这件事只能住在装配侧。
+	//   清单必须列它 —— 漏了就是"知识库不加载"，而且日志里只会说找不到插件。
+	_ "github.com/JianFeeeee/HologramAgent/internal/plugin/builtin/knowledgereg"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/agentcli"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/cfgmgr"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/cli"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/healthcheck"
-	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/kbtree"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/multimodal"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/pluginmgr"
 	_ "github.com/JianFeeeee/HologramAgent/internal/plugins/remotedevice"

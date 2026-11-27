@@ -53,8 +53,10 @@ package seemedia
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -309,10 +311,10 @@ func (p *Plugin) handleSeeVideo(args map[string]interface{}) (interface{}, error
 //
 //	取不到时返回 ok=false（“这个引用没媒体”是常态，不是错误）。
 func (p *Plugin) mediaBytes(ref string) (data []byte, mime string, ok bool, err error) {
-	if p.sdk == nil || p.sdk.Memory() == nil {
-		return nil, "", false, fmt.Errorf("记忆系统不可用")
+	if p.sdk == nil {
+		return nil, "", false, fmt.Errorf("插件未就绪")
 	}
-	return p.sdk.Memory().MediaBytes(ref)
+	return mediaBlockBytes(p.sdk.Settings().DataDir(), ref)
 }
 
 // resolveMediaURL 把 path/ref/url 解析成可直接放进 image_url/audio_url 的字符串。
@@ -593,4 +595,46 @@ func toInt(v interface{}) int {
 		return i
 	}
 	return 0
+}
+
+// mediaBlockBytes 按媒体块引用从图库里取回字节与 MIME（**自己读 SQLite**）。
+//
+// 路径规则见 docs §12.2：<data_dir>/memory/graph.db。块 ID 是内容派生的
+// （blk_media_<hash>），前缀足以唯一定位（与内核的 BlockByIDPrefix 同口径：
+// 至少 12 字符，否则一个短前缀会 LIKE 中一大批块）。
+func mediaBlockBytes(dataDir, ref string) (data []byte, mime string, ok bool, err error) {
+	ref = strings.TrimSpace(ref)
+	if dataDir == "" || len(ref) < 12 {
+		return nil, "", false, nil
+	}
+	path := filepath.Join(dataDir, "memory", "graph.db")
+	db, oerr := sql.Open("sqlite3", path+"?mode=ro&_journal_mode=WAL")
+	if oerr != nil {
+		return nil, "", false, oerr
+	}
+	defer db.Close()
+	var id, m string
+	rows, qerr := db.Query(`SELECT id, COALESCE(mime,'') FROM memory_blocks WHERE id LIKE ? LIMIT 2`, ref+"%")
+	if qerr != nil {
+		return nil, "", false, qerr
+	}
+	n := 0
+	for rows.Next() {
+		if err := rows.Scan(&id, &m); err != nil {
+			rows.Close()
+			return nil, "", false, err
+		}
+		n++
+	}
+	rows.Close()
+	if n != 1 {
+		return nil, "", false, nil // 0 或多义：不猜
+	}
+	if err := db.QueryRow(`SELECT data FROM memory_blocks WHERE id = ?`, id).Scan(&data); err != nil {
+		return nil, "", false, err
+	}
+	if len(data) == 0 {
+		return nil, "", false, nil
+	}
+	return data, m, true, nil
 }

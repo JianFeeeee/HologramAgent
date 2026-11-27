@@ -25,14 +25,13 @@ import (
 	// ★ 顺序**无关**：模块注册顺序由 init() 决定，而注册表刻意乱序
 	// （见 kernelmod/core.go）。真正的先后只由 Requires/Provides 决定。
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agentreg"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/agenttype"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/config"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/device"
-	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/docstore"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/iobus"
-	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/knowledge"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/llm"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/lua"
-	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/memory"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/migration"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/multimodal"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/onnx"
@@ -40,7 +39,7 @@ import (
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/security"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/stagehost"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/supervisor"
-	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/textmem"
+	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/tool"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/tracker"
 	_ "github.com/JianFeeeee/HologramAgent/internal/kernelmod/update"
 )

@@ -21,11 +21,22 @@ var (
 	ErrInputChannelUnknown = errors.New("inputch 未注册")
 	// ErrInputChannelNameEmpty 表示 inputch 名为空。
 	ErrInputChannelNameEmpty = errors.New("inputch 名不能为空")
-	// ErrChannelNotRealtime 表示该通道没有声明 CapRT 能力（不能承载 rt 流）。
+	// ErrAgentLacksCapability 表示**目标 agent**没有声明该通道能力（能力面拒划）。
 	//
-	// 两侧校矩的另一侧（"目标 agent 是不是 rtchild"）在 core 包，
-	// 因为 agent 类型属于 core 而非 io。
-	ErrChannelNotRealtime = errors.New("通道未声明 rt 能力（CapRT）")
+	// ★ 与 ErrChannelNotRealtime 是**两侧**的两个不同失败：那个是通道侧，
+	//   这个是 agent 侧。分开后错误文案能直接指向该动哪一边。
+	ErrAgentLacksCapability = errors.New("目标 agent 未声明该通道能力")
+
+	// ErrChannelLacksCapability 表示该通道没有声明被要求的能力位。
+	//
+	// ★ 与 ErrAgentLacksCapability 是两侧校验的两个不同失败：
+	//   一个是"通道承载不了"，一个是"agent 承接不了"。
+	ErrChannelLacksCapability = errors.New("通道未声明所需能力位")
+
+	// ErrChannelNotRealtime 是 ErrChannelLacksCapability 在 rt 场景下的具名别名。
+	//
+	// ★ 保留它是因为既有调用方与判据按名字断言；新代码一律用前者。
+	ErrChannelNotRealtime = ErrChannelLacksCapability
 )
 
 // InputChannel 是一个 inputch 的完整登记记录。
@@ -177,6 +188,38 @@ func (r *ChannelRegistry) Lookup(name string) (InputChannel, bool) {
 	defer r.mu.RUnlock()
 	ch, ok := r.channels[name]
 	return ch, ok
+}
+
+// AssignWithCapability 按**能力位**把 inputch 划给某个 agent。
+//
+// ## 两侧对称校验（docs §8.1.1，用户裁定 2026-11-20）
+//
+//	通道侧  ch.Capabilities.Supports(cap)   本通道能承载这种流吗
+//	agent 侧 agentCap.Supports(cap)         这个 agent 能承接这种流吗
+//
+// ★ 本函数**不认识任何具体能力名**（不出现 CapRT）：调用方给位，
+//
+//	它做位与。加第三种能力（音频 / 图像 / 结构化）时本函数零改动。
+//
+// wantAgentCap 由调用方传入（通常是目标 agent 的能力位），因为 io 包
+// 不认识 agent 类型 —— 与 `SetInputRouter` 同一纪律。
+func (r *ChannelRegistry) AssignWithCapability(name, agentID string, capacity int,
+	cap OutputCapability, agentCap OutputCapability) error {
+	r.mu.RLock()
+	ch, ok := r.channels[name]
+	r.mu.RUnlock()
+	if !ok {
+		return ErrInputChannelUnknown
+	}
+	if !ch.Capabilities.Supports(cap) {
+		return fmt.Errorf("通道划拨：%w（通道 %q 的 Capabilities 未含 %s）",
+			ErrChannelLacksCapability, name, cap)
+	}
+	if !agentCap.Supports(cap) {
+		return fmt.Errorf("通道划拨：%w（agent %q 的能力面未含 %s）",
+			ErrAgentLacksCapability, agentID, cap)
+	}
+	return r.Assign(name, agentID, capacity)
 }
 
 // Assign 把一个 inputch **划给**某个 agent（可同时给定容量）。

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agenttypes"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 )
@@ -46,29 +45,48 @@ type RuntimeHooks struct {
 	// Initialize wires type-owned runtime state into the kernel-owned Agent.
 	// It runs during type instantiation, before Start.
 	Initialize func(a *Agent) error
-	Start      func(a *Agent)
-	Stop       func(a *Agent)
+	// Restore 从 `dir`（**内核传入的本实例工作目录**）读回自己的运行数据。
+	//
+	// ## 用户裁定（2026-11-19）
+	//
+	// > 「恢复也是基座提供挂点每个 agent 自己挂自己的恢复回调函数，
+	// >    agentloop 持久化数据是由内核传入的路径下存储的，恢复对应的 agent
+	// >    时，该回调会被传入对应的路径，也就是说 agent 是把恢复函数挂到这个
+	// >    回调由内核驱动恢复的」
+	//
+	// > 「内核持有的 agent 表里就有 agent 的工作数据目录」
+	//
+	// > 「agent 初始化包括运行时的数据目录是内核传入的参数，相当于目录是
+	// >    内核统一管理的」
+	//
+	// ⇒ 类型**不拼路径**、**不自己决定何时恢复**：内核在构造/重启实例之后
+	// 调本回调，并把该实例的目录交过来。目录里存什么、怎么解析，是类型的事。
+	//
+	// nil ⇒ 本类型没有需要恢复的数据（明确事实，不是漏接线）。
+	Restore func(a *Agent, dir string) error
+	Start   func(a *Agent)
+	Stop    func(a *Agent)
+	// DrainTerminal 给**从未运行**的待办任务补终态（停机时）。
+	//
+	// ★ 为什么是槽位而不是基座代码：队列归类型（docs §0.3），基座不认识
+	//   队列，也就不能枚举里面的任务。类型交出的这个钩子做这件事 ——
+	//   带 ResponseCh 的同步注入方（cli / a2a 无超时）否则会永久挂起。
+	//
+	// nil ⇒ 本类型没有队列（rt / worker），跳过。
+	DrainTerminal func(a *Agent, reason string)
+	// InterruptPending 报告是否有待处理的中断（类型自己的队列状态）。
+	InterruptPending func(a *Agent) bool
+	// RoundsExecuted 返回本类型已执行的轮次数（状态面用）。
+	RoundsExecuted func(a *Agent) int
 }
 
 type Hooks struct {
-	// ── 类型身份（**数据事实**，不是类型结论）──
+	// ── 类型身份：**不占槽位**（用户裁定 2026-11-18）──
 	//
-	// IsChild 回答"我是不是某个父下的子 agent"。它是**层级事实**
-	// （`parentID != ""`），不是类别判断 —— 驻留子与 rtchild 都是子，
-	// 但它们的上下文/loop/toolcall 完全不同，那些差异走下面的槽位。
-	IsChild bool
-	// IsRealtime 回答"我是不是实时通话子 agent"（rt 的语义：单槽覆盖、
-	// 最新者胜、一切接口异步）。由 rt 模块注册为 true。
-	IsRealtime bool
-	// ComeFrom 给出本 agent 发起工具调用时的来源标签
-	// （`comefrom.go` 用它让插件判定"这次调用是谁发起的"）。
-	// 子 agent 是 internal（转投保留原事件来源，但执行者变了）；根是 user。
-	ComeFrom string
-	// MayOffload 回答"本 agent 允不允许把积压任务转投给驻留子"。
-	//
-	// 只有主 agent 注册为 true：让子再去拉孙子会形成无界增殖
-	// （每层都能拉 MAX 个），而积压的源头是根那一条调度链。
-	MayOffload bool
+	// IsChild / ComeFrom 是**数据事实**（层级 → `AgentConfig.ParentID`），
+	// 不是行为回调；IsRealtime 是 rt 自己知道的事（自我 set/get 的循环已删）；
+	// MayOffload 是**类型能力**，归 `registry.Descriptor.Meta`。
+	// 数据和能力都走"声明"，不走"槽位"。
 
 	// Runtime is the single lifecycle registration for this type.
 	Runtime RuntimeHooks
@@ -80,54 +98,47 @@ type Hooks struct {
 	//	策略裁剪型（主）：动态上下文算出的 ContextTokens
 	//	整窗型（驻留/rt）：整个模型窗口（只受硬上限约束）
 	ContextBudget func(a *Agent, b kit.TokenBudget) int
-	// Prune 按相关性裁剪上下文，返回裁掉的事件数；0 = 不做。
-	//
-	// 整窗型注册为 nil ⇒ 基座视为 no-op（这是**唯一**合法的空槽位：
-	// "我不做裁剪"是一个明确的策略，不是漏接线）。
-	Prune func(a *Agent, query string, protected int) int
-	// OverBudget 是"是否已超出窗口预算"的纯判据。nil ⇒ 恒 false。
-	OverBudget func(a *Agent) bool
 	// EnforceOverflow 执行超页处置，返回是否已处置与裁掉的事件数。
 	//
 	// ★ 这是**唯一的超页决策点**（用户 2026-11-18：「overflow 里不应该有具体
 	// 逻辑，它应该是一个预定义的钩子，各个子 agent 注册这个钩子来定义各自的
 	// overflow 行为」）。基座只提供事实与原语：
 	//
-	//	OverflowRatioNow / AccumulatedTokens / HasOversizedFrame   看得见什么
-	//	EvictOversizedPages / PruneContext / RaiseContextOverflow   能做什么
-	//	NoteOverflow*                                              记账
+	//	OverflowRatioNow / AccumulatedTokens / ContextLen          看得见什么
+	//	TokenOf / ContextWindowTokens                              看得见什么
+	//	EvictOversizedPages / PruneContext                         能做什么
 	//
 	// 「水位多少该裁、先剔页还是先归档、恢复时保护多少条」全是策略 ⇒ 在类型侧。
 	//
 	// nil ⇒ 本类型不做超页处置。那是**明确的策略**（整窗型靠 contextfull
 	// 上报父 agent 决策，父来决定压缩/回收/销毁），不是漏接线。
-	EnforceOverflow func(a *Agent, f *TaskFrame, req agenttypes.OverflowRequest) (handled bool, pruned int)
+	// ★ 签名里的帧是 `any`（docs §0.3：基座不认识帧）。
+	//   类型把自己的帧传进来并自己断言回去 —— 基座只负责"在正确的时机叫它"。
+	OverflowHandler func(a *Agent, frame any, req OverflowRequest) (handled bool, pruned int)
 
 	// ── 槽位 6：agent loop ──
 
-	// Loop 驱动一帧任务直到终态（`runTaskSteps` 的标准实现挂这里）。
-	// rt 模块注册异步版；主/驻留注册 standard 同步版。
-	Loop func(a *Agent, f *TaskFrame) agenttypes.Outcome
-
-	// ── 槽位 7：stage ──
-
-	// RunStage 执行某个阶段的插件处理器。nil ⇒ 基座退化为"无插件阶段"。
-	RunStage func(a *Agent, stage string, ctx any) bool
-
-	// GraphMemory 是本 agent 的图记忆面（可 nil = 没有图记忆）。
+	// ── 已删：Loop 槽位（2026-11-20，docs §0.3）──
 	//
-	// ★ 它是**可选槽位**（用户 2026-11-17 纠正：图记忆是可选配置）：
-	//   主 agent 装 `*memory.GraphDB`；驻留/rt 装 `*memory.LightMemory`；
-	//   工作式子与独立工具装 nil。
-	GraphMemory GraphMemory
+	// 它带 `TaskFrame` 签名 ⇒ 基座必须认识"帧"这个概念，而帧是**类型内部
+	// 的数据结构**（主 agent 一份、驻留子一份、rt 根本没有）。
+	// 删掉之后，类型在 `Runtime.Start` 里起自己的循环，基座只调 Start。
 
-	// ── 槽位 3：内核服务（安全等）──
-
-	// SecurityGate 是安全防火墙的数据面闸门（可 nil = 未启用）。
+	// ── 槽位 7（已删）：stage ──
 	//
-	// 其余内核能力（插件注册表、文档记忆、知识库…）**不进 Agent 字段**：
-	// 类型模块在自己的装配点经 `kstate.Require` 取，基座一个都不持有。
-	SecurityGate SecurityGate
+	// `RunStage` 曾是槽位，但它的实现**只有一份**（`runStageDefault`：
+	// 发事件 + 转给 StageHost），而所有调用点都在本包内。
+	// 一个"只能填一种函数"的槽位不是扩展点，是转发层 —— 已删（I 批）。
+	// 类型要拦/改阶段行为，走 StageHost 注册的 handler，不走这里。
+
+	// ── 这里**没有**什么（用户裁定 2026-11-18）──
+	//
+	//	GraphMemory   图记忆是**类型内部实现**（三形态 + 一无：主 `*GraphDB` /
+	//	              驻留·rt `*LightMemory` / worker 无）。一个槽位表达不了，
+	//	              已改为类型自己持有，句柄经 `AgentConfig` 落到 `Agent.graph`。
+	//	SecurityGate  安全判定归**安全模块**；配置事实进 `AgentConfig.Security`。
+	//	              基座只被查询（`Gate()`），未装配时运行态是 `Unguarded`。
+	//	Prune / OverBudget  已并入 `OverflowHandler` 的策略内部。
 }
 
 // Tool execution is a base/kernel service and is not a hook. The tool-request
@@ -135,11 +146,10 @@ type Hooks struct {
 //
 // 这里刻意区分"必填"与"合法为空"：
 //
-// 必填：ContextBudget / OverBudget / Loop / SecurityGate / Runtime
+// 必填：ContextBudget / SecurityGate / Runtime
 // Tool execution is a base/kernel service and is not a hook.
 //
-//	合法为空：Prune / EnforceOverflow（整窗策略明确不做裁剪与超页处置）
-//	        GraphMemory（图记忆是可选配置）
+//	合法为空：OverflowHandler（整窗策略由「上报父」处置）
 //	        RunStage（无插件阶段时基座退化为直通）
 //
 // 返回值是**给装配点看的错误文案**，说明缺哪个槽位以及该由谁注册。
@@ -151,10 +161,8 @@ func (h Hooks) Validate(who string) error {
 	}
 	slots := []slot{
 		{"ContextBudget", h.ContextBudget != nil, "由类型模块注册（主：RelevanceContext；驻留/rt：整窗）"},
-		{"OverBudget", h.OverBudget != nil, "由类型模块注册（主：按窗口预算判定；驻留/rt：恒 false）"},
-		{"Loop", h.Loop != nil, "由类型模块注册（kit.Loop 或 rt 的 Asyncloop）"},
+
 		{"Runtime", h.Runtime.Initialize != nil && h.Runtime.Start != nil && h.Runtime.Stop != nil, "由类型模块注册完整 runtime 生命周期对象"},
-		{"SecurityGate", h.SecurityGate != nil, "由类型模块在装配点从 kernelapi.FacSecurity 取"},
 	}
 	for _, s := range slots {
 		if !s.set {
@@ -186,12 +194,13 @@ func (e *MissingHookError) Error() string {
 // （两份会让"哪份才是契约"变成不可判定）。
 type SecurityGate = kernelapi.SecurityGate
 
-// Embedder 是共享词嵌入的窄面（蒸馏与上下文语义相似度用）。
+// Embedder 是共享词嵌入的**计算面**（docs §3.4：句进 → 向量出，批量）。
 //
-// 实现者：`*memory.StaticEmbedder`。方法名带 Map：接口包/本包都不能
-// import vector 实现包，而 `vector.Vector` 底层就是 `map[string]float64`。
+// 实现者：`kernelapi/semantic` 的 `*StaticEmbedder`（内核设施 FacEmbedder）。
+// 基座只按这个窄接口持用 —— 它不认识 fastText / jieba / 模型文件。
 type Embedder interface {
-	VectorizeMap(text string) map[string]float64
-	VectorizeCleanMap(text string) map[string]float64
+	// EmbedTexts 一次输入 N 个句子，返回 N 个稀疏向量（索引一一对应）。
+	EmbedTexts(texts []string) []map[string]float64
+	// Loaded 报告模型是否真加载（否则只有 TF-IDF 词频回退，仍可算余弦）。
 	Loaded() bool
 }

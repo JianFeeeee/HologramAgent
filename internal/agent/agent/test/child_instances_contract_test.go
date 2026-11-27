@@ -20,7 +20,8 @@ package test
 // Instances().RestartInstance / registry.Dispatch。
 
 import (
-	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	_ "github.com/JianFeeeee/HologramAgent/internal/agent/resident"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,8 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/agent/registry"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/security"
 	"github.com/JianFeeeee/HologramAgent/pkg/types"
 )
@@ -58,16 +59,10 @@ func newChildHarness(t *testing.T) *childHarness {
 	iom := io.NewIOManager()
 	iom.RegisterInputChannel("inbox", io.ChannelDef{})
 
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
-		Security: security.NewDisabledRuntime().AsGate(),
-		ID:       types.AgentID("root"),
-		IO:       iom,
-		Memory:   g,
-		DataDir:  dir,
-	})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	// ★ 图能力来自主 agent 注册的槽内工具（docs §6.4），不需要装配面。
+	a := newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: types.AgentID("root"), DataDir: dir})
+	faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom}.mount(a)
+	mainagent.Wrap(a).InjectServices(g, nil, nil, nil, nil, nil)
 	t.Cleanup(a.Stop)
 
 	return &childHarness{agent: a, iom: iom, graph: g, dataDir: dir}
@@ -192,26 +187,19 @@ func TestResidentRestoredAfterRestart(t *testing.T) {
 	// 模拟进程重启：新的 agent、同一个 dataDir、同一个 inputch 名。
 	iom2 := io.NewIOManager()
 	iom2.RegisterInputChannel("inbox", io.ChannelDef{})
-	a2, err := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
-		Security: security.NewDisabledRuntime().AsGate(),
-		ID:       types.AgentID("root2"),
-		IO:       iom2,
-		Memory:   h.graph,
-		DataDir:  h.dataDir,
-	})
-	if err != nil {
-		t.Fatalf("Instantiate(root2): %v", err)
-	}
+	a2 := newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: types.AgentID("root2"), DataDir: h.dataDir})
+	faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom2}.mount(a2)
+	mainagent.Wrap(a2).InjectServices(h.graph, nil, nil, nil, nil, nil)
 	t.Cleanup(a2.Stop)
 
-	n := a2.RestoreChildren()
+	n := mainagent.Wrap(a2).RestoreChildren()
 	if n == 0 {
 		t.Fatalf("★ 重启后没有恢复任何子 agent（实例表 %s）",
 			filepath.Join(h.dataDir, "agents", "instances.json"))
 	}
 	briefs := a2.Instances().ListChildren("resident")
 	if len(briefs) != 1 || briefs[0].ID != "r1" {
-		t.Fatalf("★ 恢复后实例列表 = %+v，期望一个 r1", briefs)
+		t.Fatalf("★ 恢复后实例列表 = %+v，期望一个 r1（children=%v）", briefs, a2.Children().IDs())
 	}
 }
 

@@ -19,7 +19,6 @@ package test
 
 import (
 	"context"
-	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -58,9 +57,10 @@ func TestLifecycleAnswersSynchronousInput(t *testing.T) {
 		t.Fatalf("★ request_id 没在 payload 里回传（payload=%q，evt=%q）", got, evt.RequestID)
 	}
 
-	st := h.agent.DumpScheduler().Stats
-	if st.Enqueued != 1 || st.Executed != 1 {
-		t.Fatalf("★ 调度统计 Enqueued=%d Executed=%d，期望各 1", st.Enqueued, st.Executed)
+	// ★ 调度统计**归类型**（docs §0.3：队列是类型内部实现）。
+	//   基座没有 Snapshot()；这里钉的是"恰恰处理了一次模型调用"。
+	if n := int(h.prov.calls.Load()); n != 1 {
+		t.Fatalf("★ provider 被调用 %d 次，期望 1", n)
 	}
 }
 
@@ -107,8 +107,9 @@ func TestStartIsIdempotent(t *testing.T) {
 
 	// 重复 Start 会起第二条 schedulerLoop 抢同一个队列 —— 同一条输入被执行两次。
 	// 这是"幂等"这个词在这里唯一有实际后果的含义。
-	if st := h.agent.DumpScheduler().Stats; st.Executed > 1 {
-		t.Fatalf("★ 重复 Start 后同一条输入被执行 %d 次 —— 起了两条调度循环", st.Executed)
+	// ★ 钉"模型被调用了几次"（调度统计归类型，基座没有 Snapshot()）。
+	if n := int(h.prov.calls.Load()); n > 1 {
+		t.Fatalf("★ 重复 Start 后同一条输入被处理 %d 次 —— 起了两条调度循环", n)
 	}
 }
 
@@ -177,16 +178,8 @@ func newLiveAgent(t *testing.T, reply func(*api.CompletionRequest) string) *live
 	pm := agentProvider.NewProviderManager()
 	pm.Register(prov.Name(), prov)
 
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
-		Security:        security.NewDisabledRuntime().AsGate(),
-		ID:              "lifecycle",
-		Provider:        prov,
-		ProviderManager: pm,
-		IO:              iom,
-	})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	a := faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom}.mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "lifecycle"}))
+	a.MountProviders(prov, pm)
 	a.Start()
 
 	iom.RegisterInputChannel("webui", io.ChannelDef{})

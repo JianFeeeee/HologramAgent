@@ -2,10 +2,12 @@ package pluginhost
 
 import (
 	"fmt"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelapi"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/promptsec"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
@@ -44,22 +46,36 @@ func (Module) Name() string { return "plugin-host" }
 // agent 模块），插件在 Start 阶段不用它们（唯一的 healthcheck 是 nil-guarded）。
 func (Module) Requires() []string {
 	return []string{
-		kernelmod.FacConfig, kernelmod.FacKernelIO, kernelmod.FacMemory,
+		kernelmod.FacConfig, kernelmod.FacKernelIO,
+		kernelmod.FacLLM, kernelmod.FacToolReg,
 		kernelmod.FacLua, kernelmod.FacSupervisor, kernelmod.FacTracker,
-		kernelmod.FacTextMem, kernelmod.FacDocStore, kernelmod.FacKnowledge,
 		kernelmod.FacStageHost,
 	}
 }
 
-func (Module) Provides() []string { return []string{FacPlugins} }
+// Provides 声明本模块产出的设施。
+//
+// ★ `FacPluginRegistry` 从 `stagehost` 挪到这里（用户裁定 2026-11-27）：
+//
+//	plghost 是**插件系统**的事实，归专管插件的模块。stagehost 只做阶段管道。
+func (Module) Provides() []string {
+	return []string{FacPlugins, kernelapi.FacPluginRegistry}
+}
 
 func (Module) Init(ks *kstate.State) error {
-	// ── 前置检查（用户要求："nil 加读取前检查"）──
-	pluginReg, ok := kernelmod.MustValueAny(ks, kernelapi.FacPluginRegistry).(*plugin.Registry)
-	if !ok || pluginReg == nil {
-		return fmt.Errorf("plugin-host：facility %q 未提供 —— "+
-			"stage-host 模块必须先完成（插件加载的硬前置）", kernelapi.FacPluginRegistry)
+	// ── plghost 由**本模块创建**（用户裁定 2026-11-27）──
+	//
+	// 它此前被 `stagehost` 顺手创建（那个模块本该只做阶段管道），并为它注入
+	// 11 个依赖 —— 于是"谁管插件"有两个答案。
+	//
+	// 现在：本模块是 plghost 的**唯一创建者**；依赖它的模块（device / agent）
+	// 只从设施取，不创建。
+	pluginReg := plugin.NewRegistry()
+	if err := wirePluginRegistry(ks, pluginReg); err != nil {
+		return err
 	}
+	ks.Provide(kernelapi.FacPluginRegistry, pluginReg)
+
 	if !ks.Has(kernelapi.FacStageHost) {
 		return fmt.Errorf("plugin-host：facility %q 未提供 —— "+
 			"stage-host 模块必须先完成（插件加载的硬前置）", kernelapi.FacStageHost)
@@ -360,25 +376,23 @@ func injectBaseDeps(ks *kstate.State) {
 			reg.SetSecurityRuntime(secRT)
 		}
 	}
-	// StageHost 在挂载点里存 any（kstate 不依赖 agent/core，否则成环）。
-	// 断言成 sdk.ToolSource（plugin 真正需要的只读工具视图）。
+	// 插件工具视图来自 **FacToolReg**（工具登记簿），不是 FacStageHost。
 	//
-	// 断言失败时**不静默跳过**：SetStageHost 不设的后果是插件加载后
-	// 工具表为空，而那与"插件没注册工具"无法区分。所以这里响亮记录。
-	// （Init 里已检查过 StageHost != nil，此处失败是类型不合约，属装配缺陷。）
-	if impl, ok := ks.Require(kernelapi.FacStageHost); ok {
+	// ★ 2026-11-26 修：stagehost 已按用户裁定拆开 —— 它只剩阶段管道
+	//   （RegisterStage/RunStage），工具登记搬到独立的 `kit.ToolRegistry`，
+	//   由 `kernelmod/tool` 用 `FacToolReg` 提供。
+	//
+	//   此前这里仍按 `sdk.ToolSource` 断言 `FacStageHost` ⇒ 必然失败 ⇒
+	//   日志里那条 "未实现 sdk.ToolSource —— 插件工具将不可见" 不是偶发告警，
+	//   而是**拆分后漏改的接线**：插件的工具表会一直是空的。
+	if impl, ok := ks.Require(kernelapi.FacToolReg); ok {
 		if ts, ok := impl.(sdk.ToolSource); ok && ts != nil {
 			reg.SetStageHost(ts)
 		} else {
-			log.Printf("[plugin-host] WARNING: facility %q 未实现 sdk.ToolSource —— 插件工具将不可见", kernelapi.FacStageHost)
+			log.Printf("[plugin-host] WARNING: facility %q 未实现 sdk.ToolSource —— 插件工具将不可见", kernelapi.FacToolReg)
 		}
 	}
 
-	if impl, ok := ks.Require(kernelapi.FacMemoryIndexer); ok {
-		if idx, _ := impl.(*memory.Indexer); idx != nil {
-			reg.SetIndexer(idx)
-		}
-	}
 }
 
 // formGroups 是三形态分流结果。
@@ -461,4 +475,61 @@ func publishToolsReady(ks *kstate.State) {
 		},
 	})
 	log.Printf("[pluginhost] tools_ready published (%d plugins)", len(loaded))
+}
+
+// agentTypeAssembler 是装配侧对"类型组装器"的最小要求。
+//
+// ★ 为什么用接口而不是 import `kernelmod/agenttype`：pluginhost 与 agenttype
+//
+//	是两个并列的内核模块，互相 import 会让依赖图出现横向边（本仓禁止：
+//	模块间只经 kstate 的设施名交会）。
+type agentTypeAssembler interface {
+	Assemble(def sdk.AgentTypeDef) error
+	Unregister(typeName string, alive []string) error
+}
+
+// wirePluginRegistry 是 plghost 的**唯一接线口**。
+//
+// 它此前散在 `stagehost.Init` 里（那个模块不该知道插件的依赖）。
+// 收进本模块的理由：这些线的另一头全是"插件要用什么"，属于插件系统的装配。
+func wirePluginRegistry(ks *kstate.State, reg *plugin.Registry) error {
+	if reg == nil {
+		return fmt.Errorf("plugin-host：plghost 为 nil")
+	}
+	if impl, ok := ks.Require(kernelapi.FacKernelIO); ok {
+		if iom, _ := impl.(*agentIO.IOManager); iom != nil {
+			reg.SetIOManager(iom)
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacEventBus); ok {
+		if bus, _ := impl.(kernelapi.EventBus); bus != nil {
+			reg.SetEventBus(bus)
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacLLM); ok {
+		if pm, _ := impl.(*agentProvider.ProviderManager); pm != nil {
+			reg.SetProviderManager(pm)
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacToolReg); ok {
+		if tr, _ := impl.(*kit.ToolRegistry); tr != nil {
+			reg.SetToolRegistrar(tr.RegisterTool)
+			reg.SetToolCleaner(tr)
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacStageHost); ok {
+		if sh, _ := impl.(*kit.StageHostType); sh != nil {
+			reg.SetStageRegistrar(sh.RegisterStage)
+		}
+	}
+	if impl, ok := ks.Require(kernelapi.FacMultimodal); ok {
+		if mm, _ := impl.(kernelapi.MultimodalSpace); mm != nil {
+			reg.SetMultimodal(mm)
+		}
+	}
+	reg.SetConfigRegistry(ks.CfgReg)
+	reg.SetPluginDir(ks.Cfg.Plugin.Dir)
+	reg.SetDataDir(ks.DataDir)
+	reg.SetAPIRegistrar(func(name string) error { return nil })
+	return nil
 }

@@ -52,6 +52,16 @@ type Plugin struct {
 	wg         sync.WaitGroup
 	termView   *pluginview.TerminalView
 	termUnsubs []func()
+
+	// activeMu / active 是**当前正在对话的客户端连接**（插件自己的状态）。
+	//
+	// ★ 为什么不是事件总线（docs §9.2 + 用户裁定 2026-11-25）：
+	// 流式增量与阶段进度是 **agent 的状态**，不是内核事实。这两类信息的
+	// 生产者（输出通道 handler / stage handler）都是**本插件自己的闭包**，
+	// 它们与"当前有哪些连接"住在同一进程里 —— 中间加一层发布/订阅
+	// 只是把同步调用改成异步消息，凭空多出订阅者表与事件类型。
+	activeMu sync.Mutex
+	active   map[*connWriter]struct{}
 }
 
 func New(name, socketPath string) *Plugin {
@@ -71,27 +81,56 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	p.termView = pluginview.NewTerminalView()
 	p.termUnsubs = append(p.termUnsubs,
 		s.Subscribe(sdk.EventTerminalOutput, func(evt *sdk.Event) { p.termView.OnTerminalOutput(evt.Payload) }),
-		s.Subscribe(sdk.EventToolCall, func(evt *sdk.Event) { p.termView.OnToolCall(evt.Payload) }),
 	)
 
 	// inputch 先登记：本插件既用 "cli" 作输出目标，也用它注入输入（终端行）。
 	// 输入侧必须显式登记，否则"把 inputch 划给驻留子"会找不到它。
 	_ = s.RegisterInputChannel("cli", sdk.ChannelDef{})
+	// ★ 输出通道只处理**完整输出**（`output_send__cli` 工具发来的 payload）。
+	//
+	//   此前这里还接 `delta`/`reset` 两个键 —— 那是**臆造**：输出通道是
+	//   `output_send__<name>` 工具的**执行后端**，SDK 契约只有
+	//   {payload, type, meta}。流式增量走 `on_llm_call` 阶段
+	//   （见下方 `p.stageOnLLMCall()`），那才是基座推送模型增量的位置。
+	//
+	//   这里**不发任何事件**：通道 handler 本身就跑在插件侧、持有 stdout。
 	s.RegisterOutputChannel("cli", 1, "CLI 终端", sdk.ChannelDef{}, func(args map[string]interface{}) (interface{}, error) {
-		payload, _ := args["payload"].(string)
-		if payload != "" {
-			fmt.Println(payload)
-			s.Publish(&sdk.Event{
-				Type: sdk.EventAgentOutput,
-				Payload: map[string]interface{}{
-					"content": payload,
-					"channel": "cli",
-					"kind":    "channel_output",
-				},
-			})
+		text, _ := args["payload"].(string)
+		if text != "" {
+			fmt.Println(text)
 		}
 		return map[string]interface{}{"status": "ok"}, nil
 	})
+
+	// ★ 阶段进度：cli **自己注册 stage 处理器**直接推（docs §9.1）。
+	//
+	//   此前是"内核总线发 EventStage → cli 订阅"：而 EventStage 的生产者
+	//   是插件自己（webui 也在发），一件事走两圈。现在每个插件在自己的
+	//   stage handler 里决定要不要通知客户端 —— 那本就是插件自己的事。
+	//
+	//   过滤 _consolidation_：内部记忆整理不属于用户这一轮对话。
+	// 七个阶段都要注册 —— 原先 cli 靠订阅总线 `EventStage` 拿到**全部**阶段，
+	// 那条路径已删（阶段现在由各插件在自己的 handler 里推送）。只注册其中
+	// 几个的后果是终端**少掉一半进度**（on_input / post_action /
+	// after_toolcall / after_output 静默消失，实测对照确认）。
+	s.RegisterStage(sdk.StageOnInput, p.stagePusher("on_input", ""))
+	s.RegisterStage(sdk.StagePreAction, p.stagePusher("pre_action", ""))
+	s.RegisterStage(sdk.StagePostAction, p.stagePusher("post_action", ""))
+	s.RegisterStage(sdk.StageOnToolcall, p.stageOnToolcall())
+	s.RegisterStage(sdk.StageBeforeToolcall, p.stageToolPusher())
+	s.RegisterStage(sdk.StageAfterToolcall, p.stageToolAfterPusher())
+	s.RegisterStage(sdk.StageBeforeOutput, p.stagePusher("before_output", ""))
+	s.RegisterStage(sdk.StageAfterOutput, p.stagePusher("after_output", ""))
+	// ★ 流式增量的**唯一载体**（用户裁定 2026-11-27）。
+	//
+	// 此前 cli 靠输出通道的 `payload{"delta":true}` 拿逐 token 文本 —— 那是
+	// 臆造：输出通道是 `output_send__<name>` 工具的**执行后端**，它的契约
+	// 只有 {payload, type, meta}，不是流式载体。
+	//
+	// 而 LLM 调用归基座（StreamLLM/CompleteLLM 是唯二入口），所以"模型逐
+	// token 产出了什么"只有那条链在第一现场掌握；基座在 on_llm_call 上逐
+	// chunk 推送，携带 agent 标识。
+	s.RegisterStage(sdk.StageOnLLMCall, p.stageOnLLMCall())
 
 	s.Settings().RegisterDef(sdk.ConfigDef{
 		Key: "api_key", Type: "password", DisplayName: "CLI API 密钥",
@@ -205,6 +244,10 @@ func (w *connWriter) writeLine(v interface{}) {
 // 转发给客户端（流式过程输出），InjectTextSync 返回后写出最终响应。
 // 仅插件层改动：通过 SDK 订阅事件，不触碰内核。
 func (p *Plugin) handleChat(w *connWriter, line string, s *sdk.PluginSDK) {
+	// ★ 登记这一路连接：输出通道 handler 与 stage 处理器要能把增量/进度
+	//   推给它（插件自己的状态，不经总线）。
+	defer p.trackConn(w)()
+
 	unsubReasoning := s.Subscribe(sdk.EventReasoning, func(evt *sdk.Event) {
 		if ch, _ := evt.Payload["channel"].(string); ch != cliChannel {
 			return
@@ -215,70 +258,10 @@ func (p *Plugin) handleChat(w *connWriter, line string, s *sdk.PluginSDK) {
 		}
 		w.writeLine(map[string]interface{}{"type": "reasoning", "content": content})
 	})
-	unsubToolCall := s.Subscribe(sdk.EventToolCall, func(evt *sdk.Event) {
-		if ch, _ := evt.Payload["channel"].(string); ch != cliChannel {
-			return
-		}
-		tool, _ := evt.Payload["tool"].(string)
-		status, _ := evt.Payload["status"].(string)
-		result, _ := evt.Payload["result"].(string)
-		w.writeLine(map[string]interface{}{
-			"type":   "tool_call",
-			"tool":   tool,
-			"status": status,
-			"result": truncateOneLine(result, 160),
-		})
-	})
-	// token 级流式增量帧：客户端可选订做逐 token 渲染。
-	// 旧客户端收到未知 type 会忽略；聚合 reasoning/response 帧仍照常发送，
-	// 保证旧/新客户端最终都能看到完整文本。
-	unsubReasoningDelta := s.Subscribe(sdk.EventReasoningDelta, func(evt *sdk.Event) {
-		if ch, _ := evt.Payload["channel"].(string); ch != cliChannel {
-			return
-		}
-		content, _ := evt.Payload["content"].(string)
-		if content == "" {
-			return
-		}
-		w.writeLine(map[string]interface{}{"type": "reasoning_delta", "content": content})
-	})
-	unsubContentDelta := s.Subscribe(sdk.EventContentDelta, func(evt *sdk.Event) {
-		if ch, _ := evt.Payload["channel"].(string); ch != cliChannel {
-			return
-		}
-		content, _ := evt.Payload["content"].(string)
-		if content == "" {
-			return
-		}
-		w.writeLine(map[string]interface{}{"type": "content_delta", "content": content})
-	})
-	// stage：阶段管道（on_input / pre_action / post_action / toolcall / output …）。
-	//
-	// ★ 为何要补（2026-10-13 协议审计）：CLI 是**唯一**看不到阶段进展的客户端
-	//   —— WebUI / GUI / 鸿蒙 都消费了 stage。后果具象：agent 跑长任务时
-	//   终端长时间静默，用户分不清“在干活”还是“卡住了”。
-	//
-	// 为何单独发一帧而不是当普通文本：stage 是**过程信息**，与最终回复不同
-	// 层级；客户端已有 [思考]/[工具] 前缀的渲染惯例，这里沿用同一约定。
-	//
-	// 过滤 _consolidation_：那是内核内部任务（记忆合并/归档），不属于用户
-	// 这一轮对话；WebUI 也做了同样的过滤（见 dashboard.js 的 stage 处理）。
-	unsubStage := s.Subscribe(sdk.EventStage, func(evt *sdk.Event) {
-		ch, _ := evt.Payload["channel"].(string)
-		if ch != cliChannel || ch == "_consolidation_" {
-			return
-		}
-		phase, _ := evt.Payload["phase"].(string)
-		if phase == "" {
-			return
-		}
-		tool, _ := evt.Payload["tool"].(string)
-		w.writeLine(map[string]interface{}{
-			"type":  "stage",
-			"phase": phase,
-			"tool":  tool,
-		})
-	})
+	// ★ token 级增量与阶段进度**不再订阅事件**（docs §9.2 第 5 行，
+	//   用户裁定 2026-11-25）：它们由输出通道 handler 与 cli 自己的 stage
+	//   处理器直接推到 `p.broadcast`。本文件剩下的订阅只处理**内核事件**。
+
 	// system：内核级状态事件（目前唯一发布者是 plugin_crashed）。
 	//
 	// ★ 为何要补（2026-10-13 协议审计）：该事件一直在发（dynamic_proc.go:175），
@@ -300,10 +283,6 @@ func (p *Plugin) handleChat(w *connWriter, line string, s *sdk.PluginSDK) {
 		})
 	})
 	defer unsubReasoning()
-	defer unsubToolCall()
-	defer unsubReasoningDelta()
-	defer unsubContentDelta()
-	defer unsubStage()
 	defer unsubSystem()
 
 	resp := s.InjectTextSync(cliSource, cliChannel, line)
@@ -514,15 +493,24 @@ func (p *Plugin) cmdStatus(conn net.Conn, s *sdk.PluginSDK) {
 	}
 	ks := st.GetKernelStatus()
 
+	// ★ 状态面已注册表化：按 key 取"段"，不再读 KernelStatus 的字段
+	// （那些字段在生产下 9 个恒空、3 个是类型专属结构）。
+	var llmSec sdk.LLMStatus
+	_ = sectionInto(ks, "llm", &llmSec)
+	var rtSec sdk.RuntimeStatus
+	_ = sectionInto(ks, "runtime", &rtSec)
+	var memSec sdk.MemoryStatus
+	_ = sectionInto(ks, "memory", &memSec)
+
 	llmStatus := "不可用"
-	if ks.LLM.Available {
-		llmStatus = fmt.Sprintf("%s (%d sources)", ks.LLM.Provider, ks.LLM.Sources)
+	if llmSec.Available {
+		llmStatus = fmt.Sprintf("%s (%d sources)", llmSec.Provider, llmSec.Sources)
 	}
 	memInfo := "未初始化"
-	if ks.Memory.Available {
-		memInfo = fmt.Sprintf("%d entities, %d relations", ks.Memory.EntityCount, ks.Memory.RelationCount)
+	if memSec.Available {
+		memInfo = fmt.Sprintf("%d entities, %d relations", memSec.EntityCount, memSec.RelationCount)
 	}
-	runtime := fmt.Sprintf("goroutines=%d mem=%dMB", ks.Runtime.Goroutines, ks.Runtime.MemoryMB)
+	runtime := fmt.Sprintf("goroutines=%d mem=%dMB", rtSec.Goroutines, rtSec.MemoryMB)
 	uptime := ks.Uptime
 
 	writeLine(conn, map[string]interface{}{
@@ -795,12 +783,8 @@ func (p *Plugin) cmdMemory(conn net.Conn, parts []string, s *sdk.PluginSDK) {
 			return
 		}
 		q := strings.Join(parts[2:], " ")
-		mem := s.Memory()
-		if mem == nil {
-			writeLine(conn, map[string]interface{}{"type": "error", "error": "memory not available"})
-			return
-		}
-		entities, relations, err := mem.Recall([]string{q}, 2)
+		dataDir := s.Settings().DataDir()
+		entities, relations, err := queryMemory(dataDir, []string{q}, 2)
 		if err != nil {
 			writeLine(conn, map[string]interface{}{"type": "error", "error": err.Error()})
 			return
@@ -810,72 +794,36 @@ func (p *Plugin) cmdMemory(conn net.Conn, parts []string, s *sdk.PluginSDK) {
 			"relations": relations,
 		})
 	case "graph":
-		mem := s.Memory()
-		if mem == nil {
-			writeLine(conn, map[string]interface{}{"type": "error", "error": "memory not available"})
-			return
-		}
-		data, err := mem.GraphData()
+		data, err := memoryStats(s.Settings().DataDir())
 		if err != nil {
 			writeLine(conn, map[string]interface{}{"type": "error", "error": err.Error()})
 			return
 		}
 		writeJSONContent(conn, data)
 	case "text":
-		tm := s.TextMemory()
-		if tm == nil {
-			writeLine(conn, map[string]interface{}{"type": "error", "error": "text memory not available"})
-			return
-		}
 		n := 20
 		if len(parts) >= 3 {
 			if v, err := strconv.Atoi(parts[2]); err == nil && v > 0 {
 				n = v
 			}
 		}
-		events, err := tm.RecentEvents(n)
+		events, stats, err := recentTextEvents(s.Settings().DataDir(), n)
 		if err != nil {
 			writeLine(conn, map[string]interface{}{"type": "error", "error": err.Error()})
 			return
 		}
 		writeJSONContent(conn, map[string]interface{}{
 			"events": events,
-			"stats":  tm.Stats(),
+			"stats":  stats,
 		})
 	case "context":
-		// 与 WebUI GET /api/v1/memory/context 同源：都走 IndexerAPI。
-		// 打印“输进去会拼成什么上下文”，是排查召回质量最直接的一眼。
-		idx := s.Indexer()
-		if idx == nil {
-			writeLine(conn, map[string]interface{}{"type": "error", "error": "indexer not available"})
-			return
-		}
-		q := ""
-		if len(parts) >= 3 {
-			q = strings.Join(parts[2:], " ")
-		}
-		injected, err := idx.BuildContext(q)
-		if err != nil {
-			writeLine(conn, map[string]interface{}{"type": "error", "error": err.Error()})
-			return
-		}
-		writeJSONContent(conn, map[string]interface{}{
-			"context":        idx.FormatContext(injected),
-			"summary":        injected.Summary,
-			"entities":       injected.Entities,
-			"token_estimate": injected.TokenEstimate,
-		})
+		// ★ 上下文拼装是**内核 agentloop 的事**（谁的预算、谁的渲染），
+		//   CLI 不再复刻那份逻辑。要看去调 `stablemem_*` 工具或看 /status。
+		writeLine(conn, map[string]interface{}{"type": "response",
+			"content": "已废弃：上下文拼装归 agent 自己的 agentloop。用 stablemem_recall 工具或 /status 查看。"})
 	case "tools":
-		// 与 WebUI GET /api/v1/memory/tools 同源。
-		idx := s.Indexer()
-		if idx == nil {
-			writeLine(conn, map[string]interface{}{"type": "error", "error": "indexer not available"})
-			return
-		}
-		writeJSONContent(conn, map[string]interface{}{
-			"tools":       idx.GetToolDefinitions(),
-			"tool_prompt": idx.BuildToolPrompt(),
-		})
+		writeLine(conn, map[string]interface{}{"type": "response",
+			"content": "已废弃：工具表归内核注册表。用 /status 或 get_plugin_tools 查看。"})
 	default:
 		writeLine(conn, map[string]interface{}{"type": "response", "content": "用法: /memory query <关键词> | /memory graph | /memory text [n] | /memory context [q] | /memory tools"})
 	}
@@ -1038,8 +986,8 @@ func (p *Plugin) cmdRuntime(conn net.Conn, s *sdk.PluginSDK) {
 	writeJSONContent(conn, map[string]interface{}{
 		"uptime":         ks.Uptime,
 		"agent_id":       ks.AgentID,
-		"scheduler":      ks.Scheduler,
-		"residents":      ks.Residents,
+		"scheduler":      sectionRaw(ks, "scheduler"),
+		"residents":      sectionRaw(ks, "resident"),
 		"channels":       ks.Channels,
 		"input_channels": ks.InputChannels,
 	})
@@ -1206,4 +1154,24 @@ func (p *Plugin) Stop() error {
 	p.wg.Wait()
 	os.Remove(p.socket)
 	return nil
+}
+
+// sectionRaw 取一个已注册状态段的原始 JSON（未注册 ⇒ nil）。
+//
+// ★ 消费方按 key 取、自己解码：状态面的结构由**持有者**定义，
+// 基座不承诺字段名（它连"有哪些段"都不知道）。
+func sectionRaw(ks *sdk.KernelStatus, key string) json.RawMessage {
+	if ks == nil || ks.Sections == nil {
+		return nil
+	}
+	return ks.Sections[key]
+}
+
+// sectionInto 把一个已注册状态段解码进 out（未注册或解码失败 ⇒ false）。
+func sectionInto(ks *sdk.KernelStatus, key string, out any) bool {
+	raw := sectionRaw(ks, key)
+	if raw == nil {
+		return false
+	}
+	return json.Unmarshal(raw, out) == nil
 }

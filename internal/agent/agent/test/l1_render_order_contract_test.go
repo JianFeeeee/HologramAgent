@@ -20,7 +20,6 @@ package test
 
 import (
 	"context"
-	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
 	"strings"
 	"sync"
 	"testing"
@@ -39,8 +38,17 @@ type recordingProbe struct {
 	requests []*api.CompletionRequest
 }
 
-func (p *recordingProbe) Name() string          { return "recording" }
-func (p *recordingProbe) MaxContextTokens() int { return 2000 } // 小窗口，便于压出预算
+func (p *recordingProbe) Name() string { return "recording" }
+
+// MaxContextTokens 是**小窗口**，便于压出预算。
+//
+// ★ 4000 而非 2000（2026-11-20）：主 agent 现在多注册两个槽内工具
+//
+//	（graph_recall / graph_commit），固定部分（系统提示 + 工具 schema）
+//	随之变大，2000 窗口下 12 轮里只有 6 轮能进预算 —— 那会让本判据
+//	变成"在测 overflow"，而不是"在测新旧取舍"。
+//	对应用例里的每轮 200 字节与 12 轮总量（2400）保持不变。
+func (p *recordingProbe) MaxContextTokens() int { return 4000 }
 
 func (p *recordingProbe) record(req *api.CompletionRequest) string {
 	p.mu.Lock()
@@ -83,16 +91,8 @@ func newRenderAgent(t *testing.T, protected int) (*agent.Agent, *io.IOManager, *
 	_ = iom
 	_ = prov
 	_ = pm
-	a, err := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
-		Security:        security.NewDisabledRuntime().AsGate(),
-		ID:              "l1order",
-		Provider:        prov,
-		ProviderManager: pm,
-		IO:              iom,
-	})
-	if err != nil {
-		t.Fatalf("Instantiate(main): %v", err)
-	}
+	a := faces{Security: security.NewDisabledRuntime().AsGate(), IO: iom}.mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "l1order"}))
+	a.MountProviders(prov, pm)
 	a.Start()
 	t.Cleanup(a.Stop)
 

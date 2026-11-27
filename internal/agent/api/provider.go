@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -131,7 +132,14 @@ func (m Message) MarshalJSON() ([]byte, error) {
 }
 
 type CompletionRequest struct {
-	Model           string                 `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Source 指定**这次请求要走哪个源**（空 = 设施的默认候选链）。
+	//
+	// ★ 用途是「按能力选源」：主模型不支持 vision/audio 时，模态回退要换到
+	//   一个声明了该能力的源上。设施的候选链排序不知道"这次请求带图"，
+	//   所以调用方在这里点名，设施照办（这点名不是绕过回退，它只是候选链的
+	//   第一个元素；源不可用时设施照样往下走）。
+	Source          string                 `json:"-"`
 	Messages        []Message              `json:"messages"`
 	Temperature     float64                `json:"temperature,omitempty"`
 	MaxTokens       int                    `json:"max_tokens,omitempty"`
@@ -359,3 +367,18 @@ type ToolOutput struct {
 }
 
 func (t ToolOutput) String() string { return t.Text }
+
+// IsContextFull 报告一个 provider 错误是否表示「上下文装不下」。
+//
+// ## 归属：识别在上游调用的发出者，处置在类型
+//
+// `ErrContextFull` 是 provider 回给**发请求那一方**的事实。判定本身是纯协议
+// 事实（错误码 → 类别），与任何 agent 类型无关，所以它住在 `api` 这个叶子包，
+// 由内核的 LLM 设施与基座共用同一份实现 —— 不允许两处各写一遍。
+//
+// 处置（裁/剔页/抢占/终止/上报父/什么都不做）一律由该类型注册的
+// `OverflowHandler` 决定。
+func IsContextFull(err error) bool {
+	var pe *ProviderError
+	return errors.As(err, &pe) && pe.Kind == ErrContextFull
+}

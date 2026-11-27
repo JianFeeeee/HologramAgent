@@ -57,6 +57,9 @@ func (Module) Init(ks *kstate.State) error {
 	}
 	providerMgr := buildProviderManager(ks.Cfg, luaVM, baseAPIKey, secRT)
 	ks.Provide(kernelapi.FacLLM, providerMgr)
+	// ★ LLM 设施：重试 / fallback / 可用性标记 / 活动源 / 分类错误**只在内核**
+	//   （§3.2.1）。基座只持这个句柄并转发。
+	ks.Provide(kernelapi.FacLLMClient, NewClient(providerMgr))
 	ks.Provide(kernelapi.FacLLMDefault, providerMgr.Default())
 	ks.Provide(kernelapi.FacBaseAPIKey, baseAPIKey)
 	return nil

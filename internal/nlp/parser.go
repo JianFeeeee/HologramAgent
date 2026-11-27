@@ -3,7 +3,7 @@ package nlp
 import (
 	"sort"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory/vector"
+	"github.com/JianFeeeee/HologramAgent/internal/vector"
 )
 
 // Parser 依存句法分析器接口
@@ -25,9 +25,14 @@ func GetDefaultParser() Parser {
 	return defaultParser
 }
 
-// Vectorizer 向量化接口，复用 memory/vector 或 memory/static_embedder
+// Vectorizer 是**语义计算面**（docs §3.4）：批量句进 → 稀疏向量出。
+//
+// ★ 批量是形状而不是优化：一次 call 传 N 句、返回 N 个向量（索引对应）。
+// 单发场景写长度 1 的调用。这样 `FacEmbedder` 提供的唯一计算面就能
+// 直接满足它，不必为"单发/批量"各立一个接口。
 type Vectorizer interface {
-	Vectorize(text string) vector.Vector
+	EmbedTexts(texts []string) []map[string]float64
+	Loaded() bool
 }
 
 // ExtractorConfig 三元组提取器配置
@@ -157,11 +162,24 @@ func (e *Extractor) Extract(text string) *TripleSet {
 // 处理：cos(h+r, t) → vector_conf
 // 输出：带 vector_conf 的候选三元组
 func verifyTriples(triples []Triple, embedder Vectorizer) []Triple {
+	if embedder == nil || len(triples) == 0 {
+		return triples
+	}
+	// ★ 一次 call 算全部：每对三元组要 3 个向量，N 条就是 3N 个句子。
+	// 逐条调用会把 3N 次往返塞进一个 for 循环里，而它们之间毫无依赖
+	// （docs §3.4：批量是形状，不是优化选项）。
+	texts := make([]string, 0, len(triples)*3)
 	for i := range triples {
 		t := &triples[i]
-		h := embedder.Vectorize(t.Subject)
-		r := embedder.Vectorize(t.Relation)
-		tv := embedder.Vectorize(t.Object)
+		texts = append(texts, t.Subject, t.Relation, t.Object)
+	}
+	vecs := embedder.EmbedTexts(texts)
+
+	for i := range triples {
+		t := &triples[i]
+		h := vecs[i*3]
+		r := vecs[i*3+1]
+		tv := vecs[i*3+2]
 
 		hr := addVectors(h, r)
 		sim := vector.CosineSimilarity(hr, tv)

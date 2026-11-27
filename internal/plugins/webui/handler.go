@@ -108,17 +108,21 @@ func init() {
 
 type Handler struct {
 	chatStopOnce2 sync.Once // close 纪律：chatStop 的幂等守卫
-	sdk           *sdk.PluginSDK
-	supervisor    sdk.SupervisorAPI
-	memory        sdk.MemoryAPI
-	indexer       sdk.IndexerAPI
-	adapter       sdk.AdapterAPI
-	config        sdk.ConfigAPI
-	startTime     time.Time
-	textMem       sdk.TextMemoryAPI
-	knowledge     sdk.KnowledgeAPI
-	tracker       sdk.TrackerAPI
-	settings      sdk.SettingsAPI
+
+	// llmShown 记录每个 agent **已推送过**的正文/思维链长度（用于算增量）。
+	//
+	// 按 agentID 分开：主 agent 与子 agent 并发跑时各自有独立的流，
+	// 共用一份计数会把两边的增量算错（串号）。
+	llmShownMu sync.Mutex
+	llmShown   map[string][2]int // agentID → [正文已推送, 思维链已推送]
+	sdk        *sdk.PluginSDK
+	supervisor sdk.SupervisorAPI
+	adapter    sdk.AdapterAPI
+	config     sdk.ConfigAPI
+	startTime  time.Time
+	knowledge  sdk.KnowledgeAPI
+	tracker    sdk.TrackerAPI
+	settings   sdk.SettingsAPI
 	// kernelCtl 是内核重启/关机通道。nil = 该部署没接（端点会明确报不可用）。
 	kernelCtl sdk.KernelControlAPI
 	pluginMgr sdk.PluginManager
@@ -151,6 +155,24 @@ type Handler struct {
 
 	sseEvents *sseEventRing // SSE 事件环状缓冲区，Last-Event-ID 重放用
 
+	// streamMu / streams 是**当前活着的 SSE 连接**（插件自己的状态）。
+	//
+	// ★ 为什么不用事件总线（docs §9.2 第 5 行 + 用户裁定 2026-11-25）：
+	// 流式增量与阶段进度是 **agent 的状态**，不是内核事实。把它们塞进
+	// 内部 bus 等于"插件订阅自己该直接拿的东西"——同一件事走两圈，
+	// 还要过安全模块的总线代理。输出通道 handler 与 stage handler 都是
+	// **本插件自己的闭包**，它们直接往这里写就够了。
+	//
+	// 这里也没有"事件类型"与"订阅协议"：只有"当前有哪些连接"。
+	streamMu  sync.Mutex
+	streams   map[int64]chan string
+	streamSeq int64
+	// deltaSinks 是本进程内**需要 token 级增量**的消费者（SSE 连接、
+	// OpenAI 兼容端点）。它们是插件的内部函数注册，不是事件订阅者 ——
+	// 没有事件类型、没有跨进程、生命周期跟随调用方（defer 注销）。
+	deltaSinks map[int64]func(map[string]interface{})
+	deltaSeq   int64
+
 	chatMu      sync.Mutex
 	chatHistory []ChatMsg
 	pendingIdx  int   // chatHistory 中正在进行的 assistant 消息索引，-1 表示无
@@ -178,11 +200,8 @@ type Handler struct {
 func NewHandler(s *sdk.PluginSDK) *Handler {
 	var (
 		sup sdk.SupervisorAPI
-		mem sdk.MemoryAPI
-		idx sdk.IndexerAPI
 		ad  sdk.AdapterAPI
 		cfg sdk.ConfigAPI
-		tm  sdk.TextMemoryAPI
 		ks  sdk.KnowledgeAPI
 		tr  sdk.TrackerAPI
 		se  sdk.SettingsAPI
@@ -193,9 +212,9 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		kc sdk.KernelControlAPI
 	)
 	if s != nil {
-		sup, mem, idx = s.Supervisor(), s.Memory(), s.Indexer()
+		sup = s.Supervisor()
 		ad, cfg = s.Adapter(), s.Config()
-		tm, ks, tr = s.TextMemory(), s.Knowledge(), s.Tracker()
+		ks, tr = s.Knowledge(), s.Tracker()
 		se, pm = s.Settings(), s.PluginMgr()
 		st, llm = s.Status(), s.LLM()
 		kc = s.KernelControl()
@@ -203,12 +222,9 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 	h := &Handler{
 		sdk:          s,
 		supervisor:   sup,
-		memory:       mem,
-		indexer:      idx,
 		adapter:      ad,
 		config:       cfg,
 		startTime:    time.Now(),
-		textMem:      tm,
 		knowledge:    ks,
 		tracker:      tr,
 		settings:     se,
@@ -230,16 +246,15 @@ func NewHandler(s *sdk.PluginSDK) *Handler {
 		chatStop:     make(chan struct{}),
 		chatLoopDone: make(chan struct{}),
 	}
-	// 订阅事件总线攒终端视图（内核不再维护终端语义）：
-	//   EventTerminalOutput —— agentcli 的输出与生命周期
-	//   EventToolCall       —— cmd_run 历史、terminal_create/close 归并
+	// 订阅事件总线攒终端视图（内核不再维护终端语义）。
+	//
+	// ★ `EventToolCall` 已删（2026-11-26）：那条事件**没有任何发布者**，
+	//   订阅方收的永远是空。工具调用改走 `StageOnToolcall` 阶段 ——
+	//   内核执行链握着"正在执行哪个工具 + 参数"时触发（见 handler_chat.go）。
 	if s != nil {
 		h.termUnsubs = append(h.termUnsubs,
 			s.Subscribe(sdk.EventTerminalOutput, func(ev *sdk.Event) {
 				h.termView.OnTerminalOutput(ev.Payload)
-			}),
-			s.Subscribe(sdk.EventToolCall, func(ev *sdk.Event) {
-				h.termView.OnToolCall(ev.Payload)
 			}),
 		)
 	}
@@ -758,4 +773,79 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+// ── 活着的 SSE 连接（插件自己的状态，不是事件总线）──
+
+// addStream 登记一路 SSE 连接，返回其发送通道与注销函数。
+func (h *Handler) addStream() (chan string, func()) {
+	ch := make(chan string, 2048)
+	h.streamMu.Lock()
+	if h.streams == nil {
+		h.streams = make(map[int64]chan string)
+	}
+	h.streamSeq++
+	id := h.streamSeq
+	h.streams[id] = ch
+	h.streamMu.Unlock()
+	return ch, func() {
+		h.streamMu.Lock()
+		delete(h.streams, id)
+		h.streamMu.Unlock()
+	}
+}
+
+// sendToStreams 把一行 SSE 内容写给**当前所有连接**。
+//
+// ★ 这是插件的**扇出**，不是发布/订阅：没有事件类型、没有订阅者身份、
+// 也没有跨进程。将来要按连接过滤（例如只推给某个会话页），在这里加参数即可。
+func (h *Handler) sendToStreams(eventType, id, data string) {
+	h.streamMu.Lock()
+	targets := make([]chan string, 0, len(h.streams))
+	for _, ch := range h.streams {
+		targets = append(targets, ch)
+	}
+	h.streamMu.Unlock()
+	for _, ch := range targets {
+		sendSSE(ch, id, eventType, data)
+	}
+}
+
+// ── 增量的**内部投递**（插件的函数注册，不是事件订阅）──
+
+// addDeltaSink 登记一个增量消费者，返回注销函数。
+//
+// ★ 与 `addStream` 的分工：stream 是"写 SSE 行"的连接，deltaSink 是
+// "按 payload 自己决定怎么处理"的消费者（OpenAI 兼容端点要把 token 攒成
+// 它自己的帧格式）。两者都不是事件总线的一部分。
+func (h *Handler) addDeltaSink(fn func(map[string]interface{})) func() {
+	if h == nil || fn == nil {
+		return func() {}
+	}
+	h.streamMu.Lock()
+	if h.deltaSinks == nil {
+		h.deltaSinks = make(map[int64]func(map[string]interface{}))
+	}
+	h.deltaSeq++
+	id := h.deltaSeq
+	h.deltaSinks[id] = fn
+	h.streamMu.Unlock()
+	return func() {
+		h.streamMu.Lock()
+		delete(h.deltaSinks, id)
+		h.streamMu.Unlock()
+	}
+}
+
+// fanoutDelta 把一条增量交给全部 deltaSink（无人登记 ⇒ 直接丢弃）。
+func (h *Handler) fanoutDelta(payload map[string]interface{}) {
+	h.streamMu.Lock()
+	sinks := make([]func(map[string]interface{}), 0, len(h.deltaSinks))
+	for _, fn := range h.deltaSinks {
+		sinks = append(sinks, fn)
+	}
+	h.streamMu.Unlock()
+	for _, fn := range sinks {
+		fn(payload)
+	}
 }

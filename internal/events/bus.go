@@ -18,24 +18,23 @@ import (
 type EventType = model.EventType
 
 const (
-	EventRawInput      EventType = "raw_input"
-	EventAgentOutput   EventType = "agent_output"
 	EventAgentLLMChain EventType = "agent_llm_chain"
-	EventToolCall      EventType = "tool_call"
 	EventReasoning     EventType = "reasoning"
-	EventStage         EventType = "stage"
 	// EventScheduler 是输入调度器的状态变更事件（抢占/挂起/恢复），
 	// 供状态页与诊断订阅（设计文档 §11 O2）。
 	EventScheduler      EventType = "scheduler"
 	EventSystem         EventType = "system"
 	EventTerminalOutput EventType = "terminal_output"
 
-	// 流式增量事件（LLM token 级）：核心改为流式后每收到一个增量块发布。
-	// 订阅者可选订；不认识的旧订阅者自然忽略（Bus 按 EventType 精确匹配分发）。
-	// 聚合事件 EventReasoning / EventAgentLLMChain 仍照常在每轮结束时全文发布，
-	// 插件体系行为不变。
-	EventReasoningDelta EventType = "reasoning_delta"
-	EventContentDelta   EventType = "content_delta"
+	// ★ 已删六个事件类型（2026-11-25，docs §9.5 第 3 条）：
+	//
+	//	EventRawInput    → on_input 阶段钩子（RawMessage / UserID / GroupID / Extra）
+	//	EventAgentOutput → before_output / after_output 阶段 + EmitOutputTo 本身
+	//	EventStage       → 各插件自己在 stage handler 里通知自己的客户端
+	//	EventContentDelta    → 输出通道逐 chunk 调用（payload{"delta": true}）
+	//	EventReasoningDelta  → 同上（payload{"kind": "reasoning"}）
+	//
+	// 判据：它们是 agent 状态，不是内核事实。总线只服务**内核模块之间**。
 
 	// skill_detected：clawhubadapter（OpenClaw 兼容层）扫描 skills 目录时
 	// 发现纯 SKILL 类型插件后发布，由原生 skillmgr 插件订阅并接管注册。
@@ -61,26 +60,33 @@ const (
 	//	plugin_count:  int
 	EventToolsReady EventType = "tools_ready"
 
-	// EventMemoryAccess 是**图记忆读写事件**：谁读了/写了哪几个记忆块。
+	// EventPluginsChanged 是**插件可见面发生变化**的事件（用户裁定 2026-11-27）。
 	//
-	// 为什么需要它（2026-10-08）：星图此前的「跟随 agent 活动」靠**工具名猜节点**
-	// （把 "stablemem_recall" 拆成词元去匹配实体名）。而图谱里的实体名是中文概念
-	// （小宅/对话/待命），与英文工具名永不交集 —— 实测每个工具名命中 0 个节点，
-	// 于是每次都回退到「按 mention_count 取前 8 个」，即每次工具调用点亮的都是
-	// **同一批无关节点**。
+	// 语义：某实例"能用哪些插件/工具"这张表变了，订阅者应当**重新拉取**自己的
+	// 虚拟插件管理器。**不是**"插件内容变了"——内容变化（重载/升级）也走这里，
+	// 因为对实例而言后果一致：它看到的表要重算。
 	//
-	// 正确的做法是让**图数据库自己在读写处上报**：它本来就知道自己碰了哪些块 ID。
+	// 触发者：
+	//
+	//	· admin_child 改授权（SetGrant / ClearGrant）
+	//	· 插件加载 / 卸载 / 重载 / 崩溃重启
+	//	· 插件持久禁用 / 启用、运行态启停
+	//
+	// ★ 为什么不把新表塞进 payload：表是按实例算的，一个事件要服务 N 个实例，
+	//   塞进去就得塞 N 份。事件只说"去拉"，拉什么由各实例自己算。
+	//
 	// payload 约定：
 	//
-	//	op:       "recall" | "commit" | "merge" | "purge" | "delete"
-	//	blocks:   []string，本次实际读写到的块 ID
-	//	created:  []string，本次**新建**的块 ID（驱动「从小变大」生长动画）
-	//	removed:  []string，本次**删除/合入消失**的块 ID（驱动粒子消散）
-	//	merged:   [][2]string 或 []map，合入对（驱动「两节点消失又出现」）
-	//	tool:     触发这次访问的工具名（可空，便于 UI 显示来源）
-	//
-	// 订阅者（webui SSE）据此按**真实块 ID** 精确高亮，不再猜。
-	EventMemoryAccess EventType = "memory_access"
+	//	agent_id:      string，**受影响**的实例（空 = 全部实例都要重算）
+	//	reason:        string，"grant" | "load" | "unload" | "reload" | "crash"
+	//	                  | "enable" | "disable"
+	//	plugin:        string，引发变化的插件名（可空）
+	EventPluginsChanged EventType = "plugins_changed"
+
+	// ★ 已删 `EventMemoryAccess`（"memory_access"）：它描述的消费方是星图前端
+	//   （按真实块 ID 高亮），而星图已不存在。全仓零发布者、零订阅者 ——
+	//   留在总线里只会让下一个人以为「图记忆读写有事件可订」。
+	//   图记忆的读写事实走槽内工具（graph_recall / graph_commit）的结果。
 
 	// ── 更新子系统（internal/update）的事件 ──
 	//

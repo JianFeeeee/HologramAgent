@@ -38,7 +38,18 @@ import (
 
 type BlockModality string
 
+// 模态取值（声明点在 model；实现侧以常量转发，既有 `memory.BlockText` 不变）。
+const (
+	BlockText  BlockModality = "text"
+	BlockImage BlockModality = "image"
+	BlockVideo BlockModality = "video"
+	BlockAudio BlockModality = "audio"
+)
+
 type PageKind string
+
+// PageToolRound 是一次工具往返（call → result），靠 CallID 配对。
+const PageToolRound PageKind = "tool_round"
 
 type BlockRole string
 
@@ -315,6 +326,12 @@ type RecallResult struct {
 }
 
 type SortMode string
+
+// 排序模式（声明点在 model；实现侧以常量转发）。
+const (
+	// SortRecent 按更新时间倒序（同时间按提及次数）。
+	SortRecent SortMode = "recent"
+)
 
 type DeleteResult struct {
 	Blocks int `json:"blocks"`
@@ -799,4 +816,73 @@ type Knowledge struct {
 // （正则 + 前缀预筛）留在实现包里，消费方不需要知道它怎么实现。
 type SecretPattern struct {
 	Name string
+}
+
+// ───────────────────────── agent 登记（C+D，§3.2.2） ─────────────────────────
+
+// AgentFacts 是**父为子声明的全部事实**（纯数据，与 Decision/RoundInput 同层）。
+//
+// ## 为什么集中成一个值（用户裁定：五表合一）
+//
+// 改造前这些事实散在四张表里，各有各的清理点：
+//
+//	outputsByAgent[agentID]   security/outputs.go     输出通道白名单
+//	scopesByAgent[agentID]    security/agentscope.go  档位（session/longtime）
+//	principals.byID[agentID]  security/principal.go   工具 allow/deny
+//	InstanceManager.recs[id]  agent/instances.go      创建参数
+//	child.Registry            agent/child/           存活实例
+//
+// 同一个事件（"某个 agent 实例不在了"）要触发四处清理，散在三个包、三条
+// 路径。漏一处就是残留：同名重建继承上一代的 longtime 档（**提权**）、
+// 继承上一代的输出授权、表单调增长。今天的正确性**靠人记得**。
+//
+// 现在：一张记录表，事实只有一份。判据是「删掉任何一处清理点，同名重建
+// 必须立刻红」。
+type AgentFacts struct {
+	// AllowedOutputs 是输出通道白名单（空 = 完整授权，存量 fail-open 契约）。
+	AllowedOutputs []string
+	// AllowedTools / AddTools / DenyTools 是父为子声明的**工具**授权三档。
+	//
+	// 语义是**表运算**（不是判定链）：
+	//
+	//	表 = (全量 ∩ Allowed) ∪ Add − Deny
+	//
+	// 三档全空 ⇒ 不裁剪（全量）。Deny 作用于当前结果 ⇒ 它既能撤销 Allowed 里的，
+	// 也能撤销 Add 里的，不区分来源。
+	AllowedTools []string
+	AddTools     []string
+	DenyTools    []string
+	// AllowedPlugins / AddPlugins / DenyPlugins 是**插件**授权三档，语义同上。
+	//
+	// ★ 插件维度**优先于**工具维度：插件不被允许时，它注册的一切内容
+	//   （工具 / stage / 通道 / 提示词段 / skill）在该实例都不生效。
+	AllowedPlugins []string
+	AddPlugins     []string
+	DenyPlugins    []string
+	// LongtimeProfile 是本 agent 的跨轮安全档位（空 = 未设置）。
+	LongtimeProfile string
+}
+
+// AgentRecord 是**一条** agent 记录（身份 + 创建参数 + 事实 + 生命周期）。
+type AgentRecord struct {
+	ID       string                 `json:"id"`
+	Type     string                 `json:"type"`
+	ParentID string                 `json:"parent_id,omitempty"`
+	Arg      map[string]interface{} `json:"arg,omitempty"`
+	Facts    AgentFacts             `json:"facts"`
+	// WorkDir 是本 agent 的**工作数据目录**（内核派生并管理，类型只消费）。
+	//
+	// ## 为什么它是记录的一部分，而不是类型自己拼
+	//
+	// 目录是内核统一的资源分配：一条记录 = 一个实例 = 一个目录。
+	// 由记录持有 ⇒ ① 落盘后重启能算回同一个位置；② 改布局只需改内核一处；
+	// ③ 类型永远不写 `filepath.Join(dataDir, "residents", id, ...)` 这种
+	// 硬编码（那会让"加一种类型"变成"再拼一套目录规则"）。
+	//
+	// 空表示未分配（根 agent 或未落盘的临时实例）。
+	WorkDir string `json:"work_dir,omitempty"`
+	// Lifecycle 是运行态（running / contextfull / stopped）。
+	Lifecycle string `json:"lifecycle"`
+	// Created 是创建时刻（软重启与持久化共用）。
+	Created string `json:"created,omitempty"`
 }

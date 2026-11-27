@@ -33,7 +33,7 @@ package registry
 //
 // 同一个类型在父侧贡献工具（admin_child 的入口、spawn_child），在子侧
 // 贡献另一些（notify_parent、inputch_note）。若把"谁能看到什么工具"
-// 写成基座里的 `if a.hooks.IsChild`，基座又认识了类型语义。
+// 写成基座里的 `if isChildAgent()`，基座又认识了类型语义。
 // 侧别是**注册时声明的事实**，基座只做「按我的侧别取表」。
 
 import (
@@ -98,6 +98,18 @@ type Tool struct {
 	Timeout string
 	// Handle 是执行体。
 	Handle ToolHandler
+	// Slot 声明这是**通用扩展槽**交出的工具（docs §6）。
+	//
+	// ★ 它决定「谁执行」：槽工具的钩子在注册时已交出（`Handle`），
+	//   执行一律走**内核执行设施** —— 与插件工具完全同一条链。
+	//   归属（`Owner`）只用于溯源与"创建参数划定暴露范围"，**不**表示
+	//   "由主 agent 的 agentloop 执行"。
+	//
+	//   缺这个标记的后果（实测）：主 agent 的 `ownsTool` 按 Owner 命中
+	//   自己 ⇒ 判成"类型私有" ⇒ 落进私有族分岔 ⇒ 那里没有槽工具的分支
+	//   ⇒ 报「归属声明缺失（DeclareOwnership 未登记）」，槽工具永远执行不了。
+	Slot       bool
+	OutputGate bool
 }
 
 var (
@@ -113,7 +125,10 @@ func RegisterTool(t Tool) error {
 	if strings.TrimSpace(t.Name) == "" {
 		return errf("registry: 工具名不能为空")
 	}
-	if t.Handle == nil {
+	// Handle 可为 nil 仅当登记的是**纯声明**工具（执行体在基座，
+	// 如 output_list_channels / input_channels —— 它们的执行在 output.go /
+	// inputch.go，属内核设施，不该为一个名字再造一份执行体）。
+	if t.Handle == nil && !t.OutputGate {
 		return errf("registry: 工具 %q 缺少 Handle", t.Name)
 	}
 	if t.Owner == "" {
@@ -124,6 +139,28 @@ func RegisterTool(t Tool) error {
 	if _, dup := toolTable[t.Name]; dup {
 		return errf("registry: 工具 %q 已注册", t.Name)
 	}
+	toolTable[t.Name] = t
+	return nil
+}
+
+// RegisterToolReplace 与 RegisterTool 相同，但**同名覆盖**。
+//
+// ★ 只给"槽内工具"用：多个主 agent 实例交的是同一能力（`graph_recall`
+//
+//	就���主 agent 的图记忆召回），后注册者赢是唯一合理语义。
+//	普通工具（插件 / 内核族）仍走 RegisterTool：同名重复是计划错误。
+func RegisterToolReplace(t Tool) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return errf("registry: 工具名不能为空")
+	}
+	if t.Handle == nil && !t.OutputGate {
+		return errf("registry: 工具 %q 缺少 Handle", t.Name)
+	}
+	if t.Owner == "" {
+		t.Owner = "core"
+	}
+	toolMu.Lock()
+	defer toolMu.Unlock()
 	toolTable[t.Name] = t
 	return nil
 }
@@ -177,19 +214,14 @@ func DispatchTool(c ToolCtx, tc api.ToolCall) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return t.Handle(c, tc), true
-}
-
-// ToolNames 返回全部已注册工具名（判据与状态面用）。
-func ToolNames() []string {
-	toolMu.RLock()
-	defer toolMu.RUnlock()
-	out := make([]string, 0, len(toolTable))
-	for n := range toolTable {
-		out = append(out, n)
+	// ★ `DeclaredOnly` 的工具**只登记声明**（执行体在别处，如基座的
+	//   output.go / inputch.go）。这里必须返回 `handled=false` 让调用方
+	//   继续往下路由 —— 直接调 nil Handle 会 panic，而"panic 在被 recover
+	//   之后变成一条莫名的工具失败"是最难查的形态。
+	if t.Handle == nil {
+		return "", false
 	}
-	sort.Strings(out)
-	return out
+	return t.Handle(c, tc), true
 }
 
 // errf 是本文件内部用的错误构造（避免为了一个 fmt.Errorf 反复 import）。
@@ -209,4 +241,64 @@ type ToolDef struct {
 	Parallel    bool
 	NoMemory    bool
 	Timeout     string
+}
+
+// ───────────────────────── 归属声明 ─────────────────────────
+//
+// 私有工具的 **schema 由类型渲染、执行体在类型里**，但它们仍然是"谁拥有的"
+// 这条事实的一部分 —— 而分岔判据（`ownsTool`）只能靠这条事实。
+//
+// ★ 为什么不进 toolTable：`Tool` 要求 `Handle`，而私有工具的执行体签名是
+//   `(*类型, ToolCall) string`（它读类型的私有状态），注册表的 `ToolCtx.Host`
+//   拿不到那个形状。把 Handle 造出来只会得到一层假适配。
+//
+// 所以分成两张表：
+//
+//	toolTable     名字 → Tool（含执行体）      内核可执行的工具
+//	ownerTable    名字/前缀 → Owner            谁拥有它（含不可由内核执行的）
+
+// 归属声明表：精确名 → Owner。
+var (
+	ownMu    sync.RWMutex
+	ownerTab = map[string]string{}
+)
+
+// DeclareOwnership 声明一个**精确工具名**的归属（不含执行体）。
+//
+// 用于"schema 与执行体都在类型里、但基座需要知道它归谁"的工具。
+// 与 RegisterTool 的 `Owner` 字段是两个入口、同一张事实：
+// 内核可执行的工具走 RegisterTool，类型私有的走这里。
+func DeclareOwnership(name, owner string) error {
+	if strings.TrimSpace(name) == "" {
+		return errf("registry: 归属声明的工具名不能为空")
+	}
+	if strings.TrimSpace(owner) == "" {
+		return errf("registry: 归属声明的 owner 不能为空")
+	}
+	ownMu.Lock()
+	defer ownMu.Unlock()
+	if prev, dup := ownerTab[name]; dup && prev != owner {
+		// 两个类型声称同一个工具名：与类型注册表同一纪律，响亮失败。
+		return errf("registry: 工具 %q 的归属已被 %q 声明", name, prev)
+	}
+	ownerTab[name] = owner
+	return nil
+}
+
+// OwnerOf 返回某工具的归属（先查归属声明表，再查工具表）。
+//
+// 空表示"没有归属声明" ⇒ 调用方按"不是我该执行的"处理（交给内核）。
+func OwnerOf(name string) string {
+	ownMu.RLock()
+	if o := ownerTab[name]; o != "" {
+		ownMu.RUnlock()
+		return o
+	}
+	ownMu.RUnlock()
+	toolMu.RLock()
+	defer toolMu.RUnlock()
+	if tool, ok := toolTable[name]; ok {
+		return tool.Owner
+	}
+	return ""
 }

@@ -1,0 +1,1361 @@
+package mainagent
+
+import (
+	"context"
+	"fmt"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/agent"
+	mainctx "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/ctx"
+	"github.com/JianFeeeee/HologramAgent/internal/colddoc"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/model"
+	"log"
+	"runtime/debug"
+	"strings"
+	"time"
+
+	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
+	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
+	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
+	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+)
+
+// 工具执行超时的默认值与硬上限。
+const (
+	// defaultToolTimeout 是**未声明** Timeout 的工具沿用的值。
+	// 与改动前逐字一致（60s）：存量插件不改一行，行为不变。
+	defaultToolTimeout = 60 * time.Second
+	// maxToolTimeout 是硬上限，防止插件声明成 0（无限）或荒唐的大值
+	// 把任务队列堵死。10 分钟足够覆盖已知的长任务：
+	//   cmd_run 长命令 / healthcheck（120s）/ output_send 到子 pipeline。
+	maxToolTimeout = 10 * time.Minute
+)
+
+// resolveToolTimeout 取某个工具应使用的超时。
+//
+// 顺序：ToolDef.Timeout（插件声明）→ defaultToolTimeout。
+// 声明值非法（解析失败 / ≤0 / 超上限）时**回退默认并记日志**，
+// 不静默接受：写错单位（如 "130" 少了 s）是最容易犯的错，
+// 让它默默变成 60s 会让人以为"声明没生效"却查不出原因。
+func (m *Module) resolveToolTimeout(toolName string, args map[string]interface{}) time.Duration {
+	if m.stageHostNow() == nil {
+		return defaultToolTimeout
+	}
+	def := m.toolRegNow().ToolDef(toolName)
+	if def == nil {
+		// 内置工具（output_send__* 等）不在 StageHost 里 —— 走内置表。
+		def = &sdk.ToolDef{}
+	}
+	// ★ 第二条通道：调用参数里的 timeout。
+	//
+	// 有些工具的时长**不是固定的**，而是由本次调用参数决定 —— 典型是
+	// cmd_run（模型自己传 timeout）。只做静态声明修不好它：
+	//   声明 130s：模型传 timeout=10s 时白等（浪费配额）
+	//   声明 30s ：模型传 timeout=2m  时仍被砍（就是原 bug）
+	// 所以这里把参数值也算进来，取**较大者**。
+	//
+	// 为什么取较大而不是直接用参数值：参数是模型给的，可能写成
+	// "1" 这种缺单位的（生产日志实测过）或是恶意的超大值。
+	// 用 max(声明值, 参数值) 并夹到硬上限，两边都兜住。
+	base := defaultToolTimeout
+	// 声明来源有两处：StageHost（插件工具 + 经 RegisterTool 注册的）
+	// 与内置工具表（output_send__* 等由 switch 分派的）。
+	// def.Timeout 为空时再查内置表。
+	declared := strings.TrimSpace(def.Timeout)
+	if declared == "" {
+		declared = builtinToolTimeout(toolName)
+	}
+	if declared != "" {
+		if d, err := time.ParseDuration(declared); err == nil && d > 0 {
+			base = d
+		} else if err != nil {
+			m.a.Logf("tool %s declares Timeout=%q which failed to parse (%v), using default %v",
+				toolName, declared, err, defaultToolTimeout)
+		}
+	}
+	if v, ok := args["timeout"].(string); ok && strings.TrimSpace(v) != "" {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil && d > base {
+			base = d
+		}
+	}
+	if base > maxToolTimeout {
+		m.a.Logf("tool %s timeout %v exceeds hard cap, clamped to %v", toolName, base, maxToolTimeout)
+		return maxToolTimeout
+	}
+	return base
+}
+
+// resolveToolTimeoutDeclared 只取静态声明（保留给需要区分来源的调用方）。
+func (m *Module) resolveToolTimeoutDeclared(toolName string) time.Duration {
+	if m.stageHostNow() == nil {
+		return defaultToolTimeout
+	}
+	def := m.toolRegNow().ToolDef(toolName)
+	if def == nil || strings.TrimSpace(def.Timeout) == "" {
+		return defaultToolTimeout
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(def.Timeout))
+	if err != nil {
+		m.a.Logf("tool %s declares Timeout=%q which failed to parse (%v), falling back to default %v",
+			toolName, def.Timeout, err, defaultToolTimeout)
+		return defaultToolTimeout
+	}
+	if d <= 0 {
+		m.a.Logf("tool %s declares Timeout=%q which is not positive, falling back to default %v",
+			toolName, def.Timeout, defaultToolTimeout)
+		return defaultToolTimeout
+	}
+	if d > maxToolTimeout {
+		m.a.Logf("tool %s declares Timeout=%v exceeding hard cap, clamped to %v",
+			toolName, d, maxToolTimeout)
+		return maxToolTimeout
+	}
+	return d
+}
+
+// fmtDuration 把时长写成给模型看的中文形式（秒/分钟）。
+//
+// 不用 time.Duration.String()：它给出 "1m0s"、"1h30m0s" 这类紧凑写法，
+// 模型读得懂，但用户看错误提示时"1m0s"不如"1 分钟"直观。
+func fmtDuration(d time.Duration) string {
+	if d%time.Minute == 0 && d >= time.Minute {
+		return fmt.Sprintf("%d min", int(d/time.Minute))
+	}
+	return fmt.Sprintf("%d s", int(d/time.Second))
+}
+
+// toolOutcome 是一次工具执行的完整结果：**文本**（给模型）与
+// **原值**（给契约判断）分开携带。
+//
+// 为何必须分开：executeToolCall 历来只返回 string，结构化信息在这一步
+// 被抹平，导致（a）ToolResult.Success 无法诚实化、（b）after_toolcall
+// 阶段插件对结构化结果的改写因类型断言失败而静默失效。
+type toolOutcome struct {
+	Text string
+	Raw  interface{}
+	// Denied 表示被授权拒绝或插件不健康而未执行（已落 tool 消息）。
+	Denied bool
+	// Tool 是这条结果对应工具的**声明**（内核那条路带回来，本类型那条路为空）。
+	//
+	// ★ 标记（NoMemory / Cleaner / ContextPolicy / RecallPolicy）由 agentloop
+	//   在 stepToolAfter 里消费 —— 内核只执行、不解释。
+	Tool sdk.ToolDef
+}
+
+// executeToolCall 保留原签名（spawn.go 与既有测试依赖），只取文本。
+func (m *Module) ExecuteToolCall(tc agentAPI.ToolCall, channel string, turnScenes ...string) string {
+	return m.ExecuteToolCallOutcome(tc, channel, turnScenes...).Text
+}
+
+// executeToolCallOutcome 是完整形态：崩溃/超时同样以 ToolError 表达，
+// 使「工具故障」与「工具报告的业务失败」在上层可区分。
+func (m *Module) ExecuteToolCallOutcome(tc agentAPI.ToolCall, channel string, turnScenes ...string) (out toolOutcome) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			m.a.Logf("tool %s panic: %v\n%s", tc.Name, r, stack)
+
+			if pluginName := m.ResolveToolPlugin(tc.Name); pluginName != "" {
+				if m.st.pluginHealth.RecordCrash(pluginName) {
+					m.a.Logf("plugin %s exceeded crash threshold, scheduling reload", pluginName)
+				}
+			}
+
+			te := kit.NewToolError("panic", "", fmt.Sprintf("Tool %s panicked: %v", tc.Name, r),
+				"This is a tool-side fault, not an argument problem. Do not retry with the same input; pick another tool or tell the user.")
+			out = toolOutcome{Text: te.Error(), Raw: te}
+		}
+		// ★★ 出向脱敏（2026-10-18 补）：工具返回值在交给模型**之前**必须清洗。
+		//
+		// ## 原缺陷
+		//
+		// 安全模块只做了**入向**回填（StageHost.ExecuteTool 里 FillMap，
+		// 把别名换成真凭据给插件用），**从不处理出向**。于是：
+		//
+		//	模型调 enc_shell 跑 curl → 服务端把 key 回显在响应体里
+		//	→ 工具原样返回 → f.CurResult → f.Msgs（role=tool）
+		//	→ **明文 key 直接进了模型上下文**
+		//
+		// 实测证据（2026-10-18 08:48，/home/newqqagent/log）：
+		//   `[security] 工具 enc_shell 参数回填 1 处（别名 [sec_...]）`  ← 入向有
+		//   紧随其后 `tool enc_shell result: {...}`                        ← 出向无
+		//
+		// ## 为什么 scrubbing 已有却不管用
+		//
+		// `scrubEventSecrets` 只在 `agenttypes.ContextManager.Append`（写上下文/记忆）
+		// 时运行 —— 那是**工具结果已经发出去之后**。同一轮里模型看到的是
+		// 未清洗的 f.Msgs。记忆侧干净、当轮泄漏，是最坏的组合：事后查不到。
+		//
+		// ## 为什么放在这个 defer 里
+		//
+		// executeToolCallOutcome 有多个 return 出口（插件工具、io 工具、
+		// 设备授权拒绝、不存在、panic），逐个加必然漏。defer 是唯一
+		// 能覆盖全部分支的位置，且 panic 路径也一起覆盖。
+		if out.Text != "" {
+			if st := m.a.SecretStore(); st != nil {
+				if clean, evts := st.Replace(out.Text, "tool_out:"+tc.Name, nil); len(evts) > 0 {
+					out.Text = clean
+					for _, e := range evts {
+						log.Printf("[security] tool output %s blocked %s (pattern %s, %d bytes)",
+							tc.Name, e.Alias, e.Kind, e.Len)
+					}
+				}
+			}
+			// ★ 内容审查的**第二条入向路径**（2026-11-02 接线）。
+			//
+			// future-plan §1.2 明确要求接两处，不能只接插件输入：
+			//
+			//	"入向有两条路——工具结果、插件输入事件。只接一条会留下
+			//	 「工具的返回被扫了、插件消息没扫」的缺口，而后者才是注入的
+			//	 主要入口。"
+			//
+			// 反过来同样成立：只扫插件消息、不扫工具结果，则**工具返回里的
+			// 注入**（网页/文档/邮件正文）完全没人看 —— 那正是最常见的注入载体。
+			//
+			// 放在这个 defer 里而不是某个 return 前面：本函数有多个出口
+			// （插件工具/io 工具/授权拒绝/不存在/panic），defer 是唯一能覆盖
+			// 全部分支的位置（与上面出向脱敏同一理由）。
+			if findings := m.a.ReviewToolResultContent(tc.Name, out.Text); len(findings) > 0 {
+				out.Text = agent.ToolContentWarning + out.Text
+			}
+		}
+	}()
+
+	// ★ 取消必须**真的传到对端**，而不只是让本函数不再等。
+	//
+	// 旧实现只有 time.After：到点后本函数返回，但那个 goroutine 仍在跑，
+	// 阻塞在跨进程 Call 上且**没有任何通道能通知它**——插件侧的 handler
+	// 毫不知情，继续占着连接/子进程/文件句柄直到自己跑完，结果却被丢弃。
+	// 长工具 + 频繁超时 ⇒ 后台持续堆积。
+	//
+	// 现在把 ctx 沿执行链传下去（经 args 旁路，见 StageHost.ExecuteToolCtx），
+	// 由 proc 桥的 CallContext 在取消时向插件发 call.cancel。
+	// **插件作者一行都不用改**：handler 签名不变。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // 正常返回也要放：否则 ctx 内部的 timer/子 goroutine 会泄漏
+	// ★ 登记给 agent.Agent：让用户按「停止」能取消**正在跑的工具**。
+	//
+	// 此前只登记了 LLM 的 cancelLLM，工具没有入口 —— 于是长阻塞工具
+	// （实测 browser_start 被夹到 10m）会把整轮堵死，而停止只影响排队消息。
+	// 取消管道本身早已存在（ExecuteToolCtx → proc 桥发 call.cancel），
+	// 缺的只是「谁来调它」。
+	toolCancelID := m.RegisterToolCancel(cancel)
+	defer m.UnregisterToolCancel(toolCancelID)
+
+	done := make(chan toolOutcome, 1)
+	go func() {
+		done <- m.executeToolCallInner(ctx, tc, channel, turnScenes)
+	}()
+
+	// ★ 超时：优先用工具**自己声明**的时长，而不是一刀切 60s。
+	//
+	// 2026-10-17 生产实测的缺陷：这里原本写死 60s，与工具自己的超时配置
+	// **互相矛盾**且让内层形同虚设：
+	//
+	//	23:13:38  执行 cmd_run（agent 传了 130s 级 timeout 参数）
+	//	23:14:38  ★ 内核 60s 硬超时掐断 → 「执行超时（60秒）」
+	//
+	// 而 cmd_run 内部明明有自己的 ctx（按 timeout 参数）；healthcheck
+	// 更是声明默认 120s —— 直接砍掉一半。output_send__*（向开发线投递，
+	// 子 pipeline 执行）天然就是长任务，也一起被误杀。
+	//
+	// 现在：ToolDef.Timeout 声明多久就给多久，但仍有**硬上限**
+	// （maxToolTimeout = 10m）兜住"插件声明成 0/无限"这种把队列堵死的写法。
+	toolTimeout := m.resolveToolTimeout(tc.Name, tc.Arguments)
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(toolTimeout):
+		// 先 cancel 再返回：这一行就是"让插件停下来"的触发点。
+		cancel()
+		m.a.Logf("tool %s timed out after %v (cancel sent to executor)", tc.Name, toolTimeout)
+		te := kit.NewToolError(kit.ErrReasonTimeout, "", fmt.Sprintf("Tool %s timed out (%s)", tc.Name, fmtDuration(toolTimeout)),
+			"The tool did not return within its time limit. Split into a smaller task or use another tool.")
+		return toolOutcome{Text: te.Error(), Raw: te}
+	}
+}
+
+// executeToolCallInner 执行一个**本类型私有**的工具。
+//
+// ## 这里只剩私有族（用户裁定 2026-11-19 的流向）
+//
+//	类型 agentloop 过滤出**自己定义的工具**自己执行，
+//	其余丢给基座 → 内核执行设施 → 结果 + 工具声明 返给 agentloop
+//
+// 所以本函数**不再是"工具执行链"**：安全闸、路径闸、网络闸、并发、超时、
+// 取消、panic 恢复、脱敏、内容审查、插件工具、io/设备工具 —— 全在内核执行设施
+// （**内核工具执行设施**）。这里只做两件事：
+//
+//	① 参数可用性（__arg_error）—— 属于"这个调用写坏了"，在分岔点之前统一判
+//	② 私有族分岔（读本类型私有状态的四个族）
+//
+// ★ 判据：本文件 grep `SecurityDecisionFor` / `CheckPath` / `CheckNetwork` /
+//
+//	`CheckOutputGate` / `stageHost.ExecuteToolCtx` / `IO().ExecuteTool` = 0。
+//	非 0 就说明有人在类型里又判了一次授权 —— 那会与内核设施分叉。
+func (m *Module) executeToolCallInner(ctx context.Context, tc agentAPI.ToolCall, channel string, turnScenes []string) toolOutcome {
+	// 参数没法用（被 max_tokens 截断，或 JSON 写坏了）：**不要**拿着空/残缺参数去调工具。
+	// 否则工具会报“path is required”“command is required”这类与真因无关的错，
+	// 模型看不出真因、只能原样重试（实测 cmd_run 失败率高达 34%~48%）。
+	if msg, ok := tc.Arguments["__arg_error"].(string); ok && msg != "" {
+		m.a.Logf("tool %s skipped: arguments unusable (truncated or malformed)", tc.Name)
+		return toolOutcome{Text: msg}
+	}
+
+	// 私有族分岔（读本类型私有状态：图记忆 / 冷文档 / 社交库 / 人格库 / 子 agent 管理）。
+	switch {
+	case tc.Name == "persona_set":
+		return toolOutcome{Text: m.executePersonaTool(tc)}
+	case strings.HasPrefix(tc.Name, "stablemem_"), strings.HasPrefix(tc.Name, "memory_"):
+		return toolOutcome{Text: m.executeMemoryTool(tc, turnScenes)}
+	case strings.HasPrefix(tc.Name, "social_"), strings.HasPrefix(tc.Name, "person_"):
+		return toolOutcome{Text: m.executeSocialTool(tc)}
+	case strings.HasPrefix(tc.Name, "coldcontext_"), strings.HasPrefix(tc.Name, "doc_"):
+		return toolOutcome{Text: m.executeDocTool(tc)}
+	}
+
+	// 不属于本类型的私有工具 ⇒ 不该走到这里（`executeOrDelegateTool` 已先分岔）。
+	// 走到这里说明分岔判据与登记不自洽 —— 响亮报错，不静默当"不存在"。
+	//
+	// ★ 拒绝文案要给可执行指引：模型据此知道该换工具而不是重试。
+	return toolOutcome{Text: fmt.Sprintf("工具 %s 不属于本 agent 的类型私有工具，也不在内核执行设施里："+
+		"这是归属声明缺失（registry.DeclareOwnership 未登记）。请换一个工具，或把此问题报告给用户。", tc.Name)}
+}
+
+// toolNotFound / isToolNotFound 是 agentIO 哨兵在 core 侧的薄封装，
+// 便于 core 内部与测试直接使用（core 依赖 io，不反向）。
+func toolNotFound(name string) error { return agentIO.ToolNotFound(name) }
+
+func isToolNotFound(err error) bool { return agentIO.IsToolNotFound(err) }
+
+func (m *Module) executeMemoryTool(tc agentAPI.ToolCall, turnScenes []string) string {
+	g := m.graphMem()
+	if g == nil {
+		// ★ 此处曾有 `if tc.Name == "memory_document_query" { return m.executeDocTool(tc) }`
+		// （2026-10-29 删除）。它是改名前的残留：文档类工具早已改叫
+		// `coldcontext_*`，而 Dispatch 只把 `stablemem_` 前缀送到本函数，
+		// 所以这个分支**永远不可达**。留着它的唯一效果是让读代码的人
+		// 以为旧工具名还活着。
+		return "stable memory is unavailable"
+	}
+	// 整理类工具需要**完整内核**的记忆整理面（块/媒体/结构操作）。
+	// 轻量内核（驻留子）只有图记忆共同面 ⇒ 这些操作明确不可用，不静默降级。
+	requireFull := func() string {
+		if m.graphDB() == nil {
+			return "this agent is a lightweight kernel: it can read and write stable memory, but maintenance (merge/delete/purge/edit/stats) is unavailable"
+		}
+		return ""
+	}
+	switch tc.Name {
+	case "toolresult_read":
+		txt, err := m.readStoredToolResult(tc.Arguments)
+		if err != nil {
+			return "toolresult_read failed: " + err.Error()
+		}
+		return txt
+	case "stablemem_recall":
+		query, _ := tc.Arguments["query_intent"].(string)
+		depth, _ := tc.Arguments["depth"].(float64)
+		if depth <= 0 {
+			depth = 2
+		}
+		if query == "" {
+			return "query is required"
+		}
+		// 关键词提取：支持逗号分隔和自然语言
+		keywords := strings.Split(query, ",")
+		if len(keywords) == 1 {
+			keywords = m.a.ExtractKeywords(query)
+		}
+		// 排序模式：默认相关性；显式要"最近/最新"时用 recent。
+		//
+		// ★ 为什么要分两种（实测 v4 跑分）：overwrite 组考的是"新值覆盖旧值"，
+		// 相关性排序下新旧同名实体的命中层级完全相同，只能靠时间分胜负；
+		// 而 casual 组问"某个服务端口是多少"，要的是实词精确命中。
+		// 用一个排序同时服务这两类问题，必然有一边错。
+		sortMode := model.SortMode(m.a.ParseSortMode(fmt.Sprint(tc.Arguments["sort"])))
+
+		// 块向量召回优先。
+		//
+		// ★ 为什么要有它（这是这条路径缺失的直接后果）：memory_blocks 是
+		// 带 vector+fingerprint 的图节点载体，但此前**没有任何召回读它** ——
+		// BlocksForNode 只能按端点反查，得先知道 nodeID。于是「问一个具体
+		// 问题」只能退到 entities 的 jieba+LIKE，实测跨维度定位 0/5
+		//（问「第181批的值班手册是第几版」完全答不出）。
+		//
+		// 混合而非替换：端口号（8328）、分机号（4324）这类纯数字串向量天然弱，
+		// 而它们恰是本项目最常问的。两条路都跑，块向量在前，符号路兜底。
+		if blockOut := m.recallByBlocks(query); blockOut != "" {
+			return blockOut
+		}
+
+		// ★ fingerprint 必须传：这是 recallByBlocks 失败后的兜底路，
+		// 不传就等于让旧向量空间的块混进结果
+		// （判据 TestMemoryRecall_指纹不匹配的块被跳过）。
+		result, err := g.RecallSorted(keywords, nil, int(depth), "", m.currentFingerprint(), sortMode)
+		if err != nil {
+			return fmt.Sprintf("memory recall failed: %v", err)
+		}
+		if len(result.Entities) == 0 && len(result.Relations) == 0 {
+			return "no relevant memory found"
+		}
+		if m.st.indexer != nil {
+			names := make([]string, len(result.Entities))
+			for i, e := range result.Entities {
+				names[i] = e.Name
+			}
+			m.st.indexer.MarkRecalled(names...)
+		}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("Found %d related entities (sorted by %s):", len(result.Entities), sortLabel(sortMode)))
+		for _, e := range result.Entities {
+			// ★ 带出匹配层级：此前输出是同格式平铺，模型无从判断该信哪条。
+			//
+			// 实测 v4：193 个实体平铺（13744 tokens）后，模型放弃向量检索、
+			// 转去 grep 知识库文件，还把"没检索到"说成"库里不存在"。
+			// 层级标记让最相关的几条一眼可辨。
+			tag := ""
+			switch {
+			case e.MatchRank == 0:
+				tag = ", 精确匹配"
+			case e.MatchRank == 1:
+				tag = ", 前缀匹配"
+			}
+			parts = append(parts, fmt.Sprintf("- %s (mentioned %d times, type:%s%s)", e.Name, e.MentionCount, e.Type, tag))
+		}
+		parts = append(parts, fmt.Sprintf("Found %d relations:", len(result.Relations)))
+		parts = append(parts, formatRecallRelations(result.Relations, 10)...)
+		// 命中的关系若挂着媒体块，把媒体说明附在结果末尾。
+		//
+		// 关系行只有实体名和关系类型，看不出"这条记忆当时还带了一张图"。
+		// 媒体块以结构边与句子相连，需经关系→句子反查。
+		// 不附上的后果：agent 显式查了图记忆，却仍然不知道有图。
+		if mc := m.mediaContextForRelations(result.Relations); mc != "" {
+			parts = append(parts, "", "关联媒体:", mc)
+		}
+		return strings.Join(parts, "\n")
+
+	case "stablemem_block_merge":
+		if msg := requireFull(); msg != "" {
+			return msg
+		}
+		entityA, _ := tc.Arguments["entity_a"].(string)
+		entityB, _ := tc.Arguments["entity_b"].(string)
+		rounds, _ := tc.Arguments["rounds"].(float64)
+		if entityA == "" || entityB == "" || rounds <= 0 {
+			return "entity_a, entity_b and rounds are required"
+		}
+		if entityA > entityB {
+			entityA, entityB = entityB, entityA
+		}
+		key := entityA + "||" + entityB
+		m.st.noMergeMu.Lock()
+		m.st.noMergeMarkers[key] = int(rounds)
+		m.st.noMergeMu.Unlock()
+		return fmt.Sprintf("Marked \"%s\" and \"%s\" as not-mergeable for %d rounds", entityA, entityB, int(rounds))
+
+	case "stablemem_commit":
+		triplesData, ok := tc.Arguments["triples"].([]interface{})
+		if !ok {
+			return "invalid arguments: triples must be an array"
+		}
+		// 场景键：模型可以在三元组里逐条给（scene 字段），也可以在工具参数
+		// 顶层给一次（scene 参数），后者作为本批次的默认场景。
+		// 两条路都为空则这条记忆不参与场景召回——不做猜测：猜错的场景会把
+		// 无关记忆钉死，之后每次进入该场面都会被注入，比漏标更难发现。
+		batchScene := agent.GetString(tc.Arguments, "scene")
+		// 写侧的场景是**两条路都挂**：
+		//   显式声明（模型在参数里点名）优先；
+		//   否则挂本轮解析出的场景集合——主动声明的 + 被动涌现的。
+		// 只挂一条会丢东西：只挂声明则细粒度唤起丢失，只挂涌现则首次交互
+		// （场景还没长出来）没有兜底。
+		var batchScenes []string
+		if batchScene == "" {
+			batchScenes = turnScenes
+		}
+		var triples []model.Triple
+		for _, td := range triplesData {
+			if tmap, ok := td.(map[string]interface{}); ok {
+				t := model.Triple{
+					Subject:      agent.GetString(tmap, "subject"),
+					Relation:     agent.GetString(tmap, "relation"),
+					Object:       agent.GetString(tmap, "object"),
+					SentenceText: agent.GetString(tmap, "sentence_text"),
+					Scene:        agent.GetString(tmap, "scene"),
+				}
+				if t.Scene == "" {
+					t.Scene = batchScene
+				}
+				if len(t.Scenes) == 0 {
+					t.Scenes = batchScenes
+				}
+				// 模型显式关联的媒体：结构化字段随三元组一起提交，
+				// 由 commitTriplesWithMedia 变成 L3 一等块并与句子建边——
+				// 不再把 marker 写进句子文本。值是块 ID（或其唯一前缀）。
+				if refs := agent.GetStringSlice(tmap, "media_digests"); len(refs) > 0 {
+					t.MediaDigests = m.resolveMediaRefs(refs)
+					// 块边需要句子作端点。模型没给原句时用三元组本身拼一句
+					// 自然语言——不能造一段 marker 文本，那正是被废弃的东西。
+					if t.SentenceText == "" && len(t.MediaDigests) > 0 {
+						t.SentenceText = fmt.Sprintf("%s%s%s。", t.Subject, t.Relation, t.Object)
+					}
+				}
+				if t.Subject != "" && t.Relation != "" && t.Object != "" {
+					triples = append(triples, t)
+				}
+			}
+		}
+		if len(triples) == 0 {
+			return "no valid triples"
+		}
+		// remember 工具是用户/模型显式写入，不涉及归档删除，
+		// 因此不需要 mediaBound——没有旧引用要释放。
+		// ★★ 写入前取块数基线（2026-10-04）
+		//
+		// 旧表双写已停 ⇒ Commit 的 ec/rc 恒为 0，
+		// 拿它们判断「有没有写进去」会**永远判成没写进去**。
+		blocksBefore, err := m.graphDB().MemoryBlockCount()
+		if err != nil {
+			return fmt.Sprintf("memory commit failed: %v", err)
+		}
+		edgesBefore, err := m.graphDB().MemoryEdgeCount()
+		if err != nil {
+			return fmt.Sprintf("memory commit failed: %v", err)
+		}
+
+		// ★ 判「写了几条」只能用 written（真正走进 putTripleBlocksTx 的条数）。
+		//   ec/rc 恒为 0（旧表停写），块数差值也**不可靠** —— 块 ID 由内容
+		//   派生，同一实体第二次提交走 ON CONFLICT DO UPDATE，块数不涨。
+		//   两者都不涨时「幂等命中」与「全被拒」不可区分（2026-11-15 实测）。
+		written, mb, err := m.CommitTriplesWithMedia(triples, string(m.a.ID()), 0, nil)
+		if err != nil {
+			return fmt.Sprintf("memory commit failed: %v", err)
+		}
+		blocksAfter, err := m.graphDB().MemoryBlockCount()
+		if err != nil {
+			return fmt.Sprintf("memory commit failed: %v", err)
+		}
+		edgesAfter, err := m.graphDB().MemoryEdgeCount()
+		if err != nil {
+			return fmt.Sprintf("memory commit failed: %v", err)
+		}
+		newBlocks := blocksAfter - blocksBefore
+		newEdges := edgesAfter - edgesBefore
+		// ★ 0 写入必须显式报告：提交了 N 条但一条都没落库（如实体名校验被拒）
+		// 却回「已写入 0 个」，模型会当成成功而永不重试 —— 实测（2026-10-01
+		// 跑分）：metrics 端口/分机号更新全部因此静默丢失。
+		// ★ 判据用**新增块数**，不是 ec/rc（2026-10-04）
+		//
+		// ★★ 这条提示曾经会让模型做错事：
+		//
+		//	旧表停写后 ec/rc 恒为 0 ⇒ 每次提交都被告知
+		//	「全部被拒，请检查实体名写法」——
+		//	而写入其实**成功了**。
+		//
+		//	模型据此去改不该改的东西（把正常实体名改短、
+		//	加字母数字），把记忆内容改坏。
+		//
+		//	⇒ 「报假失败」比「报假成功」危险：前者会诱发破坏性动作。
+		//
+		// ★★ 判据必须是 written，不是 newBlocks（2026-11-15 修正）：
+		//   重新提交同一件事（模型高频重试）时块与边都不涨，
+		//   用块数差值会把**成功**的幂等写入报成「全部被拒」，
+		//   而那条文案会诱导模型去改实体名、把记忆改坏。
+		if written == 0 {
+			return fmt.Sprintf("Submitted %d triples but all were rejected (nothing written). Common causes: empty entity name, longer than 50 chars, or no letters/digits. Check subject/object spelling and retry.", len(triples))
+		}
+		// ★★★ 成功分支也**不能用 ec/rc**（2026-10-05）
+		//
+		//	旧表停双写后 ec/rc 恒为 0，所以这里原本回
+		//	「已写入 0 个实体和 0 条关系」——**而实际写进去了**。
+		//
+		//	实测（隔离实例）：一次对话写入 7 块 9 边，工具却回
+		//	「已写入 0 个实体和 0 条关系」与「全部被拒（未写入）」。
+		//	模型据此认为记忆系统坏了，回复里明说
+		//	「the write is being rejected」并放弃重试。
+		//
+		//	★ 与上面那个「报假失败」是同一个病的两种表现：
+		//	  判据用 newBlocks（对）但文案用 ec/rc（错），
+		//	  于是同一份代码里两套口径打架。
+		//
+		//	唯一可信的信号是 newBlocks（块总量差值）——
+		//	它直接量「库里多了几个块」，不依赖任何旧表口径。
+		if mb > 0 {
+			return fmt.Sprintf("Wrote %d triples (%d new blocks, %d new edges), linked %d media items",
+				written, newBlocks, newEdges, mb)
+		}
+		return fmt.Sprintf("Wrote %d triples (%d new blocks, %d new edges)", written, newBlocks, newEdges)
+
+	case "stablemem_introspect":
+		if msg := requireFull(); msg != "" {
+			return msg
+		}
+		stats, err := m.graphDB().Introspect()
+		if err != nil {
+			return fmt.Sprintf("query failed: %v", err)
+		}
+		return fmt.Sprintf("memory stats: %v", stats)
+
+	case "stablemem_merge":
+		if msg := requireFull(); msg != "" {
+			return msg
+		}
+		source, _ := tc.Arguments["source"].(string)
+		target, _ := tc.Arguments["target"].(string)
+		if source == "" || target == "" {
+			return "source and target are required"
+		}
+		count, err := m.graphDB().MergeEntities(source, target)
+		if err != nil {
+			return fmt.Sprintf("merge failed: %v", err)
+		}
+		return fmt.Sprintf("Merged \"%s\" into \"%s\": source deleted, %d relations redirected", source, target, count)
+
+	case "stablemem_delete_entity":
+		if msg := requireFull(); msg != "" {
+			return msg
+		}
+		name, _ := tc.Arguments["name"].(string)
+		if name == "" {
+			return "name is required"
+		}
+		res, err := m.graphDB().DeleteEntity(name)
+		if err != nil {
+			return fmt.Sprintf("delete failed: %v", err)
+		}
+		// ★ 如实报告实际删掉多少，不说「已彻底删除…及其所有关联关系」。
+		//
+		//   旧文案是谎报：底层只碰旧表、活图谱 Δ0，却回「彻底删除」。
+		//   模型据此认为内容已消失（不再提及或重新写入），
+		//   而关联边还在、召回继续命中 —— 谎报会让模型的行为跟着错。
+		if res.Blocks == 0 {
+			return fmt.Sprintf("No block named \"%s\"; nothing deleted", name)
+		}
+		return fmt.Sprintf("Deleted block \"%s\" and its %d relations (%d blocks)",
+			name, res.Edges, res.Blocks)
+
+	case "stablemem_purge":
+		if msg := requireFull(); msg != "" {
+			return msg
+		}
+		criteria := make(map[string]string)
+		if v, ok := tc.Arguments["subject_contains"].(string); ok && v != "" {
+			criteria["subject_contains"] = v
+		}
+		if v, ok := tc.Arguments["relation_type"].(string); ok && v != "" {
+			criteria["relation_type"] = v
+		}
+		if v, ok := tc.Arguments["target_contains"].(string); ok && v != "" {
+			criteria["target_contains"] = v
+		}
+		mode, _ := tc.Arguments["mode"].(string)
+		if mode == "" {
+			mode = "soft"
+		}
+		n, err := m.graphDB().Purge(criteria, mode)
+		if err != nil {
+			return fmt.Sprintf("stable memory delete failed: %v", err)
+		}
+
+		textRemoved := 0
+		if m.st.textMem != nil {
+			if subj, ok := criteria["subject_contains"]; ok && subj != "" {
+				textRemoved, _ = m.st.textMem.PurgeByFilter(func(evt model.TextEvent) bool {
+					return strings.Contains(evt.Source, subj) || strings.Contains(evt.Input, subj) || strings.Contains(evt.Response, subj)
+				})
+			}
+		}
+		parts := []string{fmt.Sprintf("%s %d stable-memory relations", mode, n)}
+		if textRemoved > 0 {
+			parts = append(parts, fmt.Sprintf("purged %d text memory log entries", textRemoved))
+		}
+		return strings.Join(parts, "，")
+
+	case "stablemem_edit":
+		if msg := requireFull(); msg != "" {
+			return msg
+		}
+		oldSubject, _ := tc.Arguments["old_subject"].(string)
+		oldRelation, _ := tc.Arguments["old_relation"].(string)
+		oldObject, _ := tc.Arguments["old_object"].(string)
+		if oldSubject == "" || oldRelation == "" || oldObject == "" {
+			return "old_subject, old_relation and old_object are required"
+		}
+		newSubject, _ := tc.Arguments["new_subject"].(string)
+		newRelation, _ := tc.Arguments["new_relation"].(string)
+		newObject, _ := tc.Arguments["new_object"].(string)
+		if newSubject == "" && newRelation == "" && newObject == "" {
+			return "provide at least one new value (new_subject / new_relation / new_object)"
+		}
+		if newSubject == "" {
+			newSubject = oldSubject
+		}
+		if newRelation == "" {
+			newRelation = oldRelation
+		}
+		if newObject == "" {
+			newObject = oldObject
+		}
+		// 编辑前先精确取回旧关系：Purge 是「删旧写新」，中间那一步会把
+		// 置信度、场景引用、原句一起丢掉。复审心跳（reviewLoop）正是走这条路，
+		// 于是每次复审都把置信度重置成默认 1.0、把场景钉死的记忆打散成无场景，
+		// 而且没有任何日志——这类「静默降级」比报错难查得多。
+		var carriedConf float64
+		var carriedSentence, carriedScene string
+		if olds, ferr := m.graphDB().FindRelations(oldSubject, oldRelation, oldObject); ferr == nil && len(olds) > 0 {
+			carriedConf = olds[0].Confidence
+			carriedSentence = olds[0].SentenceText
+			if keys, serr := m.graphDB().ScenesOfRelation(olds[0].ID); serr == nil && len(keys) > 0 {
+				carriedScene = keys[0]
+			}
+		}
+
+		n, err := m.graphDB().Purge(map[string]string{
+			"subject_contains": oldSubject,
+			"relation_type":    oldRelation,
+			"target_contains":  oldObject,
+		}, "hard")
+		if err != nil {
+			return fmt.Sprintf("stable memory edit failed (deleting old record): %v", err)
+		}
+		triples := []model.Triple{{
+			Subject:      newSubject,
+			Relation:     newRelation,
+			Object:       newObject,
+			Confidence:   carriedConf,
+			SentenceText: carriedSentence,
+			Scene:        carriedScene,
+		}}
+		ec, rc, err := m.graphDB().Commit(triples, string(m.a.ID()), 0)
+		if err != nil {
+			return fmt.Sprintf("stable memory edit failed (writing new record): %v", err)
+		}
+
+		textReplaced := 0
+		if m.st.textMem != nil && oldSubject != "" {
+			textReplaced, _ = m.st.textMem.ReplaceByFilter(
+				func(evt model.TextEvent) bool {
+					return strings.Contains(evt.Input, oldSubject) || strings.Contains(evt.Response, oldSubject)
+				},
+				func(evt model.TextEvent) model.TextEvent {
+					evt.Input = strings.ReplaceAll(evt.Input, oldSubject, newSubject)
+					evt.Response = strings.ReplaceAll(evt.Response, oldSubject, newSubject)
+					return evt
+				},
+			)
+		}
+		result := fmt.Sprintf("Memory edited: %d old relations removed, %d entities and %d new relations written", n, ec, rc)
+		if textReplaced > 0 {
+			result += fmt.Sprintf(", %d text memory log entries updated", textReplaced)
+		}
+		return result
+
+	default:
+		return fmt.Sprintf("unknown memory tool: %s", tc.Name)
+	}
+}
+
+func (m *Module) executeSocialTool(tc agentAPI.ToolCall) string {
+	if m.st.social == nil {
+		return "social graph is unavailable (social store not initialized)"
+	}
+	switch tc.Name {
+	case "person_query":
+		name, _ := tc.Arguments["name"].(string)
+		if name == "" {
+			return "person name is required"
+		}
+		profile, err := m.st.social.GetPerson(name)
+		if err != nil {
+			return fmt.Sprintf("person lookup failed: %v", err)
+		}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("▎Profile of %s", name))
+		if len(profile.Traits) > 0 {
+			parts = append(parts, "【特质】")
+			for k, v := range profile.Traits {
+				parts = append(parts, fmt.Sprintf("  %s: %s", k, v))
+			}
+		}
+		if len(profile.Relations) > 0 {
+			parts = append(parts, "【社交关系】")
+			for _, r := range profile.Relations {
+				parts = append(parts, fmt.Sprintf("  %s —(%s)—→ %s", name, r.Relation, r.Person))
+			}
+		}
+		if len(profile.Traits) == 0 && len(profile.Relations) == 0 {
+			parts = append(parts, "  （尚无记录）")
+		}
+		return strings.Join(parts, "\n")
+
+	case "person_set_trait":
+		name, _ := tc.Arguments["name"].(string)
+		trait, _ := tc.Arguments["trait"].(string)
+		value, _ := tc.Arguments["value"].(string)
+		if name == "" || trait == "" || value == "" {
+			return "name, trait and value are required"
+		}
+		if err := m.st.social.SetTrait(name, trait, value); err != nil {
+			return fmt.Sprintf("setting trait failed: %v", err)
+		}
+		return fmt.Sprintf("Recorded: %s %s = %s", name, trait, value)
+
+	case "person_relate":
+		personA, _ := tc.Arguments["person_a"].(string)
+		relation, _ := tc.Arguments["relation"].(string)
+		personB, _ := tc.Arguments["person_b"].(string)
+		if personA == "" || relation == "" || personB == "" {
+			return "person_a, relation and person_b are required"
+		}
+		if err := m.st.social.AddRelation(personA, relation, personB); err != nil {
+			return fmt.Sprintf("creating relation failed: %v", err)
+		}
+		return fmt.Sprintf("Recorded: %s —(%s)—→ %s", personA, relation, personB)
+
+	case "person_network":
+		name, _ := tc.Arguments["name"].(string)
+		depth := int(agent.GetFloat(tc.Arguments, "depth"))
+		if depth <= 0 {
+			depth = 2
+		}
+		if name == "" {
+			return "person name is required"
+		}
+		profiles, err := m.st.social.GetNetwork(name, depth)
+		if err != nil {
+			return fmt.Sprintf("social network query failed: %v", err)
+		}
+		if len(profiles) == 0 {
+			return fmt.Sprintf("No social network found for %s", name)
+		}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("▎Social network of %s (%d hops)", name, depth))
+		for _, p := range profiles {
+			if p.Name == name {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("  · %s", p.Name))
+			for k, v := range p.Traits {
+				parts = append(parts, fmt.Sprintf("    %s: %s", k, v))
+			}
+			for _, r := range p.Relations {
+				if r.Person != name {
+					parts = append(parts, fmt.Sprintf("    —(%s)—→ %s", r.Relation, r.Person))
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+
+	default:
+		return fmt.Sprintf("unknown person tool: %s", tc.Name)
+	}
+}
+
+func (m *Module) executeDocTool(tc agentAPI.ToolCall) string {
+	if m.st.coldcontextStore == nil {
+		return "cold context is unavailable"
+	}
+	switch tc.Name {
+	case "coldcontext_query":
+		query, _ := tc.Arguments["query"].(string)
+		topK := int(agent.GetFloat(tc.Arguments, "top_k"))
+		if topK <= 0 {
+			topK = 3
+		}
+		if query == "" {
+			return "query is required"
+		}
+		// ★★ 两阶段：**先 Peek（只读），确认落地后才删 L2 副本**（2026-10-29 P4）。
+		//
+		// 原实现是 Consume（读+删一步）。删除是不可逆步骤，却发生在
+		// 「确认回灌真的成功」之前 —— 于是回灌路径上一旦失败（向量算错、
+		// panic、被中断），L1 没进、L2 已删，**三层都不在**，内容永久丢失。
+		// 这是第四个病：「取回即删除」把不可逆步骤放到了确认之前。
+		//
+		// 现在：Peek → 逐条回灌 → 该条落进 L1 才 Remove 它。
+		// 失败的那条**留着**，下次还能再取（宁可重复回忆，不可静默丢失）。
+		docs := m.st.coldcontextStore.Peek(query, topK)
+		if len(docs) == 0 {
+			return "no relevant cold context found"
+		}
+
+		// ★★ 召回前**先估算**，超预算则按页相似度剔除（用户裁定，2026-10-29）
+		//
+		// 算法（逐字）：
+		//   召回过程中要先估算召回后的 token，如果整段召回不超预算，则直接召回，
+		//   若超了则对段内每一页算相似度，将最不相似的几个页标记为 inactive，
+		//   直到不超预算
+		//
+		// 为什么要"先估算"而不是"回灌完再裁"：
+		//   后者意味着先占满窗口、再剔除 —— 但那一步之前，
+		//   `formatMergedTimeline` 已经按预算把**更早的真实历史**丢掉了。
+		//   等于用"剔除刚召回的"去换"丢失原有的"，净亏。
+		//
+		// 预算取 ContextTokens 减去当前时间线已占用：召回内容与已有事件
+		// 要一起渲染，只看整窗会在"加上原有内容"后才发现爆了。
+		budget := m.recallBudget()
+		plan := m.ctx.PlanColdRecall(docs, query, budget)
+		if plan.Over {
+			log.Printf("[coldcontext] recall over budget: need %d tokens, budget %d — "+
+				"evicted %d page(s) across %d doc(s) by lowest similarity (now %d tokens)",
+				plan.OriginalNeed, plan.Budget, countPlanPages(plan.Evict),
+				len(plan.Evict), plan.Need)
+		}
+
+		var b strings.Builder
+		if plan.Over {
+			b.WriteString(fmt.Sprintf("Recalled %d cold-context documents; their original text is re-inserted into your timeline at its own original timestamps (not the current turn). "+
+				"The recall was over the context budget, so the least relevant pages were marked inactive (not rendered): %d page(s) across %d document(s).\n",
+				len(docs), countPlanPages(plan.Evict), len(plan.Evict)))
+		} else {
+			b.WriteString(fmt.Sprintf("Recalled %d cold-context documents; their original text is re-inserted into your timeline at its own original timestamps (not the current turn):\n", len(docs)))
+		}
+
+		totalEvents := 0
+		kept := 0 // 回灌失败、保留在 L2 的篇数
+		for i, d := range docs {
+			// 召回 = 把事件（连同它持有的块）迁回 L1，不是造一条新事件。
+			//
+			// ARCHITECTURE「记忆流转」② 冷上下文 Cold Context：
+			//   coldcontext_query → Consume(读取并删除)
+			//             → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
+			n := m.restoreDocEvents(d, plan.Evict[d.ID])
+			restored := n > 0 // 是否真的落进了 L1
+			if n == 0 {
+				// 存量文档（无 Events）降级：整篇渲成一个事件。
+				// 不伪造成「有原始事件」—— 那时归档确实只有渲染视图。
+				content := d.Content
+				if labels := m.BlockLabelsForDoc(d); labels != "" {
+					content = content + "\n关联媒体: " + labels
+				}
+				m.ctx.InsertByTimestamp(mainctx.ContextEvent{
+					Timestamp: d.CreatedAt,
+					Source:    "cold_storage",
+					Input:     fmt.Sprintf("load cold context: %s", query),
+					Response:  content,
+					NoMemory:  true, // 同上：回填不产生新记忆
+				})
+				n = 1
+				restored = true
+			}
+			totalEvents += n
+
+			// ② 确认：只有**真的落进 L1** 才删 L2 副本。
+			if restored {
+				m.st.coldcontextStore.Remove(d.ID)
+			} else {
+				kept++
+				log.Printf("[coldcontext] doc %s not restored (%d events), keeping L2 copy for retry", d.ID, n)
+			}
+
+			// ★ 每条给出「什么时候 + 谁说的 + 正文开头」，
+			//   让模型**立刻**能判断这笔召回有没有用。
+			//
+			// 旧返回只有「[1] 来自 1 个来源的 1 条对话 (agent) 涉及: ok」——
+			// jieba 词袋，零信息量，模型无法据此判断相关性。
+			b.WriteString(fmt.Sprintf("\n[%d] %s\n", i+1, coldcontextRecallHeadline(d, n)))
+
+			// 附上少量真实正文行，供模型即时判断（完整原文在时序里）。
+			if preview := coldcontextRecallPreview(d, n, 3); preview != "" {
+				b.WriteString(preview)
+			}
+		}
+
+		b.WriteString(fmt.Sprintf("\n%d events backfilled in total. To quote details, read the timeline at those timestamps.", totalEvents))
+		if kept > 0 {
+			// 明说「有 N 篇没取出来」：否则模型会以为自己看到了全部相关记忆。
+			b.WriteString(fmt.Sprintf("\nNote: %d document(s) could not be restored this time and remain in cold storage (retry later).", kept))
+		}
+		return b.String()
+
+	case "coldcontext_commit":
+		content, _ := tc.Arguments["content"].(string)
+		summary, _ := tc.Arguments["summary"].(string)
+		if content == "" {
+			return "content is required"
+		}
+		if summary == "" {
+			summary = agent.TruncateStr(content, 100)
+		}
+
+		doc := &model.ColdDoc{
+			Summary: summary,
+			Content: content,
+			Source:  "manual",
+		}
+
+		// 模型显式关联的媒体：直接变成文档持有的一等块。
+		// 不再往正文写 marker——文档向量会融合这些块的媒体向量，
+		// 图片按自己的向量被检索。值是块 ID（或其唯一前缀）。
+		for _, ref := range m.resolveMediaRefs(agent.GetStringSlice(tc.Arguments, "media_digests")) {
+			if b, ok, err := m.graphDB().BlockByIDPrefix(ref); err == nil && ok {
+				doc.Blocks = append(doc.Blocks, b)
+			}
+		}
+
+		if err := m.st.coldcontextStore.Insert(doc); err != nil {
+			return fmt.Sprintf("cold context write failed: %v", err)
+		}
+		if n := len(doc.Blocks); n > 0 {
+			return fmt.Sprintf("Cold context committed (id: %s, summary: %s, %d media linked)", doc.ID, summary, n)
+		}
+		return fmt.Sprintf("Cold context committed (id: %s, summary: %s)", doc.ID, summary)
+
+	default:
+		return fmt.Sprintf("unknown cold-context tool: %s", tc.Name)
+	}
+}
+
+// sortLabel 把排序模式翻成给模型看的中文标签。
+func sortLabel(m model.SortMode) string {
+	if m == model.SortRecent {
+		return "newest first"
+	}
+	return "相关性"
+}
+
+// recallByBlocks 用稠密向量召回块节点，返回格式化文本；不可用/无命中时返回空串。
+//
+// 返回空串让调用方无缝退回符号路 —— 这保证了「向量侧没配好」不会让
+// memory_recall 整体失败（那会让模型完全失去记忆，比召回差得多）。
+func (m *Module) recallByBlocks(query string) string {
+	if m == nil || m.a == nil || m.graphDB() == nil || m.DenseCall() == nil {
+		return ""
+	}
+	if !m.DenseCall().Loaded() {
+		return ""
+	}
+	vec, err := m.DenseCall().VectorizeDense(query)
+	if err != nil || len(vec) == 0 {
+		// 向量化失败不报错到工具层：符号路仍可用，而这条失败通常意味着
+		// 模型未加载/超时，报给模型只会让它以为"记忆不存在"。
+		return ""
+	}
+	// ★ 走**融合**入口（向量 + 符号），而不是纯向量或仲裁-only
+	//
+	// 三层根因（生产快照 1391 块实测）：
+	//
+	//	1. 各向异性    已修（中心化，补上了生产调用者）
+	//	2. 精确串被稀释  向量模型固有限制：「13010/13011 而非 12011」
+	//	              含精确串却召不回，而「本地网关8081」召回了
+	//	3. 符号路无补位  本函数修的就是这个
+	//
+	// 旧实现是「块向量在前，符号路兜底」—— 块一旦有命中就直接 return，
+	// 符号路的 RecallSorted **根本没被调用**。设计注释写的
+	//「端口号、分机号这类纯数字串向量天然弱」是对的，但没有真正生效。
+	//
+	// 而仲裁仍必须在 topK 截断**之前**（RecallBlocksFused 内部
+	// 已按「放大 TopK → 符号融合 → 仲裁 → 截断」实现）：
+	// 实测旧号 4379 以 0.8127 排 top1 而新号进不了 top8，
+	// 事后仲裁无从挽回，因为被判取代的旧值和新值都不在候选里。
+	//
+	// ★ MinScore 传 0 而不是 blockRecallMinScore(0.5)：
+	//   融合分数的**量纲变了** —— 精确串命中是 1.0（布尔置顶），
+	//   而向量加权只有 0.7×余弦。用 0.5 筛会把「精确串命中 1.0」
+	//   留下，却把所有纯向量候选（0.35~0.45）全筛掉 ——
+	//   反而丢掉向量侧的有效召回。筛选改由融合内部按路处理。
+	// ★ 走**带拒答的**入口 RecallBlocksGuarded。
+	//
+	// 拒答在图库层而不是这一层，是有教训的：第一版把 AbstainCheck
+	// 写在这里（core 层），而探针在 memory 包内直连图库，
+	// 于是**探针完全绕过了拒答** —— 端到端跑出 abstention 0/3，
+	// 但生产路径其实是有拒答的，却没人能证明它。
+	// 「判据测不到被测路径 ⇒ 判据等于不存在」。
+	//
+	// 拒答为什么必须在召回之前：编造的成因正是「查询符号在库里零出现」
+	// ⇒ 向量却仍给 0.84+ 的高分（grafana/kafka/容灾演练 三类都是）。
+	// 先召回再判断的话，看到的是一堆高分块 ——
+	// 而「分数高」本身不能证明相关。
+	hits, abstain, arb, err := m.graphDB().RecallBlocksGuarded(
+		model.BlockRecallQuery{
+			Vector:      vec,
+			Fingerprint: m.DenseCall().Fingerprint(),
+			TopK:        blockRecallTopK,
+			// ★ MinScore 保留：融合内部按路应用（只约束纯向量那一路，
+			//   精确串/纯符号命中不受它约束）。曾误传 0 让噪声过滤失效，
+			//   toolcall_block_test.go 的两条判据立刻红了。
+			MinScore: blockRecallMinScore,
+		}, query)
+	if abstain != nil {
+		log.Printf("[memory] abstain: zero symbol hits, refusing to answer %q", query)
+		return abstain.Notice
+	}
+	if err != nil || len(hits) == 0 {
+		return ""
+	}
+	if n := len(arb.Superseded); n > 0 {
+		// 被取代的块不返回给模型，但**记一笔**：旧值被显式作废这件事
+		// 本身有信息（「旧号 4379 停用」解释了为什么现在打不通），
+		// 而完全静默会让「记忆里为什么没有旧号」变成无解之谜。
+		log.Printf("[memory] recall blocks: %d removed by temporal arbitration (superseded by newer values)", n)
+	}
+	// 归因统计：融合到底救回了多少条 —— 这是判断它在起作用的关键读数
+	var bySymbol, byExact int
+	for _, h := range hits {
+		if h.ExactHit {
+			byExact++
+		} else if h.VectorHit == 0 && h.SymbolHit > 0 {
+			bySymbol++
+		}
+	}
+	if byExact+bySymbol > 0 {
+		log.Printf("[memory] recall blocks: symbol path backfilled %d (exact string %d, lexical %d)",
+			byExact+bySymbol, byExact, bySymbol)
+	}
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("Found %d relevant memory fragments:", len(hits)))
+	for _, h := range hits {
+		text := strings.TrimSpace(h.Text)
+		if text == "" {
+			continue
+		}
+		// 分数照旧给模型看（它用这个判断相关性），
+		// 但精确串命中统一显示 1.00 —— 它是布尔信号不是强度信号。
+		score := h.Score
+		if h.ExactHit {
+			score = 1.0
+		}
+		tag := "text"
+		if h.ExactHit {
+			tag = "exact"
+		} else if h.VectorHit == 0 && h.SymbolHit > 0 {
+			tag = "symbol"
+		}
+		parts = append(parts, fmt.Sprintf("- [%s %.2f] %s",
+			tag, score, agent.TruncateStr(text, 160)))
+	}
+	return strings.Join(parts, "\n")
+}
+
+const (
+	// blockRecallTopK 是块召回的条数上限。与实体路的 20 条同量级：
+	// 实测 193 条平铺会把模型淹没（13744 tokens / 预算 436%）。
+	blockRecallTopK = 8
+	// blockRecallMinScore 是入选下限。低于它的候选分数已无区分意义
+	// （生成模型主干的余弦普遍偏高，实测无关句也能到 0.83）。
+	blockRecallMinScore = 0.5
+)
+
+// currentFingerprint 返回**当前向量空间**的指纹，用于给兜底召回路径做隔离。
+//
+// ★ 为什么需要它
+//
+//	memory_recall 的主路是 recallByBlocks（带向量空间检查），
+//	失败时退到 RecallSorted —— 而 RecallSorted 是纯词法的，不查 fingerprint
+//	⇒ 换向量空间后旧块会从兜底路混回结果。
+//	（判据 TestMemoryRecall_指纹不匹配的块被跳过 就是抓这个的）
+//
+// ★★ 为什么用「当前空间的指纹」而不是「库里多数取值」
+//
+//	我先写的版本是查库（DominantBlockFingerprint）—— **错的**：
+//	库里只有旧空间的块时，多数取值就是旧指纹，
+//	拿它当过滤条件等于「不过滤」，旧块原样通过。
+//	（判据当场抓住：测试库里唯一的块是 old-fp，而当前空间是 fp1。）
+//
+//	隔离的语义是「只信任当前空间写入的块」，
+//	判据必须来自**空间对象**而不是库 —— 库只能说明过去，不能说明现在。
+func (m *Module) currentFingerprint() string {
+	if m == nil || m.a == nil || m.DenseCall() == nil {
+		return ""
+	}
+	if !m.DenseCall().Loaded() {
+		return ""
+	}
+	return m.DenseCall().Fingerprint()
+}
+
+// restoreDocEvents 把一篇 L2 文档的原始事件**逐条按原时间戳迁回 L1**。
+//
+// 返回回填的事件条数；0 表示这篇文档没有可回填的原始事件（存量文档）。
+//
+// ## 依据
+//
+// ARCHITECTURE「记忆流转」② 冷上下文 Cold Context 的读取分支：
+//
+//	coldcontext_query → Consume(读取并删除)
+//	          → 逐条 context.Append{Timestamp: 原始时间戳, Source: 原来源}
+//	          → 文档以原始时间戳写入 context 时间线, 从 coldcontextStore 删除
+//
+// L1 与 L2 结构同构，召回是**迁移**：事件连同它持有的块从 L2 换到 L1，
+// 块 ID 与向量全程不变（不重建、不重算）。
+//
+// ## 块为什么要一起回填
+//
+// Consume 已把文档从 L2 删掉，而块的字节只存在于那篇文档里。
+// 不回填块 = 块两层都不在 = 永久丢内容（生产实测这一敞口约 248MB）。
+// restoreDocEvents 把一篇 L2 文档的事件逐条迁回 L1。
+//
+// inactivePages 是本篇要**剔除**（标注不渲染）的页序号。
+// 传 nil 表示整篇完整回灌。剔除是标注而非删除：数据全在，
+// 清空 InactivePages 即可恢复渲染。
+func (m *Module) restoreDocEvents(d *model.ColdDoc, inactivePages []int) int {
+	if m == nil || m.a == nil || m.ctx == nil || d == nil || !colddoc.HasEvents(d) {
+		return 0
+	}
+
+	n, blocks := 0, 0
+	for _, ev := range d.Events {
+		// ★ 用 InOutWithReasoning：回灌要完整还原事件，包括思考内容。
+		// 只用 InOut 会让回填出的 mainctx.ContextEvent 缺 ReasoningContent，
+		// 于是再次被裁下时思维链就永久丢了（而且 L1 里那份已经是唯一副本）。
+		input, response, reasoning, held := colddoc.InOutWithReasoning(&ev)
+		m.ctx.InsertByTimestamp(mainctx.ContextEvent{
+			Timestamp:        ev.Timestamp, // ★ 原始时间戳：回到事件发生的位置
+			Source:           ev.Source,
+			Input:            input,
+			Response:         response,
+			ReasoningContent: reasoning,
+			// ★ 回填事件**不参与记忆计算**，但**照常参与归档**。
+			//
+			// 为什么要标记：它们的内容刚在 L2 里被向量化过一次，
+			// 再算一次会让同一内容在向量空间里被重复加权（自激）。
+			//
+			// ★★ 为什么仍要归档（不能顺手关掉）：
+			//   Consume 已经把 L2 副本删了，L1 是**唯一副本**。
+			//   裁掉时不归档 = 三层都不在 = 内容永久丢失。
+			//   （这个错犯过：曾用同一个 NoMemory 同时关掉计算与归档。）
+			NoMemory:  true,
+			ToolsUsed: append([]string(nil), ev.ToolsUsed...),
+			ToolResults: func() []ToolResultItem {
+				var out []ToolResultItem
+				for _, tr := range ev.ToolResults {
+					out = append(out, ToolResultItem{CallID: tr.CallID, Name: tr.Name, Output: tr.Output})
+				}
+				return out
+			}(),
+			// ★ 回填必须带上工具调用记录（含参数）。
+			//   漏了它，回灌后这一页的 call 侧是空的：
+			//   既无法配对校验，也无法按页渲染/页化。
+			ToolCalls: func() []ToolCallItem {
+				if len(ev.ToolCalls) == 0 {
+					return nil
+				}
+				out := make([]ToolCallItem, len(ev.ToolCalls))
+				for i, tc := range ev.ToolCalls {
+					out[i] = ToolCallItem{
+						CallID: tc.CallID, Name: tc.Name,
+						Arguments: tc.Arguments, RawArguments: tc.RawArguments,
+					}
+				}
+				return out
+			}(),
+			Blocks: append([]model.MemoryBlock(nil), held...),
+			// 召回期剔除的页（裁剪预算用）：标注但数据保留
+			InactivePages: inactivePages,
+		})
+		n++
+		blocks += len(held)
+	}
+
+	m.a.Logf("doc->context: %s backfilled %d raw events one by one (%s -> %s), %d blocks migrated back to L1",
+		d.ID, n,
+		d.Events[0].Timestamp.Format("01-02 15:04:05"),
+		d.Events[len(d.Events)-1].Timestamp.Format("01-02 15:04:05"), blocks)
+	return n
+}
+
+// coldcontextRecallHeadline 生成一条召回结果的首行：「时间跨度 · 来源 · 事件数 · 媒体数」。
+//
+// 为什么不用 Doc.Summary：那是 jieba 词袋（"来自 N 个来源的 M 条对话 涉及: ok"），
+// 零信息量。模型看到它无法判断这笔召回有没有用 —— 这正是 agent 几乎不用
+// coldcontext_query 的直接原因之一。
+func coldcontextRecallHeadline(d *model.ColdDoc, eventCount int) string {
+	if d == nil {
+		return ""
+	}
+	var parts []string
+	if colddoc.HasEvents(d) {
+		first := d.Events[0].Timestamp
+		last := d.Events[len(d.Events)-1].Timestamp
+		if first.Equal(last) {
+			parts = append(parts, first.Format("2006-01-02 15:04"))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s → %s",
+				first.Format("01-02 15:04"), last.Format("01-02 15:04")))
+		}
+		// 来源集合（去重，最多 3 个）
+		seen := map[string]bool{}
+		var srcs []string
+		for _, ev := range d.Events {
+			if ev.Source != "" && !seen[ev.Source] {
+				seen[ev.Source] = true
+				srcs = append(srcs, ev.Source)
+				if len(srcs) >= 3 {
+					break
+				}
+			}
+		}
+		if len(srcs) > 0 {
+			parts = append(parts, strings.Join(srcs, "/"))
+		}
+	} else {
+		parts = append(parts, d.CreatedAt.Format("2006-01-02 15:04"))
+		if d.Source != "" {
+			parts = append(parts, d.Source)
+		}
+	}
+	parts = append(parts, fmt.Sprintf("%d events", eventCount))
+	if n := len(d.Blocks); n > 0 {
+		media := 0
+		for i := range d.Blocks {
+			if d.Blocks[i].Modality != model.BlockText {
+				media++
+			}
+		}
+		if media > 0 {
+			parts = append(parts, fmt.Sprintf("with %d media items", media))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// coldcontextRecallPreview 取少量**真实正文**行，让模型即时判断相关性。
+//
+// 只取前 maxLines 行、每行截短：完整原文已在对话时序里（restoreDocEvents 回填），
+// 这里只是"先给你看一眼是什么"，不是全文。
+func coldcontextRecallPreview(d *model.ColdDoc, eventCount, maxLines int) string {
+	if d == nil || maxLines <= 0 {
+		return ""
+	}
+	var out []string
+	add := func(s string) bool {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return len(out) < maxLines
+		}
+		out = append(out, "    "+oneLinePreview(s, 100))
+		return len(out) < maxLines
+	}
+
+	if colddoc.HasEvents(d) {
+		for _, ev := range d.Events {
+			in, resp, _ := colddoc.InOut(&ev)
+			if in != "" && !add(in) {
+				return strings.Join(out, "\n")
+			}
+			if resp != "" && !add(resp) {
+				return strings.Join(out, "\n")
+			}
+		}
+	} else {
+		// 存量文档：从渲染视图取前几行
+		for _, line := range strings.Split(d.Content, "\n") {
+			if !add(line) {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, "\n")
+}
+
+// oneLinePreview 把一段文本压成单行短摘要（换行折叠、超长截断）。
+func oneLinePreview(s string, maxRunes int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "…"
+}

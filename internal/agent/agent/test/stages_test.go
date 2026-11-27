@@ -11,8 +11,8 @@ import (
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
 )
 
-func TestStageHostRegisterTool(t *testing.T) {
-	host := kit.NewStageHost()
+func TestToolRegistryRegisterTool(t *testing.T) {
+	host := kit.NewToolRegistry()
 
 	err := host.RegisterTool("test_tool", sdk.ToolDef{Name: "test_tool"}, func(args map[string]interface{}) (interface{}, error) {
 		return "ok", nil
@@ -30,8 +30,8 @@ func TestStageHostRegisterTool(t *testing.T) {
 	}
 }
 
-func TestStageHostRegisterToolDuplicate(t *testing.T) {
-	host := kit.NewStageHost()
+func TestToolRegistryRegisterToolDuplicate(t *testing.T) {
+	host := kit.NewToolRegistry()
 	host.RegisterTool("dup", sdk.ToolDef{Name: "dup"}, nil)
 	err := host.RegisterTool("dup", sdk.ToolDef{Name: "dup"}, nil)
 	if err == nil {
@@ -39,8 +39,8 @@ func TestStageHostRegisterToolDuplicate(t *testing.T) {
 	}
 }
 
-func TestStageHostExecuteTool(t *testing.T) {
-	host := kit.NewStageHost()
+func TestToolRegistryExecuteTool(t *testing.T) {
+	host := kit.NewToolRegistry()
 
 	host.RegisterTool("hello", sdk.ToolDef{Name: "hello"}, func(args map[string]interface{}) (interface{}, error) {
 		return "world", nil
@@ -156,8 +156,11 @@ func TestStageHostRunStageAll(t *testing.T) {
 	}
 }
 
-func TestStageHostEmpty(t *testing.T) {
-	host := kit.NewStageHost()
+// TestToolRegistryEmpty：空登记簿的行为（无工具、查不到、执行报 not-found）。
+//
+// ★ 2026-11-25 拆分后这属于工具登记簿，不再是阶段管道的属性。
+func TestToolRegistryEmpty(t *testing.T) {
+	host := kit.NewToolRegistry()
 
 	if host.ToolCount() != 0 {
 		t.Errorf("expected 0 tools, got %d", host.ToolCount())
@@ -170,14 +173,12 @@ func TestStageHostEmpty(t *testing.T) {
 
 	_, err := host.ExecuteTool("anything", nil)
 	if err == nil {
-		t.Error("expected error on empty host")
+		t.Error("expected error on empty registry")
 	}
-
-	host.RunStage(sdk.StageOnInput, &sdk.StageContext{})
 }
 
-func TestStageHostMultipleTools(t *testing.T) {
-	host := kit.NewStageHost()
+func TestToolRegistryMultipleTools(t *testing.T) {
+	host := kit.NewToolRegistry()
 
 	host.RegisterTool("tool1", sdk.ToolDef{Name: "tool1"}, func(args map[string]interface{}) (interface{}, error) {
 		return "from_p1", nil
@@ -202,7 +203,7 @@ func TestStageHostMultipleTools(t *testing.T) {
 }
 
 func TestStageHostToolDefLookup(t *testing.T) {
-	host := kit.NewStageHost()
+	host := kit.NewToolRegistry()
 	host.RegisterTool("tool_a", sdk.ToolDef{Name: "tool_a", NoMemory: true}, nil)
 	host.RegisterTool("tool_b", sdk.ToolDef{Name: "tool_b"}, nil)
 
@@ -228,8 +229,8 @@ func TestStageHostToolDefLookup(t *testing.T) {
 	}
 }
 
-func TestStageHostToolDefNoMemoryStored(t *testing.T) {
-	host := kit.NewStageHost()
+func TestToolRegistryToolDefNoMemoryStored(t *testing.T) {
+	host := kit.NewToolRegistry()
 	host.RegisterTool("mem_tool", sdk.ToolDef{Name: "mem_tool", NoMemory: true}, nil)
 	host.RegisterTool("normal_tool", sdk.ToolDef{Name: "normal_tool", NoMemory: false}, nil)
 
@@ -293,7 +294,7 @@ func TestRunStagePanicDoesNotKillRun(t *testing.T) {
 
 // TestUnregisterPluginToolsOnlyThatPlugin：工具摘除必须只影响目标插件。
 func TestUnregisterPluginToolsOnlyThatPlugin(t *testing.T) {
-	h := kit.NewStageHost()
+	h := kit.NewToolRegistry()
 	for _, name := range []string{"a_tool", "b_tool"} {
 		pluginName := strings.SplitN(name, "_", 2)[0]
 		h.RegisterTool(name, sdk.ToolDef{Name: name, Plugin: pluginName},

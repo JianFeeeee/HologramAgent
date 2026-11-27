@@ -20,7 +20,7 @@
 //	├── supervisor/mod.go
 //	├── tracker/mod.go
 //	├── textmem/mod.go
-//	├── docstore/mod.go
+//	├── coldcontext/mod.go
 //	├── knowledge/{migration,store}.go
 //	├── multimodal/mod.go
 //	├── onnx/mod.go

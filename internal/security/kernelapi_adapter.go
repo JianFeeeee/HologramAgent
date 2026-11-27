@@ -87,6 +87,18 @@ func (g gateAdapter) CheckOutput(agentID string, channel string) model.Decision 
 	return g.rt.CheckOutput(agentID, channel)
 }
 
+// Registry 暴露记录表的写面（agent 登记/删除用；未注入 ⇒ nil）。
+func (g gateAdapter) Registry() kernelapi.AgentRegistry { return g.rt.agentRegistry }
+
+// Archive 实现 kernelapi.SecurityGate：写前留档（数据面动作，与判定同一层）。
+func (g gateAdapter) Archive(dataDir, path string) (bool, error) {
+	return ArchiveBeforeWrite(dataDir, path)
+}
+
+func (g gateAdapter) ClampPriority(declared string, privileged bool) string {
+	return g.rt.ClampPriority(declared, privileged)
+}
+
 func (g gateAdapter) Store() kernelapi.SecretStore {
 	st := g.rt.Store()
 	if st == nil {

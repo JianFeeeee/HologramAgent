@@ -1,0 +1,558 @@
+{
+  "id": "doc_1795145582053845586",
+  "summary": "第A轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+  "content": "[11:33] agent: 第A轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx → ok\n[11:33] webui: 第B轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[11:33] agent: 第B轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx → ok\n[11:33] webui: 第C轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[11:33] agent: 第C轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx → ok\n[11:33] webui: 第D轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[11:33] agent: 第D轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx → ok\n[11:33] webui: 第E轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[11:33] agent: 第E轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx → ok\n[11:33] webui: 第F轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[11:33] agent: 第F轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx → ok\n[11:33] webui: 第G轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "events": [
+    {
+      "ts": "2026-11-20T11:33:02.050220444+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_31a8ceebdee601c32a2b76b4",
+          "modality": "text",
+          "text": "第A轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050220444+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050220444+08:00",
+          "updated_at": "2026-11-20T11:33:02.050220444+08:00"
+        },
+        {
+          "id": "blk_txt_468e104a1a574d7f88eb2862",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050220444+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050220444+08:00",
+          "updated_at": "2026-11-20T11:33:02.050220444+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050243327+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_221da62577dead14861a61b2",
+          "modality": "text",
+          "text": "第B轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "webui",
+          "frame_ts": "2026-11-20T11:33:02.050243327+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050243327+08:00",
+          "updated_at": "2026-11-20T11:33:02.050243327+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050314449+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_8e4acff750d902ea96d81140",
+          "modality": "text",
+          "text": "第B轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050314449+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050314449+08:00",
+          "updated_at": "2026-11-20T11:33:02.050314449+08:00"
+        },
+        {
+          "id": "blk_txt_d6069a1b96d4af9af6f7b0c4",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050314449+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050314449+08:00",
+          "updated_at": "2026-11-20T11:33:02.050314449+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050337852+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_a531733ef70d7543f410a45c",
+          "modality": "text",
+          "text": "第C轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "webui",
+          "frame_ts": "2026-11-20T11:33:02.050337852+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050337852+08:00",
+          "updated_at": "2026-11-20T11:33:02.050337852+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050430064+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_a5549b51ca33ae924ed820e5",
+          "modality": "text",
+          "text": "第C轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050430064+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050430064+08:00",
+          "updated_at": "2026-11-20T11:33:02.050430064+08:00"
+        },
+        {
+          "id": "blk_txt_63bef215f1a4c15d19b97635",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050430064+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050430064+08:00",
+          "updated_at": "2026-11-20T11:33:02.050430064+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050447055+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_4d479cd6d2ebb9ff4c79844e",
+          "modality": "text",
+          "text": "第D轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "webui",
+          "frame_ts": "2026-11-20T11:33:02.050447055+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050447055+08:00",
+          "updated_at": "2026-11-20T11:33:02.050447055+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050510784+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_899bbd16eebb1954abe1982b",
+          "modality": "text",
+          "text": "第D轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050510784+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050510784+08:00",
+          "updated_at": "2026-11-20T11:33:02.050510784+08:00"
+        },
+        {
+          "id": "blk_txt_142e0b94989aee28a56d88bc",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050510784+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050510784+08:00",
+          "updated_at": "2026-11-20T11:33:02.050510784+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050535159+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_15482705afa92f5040477d08",
+          "modality": "text",
+          "text": "第E轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "webui",
+          "frame_ts": "2026-11-20T11:33:02.050535159+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050535159+08:00",
+          "updated_at": "2026-11-20T11:33:02.050535159+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050609066+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_03504be5f53a374fe3fc2858",
+          "modality": "text",
+          "text": "第E轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050609066+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050609066+08:00",
+          "updated_at": "2026-11-20T11:33:02.050609066+08:00"
+        },
+        {
+          "id": "blk_txt_361678e47cb7bff9c7e65453",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050609066+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050609066+08:00",
+          "updated_at": "2026-11-20T11:33:02.050609066+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050624034+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_42745d3611af8c4bfbdb55d8",
+          "modality": "text",
+          "text": "第F轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "webui",
+          "frame_ts": "2026-11-20T11:33:02.050624034+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050624034+08:00",
+          "updated_at": "2026-11-20T11:33:02.050624034+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050716205+08:00",
+      "source": "agent",
+      "blocks": [
+        {
+          "id": "blk_txt_2329bf1d61216ed3f543cb11",
+          "modality": "text",
+          "text": "第F轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050716205+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050716205+08:00",
+          "updated_at": "2026-11-20T11:33:02.050716205+08:00"
+        },
+        {
+          "id": "blk_txt_faba11db3fd36961888c0067",
+          "modality": "text",
+          "text": "ok",
+          "source": "agent",
+          "frame_ts": "2026-11-20T11:33:02.050716205+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "response",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050716205+08:00",
+          "updated_at": "2026-11-20T11:33:02.050716205+08:00"
+        }
+      ]
+    },
+    {
+      "ts": "2026-11-20T11:33:02.050734149+08:00",
+      "source": "webui",
+      "blocks": [
+        {
+          "id": "blk_txt_c2860aff4e995103acc51450",
+          "modality": "text",
+          "text": "第G轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "source": "webui",
+          "frame_ts": "2026-11-20T11:33:02.050734149+08:00",
+          "page_seq": 1,
+          "page_kind": "llm_round",
+          "block_role": "request",
+          "last_recalled_at": "0001-01-01T00:00:00Z",
+          "created_at": "2026-11-20T11:33:02.050734149+08:00",
+          "updated_at": "2026-11-20T11:33:02.050734149+08:00"
+        }
+      ]
+    }
+  ],
+  "created_at": "2026-11-20T11:33:02.053846618+08:00",
+  "updated_at": "2026-11-20T11:33:02.053846668+08:00",
+  "source": "context_archived",
+  "meta": {
+    "content_hash": "5954c40451b1a520de8d74a6efd410d0",
+    "is_archived_context": "true"
+  },
+  "access_count": 1,
+  "last_access": "2026-11-20T11:33:02.053846708+08:00",
+  "blocks": [
+    {
+      "id": "blk_txt_31a8ceebdee601c32a2b76b4",
+      "modality": "text",
+      "text": "第A轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050220444+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050220444+08:00",
+      "updated_at": "2026-11-20T11:33:02.050220444+08:00"
+    },
+    {
+      "id": "blk_txt_468e104a1a574d7f88eb2862",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050220444+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050220444+08:00",
+      "updated_at": "2026-11-20T11:33:02.050220444+08:00"
+    },
+    {
+      "id": "blk_txt_221da62577dead14861a61b2",
+      "modality": "text",
+      "text": "第B轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "webui",
+      "frame_ts": "2026-11-20T11:33:02.050243327+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050243327+08:00",
+      "updated_at": "2026-11-20T11:33:02.050243327+08:00"
+    },
+    {
+      "id": "blk_txt_8e4acff750d902ea96d81140",
+      "modality": "text",
+      "text": "第B轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050314449+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050314449+08:00",
+      "updated_at": "2026-11-20T11:33:02.050314449+08:00"
+    },
+    {
+      "id": "blk_txt_d6069a1b96d4af9af6f7b0c4",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050314449+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050314449+08:00",
+      "updated_at": "2026-11-20T11:33:02.050314449+08:00"
+    },
+    {
+      "id": "blk_txt_a531733ef70d7543f410a45c",
+      "modality": "text",
+      "text": "第C轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "webui",
+      "frame_ts": "2026-11-20T11:33:02.050337852+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050337852+08:00",
+      "updated_at": "2026-11-20T11:33:02.050337852+08:00"
+    },
+    {
+      "id": "blk_txt_a5549b51ca33ae924ed820e5",
+      "modality": "text",
+      "text": "第C轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050430064+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050430064+08:00",
+      "updated_at": "2026-11-20T11:33:02.050430064+08:00"
+    },
+    {
+      "id": "blk_txt_63bef215f1a4c15d19b97635",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050430064+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050430064+08:00",
+      "updated_at": "2026-11-20T11:33:02.050430064+08:00"
+    },
+    {
+      "id": "blk_txt_4d479cd6d2ebb9ff4c79844e",
+      "modality": "text",
+      "text": "第D轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "webui",
+      "frame_ts": "2026-11-20T11:33:02.050447055+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050447055+08:00",
+      "updated_at": "2026-11-20T11:33:02.050447055+08:00"
+    },
+    {
+      "id": "blk_txt_899bbd16eebb1954abe1982b",
+      "modality": "text",
+      "text": "第D轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050510784+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050510784+08:00",
+      "updated_at": "2026-11-20T11:33:02.050510784+08:00"
+    },
+    {
+      "id": "blk_txt_142e0b94989aee28a56d88bc",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050510784+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050510784+08:00",
+      "updated_at": "2026-11-20T11:33:02.050510784+08:00"
+    },
+    {
+      "id": "blk_txt_15482705afa92f5040477d08",
+      "modality": "text",
+      "text": "第E轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "webui",
+      "frame_ts": "2026-11-20T11:33:02.050535159+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050535159+08:00",
+      "updated_at": "2026-11-20T11:33:02.050535159+08:00"
+    },
+    {
+      "id": "blk_txt_03504be5f53a374fe3fc2858",
+      "modality": "text",
+      "text": "第E轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050609066+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050609066+08:00",
+      "updated_at": "2026-11-20T11:33:02.050609066+08:00"
+    },
+    {
+      "id": "blk_txt_361678e47cb7bff9c7e65453",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050609066+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050609066+08:00",
+      "updated_at": "2026-11-20T11:33:02.050609066+08:00"
+    },
+    {
+      "id": "blk_txt_42745d3611af8c4bfbdb55d8",
+      "modality": "text",
+      "text": "第F轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "webui",
+      "frame_ts": "2026-11-20T11:33:02.050624034+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050624034+08:00",
+      "updated_at": "2026-11-20T11:33:02.050624034+08:00"
+    },
+    {
+      "id": "blk_txt_2329bf1d61216ed3f543cb11",
+      "modality": "text",
+      "text": "第F轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050716205+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050716205+08:00",
+      "updated_at": "2026-11-20T11:33:02.050716205+08:00"
+    },
+    {
+      "id": "blk_txt_faba11db3fd36961888c0067",
+      "modality": "text",
+      "text": "ok",
+      "source": "agent",
+      "frame_ts": "2026-11-20T11:33:02.050716205+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "response",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050716205+08:00",
+      "updated_at": "2026-11-20T11:33:02.050716205+08:00"
+    },
+    {
+      "id": "blk_txt_c2860aff4e995103acc51450",
+      "modality": "text",
+      "text": "第G轮：xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "source": "webui",
+      "frame_ts": "2026-11-20T11:33:02.050734149+08:00",
+      "page_seq": 1,
+      "page_kind": "llm_round",
+      "block_role": "request",
+      "last_recalled_at": "0001-01-01T00:00:00Z",
+      "created_at": "2026-11-20T11:33:02.050734149+08:00",
+      "updated_at": "2026-11-20T11:33:02.050734149+08:00"
+    }
+  ]
+}

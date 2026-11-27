@@ -31,6 +31,8 @@ package registry
 
 import (
 	"fmt"
+
+	"github.com/JianFeeeee/HologramAgent/internal/agent/io"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +51,16 @@ type Meta struct {
 	NeedsInputCh bool
 	// NeedsOutputCh 声明该类型**必须**成对给出 outputch（rt 的成对契约）。
 	NeedsOutputCh bool
+	// MayOffload 声明该类型**可以**为转投拉起新实例。
+	//
+	// 只给主 agent（文档 §8.2）：让子再去拉孙子会形成无界增殖。
+	MayOffload bool
+	// AgentCap 是本类型**能承接的通道能力位**（能力面，文档 §8.1.1）。
+	//
+	// ★ 它是**数据声明**，不是行为：内核与基座只做位掩码比较，
+	//   不认识任何一个具体能力名（`rt` 只是 io 包里的一个位）。
+	//   加第三种能力（音频 / 图像 / 结构化）时，本字段与基座代码都不用改。
+	AgentCap io.OutputCapability
 }
 
 // Action 是**类型独有**的管理动作声明（生成工具 schema 与 _help 用）。
@@ -71,6 +83,23 @@ type Descriptor struct {
 	Actions []Action
 
 	// Construct 装配**本类型**的一个实例。
+	//
+	// ⚠️ **不要直接调它** —— 用 `Instantiate(d, host, arg)`：后者在它之后
+	//   统一跑 `Initialize` 并负责回滚。直接调 Construct 会跳过 Initialize，
+	//   症状是"实例建好了但调度器/上下文全没装"（四个类型各自踩过一次）。
+	//
+	// ★ 为什么私有（2026-11-25）：装配有两个阶段——"把实例造出来"与
+	// "把它的运行时服务装进去"。此前**每个类型自己决定怎么衔接**：
+	//
+	//	主 agent    在 `New()` 里自己调 `Runtime.Initialize`
+	//	resident    在自己的 Construct 里 `registry.Lookup(kind)` 再调 `.Initialize`
+	//	rtchild     同上
+	//	worker      根本不调（没有 Initialize 字段）
+	//	插件类型    由内核 `kernelmod/agenttype` 调
+	//
+	// 于是"所有 agent 对内核一致"只在 construct 这一层成立，Initialize
+	// 这一层完全不统一 —— 类型为了让自己能工作，必须知道"注册表怎么查"，
+	// 这是倒挂。收成一个入口之后，两阶段都由 registry 保证。
 	//
 	// 参数 host 是内核侧的实例管理器（分配 id、查重、登记、绑定上行通路
 	// 都在它那）；arg 是调用方给的参数。返回给模型看的结果文本。
@@ -124,13 +153,21 @@ type Host interface {
 	// GetChild 取单个实例简报。
 	GetChild(id string) (ChildBrief, bool)
 	// DestroyChild 销毁实例（类型 Dispose 由登记表骨架调用）。
-	DestroyChild(id string, residual string) (string, error)
+	// DestroyChild 销毁实例。residual / channels 是**销毁时的声明**
+	// （残余任务处置 / 通道去向），由基座执行，类型只声明。
+	DestroyChild(id string, residual string, channels string) (string, error)
 	// SendToChild 向实例注入一条输入（走它自己的 inputch，复用现有注入原语）。
 	SendToChild(id, text string) (string, error)
 	// OwnerID 是宿主（调用方）的标识 —— 用于模板化错误文案与审计。
 	OwnerID() string
 	// DataDir 是宿主的工作目录（类型的 Construct 需要它派生 temp 路径等）。
 	DataDir() string
+	// WorkDirOf 返回某个实例的**工作数据目录**（内核派生，类型只消费）。
+	//
+	// ★ 类型**不许**自己拼 `<data>/residents/<id>/graph.db` 这类路径：
+	//   目录是内核统一的资源分配（一条记录 = 一个实例 = 一个目录），
+	//   改布局只改内核一处，加类型不必再发明一套目录规则。
+	WorkDirOf(typeName, id string) string
 }
 
 // ───────────────────────── 类型注册表 ─────────────────────────
@@ -149,8 +186,10 @@ func Register(d Descriptor) error {
 	if strings.TrimSpace(d.Type) == "" {
 		return fmt.Errorf("registry: 类型名不能为空")
 	}
+	// Construct 是**唯一**的实例化能力：主 agent 与子 agent 都经它
+	// （文档 §7.1「一张表管五件事」，主 agent 不是特例）。
 	if d.Construct == nil {
-		return fmt.Errorf("registry: 类型 %q 缺少 Construct（没有它就创建不出实例）", d.Type)
+		return fmt.Errorf("registry: 类型 %q 缺少装配能力（没有它就创建不出实例）", d.Type)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -186,6 +225,95 @@ func Unregister(typeName string, alive []string) error {
 		}
 	}
 	return nil
+}
+
+// Instantiate 是**造实例的唯一入口**（两阶段一起做完）。
+//
+//	① construct   把实例装配出来（父的决定 + 通道划拨 + 登记）
+//	② Initialize  把它的运行时服务装进去（失败必须回滚，否则留下僵尸）
+//
+// ★ 为什么必须由 registry 保证顺序（而不是各类型自己调）：
+// Initialize 失败时实例已经建好（可能已 children.Add、已 Assign inputch），
+// 回滚的责任在**谁造的**。此前四种类型各自决定去哪一步、失败怎么收，
+// 于是"Initialize 失败留僵尸"在一条路径上被修过、另一条没修。
+//
+// ★ 主 agent 不是特例：它也走这里（`Construct` 里交回根实例，Initialize
+// 照常对它跑）。「所有 agent 对内核一致」于是真正落在代码上。
+func Instantiate(d Descriptor, host Host, arg map[string]interface{}) (string, func(), error) {
+	if d.Construct == nil {
+		return "", nil, fmt.Errorf("registry: 类型 %q 没有装配能力", d.Type)
+	}
+	out, err := d.Construct(host, arg)
+	if err != nil {
+		return "", nil, err
+	}
+	// ★ 实例参数是 `any`：注册表不 import agent 包（那会让注册表变成
+	//   基座的一部分）。由宿主经 `NewlyCreated` 交出刚造的那个。
+	instance := NewlyCreated(host)
+	if instance == nil {
+		// 没有"刚造的实例"可取 ⇒ 本宿主不支持两阶段（裁剪版内核 / 判据）。
+		// 明确跳过，不猜。
+		return out, nil, nil
+	}
+	if d.Initialize == nil {
+		return out, nil, nil
+	}
+	if err := d.Initialize(instance); err != nil {
+		// ★ 回滚责任在造的人：调用方拿不到实例（构造失败语义一致）。
+		if r, ok := host.(RollbackHost); ok {
+			r.RollbackConstruct(d.Type, strOf(arg, "id"))
+		}
+		return "", nil, fmt.Errorf("registry: 类型 %q 的 Initialize 失败（实例已回滚）: %w", d.Type, err)
+	}
+	// ★ 这里**只做装配，不做启动**（2026-11-25）。
+	//
+	// `Start` 需要一个前置：**面已挂好**（IO / 阶段管道 / 安全闸）。
+	// 面由装配点在实例建好后挂（`MountSurface`），所以启动必须排在它之后，
+	// 不能塞进 Instantiate —— 否则运行期一起来就撞 nil IO。
+	//
+	// 启动由内核在**面挂完之后**调（`StartInstance`）；本函数返回的实例
+	// 由调用方决定何时起（装配点/实例管理器各在自己的时机调）。
+	return out, func() { /* 已成功，无回滚动作 */ }, nil
+}
+
+// StartInstance 由**内核**在"面已挂好"之后调用（docs §10）。
+//
+// 顺序不可换：`Instantiate`（construct + Initialize）→ 装配点挂面
+// （`MountSurface` 等）→ 本函数。把 Start 塞进 Instantiate 会让 IO/
+// StageHost 还是 nil 时运行期就起来了（实测 panic）。
+func StartInstance(instance any) {
+	if st, ok := instance.(Starter); ok && st != nil {
+		st.Start()
+	}
+}
+
+// Starter 是"能起自己运行期"的实例（*agent.Agent 满足它）。
+//
+// ★ 注册表不 import agent 包，所以经这个窄接口调用。
+type Starter interface {
+	Start()
+}
+
+// NewlyCreated 由宿主实现：返回**刚刚由 construct 造出来的**实例（any）。
+//
+// ★ 为什么是独立接口而不是塞进 Host：只有需要两阶段装配的宿主才实现它
+//
+//	（实例管理器有"刚造那个"的概念；判据里的假宿主没有）。
+type NewlyCreatedHost interface {
+	NewlyCreated() any
+}
+
+// NewlyCreated 取宿主刚造出来的实例（未支持 ⇒ nil）。
+func NewlyCreated(host Host) any {
+	if h, ok := host.(NewlyCreatedHost); ok {
+		return h.NewlyCreated()
+	}
+	return nil
+}
+
+// RollbackHost 是支持**回滚已构造实例**的宿主（可变可选能力）。
+type RollbackHost interface {
+	RollbackConstruct(typeName, id string)
 }
 
 // Lookup 按类型名取 Descriptor。
@@ -246,7 +374,7 @@ var genericActions = []Action{
 	{Name: ActionDestroy, Description: "销毁单个实例", Required: []string{"id"},
 		Args: map[string]interface{}{
 			"id":       map[string]interface{}{"type": "string", "description": "实例 id"},
-			"residual": map[string]interface{}{"type": "string", "enum": []string{"keep", "drop"}, "description": "未处理的残余任务处置：keep=转回你自己的队列（默认）/ drop=明确丢弃"},
+			"residual": map[string]interface{}{"type": "string", "enum": []string{"keep", "stash", "drop"}, "description": "未处理的残余任务处置：keep=投回你的队列（默认，父接手）/ stash=退回原通道暂存（接回该通道即释放）/ drop=明确丢弃（逐条留痕，异步通道用户收不到回复）"},
 		}},
 	{Name: ActionDestroyAll, Description: "销毁该类型的全部实例（撤销类型前必须先做）"},
 	{Name: ActionRestart, Description: "重启单个实例（停掉并重建，用于强行停止跑飞的实例）", Required: []string{"id"},
@@ -289,7 +417,24 @@ func Dispatch(host Host, typeName, action string, arg map[string]interface{}) (s
 	case ActionList:
 		return listOf(host, typeName), nil
 	case ActionCreate:
-		return d.Construct(host, arg)
+		// ★ 工作目录由**内核**在建实例之前分配好（用户裁定 2026-11-19）：
+		//   「内核持有的 agent 表里就有 agent 的工作数据目录」。
+		//   调用方给的 work_dir 一律覆盖 —— 目录不是调用方的参数。
+		if wd := host.WorkDirOf(typeName, strOf(arg, "id")); wd != "" {
+			arg[ArgWorkDir] = wd
+		}
+		// ★ 统一两阶段（construct → Initialize）。此前这里直接调 `d.Construct`，
+		//   于是 `admin_child(create)` 造出来的实例**没有 Initialize** ——
+		//   插件的运行期钩子没挂、Loop 永远不跑，而创建动作返回成功。
+		out, _, err := Instantiate(d, host, arg)
+		if err != nil {
+			return "", err
+		}
+		// ★ 面由 construct 挂好 ⇒ 现在起运行期（顺序见 StartInstance 注释）。
+		if im, ok := host.(NewlyCreatedHost); ok {
+			StartInstance(im.NewlyCreated())
+		}
+		return out, nil
 	case ActionInspect:
 		id := strOf(arg, "id")
 		if id == "" {
@@ -312,7 +457,7 @@ func Dispatch(host Host, typeName, action string, arg map[string]interface{}) (s
 		if id == "" {
 			return "", fmt.Errorf("registry: destroy 需要 id")
 		}
-		return host.DestroyChild(id, strOf(arg, "residual"))
+		return host.DestroyChild(id, strOf(arg, "residual"), strOf(arg, "channels"))
 	case ActionDestroyAll:
 		return destroyAll(host, typeName), nil
 	case ActionRestart:
@@ -340,17 +485,31 @@ func Dispatch(host Host, typeName, action string, arg map[string]interface{}) (s
 //
 // 语义：销毁该实例（不带残余转回，因为它可能已经跑飞）→ 用**同类型同参数**
 // 重建。参数由 Host 保存（创建时记录），所以调用方只需要给 id。
+// restartChild 完成一次**软重启**（停掉某实例并用它的创建参数重建）。
+//
+// ★ 整个动作委托给宿主的 `RecreateChild`，**不在本包拆成“先销毁再重建”**
+//
+//	（2026-11-26 实测缺陷）。
+//
+// 原先这里的分步写法：
+//
+//	DestroyChild(id, "drop")   → 末尾 Forget(id) —— 创建参数快照被删
+//	RecreateChild(type, id)    → 读快照 —— 已经不在了
+//	⇒ 「实例 %q 没有创建参数快照（无法重建）」
+//
+// 于是**软重启永远不可能成功**，而报错指向“没有快照”，看起来像记录没写。
+//
+// 重启是一个原子语义（“换上新的同参实例”），快照的取用归宿主：
+// 它才知道自己的销毁链会清理什么。
 func restartChild(host Host, d Descriptor, id string) (string, error) {
 	if _, ok := host.GetChild(id); !ok {
 		return "", fmt.Errorf("registry: 实例 %q 不存在", id)
 	}
-	if _, err := host.DestroyChild(id, "drop"); err != nil {
-		return "", fmt.Errorf("registry: 重启 %q 失败于销毁阶段: %w", id, err)
+	c, ok := host.(RestartHost)
+	if !ok {
+		return "", fmt.Errorf("registry: 实例管理器不支持重建（无法完成软重启）")
 	}
-	if c, ok := host.(RestartHost); ok {
-		return c.RecreateChild(d.Type, id)
-	}
-	return "", fmt.Errorf("registry: 实例管理器不支持重建（无法完成软重启）")
+	return c.RecreateChild(d.Type, id)
 }
 
 // RestartHost 是支持**软重启**的实例管理器（可选能力）。
@@ -402,7 +561,7 @@ func destroyAll(host Host, typeName string) string {
 	var ok, failed int
 	var errs []string
 	for _, x := range briefs {
-		if _, err := host.DestroyChild(x.ID, "drop"); err != nil {
+		if _, err := host.DestroyChild(x.ID, "drop", "release"); err != nil {
 			failed++
 			errs = append(errs, fmt.Sprintf("%s: %v", x.ID, err))
 			continue

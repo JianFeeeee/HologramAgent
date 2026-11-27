@@ -49,8 +49,6 @@ const (
 	FacIO = "kernel-io"
 	// FacEventBus 是事件总线的**代理面**（安全模块注册；消费方唯一的取用入口）。
 	FacEventBus = "eventbus"
-	// FacGraphOpener 是图记忆的**装配面**（memory 模块提供，类型模块用它开子视图）。
-	FacGraphOpener = "memory.opener"
 	// FacEventDispatch 是**投递驱动者的注入点**（安全模块提供，
 	// 供运行期事件循环把 Dispatcher 挂上裸总线）。
 	FacEventDispatch = "eventbus.dispatch"
@@ -59,40 +57,47 @@ const (
 	//
 	// ★ 名字本身就是一条纪律：能取到 Raw 的只有装配侧的 security。
 	FacEventBusRaw = "eventbus.raw"
-	// FacMemory 是图记忆（memory 模块提供，类型 GraphMemory）。
-	FacMemory = "memory"
-	// FacMemoryIndexer 是记忆索引器（memory 模块提供）。
-	FacMemoryIndexer = "memory.indexer"
-	// FacMemorySocial 是人物关系网（memory 模块提供）。
-	FacMemorySocial = "memory.social"
-	// FacMemoryDistiller 是蒸馏器（memory 模块提供，可暂停/恢复）。
-	FacMemoryDistiller = "memory.distiller"
-	// FacEmbedder 是共享词嵌入（memory 模块提供）。
-	FacEmbedder = "memory.embedder"
 	// FacLua 是 Lua 协议适配 VM（lua 模块提供）。
 	FacLua = "lua"
 	// FacSupervisor 是代理生命周期守护（supervisor 模块提供）。
 	FacSupervisor = "supervisor"
 	// FacTracker 是变更追踪（tracker 模块提供）。
 	FacTracker = "tracker"
-	// FacTextMem 是文本记忆（textmem 模块提供）。
-	FacTextMem = "textmem"
 	// FacLLM 是多源 provider 管理（llm 模块提供）。
 	FacLLM = "llm"
 	// FacLLMDefault 是默认 provider（llm 模块提供）。
 	FacLLMDefault = "llm.default"
-	// FacDocStore 是文档记忆（docmem 模块提供）。
-	FacDocStore = "docmem"
-	// FacKnowledge 是知识库（knowledge 模块提供）。
-	FacKnowledge = "knowledge"
+	// FacLLMClient 是 **LLM 设施**（重试/fallback/记账/活动源/分类错误，§3.2.1）。
+	//
+	// ★ 与 FacLLM（多源管理器）不同：管理器是"有哪些源"的**事实**，
+	//   本设施是"怎么用它们"的**策略**。基座只持本设施的句柄。
+	FacLLMClient = "llm.client"
 	// FacMultimodal 是多模态向量空间（multimodal 模块提供）。
 	FacMultimodal = "multimodal"
 	// FacMultimodalStatus 是多模态空间的启用状态（provider 名 / 失败原因）。
 	FacMultimodalStatus = "multimodal.status"
+	// FacEmbedder 是**稀疏词嵌入**（fastText 词向量 + jieba 分词）。
+	//
+	// ★ 它是**语义计算能力**，不是记忆（docs §3.4）。
+	//   记忆（图库/文档/文本日志）归主 agent；而"句 → 向量"
+	//   这个纯计算归内核设施 —— 否则每个类型各建一个 fastText 模型
+	//   （生产实测 50k 词 × 300 维，数百 MB）。
+	//
+	// ★ 与 FacMultimodal 同住 multimodal 模块：稠密空间（provider 为空时禁用）
+	//   与稀疏词嵌入（永远可用）是同一件事的两个档位。
+	FacEmbedder = "memory.embedder"
 	// FacONNX 是内嵌 ONNX 运行时（onnx 模块提供）。
 	FacONNX = "onnx"
-	// FacStageHost 是阶段管道 + 工具注册表（stage-host 模块提供）。
+	// FacStageHost 是**阶段管道**（stage-host 模块提供）。
+	//
+	// ★ 它**不含工具注册表**（2026-11-25 拆分）：工具登记归 FacToolReg。
+	//   原先两者住同一个类型，于是"工具表由谁产"永远讲不清。
 	FacStageHost = "stagehost"
+	// FacToolReg 是**插件工具登记簿**（tool-reg 模块提供）。
+	//
+	// ★ 与 FacToolExec 的分工：本设施持有"名字 + schema + handler"，
+	//   执行设施（FacToolExec）按名字取它来跑。两者都属内核，谁也不持有谁。
+	FacToolReg = "tool.reg"
 	// FacPromptSections 是插件声明的系统提示词段（stage-host 模块提供）。
 	FacPromptSections = "promptsec"
 	// FacPluginRegistry 是插件注册表（stage-host 模块提供）。
@@ -107,12 +112,25 @@ const (
 	FacSecurity = "security"
 	// FacDevice 是设备/工具数据面（device 模块提供）。
 	FacDevice = "device"
+	// FacToolExec 是**工具执行设施**（tool-exec 模块提供）。
+	//
+	// ★ 它执行的是"不属于任何类型私有"的工具（内核侧登记的 / 插件 / io 设备）。
+	//   类型私有的工具（读图记忆/冷文档/人格）由类型的 agentloop 自己执行，
+	//   不进这里 —— 否则内核就要认识那些类型的私有状态。
+	FacToolExec = "tool-exec"
 	// FacUpdate 是更新子系统的状态面（update 模块提供）。
 	FacUpdate = "update"
 	// FacUpdateCapabilities 是本机升级能力快照（update 模块提供）。
 	FacUpdateCapabilities = "update.capabilities"
 	// FacAgent 是主 agent（agent 模块提供）。
 	FacAgent = "agent"
+	// FacAgentRegistry 是 **agent 记录表**（唯一事实来源，见 model.AgentRecord）。
+	//
+	// ★ 与 FacAgent（主 agent 实例）不同：登记表描述"这台内核下有哪些 agent
+	//   以及父为它们声明了什么"，与"主 agent 是谁"无关。安全模块只读它。
+	FacAgentRegistry = "agent.registry"
+	// FacAgentIndex 是登记表的**只读视图**（安全模块/基座渲染用）。
+	FacAgentIndex = "agent.index"
 	// FacSyncBus 是内核就绪状态总线（kernelboot 提供）。
 	FacSyncBus = "kernel.syncbus"
 	// FacMigrationPreflight 是数据目录迁移体检（migration 模块提供，可空）。
@@ -121,6 +139,14 @@ const (
 	FacBaseAPIKey = "llm.base-api-key"
 	// FacDataDir 是数据目录（Group 0 提供，与 ks.DataDir 同值；给只读接口用）。
 	FacDataDir = "kernel.datadir"
+	// FacAgentTypeHost 是**插件类型组装器**（agent-type 模块提供）。
+	//
+	// 它把插件声明的中立类型（`sdk.AgentTypeDef`）组装成内核注册项
+	// （`registry.Descriptor`），并挂上插件提供的回调。
+	//
+	// ★ 为什么是内核设施而不是插件自己注册：造实例要碰 IO / GraphOpener /
+	//   Security / child.Registry —— 那些是内核实现，插件不认识。
+	FacAgentTypeHost = "agent.type-host"
 )
 
 // ───────────────────────── 图记忆 ─────────────────────────
@@ -274,24 +300,6 @@ type DocStore interface {
 }
 
 // Knowledge 是知识库（文档树 + 检索 + 导入）。
-type Knowledge interface {
-	SearchIn(query, category string, topK int) []*model.Knowledge
-	AddWithMedia(name, content string, media []model.KnowledgeMediaRef) error
-	ImportDir(opts model.ImportOptions) (model.ImportStats, error)
-	Remove(name string) error
-	BuildTree() *model.TreeIndex
-	List() []string
-	Start() error
-	Stop()
-	// SetDenseSpace / ReindexDense 是装配期接线（多模态空间）。
-	SetDenseSpace(space MultimodalSpace)
-	ReindexDense() (built, skipped int)
-	// SetVectorizer / ReindexWithVectorizer 是稀疏词嵌入接线。
-	// 参数用 any：接口包不能 import vector 实现包（`vector.Vectorizer` 是接口，
-	// 由实现在收到后自己断言）。
-	SetVectorizer(v any)
-	ReindexWithVectorizer(v any)
-}
 
 // ───────────────────────── LLM ─────────────────────────
 
@@ -379,29 +387,14 @@ type EventDispatchSink interface {
 	SetDispatcher(d EventDispatcher)
 }
 
-// GraphMemoryOpener 是**图记忆的装配面**：打开只读视图与轻量实例。
+// ★ 已删 `GraphMemoryOpener`（2026-11-20 用户裁定）。
 //
-// ★ 为什么需要它（2026-11-17 拆包）：驻留子与 rtchild 要 `OpenGraphDBReadOnly`
-//   - `NewLightMemory` 来装配自己的记忆面。那两个是**实现构造**，agent 不该
-//     直接调 —— 但也不能没有。于是由 memory 模块把这两个构造挂到设施表，
-//     类型模块经 `Require` 取（这样"谁来构造"是装配的事，不是基座的事）。
+// 它曾是"子 agent 自己开图库视图"的装配面（OpenReadOnly / OpenLight /
+// Close / ExportTriples / LightCommon / LightTemp）。按 docs §6.4，子 agent
+// 的图记忆能力**只能**经主 agent 注册的 `graph_*` 槽内工具获得 ——
+// 它们不认识 GraphDB / LightMemory / 任何开库方法。
 //
-// ★ 返回的是 `GraphMemory`/`any` 而不是具体类型：消费方只需要"能 Recall/Commit
-//
-//	的图记忆面"与"可关闭句柄"，不需要知道它是 LightMemory 还是 GraphDB。
-type GraphMemoryOpener interface {
-	// OpenReadOnly 按已存在的主库路径开一个**结构上写不进**的只读视图。
-	OpenReadOnly(mainPath string) (GraphMemory, error)
-	// OpenLight 用只读主库 + temp 路径构造轻量实例（读 temp∪main、只写 temp）。
-	//
-	// 返回值是 `any` 而不是 GraphMemory：LightMemory 的方法集与全量 GraphDB
-	// 不同（它只实现 Recall/Commit 那一面），强行统一成同一接口就得给
-	// GraphMemory 加它没有的方法 —— 那是把实现的形状泄漏成契约。
-	// 消费方（驻留子/rt 的装配点）自己断言成它需要的窄面。
-	OpenLight(mainRO GraphMemory, tempPath string, allowWrite bool) (any, error)
-	// Close 关闭一个由本接口打开的句柄（幂等）。
-	Close(m GraphMemory) error
-}
+// 因此这个接口与它的 6 个方法一并删除：留着它等于给"自己开库"留后门。
 
 // ───────────────────────── 安全闸门 ─────────────────────────
 
@@ -446,6 +439,28 @@ type SecurityGate interface {
 	//
 	// 未装配安全模块时调用方应视为放行 —— 但那是"未装配"，不是"授权通过"。
 	CheckOutput(agentID string, channel string) model.Decision
+	// Archive 是**写前留档**：受保护路径被写之前先备份一份（供 L1 还原）。
+	//
+	// ★ 为什么它属于闸门而不是"另一个设施"：它是**写路径上的数据面动作**，
+	//   与 CheckPath/CheckOutput 同一层（同一个边界、同一份配置、同一套目录）。
+	//   放在这里让基座只经闸门调用它 —— 于是 `internal/agent/**` 对
+	//   `internal/security` 的 import 可以是**零**（§8 判据 3）。
+	//
+	// 返回 archived=true 表示真的留了一份（调用方据此记日志）。
+	Archive(dataDir, path string) (archived bool, err error)
+	// ClampPriority 把注入方声明的中断级别**收到允许的范围**。
+	//
+	// ★ 这是一个**授权**判定，不是调度判定（用户裁定 2026-11-18）：
+	//   L4 是"只有编译期内置插件可声明"的级别；外部插件/普通来源拿到它
+	//   就能抢占全部执行且父无从分辨来源。所以夹取必须发生在**注入路径**
+	//   （闸门这一侧），而不是让每个 agent 在投递时各夹一次 ——
+	//   那样任何 agent 收到的 L4 都不可信。
+	//
+	// 语义：
+	//   特权来源（内置插件 / 父 agent）⇒ 原样返回
+	//   其余来源                      ⇒ 夹到 L3（LevelInteractive）
+	//   未知字符串                    ⇒ 返回 fallback（"L1"），呼叫方据此降级
+	ClampPriority(declared string, privileged bool) string
 	// Store 返回变量库（明文 ↔ 别名）。
 	Store() SecretStore
 }
@@ -644,3 +659,62 @@ type PromptSections interface {
 //
 // 它们存在只是为了省去每个 mod.go 里重复的"Require + 断言"三行样板；
 // 判据在 `ok==false` 时必须失败（装配契约），不许当默认值用。
+
+// ───────────────────────── agent 登记（C+D，§3.2.2） ─────────────────────────
+
+// AgentIndex 是 agent 记录的**只读视图**（叶子层，安全模块与基座都用它）。
+//
+// ## 为什么只读接口放这里
+//
+// 安全模块**不能** import `internal/agent/agent`（那是把墙焊到基座上），
+// 而它需要知道"这个 agent 被授权了什么"。所以：
+//
+//	internal/kernelapi/model   AgentFacts / AgentRecord（纯数据）
+//	internal/kernelapi         AgentIndex（只读接口，本类型）
+//	内核（Group 0 之后的装配）  AgentRegistry 实现，Provide(FacAgentIndex, …)
+//	kernelmod/security         Requires(FacAgentIndex)，Runtime 持只读句柄
+//
+// ## 契约（改语义就是改安全行为）
+//
+//   - **fail-open**：记录缺失（裸 agent / 单测）或 AllowedOutputs 为空 ⇒ 放行。
+//     fail-open 是存量契约：`device_id` 缺失、agent 未声明授权，改造前都是放行。
+//   - **deny 优先**：全局 policy deny 先判，再判父声明的 allow，顺序不变。
+//   - **profiles 校验不变**：未声明的档位名照样**响亮报错**。
+type AgentIndex interface {
+	// Facts 返回某 agent 的父声明事实（不存在 ⇒ ok=false）。
+	Facts(agentID string) (model.AgentFacts, bool)
+	// Present 报告某 agent 是否有记录（存活或已知）。
+	Present(agentID string) bool
+}
+
+// AgentRegistry 是 agent 记录的**写面**（只有实例生命周期写它）。
+type AgentRegistry interface {
+	AgentIndex
+	// Register 登记一个新 agent（覆盖同 ID 的旧记录）。
+	Register(rec model.AgentRecord) error
+	// Update 就地改一条记录（fn 返回后落库）。
+	Update(agentID string, fn func(*model.AgentRecord))
+	// Remove 删除一条记录（**唯一**的清理点）。
+	Remove(agentID string)
+	// Records 返回全部记录（状态面与持久化用）。
+	Records() []model.AgentRecord
+}
+
+// AgentRegistryOf 从闸门取出记录表的**写面**（未装配 ⇒ nil）。
+//
+// ★ 为什么挂在闸门上而不是单独注入：记录表与安全模块是**同一组装配事实**
+//
+//	（记录描述"谁被授权了什么"，闸门执行判定）。让 agent 只接一个字段，
+//	就不会出现"登记表接了、闸门没接"这种半装状态。
+//
+// 语义：nil = 该部署没有记录表（裸 agent / 裁剪版内核）⇒ 调用方跳过登记，
+// 判定侧 fail-open（与改造前逐字一致）。
+func AgentRegistryOf(g SecurityGate) AgentRegistry {
+	if g == nil {
+		return nil
+	}
+	if p, ok := g.(interface{ Registry() AgentRegistry }); ok {
+		return p.Registry()
+	}
+	return nil
+}

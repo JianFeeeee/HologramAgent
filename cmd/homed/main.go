@@ -9,8 +9,6 @@ import (
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod"
 	"github.com/JianFeeeee/HologramAgent/internal/kstate"
 	luapkg "github.com/JianFeeeee/HologramAgent/internal/lua"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/pipeline"
-	"github.com/JianFeeeee/HologramAgent/internal/memory/text"
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	"github.com/JianFeeeee/HologramAgent/internal/supervisor"
 	"github.com/JianFeeeee/HologramAgent/internal/tracker"
@@ -18,11 +16,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	mainmem "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent/memory"
 	internalConfig "github.com/JianFeeeee/HologramAgent/internal/config"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelboot"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelloop"
 	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/pluginhost"
 	securitymod "github.com/JianFeeeee/HologramAgent/internal/kernelmod/security"
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
 	"github.com/JianFeeeee/HologramAgent/internal/meta"
 	// ★ 内置插件统一走 internal/plugins 的清单（all.go），**不要**在这里
 	// 单独导入某个插件：
@@ -104,7 +103,7 @@ func main() {
 	//   · 而 patch 版本之间这两个目录实际从未变过
 	//
 	// 必须在 GetJieba() 首次调用之前设：首次调用会初始化单例并固定目录。
-	memory.SetJiebaDataDir(opt.dataDir)
+	mainmem.SetJiebaDataDir(opt.dataDir)
 
 	// ---- 配置中心（SQLite 持久化，唯一配置源） ----
 	//
@@ -283,11 +282,11 @@ func main() {
 	// 候选消费管线（memory_candidate → 文本记忆 + 蒸馏）：
 	// ★ 它不再自己起 goroutine，而是**注册到内核事件循环**由循环推动
 	//   （用户裁定「eventloop 也是协调各个模块的核心推动者」）。
-	//   注册发生在 startRuntime 里（见下面），这里只准备处理函数。
-	memoryCandidate := memoryCandidateHandler(
-		kernelmod.MustValue[*text.Memory](ks, kernelapi.FacTextMem),
-		kernelmod.MustValue[*memory.GraphDB](ks, kernelapi.FacMemory),
-		kernelmod.MustValue[*pipeline.Distiller](ks, kernelapi.FacMemoryDistiller))
+	//   记忆候选的**消费**已在主 agent 自己的 `emitMemoryCandidate` 里完成
+	//   （它直调自己的文本记忆与蒸馏器，不经输出通道）。
+	//   装配侧不再需要任何转发壳 —— 内核循环也不认识 agent 类型。
+	var memoryCandidate func(kernelloop.OutputEvent)
+	_ = memoryCandidate
 
 	// L1 failback：受限 worker 启动即跑恢复梯子，结果以退出码交回 guard。
 	if opt.boot == "failback" {

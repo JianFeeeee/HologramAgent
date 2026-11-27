@@ -111,6 +111,7 @@ done
 
 | 文档 | 内容 |
 | --- | --- |
+| **[`target-architecture.md`](./target-architecture.md)** | **★ 目标架构权威（模块关系 / 接口契约 / eventloop 与 agentloop 的区别）**。`todo.md` §10 六之二的正式转写，含 14 条可机械检验的不变量 |
 | ⚠️ [`kernel-modularization-design.md`](./kernel-modularization-design.md) | **装配架构权威**：依赖声明、BFS 分层、Group 0、实例化粒度 |
 | [`kernel-secret-firewall-design.md`](./kernel-secret-firewall-design.md) | 安全防火墙（**部分实现**，见文首接线状态表） |
 | ⚠️ [`input-scheduler-design.md`](./input-scheduler-design.md) | 两类别输入 + L1–L4 中断 + 可抢占 |

@@ -38,22 +38,14 @@ const (
 	FacilityConfig = "config"
 	// FacilityKernelIO 是 IOManager + EventBus 就绪。
 	FacilityKernelIO = "kernel-io"
-	// FacilityMemory 是图记忆（含索引/社交图/蒸馏）就绪。
-	FacilityMemory = "memory"
 	// FacilityLua 是 Lua 协议适配 VM 就绪。
 	FacilityLua = "lua"
 	// FacilitySupervisor 是代理生命周期守护就绪。
 	FacilitySupervisor = "supervisor"
 	// FacilityTracker 是变更追踪（overlayfs）就绪。
 	FacilityTracker = "tracker"
-	// FacilityTextMemory 是文本记忆就绪。
-	FacilityTextMemory = "textmem"
 	// FacilityLLM 是多源 Provider 管理就绪。
 	FacilityLLM = "llm"
-	// FacilityDocStore 是文档记忆就绪。
-	FacilityDocStore = "docmem"
-	// FacilityKnowledge 是知识库就绪。
-	FacilityKnowledge = "knowledge"
 	// FacilityMultimodal 是多模态向量空间就绪。
 	FacilityMultimodal = "multimodal"
 	// FacilityONNX 是依存句法分析器就绪。
@@ -78,9 +70,9 @@ const (
 // （运行期发现意味着用户已经装上了那个永不启动的插件）。
 func KnownFacilities() []string {
 	return []string{
-		FacilityConfig, FacilityKernelIO, FacilityMemory, FacilityLua,
-		FacilitySupervisor, FacilityTracker, FacilityTextMemory, FacilityLLM,
-		FacilityDocStore, FacilityKnowledge, FacilityMultimodal, FacilityONNX,
+		FacilityConfig, FacilityKernelIO, FacilityLua,
+		FacilitySupervisor, FacilityTracker, FacilityLLM,
+		FacilityMultimodal, FacilityONNX,
 		FacilityStageHost, FacilityAgent, FacilitySecurity, FacilityDevice,
 	}
 }

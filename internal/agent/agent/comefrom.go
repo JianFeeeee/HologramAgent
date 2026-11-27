@@ -55,7 +55,10 @@ const extraKeyComeFrom = "comefrom"
 // comefrom 的两个取值。
 const (
 	// comeFromUser：用户请求在边界上发起（默认语义）。
-	comeFromUser = "user"
+	// ComeFromUser / ComeFromInternal 的导出形态（类型包构造帧时用）。
+	comeFromUser     = "user"
+	ComeFromUser     = "user"
+	ComeFromInternal = "internal"
 	// comeFromInternal：agent 体系内部发起（委派、转投、自主续跑）。
 	comeFromInternal = "internal"
 )
@@ -64,7 +67,8 @@ const (
 //
 // 不覆盖是有意的：更内层（知道更准）的调用点先写了就以它为准；
 // 外层只在"没人标过"时补一个保守值。
-func stampComeFrom(extra map[string]interface{}, v string) {
+// StampComeFrom 在帧的 Extra 上打来源标识（类型包调用）。
+func StampComeFrom(extra map[string]interface{}, v string) {
 	if extra == nil {
 		return
 	}
@@ -89,10 +93,8 @@ func (a *Agent) ComefromForAgent() string {
 	if a == nil {
 		return comeFromUser
 	}
-	if a.hooks.ComeFrom != "" {
-		return a.hooks.ComeFrom
-	}
-	return comeFromUser
+	// ★ 来源标签是**构造期数据事实**（有没有父），不占槽位。
+	return comeFromFor(a.cfg.ParentID)
 }
 
 // comeFromFor 由**层级事实**推导来源标签。

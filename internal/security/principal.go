@@ -105,28 +105,22 @@ type PrincipalPolicy struct {
 	HardPrivateTools []string
 }
 
-// principalRegistry 持有各主体的策略（进程级，内核持有）。
+// principalRegistry 持有**部署级**主体策略（进程级，内核持有）。
+//
+// ★ 2026-11-18（§3.2.2）：`byID` 表**已删** —— 按 ID 的声明（父为子声明的
+//
+//	工具策略）现在住在 `AgentRecord.Facts`，与输出授权、长期档位同一条记录。
+//
+// `byTag` 保留：它是**部署级**声明（插件事先声明 "external" 这类标签的策略），
+// 生命周期不跟随任何具体执行体 —— 撤销只能由声明方自己做，所以它不该跟着
+// 某个 agent 的注册/注销走。这是它与"父为子声明"的本质区别。
 type principalRegistry struct {
 	mu    sync.RWMutex
-	byID  map[string]PrincipalPolicy
 	byTag map[string]PrincipalPolicy
 }
 
 func newPrincipalRegistry() *principalRegistry {
-	return &principalRegistry{
-		byID:  map[string]PrincipalPolicy{},
-		byTag: map[string]PrincipalPolicy{},
-	}
-}
-
-// SetByID 按主体 ID 声明策略。
-func (r *principalRegistry) SetByID(id string, p PrincipalPolicy) {
-	if r == nil || strings.TrimSpace(id) == "" {
-		return
-	}
-	r.mu.Lock()
-	r.byID[id] = p
-	r.mu.Unlock()
+	return &principalRegistry{byTag: map[string]PrincipalPolicy{}}
 }
 
 // SetByTag 按标签声明策略（比逐 ID 声明更好维护）。
@@ -137,47 +131,6 @@ func (r *principalRegistry) SetByTag(tag string, p PrincipalPolicy) {
 	r.mu.Lock()
 	r.byTag[tag] = p
 	r.mu.Unlock()
-}
-
-// RemoveByID 撤销某个主体的策略声明。
-//
-// ## 为什么必须有它（2026-10-30）
-//
-// 主体 ID 对**子 agent** 来说是脚本给的（`ring_agents create id="bot1"`）。
-// 子被回收后同名重建是常规操作，而若旧策略留在表里：
-//
-//	新一代用**上一代父当时留的约束**运行 —— 而那个父可能已经不在了。
-//
-// 这与今天修的 rtchild 留档串线（`rtClosedTranscripts` 以模型给的名字为键）
-// 是**同一种形态**：以调用方给的名称为键的表，必须在生命周期结束时清理。
-//
-// 不清理还会单调增长（每建一个不同名字的子就多一条永不释放的 Polciy）。
-func (r *principalRegistry) RemoveByID(id string) {
-	if r == nil || strings.TrimSpace(id) == "" {
-		return
-	}
-	r.mu.Lock()
-	delete(r.byID, id)
-	r.mu.Unlock()
-}
-
-// lookup 取出与主体相关的全部策略（ID + 每个标签）。
-func (r *principalRegistry) lookup(p Principal) []PrincipalPolicy {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var out []PrincipalPolicy
-	if pol, ok := r.byID[p.ID]; ok {
-		out = append(out, pol)
-	}
-	for _, tag := range p.Tags {
-		if pol, ok := r.byTag[tag]; ok {
-			out = append(out, pol)
-		}
-	}
-	return out
 }
 
 // DeclarePrincipalPolicy 是**插件声明主体策略**的入口（SDK 转发到这里）。
@@ -192,39 +145,39 @@ func (r *Runtime) DeclarePrincipalPolicy(scope, key string, p PrincipalPolicy) e
 	}
 	switch scope {
 	case "id":
-		r.principals.SetByID(key, p)
+		// ★ 按 ID 的声明已归 **agent 记录表**（`Facts.AllowedTools/DenyTools`）。
+		//   这里响亮报错而不是静默接受：静默会让调用方以为策略生效了。
+		return &policyErr{"security: scope=\"id\" 已归 agent 记录表 —— " +
+			"用 DeclareChildPolicy 声明（它写 AgentRegistry），本入口只处理部署级 tag 策略"}
 	case "tag":
 		r.principals.SetByTag(key, p)
 	default:
-		return &policyErr{"security: principal scope must be \"id\" or \"tag\", got " + scope}
+		return &policyErr{"security: principal scope must be \"tag\" (\"id\" 已归 agent 记录表), got " + scope}
 	}
 	return nil
 }
 
-// RevokePrincipalPolicy 撤销一个按 ID 声明的主体策略（合规性：子 agent 销毁时调）。
+// RevokePrincipalPolicy 撤销主体策略（**只支持 tag**，见 principalRegistry 的注释）。
 //
-// 只支持 scope="id"：标签策略属于**部署级**声明（如 tag=external），
-// 它们的生命周期不跟随某个具体执行体，撤销只能由声明方自己做。
+// scope="id" 的撤销已不需要：按 ID 的声明随 `AgentRegistry.Remove(id)` 消失。
 func (r *Runtime) RevokePrincipalPolicy(scope, key string) error {
 	if r == nil || r.principals == nil {
 		return errNoRuntime
 	}
-	if scope != "id" {
-		return &policyErr{"security: revoke only supports scope=\"id\" (tag policies are deployment-level), got " + scope}
+	if scope != "tag" {
+		return &policyErr{"security: revoke only supports scope=\"tag\" " +
+			"(按 ID 的声明随 agent 记录消失), got " + scope}
 	}
-	r.principals.RemoveByID(key)
+	r.principals.RemoveByTag(key)
 	return nil
 }
 
-// HasPrincipalPolicy 报告某 ID 是否已声明主体策略（诊断/状态面用）。
+// HasPrincipalPolicy 报告某 ID 是否有**记录表**声明（诊断/状态面用）。
 func (r *Runtime) HasPrincipalPolicy(id string) bool {
-	if r == nil || r.principals == nil {
-		return false
+	if _, ok := r.agentFacts(id); ok {
+		return true
 	}
-	r.principals.mu.RLock()
-	defer r.principals.mu.RUnlock()
-	_, ok := r.principals.byID[id]
-	return ok
+	return false
 }
 
 // CheckToolFor 按**主体**判定工具是否可用。
@@ -253,7 +206,7 @@ func (r *Runtime) checkToolForWithProfile(p Principal, profileName, tool string)
 	if d := r.checkToolWithProfile(p, profileName, tool); !d.Allowed {
 		return d
 	}
-	pols := r.principals.lookup(p)
+	pols := r.lookup(p)
 	if len(pols) == 0 {
 		return allowed()
 	}
@@ -302,14 +255,14 @@ func (r *Runtime) checkToolForWithProfile(p Principal, profileName, tool string)
 	return allowed()
 }
 
-// PrincipalPolicies 返回已声明策略数量（状态面用）。
+// PrincipalPolicies 返回已声明的**部署级**策略数量（状态面用）。
 func (r *Runtime) PrincipalPolicies() int {
 	if r == nil || r.principals == nil {
 		return 0
 	}
 	r.principals.mu.RLock()
 	defer r.principals.mu.RUnlock()
-	return len(r.principals.byID) + len(r.principals.byTag)
+	return len(r.principals.byTag)
 }
 
 // errNoRuntime 表示安全运行时未装配。
@@ -318,3 +271,13 @@ var errNoRuntime = &policyErr{"security: runtime is not initialized"}
 type policyErr struct{ msg string }
 
 func (e *policyErr) Error() string { return e.msg }
+
+// RemoveByTag 撤销某个标签的部署级策略（幂等）。
+func (r *principalRegistry) RemoveByTag(tag string) {
+	if r == nil || strings.TrimSpace(tag) == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.byTag, tag)
+	r.mu.Unlock()
+}

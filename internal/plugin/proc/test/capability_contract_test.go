@@ -41,11 +41,11 @@ package test
 //	                 调用会 panic 在 RPC 之前，测不到边界）
 //	kernel_control —— 模板未接 KernelControlAPI（同上）；且 protocol.go
 //	                 登记了 kernel.restart/shutdown 但 corehandler 里
-//	                 **没有任何 case**（见 todo.md §8 第 1 条），这条
-//	                 渠道当前根本不通，用判据钉它只会钉出一个必然失败的断言。
+//	                 **没有任何 case**，这条渠道当前根本不通，
+//	                 用判据钉它只会钉出一个必然失败的断言。
 //	io            —— 模板侧把注入错误**吞掉**了（`_, _ = callWithTextOpts(...)`），
 //	                 插件侧拿不到 error、也没有别的可观测出口，所以这组
-//	                 测不出边界。是缺陷，记在 todo.md §8 第 10 条，不是遗漏。
+//	                 测不出边界。是缺陷，不是遗漏。
 
 import (
 	"strings"

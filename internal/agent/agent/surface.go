@@ -1,34 +1,28 @@
 package agent
 
-// surface.go —— 基座提供给**类型实现**的构造面访问器。
+// surface.go —— 基座对外的**最小构造面**（用户裁定 2026-11-18，§6.3）。
 //
-// ## 为什么这层存在（且为什么它不违反洋葱）
+// ## 34 → 5
 //
-// 内核持有 `*Agent`；类型模块（mainimpl / resident / rtchild）通过注册的回调
-// 拿到它。回调里的代码需要读基座的构造面（id / io / provider / ctx / 安全闸…），
-// 但 Go 的可见性让跨包读不到小写字段。
+// 收敛前这里有 34 个访问器：`Provider` / `ProviderManager` / `DataDir` /
+// `Sched` / `Sub` / `CancelTools` / `ToolMu` / `Impl` … 它们全都是
+// **`AgentConfig` 公有字段的再导出**或**类型自己的状态**。
 //
-// ⇒ 基座把这些**构造面**开成只读访问器。它们不是"把内部状态暴露出去"：
-//   每一个都是 Agent 构造时确定、运行期不再变的事实；写入口仍然只有
-//   `Install*` 系列（类型初始化期用一次）。
+// 问题不是"多几个方法"，而是它们把基座的**内部结构**变成了类型可以依赖的
+// 契约：任何一次字段搬家都得同步改 N 个类型模块。
 //
-// 纪律：这里只放**读**。出现"实现体要写某个基座字段"时，说明那个字段该搬家。
+// 现在只剩五个（分布在三个文件里）：
+//
+//	Config()   构造参数（归一化后，类型初始化时读一次）
+//	Hooks()    槽位表（类型工厂"取—改—挂回"）
+//	SetHooks() 挂回槽位
+//	Ctx()      取消域（事件循环与类型共用同一个）
+//	Cancel()   取消函数
+//
+// 其余一律**删掉**。类型的状态走它自己的实现体（`Impl`→删，改由类型模块
+// 自己的闭包/结构持有）；基座字段走 `Config()`。
 
-import (
-	"context"
-	"sync"
-	"time"
-
-	"github.com/JianFeeeee/HologramAgent/internal/agent/agent/child"
-	agentAPI "github.com/JianFeeeee/HologramAgent/internal/agent/api"
-	agentIO "github.com/JianFeeeee/HologramAgent/internal/agent/io"
-	"github.com/JianFeeeee/HologramAgent/internal/agent/kit"
-	agentProvider "github.com/JianFeeeee/HologramAgent/internal/agent/provider"
-	"github.com/JianFeeeee/HologramAgent/pkg/types"
-)
-
-// IDValue 返回本 agent 的标识。
-func (a *Agent) IDValue() types.AgentID { return a.id }
+import "context"
 
 // Ctx 返回取消域。
 func (a *Agent) Ctx() context.Context {
@@ -40,104 +34,3 @@ func (a *Agent) Ctx() context.Context {
 
 // Cancel 返回取消函数。
 func (a *Agent) Cancel() context.CancelFunc { return a.cancel }
-
-// IO 返回 IOManager。
-func (a *Agent) IO() *agentIO.IOManager { return a.io }
-
-// Provider 返回默认模型源。
-func (a *Agent) Provider() agentAPI.Provider { return a.provider }
-
-// ProviderManager 返回多源管理器。
-func (a *Agent) ProviderManager() *agentProvider.ProviderManager { return a.providerManager }
-
-// PreferredProvider 返回优先模型源名。
-func (a *Agent) PreferredProvider() string { return a.preferredProvider }
-
-// Graph 返回图记忆共同面（可 nil）。
-func (a *Agent) Graph() GraphMemory { return a.graph }
-
-// SetGraph 运行期覆盖图记忆面（可选槽位）。
-func (a *Agent) SetGraph(g GraphMemory) {
-	if a != nil {
-		a.graph = g
-	}
-}
-
-// KernelSource 返回上级标识。
-func (a *Agent) KernelSource() string { return a.kernelSource }
-
-// ParentOf 返回父 agent 的 id（根为空）。
-func (a *Agent) ParentOf() string { return a.parentID }
-
-// TaskPrompt 返回任务提示词。
-func (a *Agent) TaskPrompt() string { return a.taskPrompt }
-
-// DataDir 返回数据目录。
-func (a *Agent) DataDir() string { return a.dataDir }
-
-// ContextOf 返回上下文实现（类型装的；未装时 nil）。
-func (a *Agent) ContextOf() *RelevanceContext { return a.context }
-
-// SystemPrompt 返回固定提示词。
-func (a *Agent) SystemPrompt() string { return a.systemPrompt }
-
-// AllowedOutputs 返回被授权的输出通道集合。
-func (a *Agent) AllowedOutputs() []string { return a.allowedOutputs }
-
-// MaxToolTurns 返回工具轮次硬上限。
-func (a *Agent) MaxToolTurns() int { return a.maxToolTurns }
-
-// UsageLedger 返回用量账本。
-func (a *Agent) UsageLedger() *kit.Ledger { return &a.usageLedger }
-
-// Sched 返回调度器（未安装时 nil）。
-func (a *Agent) Sched() *scheduler { return a.sched }
-
-// Sub 返回类型分区表（未安装时 nil）。
-func (a *Agent) Sub() *subStates { return a.sub }
-
-// HooksValue 返回当前槽位表（改写走 SetHooks）。
-func (a *Agent) HooksValue() Hooks { return a.hooks }
-
-// ChildrenOf 返回子 agent 登记表。
-func (a *Agent) ChildrenOf() *child.Registry { return &a.children }
-
-// CancelLLM 返回进行中的 LLM 取消槽。
-func (a *Agent) CancelLLM() *context.CancelFunc { return &a.cancelLLM }
-
-// LLMMu 返回 LLM 互斥锁。
-func (a *Agent) LLMMu() *sync.Mutex { return &a.llmMu }
-
-// InterruptInput 返回"本轮被中断"标志槽。
-func (a *Agent) InterruptInput() *bool { return &a.interruptInput }
-
-// LogIdentity 返回日志身份标签。
-func (a *Agent) LogIdentity() child.LogIdentity { return a.logIdentity }
-
-// Periodic 返回类型注册的定时任务（刻度由内核事件循环推动）。
-func (a *Agent) Periodic() []PeriodicTask { return a.periodic }
-
-// LastInputMu 返回最近输入时间表的锁。
-func (a *Agent) LastInputMu() *sync.Mutex { return &a.lastInputMu }
-
-// LastInput 返回最近输入时间表（去重窗口用）。
-func (a *Agent) LastInput() map[string]time.Time { return a.lastInput }
-
-// ToolMu 返回工具批的互斥锁。
-func (a *Agent) ToolMu() *sync.Mutex { return &a.toolMu }
-
-// ToolSeq 返回工具调用序号计数器。
-func (a *Agent) ToolSeq() *uint64 { return &a.toolSeq }
-
-// CancelTools 返回"取消当前工具批"的取消函数表。
-func (a *Agent) CancelTools() *map[uint64]context.CancelFunc { return &a.cancelTools }
-
-// Impl 返回类型实现体（未挂时 nil）。
-func (a *Agent) Impl() any { return a.impl }
-
-// SetImpl 挂上类型实现体（装配期一次）。
-func (a *Agent) SetImpl(v any) {
-	if a != nil {
-		a.impl = v
-	}
-}

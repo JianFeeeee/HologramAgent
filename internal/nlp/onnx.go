@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/JianFeeeee/HologramAgent/internal/memory"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelapi/semantic"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -108,7 +108,7 @@ func (p *ONNXParser) Parse(text string) (*ParseResult, error) {
 		return &ParseResult{}, nil
 	}
 
-	x := memory.GetJieba()
+	x := semantic.GetJieba()
 	if x == nil {
 		return nil, fmt.Errorf("jieba unavailable")
 	}

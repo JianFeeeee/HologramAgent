@@ -23,7 +23,7 @@ package test
 // 等于判据侵入被测代码；而"拒绝理由出现在结果里"正是模型与用户看到的那个面。
 
 import (
-	_ "github.com/JianFeeeee/HologramAgent/internal/agent/mainagent"
+	"github.com/JianFeeeee/HologramAgent/internal/kernelmod/device"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,17 +54,14 @@ func pathGuardHarnessDef(t *testing.T, dataDir string, sandbox security.SandboxP
 	rt := security.NewDisabledRuntime()
 	rt.SetPolicy(security.Policy{Sandbox: sandbox})
 
-	sh := kit.NewStageHost()
+	tr := kit.NewToolRegistry()
 	noop := func(map[string]interface{}) (interface{}, error) { return "EXECUTED", nil }
-	if err := sh.RegisterTool(def.Name, def, noop); err != nil {
+	if err := tr.RegisterTool(def.Name, def, noop); err != nil {
 		t.Fatalf("RegisterTool: %v", err)
 	}
-	a, instErr := agent.Instantiate(agent.TypeNameMain, agent.AgentConfig{
-		ID: "pathguard", StageHost: sh, Security: rt.AsGate(), DataDir: dataDir,
-	})
-	if instErr != nil {
-		t.Fatalf("Instantiate(main): %v", instErr)
-	}
+	// ★ 执行链是内核设施（装配侧注入）；判据自己当装配侧。
+	a := faces{ToolReg: tr, Security: rt.AsGate(), ToolExec: device.NewExecutor(nil, rt.AsGate(), tr)}.
+		mount(newMainAgent(t, agent.AgentConfig{TypeName: agent.TypeNameMain, ID: "pathguard", DataDir: dataDir}))
 	t.Cleanup(a.Stop)
 	return a
 }

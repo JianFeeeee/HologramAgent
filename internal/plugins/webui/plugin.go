@@ -15,6 +15,7 @@ import (
 
 	"github.com/JianFeeeee/HologramAgent/internal/plugin"
 	sdk "github.com/JianFeeeee/HologramAgent/internal/sdk"
+	"sync"
 )
 
 func init() {
@@ -29,12 +30,20 @@ type Plugin struct {
 	handler *Handler
 	server  *http.Server
 	mux     *http.ServeMux
+
+	// llmShown 记录每个 agent **已推送过**的正文/思维链长度（用于算增量）。
+	//
+	// 按 agentID 分开：主 agent 与子 agent 并发跑时各自有独立的流，
+	// 共用一份计数会把两边的增量算错（串号）。
+	llmShownMu sync.Mutex
+	llmShown   map[string][2]int // agentID → [正文已推送, 思维链已推送]
 }
 
 func New(name string) *Plugin {
 	return &Plugin{
-		name: name,
-		mux:  http.NewServeMux(),
+		name:     name,
+		mux:      http.NewServeMux(),
+		llmShown: map[string][2]int{},
 	}
 }
 
@@ -192,6 +201,13 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 	_ = s.RegisterInputChannel("webui", sdk.ChannelDef{})
 	_ = s.RegisterInputChannel("http", sdk.ChannelDef{NoMemory: true})
 	s.RegisterOutputChannel("webui", 7, "Web 控制台（支持文字/图片/文件，图片内联展示、文件可下载）", sdk.ChannelDef{}, func(args map[string]interface{}) (interface{}, error) {
+		// ★ 本 handler 只处理**完整输出**（`output_send__webui` 工具发来的
+		//   payload/type）。
+		//
+		// 此前这里还接 `delta`/`reset` 两个键——那是**臆造**：输出通道是
+		// `output_send__<name>` 工具的执行后端，SDK 契约只有
+		// {payload, type, meta}。流式增量改走 `on_llm_call` 阶段（见下方注册）。
+
 		payload, _ := args["payload"].(string)
 		rawType, _ := args["type"].(string)
 		if payload == "" {
@@ -205,27 +221,29 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 			if err != nil {
 				return nil, err
 			}
-			s.Publish(&sdk.Event{
-				Type: sdk.EventAgentOutput,
-				Payload: map[string]interface{}{
-					"content":     payload,
-					"channel":     "webui",
-					"kind":        "channel_output",
-					"output_type": rawType,
-					"url":         url,
-					"size":        size,
-				},
-			})
+			// ★ 完整输出（图片/文件卡片）直接推给浏览器，**不发事件**。
+			out := map[string]interface{}{
+				"type":        "agent_output",
+				"channel":     "webui",
+				"kind":        "channel_output",
+				"content":     payload,
+				"output_type": rawType,
+				"url":         url,
+				"size":        size,
+			}
+			p.handler.RecordChannelOutput(out)
+			p.pushOutput(out)
 			return map[string]interface{}{"status": "ok", "url": url, "size": size}, nil
 		}
-		s.Publish(&sdk.Event{
-			Type: sdk.EventAgentOutput,
-			Payload: map[string]interface{}{
-				"content": payload,
-				"channel": "webui",
-				"kind":    "channel_output",
-			},
-		})
+		// ★ 完整文本输出：同样直接推，不经事件总线。
+		out := map[string]interface{}{
+			"type":    "agent_output",
+			"channel": "webui",
+			"kind":    "channel_output",
+			"content": payload,
+		}
+		p.handler.RecordChannelOutput(out)
+		p.pushOutput(out)
 		return map[string]interface{}{"status": "ok"}, nil
 	})
 
@@ -268,20 +286,58 @@ func (p *Plugin) Start(s *sdk.PluginSDK) error {
 		}
 	}
 
-	s.RegisterStage(sdk.StagePreAction, func(ctx *sdk.StageContext) error {
-		s.Publish(&sdk.Event{Type: sdk.EventStage, Payload: map[string]interface{}{"phase": "pre_action", "message": "thinking"}})
-		return nil
-	})
+	// ★ 阶段进度**由 stage 处理器自己推**（docs §9.1：类型 → StageHost → 插件
+	//   stage handler；插件拿到 ctx 之后怎么办是插件自己的事）。
+	//
+	//   此前是 `s.Publish(EventStage)` 发到内核总线、webui 再订阅回来 ——
+	//   同一件事走两圈，而且"当前有哪些浏览器连着"是插件自己的状态，
+	//   不该借内核总线表达（用户裁定 2026-11-25）。
+	// ★ 全部 8 个阶段都要消费（2026-11-27 补齐）。
+	//
+	// 此前只注册了 5 个，缺 `post_action` / `after_toolcall` / `after_output`
+	// —— 前端于是**看不到"工具跑完了"和"这一轮结束了"**，进度条与工具卡片
+	// 的状态永远停在"进行中"。clash 与 cli 的对照实验抓到过同一形态的缺失
+	// （cli 因删统一广播少了 4 个阶段）。
+	pushPhase := func(phase, msg string) func(*sdk.StageContext) error {
+		return func(ctx *sdk.StageContext) error {
+			frame := map[string]interface{}{"phase": phase, "message": msg}
+			addStageAgent(frame, ctx)
+			p.pushStage(frame)
+			return nil
+		}
+	}
+	s.RegisterStage(sdk.StagePreAction, pushPhase("pre_action", "thinking"))
+	s.RegisterStage(sdk.StagePostAction, pushPhase("post_action", "thought"))
 	s.RegisterStage(sdk.StageBeforeToolcall, func(ctx *sdk.StageContext) error {
 		tool := ""
 		if len(ctx.ToolCalls) > 0 {
 			tool = ctx.ToolCalls[0].Name
 		}
-		s.Publish(&sdk.Event{Type: sdk.EventStage, Payload: map[string]interface{}{"phase": "before_toolcall", "tool": tool, "message": "tool:" + tool}})
+		frame := map[string]interface{}{"phase": "before_toolcall", "tool": tool, "message": "tool:" + tool}
+		addStageAgent(frame, ctx)
+		p.pushStage(frame)
 		return nil
 	})
-	s.RegisterStage(sdk.StageBeforeOutput, func(ctx *sdk.StageContext) error {
-		s.Publish(&sdk.Event{Type: sdk.EventStage, Payload: map[string]interface{}{"phase": "before_output", "message": "output"}})
+	s.RegisterStage(sdk.StageAfterToolcall, func(ctx *sdk.StageContext) error {
+		tool := ""
+		if len(ctx.ToolCalls) > 0 {
+			tool = ctx.ToolCalls[0].Name
+		}
+		frame := map[string]interface{}{"phase": "after_toolcall", "tool": tool, "message": "done:" + tool}
+		addStageAgent(frame, ctx)
+		p.pushStage(frame)
+		return nil
+	})
+	s.RegisterStage(sdk.StageBeforeOutput, pushPhase("before_output", "output"))
+	s.RegisterStage(sdk.StageAfterOutput, pushPhase("after_output", "done"))
+	// ★ 流式增量的**唯一载体**（用户裁定 2026-11-27）。
+	//
+	// 此前 webui 靠输出通道的 `delta:true` 拿逐 token 文本 —— 那是臆造：
+	// 输出通道是 `output_send__webui` 工具的**执行后端**，契约只有
+	// {payload, type, meta}。而 LLM 调用归基座，只有那条链在流的第一现场
+	// 掌握"模型逐 token 产出了什么"；基座在 on_llm_call 上逐 chunk 推送。
+	s.RegisterStage(sdk.StageOnLLMCall, func(ctx *sdk.StageContext) error {
+		p.handler.pushLLMDelta(ctx)
 		return nil
 	})
 

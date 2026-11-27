@@ -75,26 +75,31 @@ func TestUnregisterPluginStages_EmptyNameIsNoop(t *testing.T) {
 }
 
 // 工具与 stage 的摘除互不干扰：都摘完后两者皆空。
+//
+// ★ 2026-11-25 拆分后，这两件事住在**两个句柄**里（`ToolRegistry` /
+// `StageHostType`）—— 于是"互不干扰"从"同一个对象上的两段代码各扫各的"
+// 变成结构上不可能互相影响。本判据因此同时钉两件事：
+// 摘除各自生效，且摘除后都能重新登记（重启路径的前提）。
 func TestUnregisterPluginToolsAndStages_Together(t *testing.T) {
 	h := kit.NewStageHost()
-	if err := h.RegisterTool("demo_run", sdk.ToolDef{Name: "demo_run", Plugin: "demo"},
-		func(map[string]interface{}) (interface{}, error) { return nil, nil }); err != nil {
+	tr := kit.NewToolRegistry()
+	noop := func(map[string]interface{}) (interface{}, error) { return nil, nil }
+	if err := tr.RegisterTool("demo_run", sdk.ToolDef{Name: "demo_run", Plugin: "demo"}, noop); err != nil {
 		t.Fatal(err)
 	}
 	h.RegisterStageFor("demo", sdk.StagePreAction, func(*sdk.StageContext) error { return nil })
 
-	h.UnregisterPluginTools("demo")
+	tr.UnregisterPluginTools("demo")
 	h.UnregisterPluginStages("demo")
 
-	if h.ToolCount() != 0 {
-		t.Errorf("工具应已摘除，实际 %d", h.ToolCount())
+	if tr.ToolCount() != 0 {
+		t.Errorf("工具应已摘除，实际 %d", tr.ToolCount())
 	}
-	if h.ToolPlugin("demo_run") != "" {
+	if tr.ToolPlugin("demo_run") != "" {
 		t.Error("工具→插件映射应清空")
 	}
 	// 摘除后可重新注册同名工具（重启路径的前提）
-	if err := h.RegisterTool("demo_run", sdk.ToolDef{Name: "demo_run", Plugin: "demo"},
-		func(map[string]interface{}) (interface{}, error) { return nil, nil }); err != nil {
+	if err := tr.RegisterTool("demo_run", sdk.ToolDef{Name: "demo_run", Plugin: "demo"}, noop); err != nil {
 		t.Errorf("摘除后应可重新注册同名工具，实际: %v", err)
 	}
 }
